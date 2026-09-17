@@ -1,0 +1,35 @@
+# python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# secrets
+.env
+
+# your vocabulary — copy config/projects.example.yaml and edit; never committed
+config/projects.yaml
+
+# local data — the brain DB lives in ~/Library/Application Support/slim/, never in-repo
+*.db
+*.sqlite*
+data/
+
+# macOS
+.DS_Store
+
+# raw Notion export snapshot (source-class, lives outside git)
+Export-*/
+
+# scratch docs; the decision log and the experiments live in the vault, not here
+docs/
+
+
+# Playwright MCP session artifacts (snapshots/screenshots from live UI checks)
+.playwright-mcp/
+*.png
+
+# Claude Code worktrees live inside the repo; `.claude/hooks` and `settings.json` are tracked,
+# the worktree checkouts never are (a `git add -A` once recorded one as a submodule gitlink).
+.claude/worktrees/

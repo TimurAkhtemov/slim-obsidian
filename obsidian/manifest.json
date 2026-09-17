@@ -1,0 +1,9 @@
+{
+  "id": "slim-recorder",
+  "name": "SLIM",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Record into the vault and discuss the note currently open in Obsidian.",
+  "author": "Timur Akhtemov",
+  "isDesktopOnly": true
+}

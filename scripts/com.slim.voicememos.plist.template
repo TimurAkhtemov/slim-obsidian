@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  TEMPLATE — not a working plist. `install-memo-sweep.sh` fills the @PLACEHOLDERS@ with this
+  machine's absolute paths and installs the result. A committed plist with real paths would be
+  a lie on any other machine (and would hardcode one person's $HOME), which is exactly the
+  mistake the backup installer avoids by generating its plist too.
+
+  Runs `slim memos` every 5 minutes (StartInterval 300) and once at load/login (RunAtLoad),
+  so a memo that synced while the timer was between ticks still gets swept on the next wake.
+
+  @CONTAINER@ is the folder the macOS Shortcut EXPORTS INTO — not Apple's Voice Memos
+  container, which stays TCC-protected and unreadable to any interpreter (that is the whole
+  point of the Shortcut: the file picker grants access by user consent, so no Full Disk
+  Access is needed anywhere). Validated headless on 2026-07-20: `shortcuts run` from a
+  non-GUI shell really does execute, so this timer works.
+
+  ⚠ Two things measured the hard way that day, both of which look like a broken timer:
+   - A memo appears in the Voice Memos APP before its audio downloads. iCloud syncs the
+     database entry first, so the app lists a recording whose .m4a is not yet on disk, and
+     nothing can copy a file that is not there. The sweep is idempotent and content-addressed,
+     so it simply picks the memo up on a later tick — which is why this runs on a schedule
+     instead of expecting a memo the instant it is recorded.
+   - If the Shortcut's "Save File" destination is left at its default, exports land in
+     Shortcuts' own iCloud folder rather than the intended one, and the sweep finds nothing
+     while the Shortcut reports success. Set the destination explicitly, and turn ON
+     "Overwrite If File Exists" or every run appends -2, -3, -4… (171 copies accumulated
+     before this was spotted).
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>@LABEL@</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>@RUNNER@</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>@UV_DIR@:@FFMPEG_DIR@:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>@REPO_ROOT@</string>
+    <key>StartInterval</key>
+    <integer>300</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>@LOG@</string>
+    <key>StandardErrorPath</key>
+    <string>@LOG@</string>
+</dict>
+</plist>

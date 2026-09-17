@@ -1,0 +1,36 @@
+# Both suites run without Ollama, a vault, or any of the weights — which is exactly what makes
+# CI possible here. macOS runners only: `parakeet-mlx` is MLX, so there is no Linux wheel.
+name: tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    runs-on: macos-15        # Apple Silicon; MLX has no x86 path
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      # ffprobe/ffmpeg are a real dependency of the recorder tests — the runner ships neither,
+      # and without them 41 tests fail rather than skip. Ollama, a vault and the model weights
+      # are genuinely not needed.
+      - run: brew install ffmpeg
+      - run: uv run pytest -q
+
+  plugin:
+    runs-on: ubuntu-latest   # plain CommonJS, no build step, no MLX
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+      - run: node --test obsidian/*.test.mjs

@@ -1,0 +1,28 @@
+# SLIM subject registry — copy to `config/projects.yaml` (gitignored) and make it yours.
+#
+# Subject is the only folder axis: an id IS the folder name under `Notes/<id>` and
+# `Capture/<id>` (both derived in `config.project_prefixes`), so ids are single lowercase path
+# segments. `aliases` are the words you actually say when you open a recording ("this is a
+# work thing"); `voicetags.detect_subject` routes a spoken opening by them. `description` is
+# what the labeling model (`enrich`) reads to pick a subject when you did not say one.
+#
+# ⚠ Subject names match LONGEST FIRST. Never register an id that is a prefix of everyday
+# speech about another subject ("learning" would outrank "school" in "learning about SVMs
+# for school"). Name the id for the folder, not for the English.
+
+# The name the prompts address you by. Only interpretation reads it — labels, summaries,
+# the nightly reflection; no path, id or filter ever does.
+owner: "Alex"
+
+projects:
+  work:
+    aliases: ["my job", "the office"]
+    description: "Day job — meetings, one-on-ones, project notes."
+
+  school:
+    aliases: ["class", "grad school", "the course"]
+    description: "Coursework — lectures, readings, assignments."
+
+  side-project:
+    aliases: ["the app"]
+    description: "The thing being built on evenings and weekends."
