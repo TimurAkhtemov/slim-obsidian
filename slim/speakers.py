@@ -44,22 +44,38 @@ def _hangover(active: np.ndarray) -> np.ndarray:
     return out
 
 
+def _words(tokens) -> list[list]:
+    """Group sentencepiece PIECES into words. Parakeet's tokens are pieces (`' Ne'`, `'vert'`,
+    `'hel'`, `'ess'`), not words, and a piece's start time can lead its own audio by up to
+    ~100-250 ms — so the first piece of a new speaker's word can fall while the old channel is
+    still active. A piece that starts with a space opens a word; one that does not (a further
+    piece, or trailing punctuation) joins the word before it. The first token always opens one."""
+    words: list[list] = []
+    for t in tokens:
+        if words and not t.text.startswith(" "):
+            words[-1].append(t)
+        else:
+            words.append([t])
+    return words
+
+
 def label_tokens(tokens, levels: np.ndarray) -> list[str]:
-    """One label per token. `levels` is (2, frames) dBFS: row 0 microphone, row 1 system."""
+    """One label per token, decided one WORD at a time. `levels` is (2, frames) dBFS: row 0
+    microphone, row 1 system."""
     frames = levels.shape[1]
     if not frames:
         return [""] * len(tokens)
     mic = levels[0] >= ACTIVE_DBFS
     system = _hangover(levels[1] >= ACTIVE_DBFS)
     labels, last = [], ""
-    for t in tokens:
-        a = min(int(t.start / FRAME_SECONDS), frames - 1)
-        b = min(max(a + 1, int(np.ceil(t.end / FRAME_SECONDS))), frames)
+    for word in _words(tokens):
+        a = min(int(word[0].start / FRAME_SECONDS), frames - 1)
+        b = min(max(a + 1, int(np.ceil(word[-1].end / FRAME_SECONDS))), frames)
         if system[a:b].mean() >= 0.5:
             last = THEM
         elif mic[a:b].any():
             last = ME
-        labels.append(last)               # silence on both: whoever was speaking still is
+        labels += [last] * len(word)       # silence on both: whoever was speaking still is
     first = next((label for label in labels if label), "")
     return [label or first for label in labels]
 

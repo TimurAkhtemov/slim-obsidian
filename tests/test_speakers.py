@@ -112,6 +112,37 @@ def test_turns_render_as_labelled_paragraphs():
     assert text == "**Me:** so what\n\n**Them:** yes indeed"
 
 
+def test_a_word_split_across_pieces_is_not_labelled_in_the_middle():
+    """Parakeet's tokens are sentencepiece PIECES, and a piece's start time can lead its own
+    audio by up to ~100-250 ms. At a Me -> Them boundary the first piece of the new speaker's
+    word can land while the system channel is still silent — decide per word, not per piece,
+    or the word splits between two speakers."""
+    lv = levels(11, mic=[(0, 9.0)], system=[(9.30, 11)])
+    tokens = [tok(" Okay", 0.5, 0.9),
+              tok(" Ne", 9.20, 9.36), tok("vert", 9.36, 9.60),
+              tok("hel", 9.60, 9.76), tok("ess", 9.76, 9.92)]
+    labels = speakers.label_tokens(tokens, lv)
+    assert labels == [speakers.ME] + [speakers.THEM] * 4
+    assert speakers.turns(tokens, labels) == [
+        (speakers.ME, "Okay"), (speakers.THEM, "Nevertheless"),
+    ]
+
+
+def test_punctuation_never_opens_a_turn():
+    """A piece that does not start with a space — here trailing punctuation — joins the word
+    before it rather than being decided on its own."""
+    lv = levels(2, mic=[(0, 0.5)], system=[(0.48, 2)])
+    tokens = [tok(" Hello", 0.0, 0.48), tok(".", 0.48, 0.52), tok(" world", 0.6, 1.0)]
+    labels = speakers.label_tokens(tokens, lv)
+    for _, text in speakers.turns(tokens, labels):
+        assert not text.startswith(".")
+
+
+def test_a_leading_piece_with_no_space_still_opens_a_word():
+    lv = levels(1, mic=[(0, 1)])
+    assert speakers.label_tokens([tok("Hi", 0.0, 0.5)], lv) == [speakers.ME]
+
+
 @needs_ffmpeg
 def test_levels_come_back_per_channel(tmp_path):
     lv = speakers.channel_levels(_wav(tmp_path / "a.wav", [(0, 2)], [(3, 5)]))
