@@ -130,17 +130,17 @@ def channel_levels(path: Path) -> np.ndarray:
 
     frame = int(SAMPLE_RATE * FRAME_SECONDS)
     frame_bytes = frame * 2 * 2                       # two channels of s16le
-    proc = subprocess.Popen([ffbin("ffmpeg"), "-nostdin", "-loglevel", "error", "-i", str(path),
-                             "-f", "s16le", "-ac", "2", "-ar", str(SAMPLE_RATE), "-"],
-                            stdout=subprocess.PIPE)
     rows = []
-    while block := proc.stdout.read(frame_bytes * 500):
-        block = block[:len(block) - len(block) % frame_bytes]
-        if not block:
-            continue
-        pcm = np.frombuffer(block, dtype="<i2").reshape(-1, frame, 2).astype(np.float32) / 32768
-        rows.append(np.sqrt((pcm ** 2).mean(axis=1)))
-    if proc.wait() != 0:
+    with subprocess.Popen([ffbin("ffmpeg"), "-nostdin", "-loglevel", "error", "-i", str(path),
+                           "-f", "s16le", "-ac", "2", "-ar", str(SAMPLE_RATE), "-"],
+                          stdout=subprocess.PIPE) as proc:
+        while block := proc.stdout.read(frame_bytes * 500):
+            block = block[:len(block) - len(block) % frame_bytes]
+            if not block:
+                continue
+            pcm = np.frombuffer(block, dtype="<i2").reshape(-1, frame, 2).astype(np.float32) / 32768
+            rows.append(np.sqrt((pcm ** 2).mean(axis=1)))
+    if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg could not decode {path.name}")
     rms = np.concatenate(rows) if rows else np.zeros((0, 2), dtype=np.float32)
     return 20 * np.log10(np.maximum(rms, 1e-10)).T

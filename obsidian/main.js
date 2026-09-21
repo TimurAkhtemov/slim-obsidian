@@ -1006,7 +1006,8 @@ class RecorderView {
    * They used to be summed, and once summed nobody can say who spoke. Apart, "me or them" is
    * a fact of the capture, decided on the server with no model. A missing source leaves its
    * channel silent; it never moves to the other side. The caption tap and the level meter
-   * each ask for ONE channel, so Web Audio downmixes for them — leave them alone.
+   * each ask for ONE channel, so Web Audio downmixes for them — leave them alone. The downmix
+   * is half of each side, so the level bar reads ~6 dB lower than before for the same voice.
    */
   async buildStream() {
     const Ctx = window.AudioContext || window.webkitAudioContext;

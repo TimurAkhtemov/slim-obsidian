@@ -201,7 +201,8 @@ def append_audio_frontmatter(text: str, *, rels: list[str], digests: list[str],
     that shapes them is this module's. A second writer is a second place to get it wrong.
 
     `asr_model` is written only when the note has none: a note first transcribed by one model
-    keeps that provenance, and a resume that produced no model name never blanks it.
+    keeps that provenance, and a resume that produced no model name never blanks it. `speakers_by`
+    follows the same rule.
     """
     from .chunk import parse_frontmatter, set_frontmatter
 
