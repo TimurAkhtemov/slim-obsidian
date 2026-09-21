@@ -36,6 +36,7 @@ class FakeStream {
 
 let notices = [];
 let noticeInstances = [];
+let wiring = null;
 function fakeContentEl() {
   const el = {
     classes: new Set(), children: [], isConnected: true, style: {}, events: {}, text: "",
@@ -153,6 +154,7 @@ test("a plugin-started server is told which vault this plugin is in", () => {
 function view({ recordVoice = true, display, user } = {}) {
   notices = [];
   noticeInstances = [];
+  wiring = null;
   installed.handler = undefined;
   // ⚠ Node 23 ships a read-only `navigator` global, so plain assignment throws.
   Object.defineProperty(globalThis, "navigator", {
@@ -168,7 +170,14 @@ function view({ recordVoice = true, display, user } = {}) {
   globalThis.window = {
     AudioContext: class {
       createMediaStreamDestination() { return { stream: new FakeStream(["audio"]) }; }
-      createMediaStreamSource() { return { connect() {} }; }
+      createChannelMerger(inputs) {
+        wiring = { inputs, routed: [], out: null };
+        return { connect(node) { wiring.out = node; }, wiring };
+      }
+      createMediaStreamSource(stream) {
+        // Tolerant of other targets (a caption tap, an analyser): only the merger has `wiring`.
+        return { connect(node, output, input) { if (node && node.wiring) node.wiring.routed.push([stream, input]); } };
+      }
     },
   };
   const plugin = { settings: { recordVoice, lastType: "lecture" }, saveSettings: async () => {} };
@@ -304,6 +313,25 @@ test("no voice and no system audio refuses to record rather than capturing silen
     display: async () => { throw new Error("denied"); },
   });
   await assert.rejects(() => v.buildStream(), /no audio source/);
+});
+
+test("the two sides are kept APART: microphone left, system audio right", async () => {
+  // Blended, nobody can ever say who spoke. Apart, "me or them" is a fact of the capture.
+  const mic = new FakeStream(["audio"]);
+  const sys = new FakeStream(["video", "audio"]);
+  const v = view({ user: async () => mic, display: async () => sys });
+  await v.buildStream();
+  assert.equal(wiring.inputs, 2);
+  assert.deepEqual(wiring.routed, [[mic, 0], [sys, 1]]);
+  assert.ok(wiring.out, "the merger feeds the recorded stream");
+});
+
+test("system audio stays on the RIGHT even when the microphone is off", async () => {
+  // The server reads the right channel as Them. A lone source must not slide to the left.
+  const sys = new FakeStream(["video", "audio"]);
+  const v = view({ recordVoice: false, display: async () => sys });
+  await v.buildStream();
+  assert.deepEqual(wiring.routed, [[sys, 1]]);
 });
 
 

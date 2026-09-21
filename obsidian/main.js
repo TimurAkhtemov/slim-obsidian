@@ -37,6 +37,8 @@ const os = require("os");
 const nodePath = require("path");
 
 const STAGING_DIR = "Attachments/_incoming";
+const MIC_CHANNEL = 0;      // left  — the server labels it Me
+const SYSTEM_CHANNEL = 1;   // right — the server labels it Them
 const RECORDER_ATTACHMENTS = "Attachments/Recorder";
 const DRAFT_SUFFIX = ".slim-draft.md";
 const EMPTY_MEETING_BLOCK = "````slim-meeting\n\n````\n\n";
@@ -981,7 +983,7 @@ class RecorderView {
     }
   }
 
-  /* Both sides of the conversation, mixed into ONE track.
+  /* Both sides of the conversation in ONE file, and kept APART inside it.
    *
    * A microphone records the room; on headphones that is only them, and the transcript ends up
    * a monologue with the other half missing. So the machine's own output is captured too —
@@ -998,11 +1000,19 @@ class RecorderView {
    * The two are opened separately and summed here with Web Audio rather than depending on a
    * pre-built Aggregate Device having the right channel layout. It degrades honestly: system
    * audio can fail and you still get the mic, with a Notice saying so.
+   *
+   * ⚠ LEFT IS THE MICROPHONE, RIGHT IS THE MACHINE — `slim/speakers.py` reads them that way.
+   * They used to be summed, and once summed nobody can say who spoke. Apart, "me or them" is
+   * a fact of the capture, decided on the server with no model. A missing source leaves its
+   * channel silent; it never moves to the other side. The caption tap and the level meter
+   * each ask for ONE channel, so Web Audio downmixes for them — leave them alone.
    */
   async buildStream() {
     const Ctx = window.AudioContext || window.webkitAudioContext;
     this.audioCtx = new Ctx();
     const dest = this.audioCtx.createMediaStreamDestination();
+    const sides = this.audioCtx.createChannelMerger(2);
+    sides.connect(dest);
     this.streams = [];
 
     let sources = 0;
@@ -1010,14 +1020,14 @@ class RecorderView {
     if (this.recordVoice) {
       const mic = await this.openMic();
       this.streams.push(mic);
-      this.audioCtx.createMediaStreamSource(mic).connect(dest);
+      this.audioCtx.createMediaStreamSource(mic).connect(sides, 0, MIC_CHANNEL);
       sources++;
     }
 
     try {
       const sys = await this.openSystemAudio();
       this.streams.push(sys);
-      this.audioCtx.createMediaStreamSource(sys).connect(dest);
+      this.audioCtx.createMediaStreamSource(sys).connect(sides, 0, SYSTEM_CHANNEL);
       sources++;
     } catch (e) {
       // Losing the far side is bad; losing the recording is worse. Carry on with the mic and
