@@ -1,0 +1,88 @@
+"""Who spoke is decided by which channel was making sound — a measurement, not a model."""
+
+from types import SimpleNamespace
+
+import numpy as np
+
+from slim import speakers
+
+QUIET, LOUD = -90.0, -20.0
+
+
+def tok(text, start, end):
+    return SimpleNamespace(text=text, start=start, end=end)
+
+
+def levels(seconds, mic=(), system=()):
+    """(2, frames) dBFS: QUIET everywhere, LOUD inside each (start, end) span."""
+    frames = int(seconds / speakers.FRAME_SECONDS)
+    out = np.full((2, frames), QUIET)
+    for row, spans in ((0, mic), (1, system)):
+        for a, b in spans:
+            out[row, int(a / speakers.FRAME_SECONDS):int(b / speakers.FRAME_SECONDS)] = LOUD
+    return out
+
+
+def test_a_token_is_labelled_by_the_channel_that_was_making_sound():
+    lv = levels(6, mic=[(0, 2)], system=[(3, 5)])
+    tokens = [tok(" hello", 0.5, 0.9), tok(" there", 3.5, 3.9)]
+    assert speakers.label_tokens(tokens, lv) == [speakers.ME, speakers.THEM]
+
+
+def test_system_audio_wins_when_both_channels_are_loud():
+    """On speakers the far end leaks into the microphone — but only while the far end is
+    talking, so those moments are already Them."""
+    lv = levels(4, mic=[(0, 4)], system=[(1, 3)])
+    assert speakers.label_tokens([tok(" bleed", 1.5, 1.9)], lv) == [speakers.THEM]
+
+
+def test_a_token_in_silence_inherits_the_speaker_before_it():
+    lv = levels(6, system=[(0, 2)])
+    tokens = [tok(" so", 0.5, 0.9), tok(" anyway", 4.0, 4.4)]
+    assert speakers.label_tokens(tokens, lv) == [speakers.THEM, speakers.THEM]
+
+
+def test_a_leading_token_in_silence_takes_the_first_decided_speaker():
+    lv = levels(6, mic=[(2, 4)])
+    tokens = [tok(" um", 0.2, 0.4), tok(" right", 2.5, 2.9)]
+    assert speakers.label_tokens(tokens, lv) == [speakers.ME, speakers.ME]
+
+
+def test_the_tail_of_their_speech_is_still_theirs():
+    """Room reverb outlasts the digital signal: just after system audio stops, the microphone
+    is still loud with THEIR voice. The hangover keeps that tail from becoming Me."""
+    lv = levels(4, mic=[(0, 2.2)], system=[(0, 2.0)])
+    assert speakers.label_tokens([tok(" end", 2.02, 2.18)], lv) == [speakers.THEM]
+
+
+def test_a_token_past_the_end_of_the_audio_does_not_crash():
+    lv = levels(1, mic=[(0, 1)])
+    assert speakers.label_tokens([tok(" late", 5.0, 5.2)], lv) == [speakers.ME]
+
+
+def test_no_frames_means_no_labels():
+    assert speakers.label_tokens([tok(" x", 0, 1)], np.zeros((2, 0))) == [""]
+
+
+def test_consecutive_tokens_from_one_speaker_are_one_turn():
+    tokens = [tok(" so", 0, .3), tok(" what", .3, .6), tok(" yes", 2, 2.5), tok(" indeed", 2.5, 3)]
+    labels = [speakers.ME, speakers.ME, speakers.THEM, speakers.THEM]
+    assert speakers.turns(tokens, labels) == [(speakers.ME, "so what"), (speakers.THEM, "yes indeed")]
+
+
+def test_a_flicker_shorter_than_a_turn_joins_the_turn_before_it():
+    tokens = [tok(" we", 0, .5), tok(" ship", .5, 1.0), tok(" uh", 1.0, 1.1),
+              tok(" on", 1.1, 1.6), tok(" friday", 1.6, 2.2)]
+    labels = [speakers.THEM, speakers.THEM, speakers.ME, speakers.THEM, speakers.THEM]
+    assert speakers.turns(tokens, labels) == [(speakers.THEM, "we ship uh on friday")]
+
+
+def test_a_flicker_at_the_very_start_joins_the_turn_after_it():
+    tokens = [tok(" uh", 0, .1), tok(" hello", .1, .8), tok(" everyone", .8, 1.5)]
+    labels = [speakers.ME, speakers.THEM, speakers.THEM]
+    assert speakers.turns(tokens, labels) == [(speakers.THEM, "uh hello everyone")]
+
+
+def test_turns_render_as_labelled_paragraphs():
+    text = speakers.render([(speakers.ME, "so what"), (speakers.THEM, "yes indeed")])
+    assert text == "**Me:** so what\n\n**Them:** yes indeed"
