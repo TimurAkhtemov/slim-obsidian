@@ -775,7 +775,8 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
 
     _index_now(vault, str(r.note.relative_to(vault)))
     trace.record("record", {"note": str(r.note), "dest": card.dest_dir,
-                            "type": card.type_tag, "has_summary": bool(summary_md)})
+                            "type": card.type_tag, "has_summary": bool(summary_md),
+                            "speakers_by": speakers_by})
     progress("complete", "AI review ready", "The note is filed and ready for approval")
     return {
         "note": str(r.note.relative_to(vault)),
