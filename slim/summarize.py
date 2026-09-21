@@ -181,8 +181,9 @@ there; do not speculate about what a garbled word might have been.
 
 Some transcripts mark who spoke: a paragraph beginning **Me:** is {OWNER}, and one beginning
 **Them:** is whoever was on the other end of the call — possibly several people, not told
-apart. Those marks come from the recording itself and are exact. A transcript without them
-has no speaker information at all.
+apart. Those marks come from the recording's two audio channels, not from a guess — but a
+very short reply ("Yes.") can sit inside the other speaker's paragraph. A transcript without
+them has no speaker information at all.
 
 THEIR NOTES, when present after the transcript, are what {OWNER} typed while listening: they
 tell you what they noticed and how they spell names and terms. Use them for that. They are NOT

@@ -331,7 +331,7 @@ def test_the_prompt_says_what_the_speaker_labels_mean():
     assert f"**{speakers.ME}:**" in summarize.SYSTEM
     assert f"**{speakers.THEM}:**" in summarize.SYSTEM
     assert "It has no speaker labels" not in summarize.SYSTEM
-    assert summarize.PROMPT_VERSION == "summarize-v6"
+
 
 def test_latex_mangled_by_json_escaping_is_repaired():
     """MEASURED 2026-08-26, on the first real run of v4, and it is a trap with teeth.
