@@ -16,6 +16,9 @@ it; `turns` and `render` do not change, and neither does anything downstream.
 
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
+
 import numpy as np
 
 ME, THEM = "Me", "Them"
@@ -87,3 +90,53 @@ def turns(tokens, labels: list[str]) -> list[tuple[str, str]]:
 
 def render(turns: list[tuple[str, str]]) -> str:
     return "\n\n".join(f"**{label}:** {text}" for label, text in turns)
+
+
+def channel_count(path: Path) -> int:
+    from .transcribe import ffbin
+
+    out = subprocess.run([ffbin("ffprobe"), "-v", "error", "-select_streams", "a:0",
+                          "-show_entries", "stream=channels", "-of", "csv=p=0", str(path)],
+                         capture_output=True, text=True)
+    try:
+        return int(out.stdout.strip().splitlines()[0])
+    except (ValueError, IndexError):
+        return 0
+
+
+def channel_levels(path: Path) -> np.ndarray:
+    """(2, frames) dBFS, one value per 20 ms: row 0 microphone (left), row 1 system (right).
+
+    Streamed in ten-second blocks: an hour of 16 kHz stereo is 230 MB as samples and 2 MB as
+    levels, and this runs beside a 25 GB model.
+    """
+    from .transcribe import ffbin
+
+    frame = int(SAMPLE_RATE * FRAME_SECONDS)
+    frame_bytes = frame * 2 * 2                       # two channels of s16le
+    proc = subprocess.Popen([ffbin("ffmpeg"), "-nostdin", "-loglevel", "error", "-i", str(path),
+                             "-f", "s16le", "-ac", "2", "-ar", str(SAMPLE_RATE), "-"],
+                            stdout=subprocess.PIPE)
+    rows = []
+    while block := proc.stdout.read(frame_bytes * 500):
+        block = block[:len(block) - len(block) % frame_bytes]
+        if not block:
+            continue
+        pcm = np.frombuffer(block, dtype="<i2").reshape(-1, frame, 2).astype(np.float32) / 32768
+        rows.append(np.sqrt((pcm ** 2).mean(axis=1)))
+    if proc.wait() != 0:
+        raise RuntimeError(f"ffmpeg could not decode {path.name}")
+    rms = np.concatenate(rows) if rows else np.zeros((0, 2), dtype=np.float32)
+    return 20 * np.log10(np.maximum(rms, 1e-10)).T
+
+
+def label(path: Path, tokens) -> str | None:
+    """The transcript with speakers, or None when there are not two sides to tell apart:
+    a mono file, or a recording where only one of them ever spoke."""
+    tokens = list(tokens)
+    if not tokens or channel_count(path) != 2:
+        return None
+    got = turns(tokens, label_tokens(tokens, channel_levels(path)))
+    if len({who for who, _ in got}) < 2:
+        return None
+    return render(got)

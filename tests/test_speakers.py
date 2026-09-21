@@ -1,16 +1,40 @@
 """Who spoke is decided by which channel was making sound — a measurement, not a model."""
 
+import shutil
+import wave
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from slim import speakers
 
 QUIET, LOUD = -90.0, -20.0
 
+needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")
+
 
 def tok(text, start, end):
     return SimpleNamespace(text=text, start=start, end=end)
+
+
+def _wav(path, left_spans, right_spans, seconds=6, channels=2):
+    """A 16 kHz WAV: a 440 Hz tone on the left inside left_spans, 880 Hz on the right."""
+    sr = 16000
+    t = np.arange(seconds * sr) / sr
+    sides = []
+    for freq, spans in ((440, left_spans), (880, right_spans)):
+        gate = np.zeros_like(t)
+        for a, b in spans:
+            gate[int(a * sr):int(b * sr)] = 1.0
+        sides.append(0.3 * np.sin(2 * np.pi * freq * t) * gate)
+    data = np.stack(sides[:channels], axis=1)
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(channels)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes((data * 32767).astype("<i2").tobytes())
+    return path
 
 
 def levels(seconds, mic=(), system=()):
@@ -86,3 +110,39 @@ def test_a_flicker_at_the_very_start_joins_the_turn_after_it():
 def test_turns_render_as_labelled_paragraphs():
     text = speakers.render([(speakers.ME, "so what"), (speakers.THEM, "yes indeed")])
     assert text == "**Me:** so what\n\n**Them:** yes indeed"
+
+
+@needs_ffmpeg
+def test_levels_come_back_per_channel(tmp_path):
+    lv = speakers.channel_levels(_wav(tmp_path / "a.wav", [(0, 2)], [(3, 5)]))
+    assert lv.shape == (2, 300)
+    frame = lambda s: int(s / speakers.FRAME_SECONDS)  # noqa: E731
+    assert lv[0, frame(1)] > -20 and lv[1, frame(1)] < -80
+    assert lv[1, frame(4)] > -20 and lv[0, frame(4)] < -80
+
+
+@needs_ffmpeg
+def test_a_two_sided_recording_is_labelled(tmp_path):
+    path = _wav(tmp_path / "a.wav", [(0, 2)], [(3, 5)])
+    tokens = [tok(" so", 0.4, 0.9), tok(" what", 0.9, 1.5), tok(" yes", 3.4, 4.0)]
+    assert speakers.label(path, tokens) == "**Me:** so what\n\n**Them:** yes"
+
+
+@needs_ffmpeg
+def test_one_speaker_is_not_labelled_at_all(tmp_path):
+    """A lecture is all Them. A label on every paragraph of it is noise."""
+    path = _wav(tmp_path / "a.wav", [], [(0, 5)])
+    assert speakers.label(path, [tok(" today", 0.5, 1.0), tok(" kernels", 3.0, 3.6)]) is None
+
+
+@needs_ffmpeg
+def test_a_mono_file_is_never_analysed(tmp_path, monkeypatch):
+    path = _wav(tmp_path / "a.wav", [(0, 2)], [], channels=1)
+    monkeypatch.setattr(speakers, "channel_levels",
+                        lambda p: pytest.fail("a mono file has no sides to compare"))
+    assert speakers.channel_count(path) == 1
+    assert speakers.label(path, [tok(" memo", 0.5, 1.0)]) is None
+
+
+def test_no_tokens_means_nothing_to_label(tmp_path):
+    assert speakers.label(tmp_path / "missing.webm", []) is None
