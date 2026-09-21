@@ -18,3 +18,5 @@ are the history. Past ~20 items is a signal about scope, not a reason for headin
 - [ ] `scripts/backup.sh:5` header comment still names `~/Documents/Obsidian Vault`.
 - [ ] `slim status` and `slim trace` never call `require_vault_identity()`, so the one command you'd run to notice a vault/pin mismatch cannot report one.
 - [ ] `slim/llm.py:44` says "Tests pin this" about the explicit `think` parameter, but no test decodes the HTTP body — deleting `"think": think` (`llm.py:118`, `:190`) passes the whole suite and breaks the recorder. Add a wire-level test.
+- [ ] Tell remote speakers apart (Speaker 1, Speaker 2): a voice-clustering model on the system channel, replacing `speakers.label_tokens`. Test with a panel podcast played as system audio.
+- [ ] In-room meetings on one microphone: the same model on the mic channel; "which cluster is me" needs an enrollment or a rename on the card. Test with a podcast played out of the speakers into the mic.

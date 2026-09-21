@@ -16,7 +16,7 @@ outsiders and an AGENTS.md pointer.
 ## Commands
 
 ```bash
-uv run pytest -q                        # ~510 tests; `uv` always — the system python may be 3.9
+uv run pytest -q                        # ~530 tests; `uv` always — the system python may be 3.9
 node --test obsidian/*.test.mjs         # plugin tests; no build step
 uv run slim chat --reload               # dev server; respawns on any slim/**/*.py save (not .yaml)
 uv run slim ingest                      # index the vault; embeds at the end; exits non-zero if vectors are missing
@@ -49,6 +49,10 @@ note loses its id. Embedding is part of ingest; `slim status` reports `unembedde
      setup → recording → processing → review → finished.
    - ONE CLICK, no settings: system audio comes from macOS's Core Audio tap via
      `audio: "loopback"`. No BlackHole, no Multi-Output, no device pickers.
+   - The file is STEREO ON PURPOSE: microphone left, system audio right. `slim/speakers.py`
+     labels each word Me or Them by which side was making sound — a measurement, no model —
+     and writes `speakers_by: channels`. One speaker (a lecture, a video) or a mono file stays
+     unlabelled. `speakers.label_tokens` is the seam a voice-clustering model would replace.
    - The plugin owns the UI and writes files through the Vault API; every judgement —
      transcribe, summarize, suggest a path — is the Python server's. Audio is appended to
      `Attachments/_incoming` in 5 s chunks as `<id>-NNN.webm`; a `.webm` left there is a
@@ -223,8 +227,9 @@ reacts to a vault `delete` must first ask whether the server caused it (2026-09-
 `slim/cli.py` is the entry point (six commands: `ingest`, `status`, `reflect`, `memos`, `chat`,
 `trace`). Capture: `chat.py` (the plugin's API server — recorder and copilot, loopback-only,
 Host and Origin gates on every write), `record.py` (writes the note), `transcribe.py`
-(Parakeet, two lanes), `summarize.py`, `suggest.py` (the filing card), `enrich.py` and
-`voicetags.py` (label), `inbox.py` (the memo lane's transcribe-and-write), `voicememos.py`.
+(Parakeet, two lanes), `speakers.py` (Me/Them from the two channels), `summarize.py`,
+`suggest.py` (the filing card), `enrich.py` and `voicetags.py` (label), `inbox.py`
+(the memo lane's transcribe-and-write), `voicememos.py`.
 Index: `ingest.py`, `chunk.py` (fragments; the frontmatter reader and writer), `embed.py`,
 `db.py`. Answer: `search.py`, `copilot.py`, `threads.py`, `copilot_images.py`, `reflect.py`.
 Seams: `llm.py`, `trace.py`, `config.py` with `config/projects.yaml` and `vaultpath.py`,
