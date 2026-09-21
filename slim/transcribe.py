@@ -78,6 +78,8 @@ class Transcript:
     model: str
     audio_seconds: float
     wall_seconds: float
+    # How the speakers in `text` were told apart ("channels"), or "" when it carries no labels.
+    speakers_by: str = ""
 
     @property
     def rtf(self) -> float:
@@ -331,12 +333,22 @@ def transcribe(path: Path, model: str | None = None) -> Transcript:
     t0 = time.perf_counter()
     with _ASR_BATCH_LOCK:
         asr = _asr_model(model, "batch")
-        text = asr.transcribe(
+        result = asr.transcribe(
             str(path),
             chunk_duration=CHUNK_SECONDS,
             overlap_duration=OVERLAP_SECONDS,
-        ).text
+        )
+    text, speakers_by = result.text.strip(), ""
+    # Outside the ASR lock: this is ffmpeg and numpy, and must not hold up live captions.
+    from . import speakers, trace
+    try:
+        labelled = speakers.label(path, result.tokens)
+    except Exception as exc:                       # noqa: BLE001 - labels decorate, never gate
+        trace.record("record", {"stage": "speakers", "status": "failed", "error": str(exc)})
+        labelled = None
+    if labelled:
+        text, speakers_by = labelled, speakers.PROVENANCE
     wall = time.perf_counter() - t0
 
-    return Transcript(text=text.strip(), model=model,
-                      audio_seconds=secs, wall_seconds=wall)
+    return Transcript(text=text, model=model, audio_seconds=secs, wall_seconds=wall,
+                      speakers_by=speakers_by)
