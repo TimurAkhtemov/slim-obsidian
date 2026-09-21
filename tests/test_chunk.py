@@ -133,7 +133,8 @@ def test_record_renders_a_subsequence_of_the_canonical_order():
         title="t", when=datetime(2026, 8, 6, tzinfo=timezone.utc), type_tag="idea",
         transcript="x", notes_md="", summary_md="", topics=["b"],
         audio_rel="Attachments/Recordings/x.webm", filed_by_slim=True,
-        audio_sha256="d" * 64, asr_model="parakeet", audio_seconds=1.0,
+        audio_sha256="d" * 64, asr_model="parakeet", speakers_by="channels",
+        audio_seconds=1.0,
         transcribed_at=datetime(2026, 8, 6, tzinfo=timezone.utc))
     keys = [l.split(":", 1)[0] for l in text.split("---")[1].strip().splitlines()]
     assert set(keys) - set(chunk.FRONTMATTER_ORDER) == set(), keys

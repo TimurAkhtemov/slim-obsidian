@@ -193,7 +193,8 @@ def recording_id_from_staged(path: str) -> str:
 
 
 def append_audio_frontmatter(text: str, *, rels: list[str], digests: list[str],
-                             seconds: float, asr_model: str = "") -> str:
+                             seconds: float, asr_model: str = "",
+                             speakers_by: str = "") -> str:
     """Add a resumed segment's audio to a recorded note's frontmatter.
 
     Here rather than in `chat.py`: these are `render_note`'s keys and the scalar-or-list rule
@@ -223,6 +224,8 @@ def append_audio_frontmatter(text: str, *, rels: list[str], digests: list[str],
     }
     if asr_model and not fm.get("asr_model"):
         updates["asr_model"] = asr_model
+    if speakers_by and not fm.get("speakers_by"):
+        updates["speakers_by"] = speakers_by
     return set_frontmatter(text, updates)
 
 
@@ -313,6 +316,7 @@ def render_note(*, title: str, when: datetime, type_tag: str, transcript: str,
                 notes_md: str, summary_md: str,
                 topics: list[str], audio_rel: str | list[str],
                 filed_by_slim: bool, audio_sha256: str | list[str] = "", asr_model: str = "",
+                speakers_by: str = "",
                 audio_seconds: float | None = None,
                 transcribed_at: datetime | None = None) -> str:
     """One recording's frontmatter.
@@ -342,6 +346,10 @@ def render_note(*, title: str, when: datetime, type_tag: str, transcript: str,
         # that these words came from an unvalidated default, so a future re-transcription
         # knows which notes to revisit.
         fm += ["source: local-asr", f"asr_model: {asr_model}", "asr_selected: false"]
+    if speakers_by:
+        # Provenance like `tagged_by`: which layer decided who spoke. "channels" is the
+        # capture itself — microphone against system audio — not a model's opinion.
+        fm.append(f"speakers_by: {speakers_by}")
     # A RESUMED recording has several segments: a second MediaRecorder session writes its own
     # container header, so one file per segment is what keeps every recording playable. A single
     # segment still writes a plain scalar, which is what 300 existing notes carry.
@@ -376,7 +384,8 @@ def render_note(*, title: str, when: datetime, type_tag: str, transcript: str,
 def write_recording(*, audio_src: Path | list[Path], title: str, when: datetime, type_tag: str,
                     transcript: str, notes_md: str, summary_md: str,
                     topics: list[str], dest_dir: str, filed_by_slim: bool = True,
-                    asr_model: str = "", audio_seconds: float | None = None,
+                    asr_model: str = "", speakers_by: str = "",
+                    audio_seconds: float | None = None,
                     transcribed_at: datetime | None = None,
                     draft_src: Path | None = None,
                     vault: Path = VAULT) -> Recorded:
@@ -402,7 +411,7 @@ def write_recording(*, audio_src: Path | list[Path], title: str, when: datetime,
                        topics=topics, audio_rel=audio_rel,
                        filed_by_slim=filed_by_slim,
                        audio_sha256=digests if len(digests) > 1 else digest,
-                       asr_model=asr_model, audio_seconds=audio_seconds,
+                       asr_model=asr_model, speakers_by=speakers_by, audio_seconds=audio_seconds,
                        transcribed_at=transcribed_at)
 
     name = f"{inbox.local_date(when)}--{inbox._slug(title)}--{digest[:8]}.md"

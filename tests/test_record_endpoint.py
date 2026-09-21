@@ -1407,6 +1407,27 @@ def test_a_transcript_cache_is_bound_to_the_audio_it_transcribed(tmp_path, monke
     assert third["text"] == "take 2" and not cached, "different bytes are a different recording"
 
 
+def test_speaker_provenance_survives_the_segment_cache(tmp_path, monkeypatch):
+    """The cache hands back the words without transcribing. It must hand back how their
+    speakers were decided too, or a Try again files a labelled transcript that says nothing
+    about where its labels came from."""
+    from slim import chat, transcribe
+
+    _fakes(monkeypatch)
+    monkeypatch.setattr(transcribe, "normalize_container", lambda p: p)
+    monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
+        text="**Me:** so\n\n**Them:** yes", model="fake", audio_seconds=10.0, wall_seconds=1.0,
+        speakers_by="channels"))
+    staged = tmp_path / "Attachments/_incoming/t-001.webm"
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    staged.write_bytes(b"audio")
+
+    first, cached = chat._transcribe_segment(staged, transcribe)
+    assert (first["speakers_by"], cached) == ("channels", False)
+    again, cached = chat._transcribe_segment(staged, transcribe)
+    assert (again["speakers_by"], cached) == ("channels", True)
+
+
 def test_two_writers_on_one_note_take_turns(tmp_path, monkeypatch):
     """⚠ `ThreadingHTTPServer` runs handlers in parallel and four endpoints write the same note.
     Re-reading before the write closed the long-job case; it does NOT close the case where two

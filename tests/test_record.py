@@ -411,6 +411,27 @@ def test_one_owner_for_the_recording_id_in_a_staged_path():
     assert record.recording_id_from_staged("abc-1.webm") == "abc-1", "only NNN is a segment"
 
 
+def test_how_the_speakers_were_told_apart_is_recorded(tmp_path):
+    r = _write(tmp_path, asr_model="parakeet", speakers_by="channels",
+               transcript="**Me:** so\n\n**Them:** yes")
+    fm, _ = parse_frontmatter(r.note.read_text(encoding="utf-8"))
+    assert fm.get("speakers_by") == "channels"
+
+
+def test_an_unlabelled_transcript_claims_no_speakers(tmp_path):
+    r = _write(tmp_path, asr_model="parakeet")
+    assert "speakers_by" not in r.note.read_text(encoding="utf-8")
+
+
+def test_a_resumed_segment_can_bring_speakers_to_a_note_that_had_none(tmp_path):
+    r = _write(tmp_path, asr_model="parakeet")
+    text = record.append_audio_frontmatter(
+        r.note.read_text(encoding="utf-8"), rels=["Attachments/Recordings/b.webm"],
+        digests=["e" * 64], seconds=5.0, speakers_by="channels")
+    fm, _ = parse_frontmatter(text)
+    assert fm.get("speakers_by") == "channels"
+
+
 def test_audio_frontmatter_has_one_writer(tmp_path):
     """CLAUDE.md: record.py remains the sole writer of a recorded note's frontmatter. The
     append path was setting `audio`, `audio_sha256` and `audio_seconds` from chat.py, reaching

@@ -565,7 +565,8 @@ def _transcribe_segment(staged: Path, transcribe_mod) -> tuple[dict, bool]:
     transcribe_mod.normalize_container(staged)
     t = transcribe_mod.transcribe(staged)
     got = {"text": t.text, "model": t.model, "audio_seconds": t.audio_seconds,
-           "words": t.words, "wall_seconds": t.wall_seconds, "rtf": t.rtf}
+           "words": t.words, "wall_seconds": t.wall_seconds, "rtf": t.rtf,
+           "speakers_by": t.speakers_by}
     # After normalize_container, which rewrites the file — hash what was actually read.
     try:
         got["audio_sha256"] = inbox._sha256(staged)
@@ -644,7 +645,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
     # Keep the Transcript, not just its text: `asr_model` and `audio_seconds` are deterministic
     # facts about how these words were produced, and the note records them the same way the
     # memo lane does. They stay absent when transcription fails rather than being invented.
-    asr_model, audio_seconds, transcribed_at = "", None, None
+    asr_model, audio_seconds, transcribed_at, speakers_by = "", None, None, ""
     parts, words, seconds, wall = [], 0, 0.0, 0.0
     try:
         for i, seg in enumerate(segments, start=1):
@@ -658,6 +659,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
             seconds += got.get("audio_seconds") or 0.0
             wall += 0.0 if cached else (got.get("wall_seconds") or 0.0)
             asr_model = got.get("model") or asr_model
+            speakers_by = got.get("speakers_by") or speakers_by
         # No seam marker: where they paused is not information they want back inside a lecture
         # transcript, and a marker there would be read by chunking and retrieval as content.
         text = "\n\n".join(part.strip() for part in parts if part.strip())
@@ -758,6 +760,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
         audio_src=segments, title=title, when=when, type_tag=card.type_tag, transcript=text,
         notes_md=notes_md, summary_md=summary_md,
         topics=card.topics, dest_dir=card.dest_dir, filed_by_slim=True, asr_model=asr_model,
+        speakers_by=speakers_by,
         audio_seconds=audio_seconds, transcribed_at=transcribed_at, draft_src=draft,
         vault=vault)
 
@@ -850,7 +853,7 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
         if on_progress is not None:
             on_progress(stage=stage, label=label, detail=detail, **extra)
 
-    parts, seconds, asr_model = [], 0.0, ""
+    parts, seconds, asr_model, speakers_by = [], 0.0, "", ""
     for i, seg in enumerate(segments, start=1):
         _check_record_cancel(job_id)
         of = f" ({i} of {len(segments)})" if len(segments) > 1 else ""
@@ -859,6 +862,7 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
         parts.append(got["text"])
         seconds += got.get("audio_seconds") or 0.0
         asr_model = got.get("model") or asr_model
+        speakers_by = got.get("speakers_by") or speakers_by
     addition = "\n\n".join(part.strip() for part in parts if part.strip())
     if not addition:
         raise NoSpeech("no words were captured — nothing was added, and your audio is exactly "
@@ -884,7 +888,8 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
         # ⚠ record.py is the sole writer of a recorded note's frontmatter (CLAUDE.md), and
         # that includes `asr_model`: it decides whether an existing model name is kept.
         text = record_mod.append_audio_frontmatter(text, rels=archived_rels, digests=digests,
-                                                   seconds=seconds, asr_model=asr_model)
+                                                   seconds=seconds, asr_model=asr_model,
+                                                   speakers_by=speakers_by)
         record_mod.write_note_text(src, record_mod.append_transcript(text, addition))
 
     archived_paths = {_vault_path(vault, rel).resolve() for rel in archived_rels}
