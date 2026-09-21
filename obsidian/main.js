@@ -997,9 +997,10 @@ class RecorderView {
    * The lesson is the pattern, not the fix — reach for what the HOST can do before reaching
    * for the universal workaround.
    *
-   * The two are opened separately and summed here with Web Audio rather than depending on a
-   * pre-built Aggregate Device having the right channel layout. It degrades honestly: system
-   * audio can fail and you still get the mic, with a Notice saying so.
+   * The two are opened separately and joined here with Web Audio — one to each channel —
+   * rather than depending on a pre-built Aggregate Device having the right channel layout.
+   * It degrades honestly: system audio can fail and you still get the mic, with a Notice
+   * saying so.
    *
    * ⚠ LEFT IS THE MICROPHONE, RIGHT IS THE MACHINE — `slim/speakers.py` reads them that way.
    * They used to be summed, and once summed nobody can say who spoke. Apart, "me or them" is
