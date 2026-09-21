@@ -16,7 +16,7 @@ from .config import OWNER
 # The version tracks the SHAPE as well as the wording — a v3 summary is a flat list of key
 # points and a v4 summary groups them — so summaries written under different versions are
 # not comparable and must not be scored as if they were.
-PROMPT_VERSION = "summarize-v5"
+PROMPT_VERSION = "summarize-v6"
 
 # Ollama compiles a JSON schema into a GBNF grammar, and a bounded string becomes an N-way
 # character repetition rule: maxLength 1500 compiles, 2000 dies with "failed to parse grammar".
@@ -175,9 +175,14 @@ content in your summary where it adds substance — a formula shown on a slide i
 one stated aloud and deserves the same treatment. Do not describe the screenshot itself ("a
 screenshot shows…") — describe what it CONTAINS, as if the speaker had said it.
 
-The transcript is machine-generated from audio. It has no speaker labels, no punctuation
-reliability, and it contains misheard words — especially names of people and companies.
-Work with what is there; do not speculate about what a garbled word might have been.
+The transcript is machine-generated from audio. It has no reliable punctuation, and it
+contains misheard words — especially names of people and companies. Work with what is
+there; do not speculate about what a garbled word might have been.
+
+Some transcripts mark who spoke: a paragraph beginning **Me:** is {OWNER}, and one beginning
+**Them:** is whoever was on the other end of the call — possibly several people, not told
+apart. Those marks come from the recording itself and are exact. A transcript without them
+has no speaker information at all.
 
 THEIR NOTES, when present after the transcript, are what {OWNER} typed while listening: they
 tell you what they noticed and how they spell names and terms. Use them for that. They are NOT

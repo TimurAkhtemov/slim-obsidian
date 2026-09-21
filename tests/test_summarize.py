@@ -304,7 +304,7 @@ def test_the_grouped_schema_is_still_fully_bounded():
 def test_prompt_version_tracks_the_shape():
     """A stored summary carries the prompt version that wrote it. The shape changed, so a
     v3 summary and a v4 summary are not comparable and must not claim to be."""
-    assert summarize_mod.PROMPT_VERSION == "summarize-v5"
+    assert summarize_mod.PROMPT_VERSION == "summarize-v6"
 
 
 def test_prompt_asks_for_grouping_and_forbids_inventing_a_topic():
@@ -321,6 +321,17 @@ def test_prompt_allows_only_a_formula_that_was_stated():
     assert "$$" in summarize_mod.SYSTEM
     assert "never derive" in system
 
+
+def test_the_prompt_says_what_the_speaker_labels_mean():
+    """This is INFORMATION the model cannot get anywhere else — who `Me` is — not a rider
+    asking it to behave. The old sentence said transcripts have no speaker labels, which is
+    now false for every call."""
+    from slim import speakers, summarize
+
+    assert f"**{speakers.ME}:**" in summarize.SYSTEM
+    assert f"**{speakers.THEM}:**" in summarize.SYSTEM
+    assert "It has no speaker labels" not in summarize.SYSTEM
+    assert summarize.PROMPT_VERSION == "summarize-v6"
 
 def test_latex_mangled_by_json_escaping_is_repaired():
     """MEASURED 2026-08-26, on the first real run of v4, and it is a trap with teeth.
