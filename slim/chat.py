@@ -335,7 +335,8 @@ def _strip_frontmatter_key(text: str, key: str) -> str:
     return "\n".join(out) + ("\n" if text.endswith("\n") else "")
 
 
-def _index_now(vault: Path, note_rel: str, *, sweep: bool = True) -> dict:
+def _index_now(vault: Path, note_rel: str, *, sweep: bool = True,
+               moved_from: str | None = None) -> dict:
     """Make THIS note reachable by everything that reads the INDEX rather than the vault.
 
     Filing makes a note findable in Obsidian immediately; it does NOT reach the two readers of
@@ -350,8 +351,10 @@ def _index_now(vault: Path, note_rel: str, *, sweep: bool = True) -> dict:
     no other note.
 
     ⚠ Called after record AND after apply, so a note is indexed twice with both its content and
-    its path changed in between — normally the exact sequence that costs a source its identity.
-    Safe HERE only because the note is seconds old and has no lineage to lose.
+    its path changed in between — the exact sequence the hash rename rule cannot follow. The
+    note is NOT lineage-free by then: the copilot can be opened on the draft, and its threads
+    are keyed by source id (a filed note was re-minted and its chat orphaned, 2026-09-22).
+    Apply therefore passes `moved_from`, and ingest keeps the id.
 
     Never raises: a note filed but not indexed is recoverable by the sweep. One that failed to
     file is not.
@@ -361,7 +364,7 @@ def _index_now(vault: Path, note_rel: str, *, sweep: bool = True) -> dict:
     try:
         con = db.connect()
         try:
-            source = ingest_mod.ingest_note(con, vault, note_rel)
+            source = ingest_mod.ingest_note(con, vault, note_rel, moved_from=moved_from)
             embedded = embed_mod.embed_source(con, source["id"])
         finally:
             con.close()
@@ -1115,7 +1118,8 @@ def handle_record_apply(*, note: str, dest_dir: str, type_tag: str, topics: list
         if dest != src:
             src.unlink()
 
-    _index_now(vault, str(dest.relative_to(vault)))
+    _index_now(vault, str(dest.relative_to(vault)),
+               moved_from=str(src.relative_to(vault)) if dest != src else None)
     trace.record("record", {"stage": "apply", "note": str(dest), "moved": dest != src})
     return {"note": str(dest.relative_to(vault))}
 
@@ -1137,6 +1141,22 @@ def handle_record_review(*, note: str, vault: Path | None = None) -> dict:
     _index_now(vault, str(src.relative_to(vault)), sweep=False)
     trace.record("record", {"stage": "review", "note": str(src)})
     return {"note": str(src.relative_to(vault))}
+
+
+def _live_source_paths(source_ids: list[str]) -> dict[str, str]:
+    """Where each note IS, not where it was when its thread was saved. A thread file records
+    the path at save time; the note moves (a drag, the card filing it) and the plugin opens
+    a thread's note by path, so both thread readers answer from the sources table."""
+    ids = sorted({sid for sid in source_ids if sid})
+    if not ids:
+        return {}
+    con = db.connect()
+    try:
+        marks = ",".join("?" * len(ids))
+        return {row["id"]: row["path"] for row in con.execute(
+            f"SELECT id, path FROM sources WHERE deleted=0 AND id IN ({marks})", ids)}
+    finally:
+        con.close()
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -1199,11 +1219,14 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(200, state)
             return
         if url.path == "/api/copilot/threads":
+            listed = threads_mod.list_copilot_threads()
+            live = _live_source_paths([item.source_id for item in listed])
             self._send_json(200, {"threads": [
                 {"id": item.id, "title": item.title, "updated_at": item.updated_at,
                  "turns": item.turns, "source_id": item.source_id,
-                 "source_path": item.source_path, "reasoning_mode": item.reasoning_mode}
-                for item in threads_mod.list_copilot_threads()]})
+                 "source_path": live.get(item.source_id, item.source_path),
+                 "reasoning_mode": item.reasoning_mode}
+                for item in listed]})
             return
         if url.path == "/api/copilot/image":
             self._handle_copilot_image(parse_qs(url.query))
@@ -1218,6 +1241,8 @@ class _Handler(BaseHTTPRequestHandler):
             if data is None or not data.get("source_id"):
                 self._send_json(404, {"error": "no such copilot thread"})
             else:
+                live = _live_source_paths([data["source_id"]])
+                data["source_path"] = live.get(data["source_id"], data.get("source_path"))
                 self._send_json(200, data)
             return
         self._send_json(404, {"error": f"no such path {url.path!r}"})

@@ -552,11 +552,35 @@ def test_the_card_reindexes_after_it_commits(tmp_path, monkeypatch):
     from slim import chat
     r = _existing(tmp_path, monkeypatch)
     called = []
-    monkeypatch.setattr(chat, "_index_now", lambda v, note: called.append((v, note)) or {})
-    moved = chat.handle_record_apply(note=str(r.note.relative_to(tmp_path)), dest_dir="Capture/work",
+    monkeypatch.setattr(chat, "_index_now",
+                        lambda v, note, **kw: called.append((v, note, kw.get("moved_from"))) or {})
+    original = str(r.note.relative_to(tmp_path))
+    moved = chat.handle_record_apply(note=original, dest_dir="Capture/work",
                                      type_tag="lecture", topics=[], summary_md="s",
                                      vault=tmp_path)
-    assert called == [(tmp_path, moved["note"])]          # the MOVED path, not the old one
+    # The MOVED path, and where it came from: the index keeps the note's id through the move.
+    assert called == [(tmp_path, moved["note"], original)]
+
+
+def test_filing_keeps_the_source_id_a_copilot_chat_was_opened_on(tmp_path, monkeypatch):
+    """The copilot can be opened on the draft before the card is applied, and its threads are
+    keyed by source id. Apply changes content AND path in one ingest — the one sequence the
+    hash rename rule cannot follow — so without a hint the note is re-minted and every chat
+    on it is orphaned (2026-09-22)."""
+    from slim import chat, db, embed, ingest
+    r = _existing(tmp_path, monkeypatch)
+    monkeypatch.setattr(embed, "embed_source", lambda con, sid: 0)
+    monkeypatch.setattr(chat, "_schedule_sweep", lambda vault: None)
+    original = str(r.note.relative_to(tmp_path))
+    con = db.connect()
+    draft_id = ingest.ingest_note(con, tmp_path, original)["id"]
+    con.close()
+    out = chat.handle_record_apply(note=original, dest_dir="Notes/school", type_tag="lecture",
+                                   topics=["school"], summary_md="new summary", vault=tmp_path)
+    con = db.connect()
+    rows = con.execute("SELECT id, path FROM sources WHERE deleted=0").fetchall()
+    con.close()
+    assert [(row["id"], row["path"]) for row in rows] == [(draft_id, out["note"])]
 
 
 def test_a_broken_index_never_costs_the_recording(tmp_path, monkeypatch):
@@ -778,7 +802,7 @@ def test_the_request_indexes_only_its_note_and_sweeps_the_vault_afterwards(tmp_p
     _fakes(monkeypatch)
     seen = {"note": [], "source": [], "sweep_ingest": 0, "sweep_embed": 0}
     monkeypatch.setattr(ingest_mod, "ingest_note",
-                        lambda con, vault, rel: (seen["note"].append(rel), {"id": "src-1"})[1])
+                        lambda con, vault, rel, **kw: (seen["note"].append(rel), {"id": "src-1"})[1])
     monkeypatch.setattr(embed_mod, "embed_source",
                         lambda con, sid: (seen["source"].append(sid), {"embedded": 3})[1])
     monkeypatch.setattr(ingest_mod, "ingest", lambda con, vault=None, **k: (

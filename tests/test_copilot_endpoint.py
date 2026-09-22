@@ -226,3 +226,23 @@ def test_copilot_write_endpoints_refuse_cross_site_writes(server_url, endpoint):
     with pytest.raises(urllib.error.HTTPError) as excinfo:
         urllib.request.urlopen(form)
     assert excinfo.value.code == 415, endpoint
+
+
+def test_thread_listing_and_load_report_the_source_current_path(server_url):
+    """A thread remembers the path its note had when it was saved. The note moves — a drag,
+    or the card filing it — and the plugin opens a thread by path, so both readers must
+    answer with where the note is NOW."""
+    seed_source()
+    status, _headers, _body = post(server_url, "/api/copilot/thread/save", {
+        "id": "chat-1", "title": "Lesson", "turns": [], "source_id": "source-1",
+        "source_path": "Notes/school/lesson.md", "reasoning_mode": "quick"})
+    assert status == 200
+    con = db.connect()
+    con.execute("UPDATE sources SET path='Notes/school/cs-201/lesson.md' WHERE id='source-1'")
+    con.commit()
+    con.close()
+    with urllib.request.urlopen(server_url + "/api/copilot/threads") as response:
+        listed = json.load(response)["threads"]
+    assert listed[0]["source_path"] == "Notes/school/cs-201/lesson.md"
+    with urllib.request.urlopen(server_url + "/api/copilot/thread?id=chat-1") as response:
+        assert json.load(response)["source_path"] == "Notes/school/cs-201/lesson.md"

@@ -110,11 +110,17 @@ def write_fragments(con: sqlite3.Connection, source_id: str, content_hash: str, 
             (source_id, content_hash, frag.seq, frag.heading_path, frag.text))
 
 
-def ingest_note(con: sqlite3.Connection, vault: Path, rel_path: str) -> dict:
+def ingest_note(con: sqlite3.Connection, vault: Path, rel_path: str, *,
+                moved_from: str | None = None) -> dict:
     """Synchronize one saved vault Markdown note without sweeping any other source.
 
     Same per-file body as the sweep (`_sync_file`), so the two make identical identity
     decisions; only the rename rule differs, because a single-note sync sees one file.
+
+    `moved_from` is the note's previous vault path when the CALLER moved it. The hash rule
+    cannot see a rename through an edit, and the recorder's card does both in one step;
+    the mover holds the fact, so it says so and the row is retargeted instead of replaced.
+    The hint claims a row only while its file is gone — a copy is not a move.
     """
     vault = Path(vault).resolve()
     rel = Path(rel_path)
@@ -129,6 +135,14 @@ def ingest_note(con: sqlite3.Connection, vault: Path, rel_path: str) -> dict:
         raise IngestError("note path must be vault-relative") from exc
     if not target.is_file():
         raise IngestError(f"saved note does not exist: {rel.as_posix()}")
+
+    if moved_from and moved_from != rel.as_posix() and not (vault / moved_from).exists():
+        taken = con.execute("SELECT 1 FROM sources WHERE path = ?", (rel.as_posix(),)).fetchone()
+        previous = con.execute(
+            "SELECT id FROM sources WHERE path = ? AND deleted = 0", (moved_from,)).fetchone()
+        if previous and not taken:
+            con.execute("UPDATE sources SET path = ? WHERE id = ?",
+                        (rel.as_posix(), previous["id"]))
 
     def claimable(candidate: str) -> bool:
         # The sweep's rule is "not on disk": a same-content source whose file is gone is

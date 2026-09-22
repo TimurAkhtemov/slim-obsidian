@@ -3,7 +3,7 @@
 import pytest
 
 from slim import db
-from slim.ingest import ingest
+from slim.ingest import ingest, ingest_note
 
 
 @pytest.fixture
@@ -248,3 +248,34 @@ def test_status_reports_fragments_without_a_current_vector(con, vault, monkeypat
     out = capsys.readouterr().out
     assert f"unembedded: {fragments}" in out
     assert "slim ingest" in out
+
+
+def test_a_note_edited_and_moved_in_one_step_keeps_identity_when_told_where_it_came_from(con, vault):
+    """Filing a recording rewrites the note AND moves it before one ingest. The hash rule
+    cannot see a rename through an edit, so the mover names the old path and the row is
+    retargeted instead of replaced — a copilot chat opened on the draft survives filing."""
+    ingest(con, vault)
+    sid = con.execute("SELECT id FROM sources WHERE path LIKE '%note.md'").fetchone()[0]
+    old = vault / "Projects/Demo/note.md"
+    new = vault / "Projects/Filed/note.md"
+    new.parent.mkdir()
+    new.write_text(old.read_text() + "\n## Filed\n\nEdited on the way.\n")
+    old.unlink()
+    got = ingest_note(con, vault, "Projects/Filed/note.md", moved_from="Projects/Demo/note.md")
+    assert got["id"] == sid
+    rows = con.execute("SELECT id, path FROM sources WHERE deleted=0").fetchall()
+    assert [(r["id"], r["path"]) for r in rows] == [(sid, "Projects/Filed/note.md")]
+    hit = con.execute("SELECT COUNT(*) FROM fragments_fts WHERE fragments_fts MATCH '\"Edited\"'").fetchone()[0]
+    assert hit >= 1
+
+
+def test_the_moved_from_hint_is_ignored_while_the_old_file_still_exists(con, vault):
+    """A copy is not a move: the hint only claims a row whose file is gone."""
+    ingest(con, vault)
+    sid = con.execute("SELECT id FROM sources WHERE path LIKE '%note.md'").fetchone()[0]
+    old = vault / "Projects/Demo/note.md"
+    new = vault / "Projects/Demo/copy.md"
+    new.write_text(old.read_text() + "\nchanged\n")
+    got = ingest_note(con, vault, "Projects/Demo/copy.md", moved_from="Projects/Demo/note.md")
+    assert got["id"] != sid
+    assert con.execute("SELECT COUNT(*) FROM sources WHERE deleted=0").fetchone()[0] == 2
