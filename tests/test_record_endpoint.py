@@ -334,20 +334,26 @@ def test_an_edit_moves_the_note_and_marks_the_fields_as_theirs(tmp_path, monkeyp
     assert fm.get("review_status") == "complete"
 
 
-def test_approval_without_edits_marks_only_review_complete(tmp_path, monkeypatch):
+def test_approval_without_edits_completes_review_and_owns_the_filing(tmp_path, monkeypatch):
+    """Approving the card as it stands is agreeing with where SLIM put it. `filed_by: slim`
+    left behind made "SLIM guessed" and "they agreed" the same note. Nothing else changes:
+    no move, no rewrite of the body."""
     from slim import chat
     from slim.chunk import parse_frontmatter
     r = _existing(tmp_path, monkeypatch)
     before = r.note.read_text(encoding="utf-8")
     before_fm, _ = parse_frontmatter(before)
+    assert before_fm.get("filed_by") == "slim"
 
     out = chat.handle_record_review(note=str(r.note.relative_to(tmp_path)), vault=tmp_path)
 
     after = (tmp_path / out["note"]).read_text(encoding="utf-8")
     after_fm, _ = parse_frontmatter(after)
     assert (tmp_path / out["note"]) == r.note
-    assert after.replace("review_status: complete", "review_status: pending") == before
-    assert after_fm == {**before_fm, "review_status": "complete"}
+    assert after.replace("review_status: complete", "review_status: pending") == \
+        before.replace("filed_by: slim\n", "")
+    expected = {k: v for k, v in before_fm.items() if k != "filed_by"}
+    assert after_fm == {**expected, "review_status": "complete"}
 
 
 def test_the_transcript_is_untouched_by_an_edit(tmp_path, monkeypatch):

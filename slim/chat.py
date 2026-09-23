@@ -1131,7 +1131,10 @@ def handle_record_apply(*, note: str, dest_dir: str, type_tag: str, topics: list
 
 
 def handle_record_review(*, note: str, vault: Path | None = None) -> dict:
-    """Mark an unchanged recording reviewed without turning approval into a filing edit."""
+    """Mark an unchanged recording reviewed without turning approval into a filing edit.
+
+    Approving the card as it stands is agreeing with where SLIM put it, so `filed_by` goes,
+    as it does on apply: its presence means "SLIM guessed and nobody has looked"."""
     from . import record as record_mod
     from .chunk import parse_frontmatter
     from .config import VAULT as _VAULT
@@ -1143,7 +1146,8 @@ def handle_record_review(*, note: str, vault: Path | None = None) -> dict:
         fm, _ = parse_frontmatter(text)
         if fm.get("origin") != "recorded":
             raise ValueError("review status is only valid for recorded notes")
-        record_mod.write_note_text(src, record_mod.set_review_status(text, "complete"))
+        text = record_mod.set_review_status(text, "complete")
+        record_mod.write_note_text(src, _strip_frontmatter_key(text, "filed_by"))
     _index_now(vault, str(src.relative_to(vault)), sweep=False)
     trace.record("record", {"stage": "review", "note": str(src)})
     return {"note": str(src.relative_to(vault))}
