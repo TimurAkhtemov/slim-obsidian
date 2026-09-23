@@ -391,3 +391,89 @@ def test_the_profile_is_never_injected_even_when_the_file_is_there(con, vault, m
     assert seen["system"].startswith(copilot.PERSONA)
     assert "I am Alex" not in seen["system"]
     assert "About the user" not in seen["system"]
+
+
+def _png(root: Path, rel: str) -> None:
+    from PIL import Image
+    target = root / rel
+    target.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (12, 8), color="red").save(str(target))
+
+
+def test_the_model_sees_the_images_beside_the_passages_it_reads(con, vault, monkeypatch):
+    """⚠ Until 2026-09-22 the copilot saw only images pasted into the sidebar; 66 of 104 course
+    notes embed their equations as screenshots, and it rewrote Ψ(x, y) = θ·f(x, y) in its own
+    symbols. The open note's images ride with its passages; a sibling's never do."""
+    write(vault, "Notes/school/lesson.md",
+          "Chain rule:\n![[chain.png|300]]\n\nBayes: ![fig](figs/bayes%20rule.png)")
+    _png(vault, "Notes/school/Attachements/chain.png")
+    _png(vault, "Notes/school/figs/bayes rule.png")
+    _png(vault, "Notes/school/other.png")
+    source = copilot.sync_note(con, vault, "Notes/school/lesson.md", embed=False)
+    sibling = {"n": 9, "source_id": "sib", "path": "Notes/school/b.md", "title": "b",
+               "heading": None, "text": "![[other.png]]"}
+    real_collect = copilot.collect_evidence
+    monkeypatch.setattr(copilot, "collect_evidence", lambda *a, **k: (
+        lambda got: ([*got[0], sibling], got[1]))(real_collect(*a, **k)))
+    monkeypatch.setattr(copilot.search_mod, "hybrid", lambda *args, **kwargs: [])
+    sent = {}
+    monkeypatch.setattr(copilot.llm, "chat_stream", lambda messages, **kwargs: (
+        sent.setdefault("messages", messages) and ("Answer", {"duration_s": 1})))
+    monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
+    records = []
+    monkeypatch.setattr(copilot.trace, "record", lambda kind, payload: records.append(payload))
+
+    copilot.run_turn(con, source["id"], "What does the chain rule say?", [], "quick", vault=vault)
+
+    *_, shown, asked = sent["messages"]
+    assert asked == {"role": "user", "content": "What does the chain rule say?"}
+    assert shown["role"] == "user" and len(shown["images"]) == 2
+    assert "`chain.png`" in shown["content"] and "`figs/bayes rule.png`" in shown["content"]
+    assert "other.png" not in shown["content"]
+    assert records[-1]["note_images"] == 2
+
+
+def test_a_screenshot_heavy_note_sends_only_the_capped_few(con, vault, monkeypatch):
+    # ~450 prompt tokens and ~1.3 s of prefill per screenshot (measured 2026-09-22); a lecture
+    # note embeds up to 60.
+    body = "\n".join(f"Slide {i}\n![[slide-{i:02d}.png]]" for i in range(20))
+    write(vault, "Notes/school/lecture.md", body)
+    for i in range(20):
+        _png(vault, f"Notes/school/Attachements/slide-{i:02d}.png")
+    source = copilot.sync_note(con, vault, "Notes/school/lecture.md", embed=False)
+    monkeypatch.setattr(copilot.search_mod, "hybrid", lambda *args, **kwargs: [])
+    sent = {}
+    monkeypatch.setattr(copilot.llm, "chat_stream", lambda messages, **kwargs: (
+        sent.setdefault("messages", messages) and ("Answer", {"duration_s": 1})))
+    monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
+    copilot.run_turn(con, source["id"], "Quiz me", [], "quick", vault=vault)
+    shown = sent["messages"][-2]
+    assert len(shown["images"]) == copilot.MAX_NOTE_IMAGES
+    assert "`slide-00.png`" in shown["content"]
+
+
+def test_a_note_without_images_adds_no_message(con, vault, monkeypatch):
+    write(vault, "Notes/school/plain.md", "just words")
+    source = copilot.sync_note(con, vault, "Notes/school/plain.md", embed=False)
+    monkeypatch.setattr(copilot.search_mod, "hybrid", lambda *args, **kwargs: [])
+    sent = {}
+    monkeypatch.setattr(copilot.llm, "chat_stream", lambda messages, **kwargs: (
+        sent.setdefault("messages", messages) and ("Answer", {"duration_s": 1})))
+    monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
+    copilot.run_turn(con, source["id"], "Hm?", [], "quick", vault=vault)
+    assert [m["role"] for m in sent["messages"]] == ["system", "user"]
+
+
+def test_an_image_whose_passage_retrieval_missed_still_rides_after_the_packs(con, vault, monkeypatch):
+    """⚠ Measured 2026-09-22 on the real note: its Ψ(x, y) equation exists ONLY as a screenshot,
+    so no passage text matches a question about it and the pack skipped that passage. What an
+    image says is not searchable; the pack can order the images, never exclude them."""
+    write(vault, "Notes/school/ch2.md",
+          "## Scoring\n![[psi.png]] for each label\n\n## Naive Bayes\nMLE ![[mle.png]]")
+    _png(vault, "Notes/school/psi.png")
+    _png(vault, "Notes/school/mle.png")
+    source = copilot.sync_note(con, vault, "Notes/school/ch2.md", embed=False)
+    evidence = [{"n": 1, "source_id": source["id"], "path": source["path"], "title": "ch2",
+                 "heading": "Naive Bayes", "text": "MLE ![[mle.png]]"}]
+    shown, _ = copilot.open_note_images(vault, source, evidence)
+    assert [name for name, _ in shown] == ["mle.png", "psi.png"]

@@ -214,3 +214,20 @@ def test_ask_mode_never_sends_the_selection(con, vault, monkeypatch):
     copilot.run_turn(con, source["id"], "what does this mean?", [], "quick",
                      selection="leftover", vault=vault)
     assert seen["user"] == "what does this mean?"
+
+
+def test_edit_mode_sees_the_open_notes_images(con, vault, monkeypatch):
+    # "Turn this screenshot into LaTeX" is an edit: the model must see the image it is asked to
+    # transcribe. No retrieval orders a skill's pack, so the images come in note order.
+    from PIL import Image
+    open_path = note(vault, "Notes/work/eq.md", "# Eq\n\n![[psi.png|300]]\n\n![[mle.png]]\n")
+    for name in ("psi.png", "mle.png"):
+        Image.new("RGB", (12, 8), color="red").save(str(vault / "Notes/work" / name))
+    source = open_source(con, vault, open_path)
+    seen = {}
+    fake_model(monkeypatch, "Nothing to change.", seen)
+    copilot.run_turn(con, source["id"], "write the equation under its screenshot", [], "quick",
+                     edit=True, vault=vault)
+    shown = seen["messages"][-2]
+    assert len(shown["images"]) == 2
+    assert shown["content"].index("`psi.png`") < shown["content"].index("`mle.png`")

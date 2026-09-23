@@ -99,8 +99,10 @@ note loses its id. Embedding is part of ingest; `slim status` reports `unembedde
    widens note → folder → course → subject, all by PATH. It answers from general knowledge
    with the vault as context: the notes pack rides in the system message with titles only,
    so prose cannot cite, and sources come from a bounded follow-up call after the answer.
-   Quick or Deep (thinking on). Per-note chat history and pasted images live outside the
-   vault. There is no vault-wide Q&A lane and no profile injection (it pandered, measured).
+   Quick or Deep (thinking on). The open note's embedded images ride with every turn, at most 6
+   (`copilot.MAX_NOTE_IMAGES`), those beside the pack's passages first: what an image says is
+   not searchable. Per-note chat history and pasted images live outside the vault. There is
+   no vault-wide Q&A lane and no profile injection (it pandered, measured).
    - **Skills** are `/commands`: prompt templates in `slim/skills/` and the vault's `Skills/`
      (same name wins; `skills.py`). A skill reads WHOLE notes chosen by code
      (`copilot.gather`: the open note, the selection, the folder filtered by frontmatter and

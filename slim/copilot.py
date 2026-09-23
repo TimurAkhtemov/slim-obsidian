@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 
 from . import config as config_mod, edits as edits_mod, embed as embed_mod, ingest as ingest_mod
-from . import llm, search as search_mod, skills as skills_mod, trace
+from . import copilot_images, llm, search as search_mod, skills as skills_mod, trace
 from .chunk import (HEADING, body_after_frontmatter, parse_frontmatter, strip_derived_blocks,
                     strip_meeting_wrapper)
 
@@ -81,6 +81,10 @@ DEEP_NUM_PREDICT = 4096 * 3
 # goes unnoticed until content starts. Re-emitting the stage this often is the write that
 # raises BrokenPipe inside the Ollama request and frees llm._CALL_LOCK.
 HEARTBEAT_S = 1.0
+# The open note's images, those beside the passages the pack carries first. Each costs ~450
+# prompt tokens and ~1.3 s before the first word (measured 2026-09-22 on the resident), and a
+# lecture note embeds up to 60, so a turn sends at most this; the median note embeds 4.
+MAX_NOTE_IMAGES = 6
 
 
 class CopilotError(RuntimeError):
@@ -479,9 +483,26 @@ def notes_used(messages: list[dict], answer: str, evidence: list[dict]) -> tuple
     return cited, stats
 
 
+def open_note_images(vault: Path, source: dict, evidence: list[dict]) -> tuple[list[tuple[str, str]], list[dict]]:
+    """The open note's images: those in its passages in the pack, then the rest in note order.
+
+    ⚠ The pack ORDERS the images, never excludes them: an equation that exists only as a
+    screenshot matches no question, so its passage is the one retrieval skips (measured
+    2026-09-22). A sibling note's images stay out: they are context, and every image costs
+    seconds of prefill."""
+    packed = [item["text"] for item in evidence if item.get("source_id") == source["id"]]
+    try:
+        packed.append((vault / source["path"]).read_text(encoding="utf-8"))
+    except OSError:
+        pass
+    return copilot_images.note_images("\n".join(packed), vault, note_rel=source["path"],
+                                      limit=MAX_NOTE_IMAGES)
+
+
 def generate_answer(question: str, history: list[dict], evidence: list[dict], mode: str,
-                    *, images=None, on_stage=None, on_delta=None, system: str | None = None,
-                    cited: list[dict] | None = None, proposing: bool = False) -> dict:
+                    *, images=None, note_images=None, on_stage=None, on_delta=None,
+                    system: str | None = None, cited: list[dict] | None = None,
+                    proposing: bool = False) -> dict:
     """Generate one answer; reasoning is private and only content deltas are surfaced.
 
     TWO depths, and THEY pick (2026-09-03). Auto spent a whole extra classifier call on a choice
@@ -506,6 +527,14 @@ def generate_answer(question: str, history: list[dict], evidence: list[dict], mo
         if message["role"] == "user" and turn.get("images"):
             message["images"] = list(turn["images"])
         transcript.append(message)
+    if note_images:
+        # Their own message, so a screenshot they pasted is never mistaken for the note's. The
+        # names are the embeds as the note spells them, which is how the model places them.
+        names = ", ".join(f"`{name}`" for name, _data in note_images)
+        transcript.append({"role": "user",
+                           "content": "(These are the images embedded in the open note itself, "
+                                      f"not ones I attached: {names}.)",
+                           "images": [data for _name, data in note_images]})
     current = {"role": "user", "content": question}
     if images:
         current["images"] = list(images)
@@ -592,9 +621,12 @@ def run_turn(con, source_id: str, question: str, history: list[dict], mode: str,
             folder = PurePosixPath(source["path"]).parent.as_posix()
             cited = [{"n": i + 1, "path": doc["path"], "title": doc["title"]}
                      for i, doc in enumerate(d for d in pack.docs if d["role"] != "selection")]
+            # No retrieval orders a skill's images, so they come in note order.
+            shown, skipped = open_note_images(vault, source, [])
+            entry.update(note_images=len(shown), note_images_skipped=len(skipped))
             result = generate_answer(
                 skills_mod.render_prompt(skill, args) if skill else question, history, [], mode,
-                images=images, on_stage=on_stage, on_delta=on_delta,
+                images=images, note_images=shown, on_stage=on_stage, on_delta=on_delta,
                 system=pack_message(pack, proposing=proposing, folder=folder),
                 cited=cited, proposing=proposing)
             result["inputs"] = pack_inputs(pack)
@@ -617,8 +649,10 @@ def run_turn(con, source_id: str, question: str, history: list[dict], mode: str,
         else:
             limit = 12 if mode == "deep" else 6
             evidence, levels = collect_evidence(con, source, question, limit=limit)
+            shown, skipped = open_note_images(vault, source, evidence)
+            entry.update(note_images=len(shown), note_images_skipped=len(skipped))
             result = generate_answer(
-                question, history, evidence, mode, images=images,
+                question, history, evidence, mode, images=images, note_images=shown,
                 on_stage=on_stage, on_delta=on_delta)
     except (CopilotError, llm.LLMError) as exc:
         trace.record("copilot", {**entry, "status": "failed", "error": str(exc),
