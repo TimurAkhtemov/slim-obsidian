@@ -174,11 +174,17 @@ def _protected_slices(text: str) -> list[str]:
     return [text[begin:end] for begin, end in protected_ranges(text)]
 
 
+# A SEARCH that starts mid-line must be this specific to be trusted: `Total: 5` inside
+# `Grand Total: 5` is a different line, `$\eta$ is the learnign rate.` inside a paragraph is not.
+MIN_MIDLINE_CHARS = 20
+
+
 def _find(text: str, search: str) -> tuple[list[tuple[int, int]], bool]:
-    """Every place `search` occurs as whole lines: exactly, else line by line ignoring trailing
-    whitespace. A match must start at a line start: `Total: 5` is not inside `Grand Total: 5`."""
-    spans, start = [], text.find(search)
+    """Where `search` occurs: exactly at a line start; else line by line ignoring trailing
+    whitespace; else, for a long fragment only, exactly once anywhere in a line."""
+    spans, anywhere, start = [], [], text.find(search)
     while start != -1:
+        anywhere.append((start, start + len(search)))
         if start == 0 or text[start - 1] == "\n":
             spans.append((start, start + len(search)))
         start = text.find(search, start + 1)
@@ -191,6 +197,8 @@ def _find(text: str, search: str) -> tuple[list[tuple[int, int]], bool]:
     for i in range(len(have) - len(want) + 1):
         if have[i:i + len(want)] == want:
             spans.append((starts[i], starts[i + len(want)]))
+    if not spans and len(anywhere) == 1 and len(search.strip()) >= MIN_MIDLINE_CHARS:
+        return anywhere, True
     return spans, False
 
 
@@ -233,9 +241,6 @@ def apply_blocks(text: str, blocks: list[Block]) -> tuple[str, list[dict]]:
             results.append({"ok": False, "reason": f"matches {len(spans)} places; include more lines"})
             continue
         start, end = spans[0]
-        if any(start < stop and end > begin for begin, stop in protected_ranges(text)):
-            results.append({"ok": False, "reason": PROTECTED})
-            continue
         replacement = item.replace
         if not exact:
             # The match ignored trailing whitespace; an unchanged line keeps its own, or the
@@ -255,8 +260,8 @@ def apply_blocks(text: str, blocks: list[Block]) -> tuple[str, list[dict]]:
         text = text[:start] + replacement + text[end:]
         results.append({"ok": True})
     if all(result["ok"] for result in results) and _protected_slices(text) != before:
-        results = [{"ok": False, "reason": "would change the recording's protected parts"}
-                   for _ in results]
+        # Which block did it is not worth guessing: the file is refused whole.
+        results = [{"ok": False, "reason": PROTECTED} for _ in results]
     if not all(result["ok"] for result in results):
         failed = next(result["reason"] for result in results if not result["ok"])
         results = [result if not result["ok"] else
@@ -296,6 +301,10 @@ def _exact(vault: Path, path: str) -> bool:
     return True
 
 
+def _on_floor(path: str) -> bool:
+    return path.casefold().startswith(("journal/", "inbox/journal/"))
+
+
 def _read(target: Path) -> str:
     with open(target, encoding="utf-8", newline="") as handle:   # as Obsidian reads it: no \r\n folding
         return handle.read()
@@ -323,7 +332,8 @@ def propose(vault: Path, blocks: list[Block], *, in_view: set[str], creates_only
     by_path: dict[str, list[Block]] = {}
     dropped = []
     # `Journal/` is the floor (CLAUDE.md): a journal's words never leave it through a proposal.
-    journal = any(path.casefold().startswith("journal/") for path in in_view)
+    # The memo sweep drops journals in `Inbox/Journal/` first; that is the floor too.
+    journal = any(_on_floor(path) for path in in_view)
     for item in blocks:
         if not item.path:
             dropped.append({"path": "", "reason": "no FILE line before the change"})
@@ -332,7 +342,7 @@ def propose(vault: Path, blocks: list[Block], *, in_view: set[str], creates_only
         if path is None:
             dropped.append({"path": item.path, "reason": "not a note path in this vault"})
             continue
-        if journal and not path.casefold().startswith("journal/"):
+        if journal and not _on_floor(path):
             dropped.append({"path": path, "reason": "a Journal note's text stays in Journal/"})
             continue
         if creates_only and (Path(vault) / path).exists():

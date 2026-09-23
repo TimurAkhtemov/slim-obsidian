@@ -306,3 +306,28 @@ def test_a_new_note_skill_only_creates_and_a_selection_skill_stays_inside_the_se
                            in_view={"Notes/school/a.md"}, within=("Notes/school/a.md", "beta  \n"))
     assert inside["files"][0]["after"] == "alpha\nB\n"
     assert inside["dropped"] == [{"path": "Notes/school/a.md", "reason": "outside the text you selected"}]
+
+
+def test_a_long_fragment_matches_mid_line_but_a_short_one_does_not():
+    text = "We use $\\eta$ is the learnign rate. It scales steps.\n"
+    after, results = edits.apply_blocks(text, [edits.Block(
+        "p", "$\\eta$ is the learnign rate.", "$\\eta$ is the learning rate.")])
+    assert results == [{"ok": True}] and "learning rate." in after
+    _, results = edits.apply_blocks("Grand Total: 5\n", [edits.Block("p", "Total: 5\n", "x\n")])
+    assert results[0]["reason"] == "text not found in the note"
+
+
+def test_protected_text_copied_through_unchanged_is_allowed():
+    notion = "---\ntype: meeting-note\n---\n\n# Call\n\n## Transcript\n\nMe: hi\n"
+    after, results = edits.apply_blocks(notion, [edits.Block(
+        "p", "---\ntype: meeting-note\n---\n\n# Call\n", "---\ntype: meeting-note\n---\n\n# Call\n\nSummary.\n")])
+    assert results == [{"ok": True}] and "# Call\n\nSummary.\n" in after
+
+
+def test_inbox_journal_is_on_the_floor_too(vault):
+    (vault / "Inbox/Journal").mkdir(parents=True)
+    (vault / "Inbox/Journal/memo.md").write_text("private\n", encoding="utf-8")
+    proposal = edits.propose(vault, [edits.Block("Notes/school/a.md", "beta\n", "private\n")],
+                             in_view={"Inbox/Journal/memo.md", "Notes/school/a.md"})
+    assert proposal["dropped"] == [{"path": "Notes/school/a.md",
+                                    "reason": "a Journal note's text stays in Journal/"}]
