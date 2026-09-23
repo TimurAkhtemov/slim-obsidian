@@ -15,7 +15,6 @@ are the history. Past ~20 items is a signal about scope, not a reason for headin
 - [ ] `lecture` vs `learning` is an unstable distinction; collapse when the vocabulary is next touched.
 - [ ] Stale vault path: `scripts/pdf2md.py:465` (and its usage line 8) defaults `--vault` to `~/Documents/Obsidian Vault`; the vault is now the iCloud container. Route through `vaultpath.discover_vault()`.
 - [ ] `slim status` and `slim trace` never call `require_vault_identity()`, so the one command you'd run to notice a vault/pin mismatch cannot report one.
-- [ ] `slim/llm.py:44` says "Tests pin this" about the explicit `think` parameter, but no test decodes the HTTP body — deleting `"think": think` (`llm.py:118`, `:190`) passes the whole suite and breaks the recorder. Add a wire-level test.
 - [ ] Speaker labels are decided per segment: a resumed segment with one speaker is appended unlabelled under a labelled transcript and reads as the last speaker continuing. Decide at the recording level (render one-speaker stereo segments with their single label when any segment is labelled).
 - [ ] Tell remote speakers apart (Speaker 1, Speaker 2): a voice-clustering model on the system channel, replacing `speakers.label_tokens`. Test with a panel podcast played as system audio.
 - [ ] In-room meetings on one microphone: the same model on the mic channel; "which cluster is me" needs an enrollment or a rename on the card. Test with a podcast played out of the speakers into the mic.

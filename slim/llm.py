@@ -41,7 +41,8 @@ _CALL_LOCK = threading.Lock()
 # ⚠ qwen3.6 THINKS BY DEFAULT, and Ollama bills thinking tokens against num_predict while
 #   returning them in a separate field. Every call path therefore sets `think` EXPLICITLY —
 #   never by inheriting the default. Left unset, the model spends its whole output budget
-#   reasoning and returns content="", and the call dies at the first step. Tests pin this.
+#   reasoning and returns content="", and the call dies at the first step.
+#   `tests/test_llm_wire.py` pins it.
 MODEL = "qwen3.6:35b"
 
 # ⚠ ONE context size for every call, and it is not a style choice. OLLAMA SPAWNS A SEPARATE
