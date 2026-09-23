@@ -246,3 +246,34 @@ def test_thread_listing_and_load_report_the_source_current_path(server_url):
     assert listed[0]["source_path"] == "Notes/school/cs-201/lesson.md"
     with urllib.request.urlopen(server_url + "/api/copilot/thread?id=chat-1") as response:
         assert json.load(response)["source_path"] == "Notes/school/cs-201/lesson.md"
+
+
+def test_stream_endpoint_passes_edit_mode_and_a_bounded_selection(server_url, monkeypatch):
+    seen = {}
+
+    def fake_run(con, source_id, question, history, mode, **kwargs):
+        seen.update(edit=kwargs["edit"], selection=kwargs["selection"])
+        return {"answer": "ok", "mode": "quick", "citations": [], "proposal": None}
+
+    monkeypatch.setattr(copilot, "run_turn", fake_run)
+    post(server_url, "/api/copilot/stream", {
+        "thread_id": "chat-1", "source_id": "source-1", "question": "tidy", "history": [],
+        "edit": True, "selection": "x" * (copilot.MAX_SELECTION_CHARS + 50)})
+    assert seen == {"edit": True, "selection": "x" * copilot.MAX_SELECTION_CHARS}
+    # Only a literal true turns Edit mode on; a truthy string is not consent to propose.
+    post(server_url, "/api/copilot/stream", {
+        "thread_id": "chat-1", "source_id": "source-1", "question": "tidy", "history": [],
+        "edit": "yes", "selection": 5})
+    assert seen == {"edit": False, "selection": ""}
+
+
+def test_skills_endpoint_lists_builtins_and_the_vaults_own(server_url, monkeypatch, tmp_path):
+    (tmp_path / "Skills").mkdir()
+    (tmp_path / "Skills/standup.md").write_text("---\ndescription: Mine\n---\nDo it.\n")
+    (tmp_path / "Skills/broken.md").write_text("---\noutput: somewhere\n---\nx\n")
+    monkeypatch.setattr(chat.config, "VAULT", tmp_path)
+    with urllib.request.urlopen(server_url + "/api/copilot/skills") as response:
+        listed = {item["name"]: item for item in json.load(response)["skills"]}
+    assert listed["standup"]["description"] == "Mine" and listed["standup"]["origin"] == "vault"
+    assert listed["broken"]["error"].startswith("output must be")
+    assert listed["consolidate-my-notes"]["output"] == "new-note"

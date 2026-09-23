@@ -33,7 +33,8 @@ Module._load = function (request) {
 };
 
 const { CopilotView, RenameModal, SSEParser, groupThreads, streamRequest,
-        groupCitations, noteTitle, normalizeMath, SUGGESTED_PROMPTS, metaText } =
+        groupCitations, noteTitle, normalizeMath, SUGGESTED_PROMPTS, metaText,
+        sha256Hex, lineDiff, slashQuery, matchSkills, inputsText, editorSelection } =
   createRequire(import.meta.url)(path.join(HERE, "main.js"));
 
 test("SSE parsing survives arbitrary chunk boundaries", () => {
@@ -964,7 +965,7 @@ test("their turn is a bubble on the right and the composer starts as one line", 
   const { view, root } = renderedView();
   view.render();
   const input = find(root, (node) => node.tag === "textarea");
-  assert.equal(input.placeholder, "Ask SLIM");
+  assert.equal(input.placeholder, "Ask SLIM, or / for skills");
 });
 
 test("nearby notes and chat groups read as titles, with the path on hover", () => {
@@ -1110,4 +1111,141 @@ test("a click that is not on a wikilink is left alone", () => {
   view.onLinkClick(event);
   assert.equal(event.prevented, undefined);
   assert.deepEqual(opened, []);
+});
+
+
+// ---- skills and edit proposals ---------------------------------------------------------------
+
+test("a slash command completes only while its first word is being typed", () => {
+  const skills = [{ name: "actions" }, { name: "consolidate-my-notes" }, { name: "quiz" }];
+  assert.equal(slashQuery("/con"), "con");
+  assert.equal(slashQuery("/"), "");
+  assert.equal(slashQuery("/con focus"), null);
+  assert.equal(slashQuery("what /con"), null);
+  assert.deepEqual(matchSkills(skills, "con").map((s) => s.name), ["consolidate-my-notes"]);
+  assert.equal(matchSkills(skills, "").length, 3);
+  assert.deepEqual(matchSkills(skills, null), []);
+});
+
+test("the diff folds unchanged runs and marks what was added and removed", () => {
+  const before = ["a", "b", "c", "d", "e", "f", "g", "h"].join("\n");
+  const after = ["a", "b", "c", "d", "E", "f", "g", "h", "i"].join("\n");
+  assert.deepEqual(lineDiff(before, after, 1), [
+    { op: "…", text: "" },
+    { op: " ", text: "d" }, { op: "-", text: "e" }, { op: "+", text: "E" }, { op: " ", text: "f" },
+    { op: "…", text: "" },
+    { op: " ", text: "h" }, { op: "+", text: "i" },
+  ]);
+  assert.deepEqual(lineDiff("", "new\nnote").filter((r) => r.op === "+").map((r) => r.text), ["new", "note"]);
+});
+
+test("the inputs line says what code handed the model, including what it left out", () => {
+  assert.equal(inputsText({ used: ["a", "b"], selection: false, dropped: ["c"], cut: [],
+                            skipped: ["d"], missing: ["Nope"] }),
+    "Read 2 notes · 1 left out (too long together) · 1 without that section · [[Nope]] not found");
+  assert.equal(inputsText({ used: [], selection: true }), "Read your selection");
+  assert.equal(inputsText(undefined), "");
+});
+
+test("the selection comes from the pane showing the open note, not the focused one", () => {
+  const leaf = (path, text) => ({ view: { file: { path }, editor: { getSelection: () => text } } });
+  const app = { workspace: { getLeavesOfType: () => [leaf("Notes/other.md", "wrong"), leaf("Notes/a.md", "right")] } };
+  assert.equal(editorSelection(app, "Notes/a.md"), "right");
+  assert.equal(editorSelection(app, "Notes/none.md"), "");
+});
+
+function proposalVault(files) {
+  const writes = [];
+  return {
+    writes,
+    getAbstractFileByPath: (p) => (p in files ? { path: p } : null),
+    read: async (file) => files[file.path],
+    async process(file, fn) { const next = fn(files[file.path]); writes.push(["modify", file.path]); files[file.path] = next; return next; },
+    async create(p, text) { writes.push(["create", p]); files[p] = text; return { path: p }; },
+  };
+}
+
+function proposalView(vault, saved = [], indexed = []) {
+  const view = makeView({
+    postJSON: async (route, body) => {
+      if (route.endsWith("save")) saved.push(body);
+      if (route.endsWith("context")) indexed.push(body.path);
+      return {};
+    },
+  });
+  view.app = { vault, workspace: { openLinkText() {} } };
+  view.render = () => {};
+  view.activeThread = { id: "chat-1", source_id: "s1", source_path: "Notes/a.md" };
+  return view;
+}
+
+test("accept writes only a file that still hashes as proposed, then indexes it", async () => {
+  const files = { "Notes/a.md": "old\n", "Notes/b.md": "edited since\n" };
+  const vault = proposalVault(files);
+  const saved = [], indexed = [];
+  const view = proposalView(vault, saved, indexed);
+  const proposal = { files: [
+    { path: "Notes/a.md", kind: "edit", base_hash: sha256Hex("old\n"), after: "new\n", blocks: [] },
+    { path: "Notes/b.md", kind: "edit", base_hash: sha256Hex("original\n"), after: "x\n", blocks: [] },
+    { path: "Notes/c.md", kind: "create", base_hash: null, after: "# C\n", blocks: [] },
+  ], dropped: [] };
+  view.turns = [{ role: "you", text: "q" }, { role: "slim", text: "a", turn: { proposal } }];
+  await view.decide(proposal, proposal.files, "accept");
+  assert.deepEqual(proposal.files.map((f) => f.status), ["accepted", "stale", "accepted"]);
+  assert.equal(files["Notes/a.md"], "new\n");
+  assert.equal(files["Notes/b.md"], "edited since\n");            // their edit survives
+  assert.equal(files["Notes/c.md"], "# C\n");
+  assert.deepEqual(indexed.sort(), ["Notes/a.md", "Notes/c.md"]);
+  assert.equal(saved.at(-1).turns[1].turn.proposal.files[0].status, "accepted");
+});
+
+test("reject writes nothing and a create never overwrites an existing note", async () => {
+  const files = { "Notes/a.md": "mine\n" };
+  const vault = proposalVault(files);
+  const view = proposalView(vault);
+  const proposal = { files: [
+    { path: "Notes/a.md", kind: "create", base_hash: null, after: "theirs\n", blocks: [] },
+    { path: "Notes/z.md", kind: "create", base_hash: null, after: "z\n", blocks: [] },
+  ] };
+  view.turns = [{ role: "slim", text: "a", turn: { proposal } }];
+  await view.decide(proposal, [proposal.files[1]], "reject");
+  await view.decide(proposal, [proposal.files[0]], "accept");
+  assert.deepEqual(vault.writes, []);
+  assert.equal(proposal.files[0].status, "failed");
+  assert.match(proposal.files[0].error, /already exists/);
+  assert.equal(proposal.files[1].status, "rejected");
+});
+
+test("a decided file shows its outcome instead of the buttons", () => {
+  const view = proposalView(proposalVault({}));
+  view.fillDiff = async () => {};
+  const message = fakeEl("article");
+  view.renderProposal(message, { files: [
+    { path: "Notes/a.md", kind: "edit", after: "x", status: "accepted", blocks: [] },
+    { path: "Notes/b.md", kind: "edit", after: null, blocks: [{ ok: false, reason: "text not found in the note" }] },
+  ], dropped: [{ path: "Notes/o.md", reason: "not in view" }] });
+  const texts = [];
+  (function walk(el) { texts.push(el.textContent); el.children.forEach(walk); })(message);
+  assert.ok(texts.includes("Applied"));
+  assert.ok(texts.includes("One change was not applied: text not found in the note"));
+  assert.ok(texts.includes("Not proposed: Notes/o.md — not in view"));
+  assert.ok(!texts.includes("Accept"));
+});
+
+test("an edit-mode question carries the toggle and the open note's selection", async () => {
+  let body = null;
+  const view = makeView({
+    postJSON: async (route) => route.endsWith("context")
+      ? { source: { id: "s1", path: "Notes/a.md" } } : {},
+    streamCopilot: async (sent, handlers) => { body = sent; handlers.turn({ answer: "ok", citations: [] }); },
+  });
+  view.app = { workspace: { getLeavesOfType: () => [
+    { view: { file: { path: "Notes/a.md" }, editor: { getSelection: () => "picked" } } }] } };
+  view.render = () => {};
+  view.context = { source: { id: "s1", path: "Notes/a.md" }, related: [] };
+  view.editMode = true;
+  await view.send("/tidy");
+  assert.equal(body.edit, true);
+  assert.equal(body.selection, "picked");
+  assert.equal(body.question, "/tidy");
 });

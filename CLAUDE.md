@@ -101,7 +101,17 @@ note loses its id. Embedding is part of ingest; `slim status` reports `unembedde
    so prose cannot cite, and sources come from a bounded follow-up call after the answer.
    Quick or Deep (thinking on). Per-note chat history and pasted images live outside the
    vault. There is no vault-wide Q&A lane and no profile injection (it pandered, measured).
-   It cannot edit files yet.
+   - **Skills** are `/commands`: prompt templates in `slim/skills/` and the vault's `Skills/`
+     (same name wins; `skills.py`). A skill reads WHOLE notes chosen by code
+     (`copilot.gather`: the open note, the selection, the folder filtered by frontmatter and
+     cut to one section, `[[links]]`), inside a fixed budget, and names what it left out.
+     Code knows what it read, so a skill turn makes no sources call.
+   - **Ask / Edit.** Edit mode (or a skill whose `output` is a change) PROPOSES; nothing is
+     written by the server. The model writes SEARCH/REPLACE blocks as plain text, `edits.py`
+     applies them to the file on disk, and the plugin shows a diff per file. Accept writes
+     through the Vault API only if the file still hashes as proposed, then syncs and embeds.
+     Editable: notes in view and new notes in existing folders; a recording's frontmatter,
+     `slim-meeting` block and transcript never. One pass, one proposal — not a tool loop.
 
 ## Where things live
 
@@ -111,6 +121,7 @@ Capture/<subject>/  every recording, router-owned; `_unfiled` when no subject is
 Notes/<subject>/    curated writing; any depth below level 2 is the owner's
 Inbox/Journal/      the memo sweep's drop       Profile/        the owner's self-description; not indexed, not injected
 Attachments/        binaries                   _Reflections/   derived, excluded from ingest
+Skills/             the owner's copilot /commands; not indexed
 ```
 
 Subjects are the ids in `config/projects.yaml` (gitignored; copy `config/projects.example.yaml`).
@@ -186,8 +197,8 @@ reacts to a vault `delete` must first ask whether the server caused it (2026-09-
   interpretation, classification, synthesis, language.
 - **Raw sources are never rewritten.** Derived state is rebuildable — but a rebuild mints new
   source ids and orphans saved copilot chats, so schema changes are migrations.
-- **Derived artifacts are excluded from ingestion** — `_Reflections/` and `Profile/`
-  (`config.EXCLUDED_TOP`); the recorder's summary is fenced and blanked before chunking. The
+- **Derived artifacts are excluded from ingestion** — `_Reflections/`, `Profile/` and
+  `Skills/` (`config.EXCLUDED_TOP`); the recorder's summary is fenced and blanked before chunking. The
   brain never retrieves its own opinions as evidence.
 - **The ONLY privacy rule is `Journal/`** (owner's ruling, 2026-08-31). Everything else in the
   vault the owner sends to cloud models themselves, routinely. **Do not cite privacy to gate,
@@ -235,7 +246,8 @@ Host and Origin gates on every write), `record.py` (writes the note), `transcrib
 `suggest.py` (the filing card), `enrich.py` and `voicetags.py` (label), `inbox.py`
 (the memo lane's transcribe-and-write), `voicememos.py`.
 Index: `ingest.py`, `chunk.py` (fragments; the frontmatter reader and writer), `embed.py`,
-`db.py`. Answer: `search.py`, `copilot.py`, `threads.py`, `copilot_images.py`, `reflect.py`.
+`db.py`. Answer: `search.py`, `copilot.py`, `skills.py` and `edits.py` (the copilot's
+/commands and its proposals), `threads.py`, `copilot_images.py`, `reflect.py`.
 Seams: `llm.py`, `trace.py`, `config.py` with `config/projects.yaml` and `vaultpath.py`,
 `devserver.py`.
 

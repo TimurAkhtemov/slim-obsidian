@@ -24,8 +24,9 @@ EXCLUDED_DIRS = {".obsidian", ".trash"}
 # `Profile/` is their self-description, excluded because it is not evidence — and since
 # 2026-09-03 nothing reads it at all. `_Reflections/` is `slim reflect`'s own output: the brain
 # must never retrieve its opinions back as evidence, and `reflect` reads that folder from disk
-# rather than the DB to find its last window.
-EXCLUDED_TOP = {"Attachments", "Profile", "_Reflections"}
+# rather than the DB to find its last window. `Skills/` holds the copilot's prompt templates
+# (`skills.py`): instructions, not evidence.
+EXCLUDED_TOP = {"Attachments", "Profile", "Skills", "_Reflections"}
 
 def _load() -> dict:
     # The file is the user's own vocabulary and is gitignored; a fresh clone has none until

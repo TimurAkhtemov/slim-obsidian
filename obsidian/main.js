@@ -2635,6 +2635,103 @@ function groupCitations(citations) {
   return [...groups.values()];
 }
 
+/* ---- copilot skills and edit proposals ----------------------------------------------------
+ * The server never writes a note from the copilot. An Edit-mode turn (or a skill whose output
+ * is a change) returns a proposal: per file, the text it WOULD have and the sha256 of the text
+ * it was computed from. The owner accepts or rejects each file here; Accept writes through the
+ * Vault API only if the file on disk still hashes the same, so an edit made in between is
+ * never overwritten.
+ */
+function sha256Hex(text) {
+  return require("crypto").createHash("sha256").update(String(text), "utf8").digest("hex");
+}
+
+// Line diff for the proposal card: common head and tail trimmed, LCS on the middle, then
+// unchanged runs folded to `context` lines around each change.
+function lineDiff(before, after, context = 2) {
+  const a = String(before || "").split("\n");
+  const b = String(after || "").split("\n");
+  let head = 0;
+  while (head < a.length && head < b.length && a[head] === b[head]) head += 1;
+  let tail = 0;
+  while (tail < a.length - head && tail < b.length - head
+         && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail += 1;
+  const midA = a.slice(head, a.length - tail);
+  const midB = b.slice(head, b.length - tail);
+  const rows = [];
+  if (midA.length * midB.length > 4_000_000) {
+    // Too big to align line by line: show it as a replacement rather than stall the sidebar.
+    for (const text of midA) rows.push({ op: "-", text });
+    for (const text of midB) rows.push({ op: "+", text });
+  } else {
+    const n = midA.length, m = midB.length;
+    const table = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+    for (let i = n - 1; i >= 0; i -= 1) {
+      for (let j = m - 1; j >= 0; j -= 1) {
+        table[i][j] = midA[i] === midB[j] ? table[i + 1][j + 1] + 1
+          : Math.max(table[i + 1][j], table[i][j + 1]);
+      }
+    }
+    let i = 0, j = 0;
+    while (i < n || j < m) {
+      if (i < n && j < m && midA[i] === midB[j]) { rows.push({ op: " ", text: midA[i] }); i += 1; j += 1; }
+      else if (i < n && (j >= m || table[i + 1][j] >= table[i][j + 1])) { rows.push({ op: "-", text: midA[i] }); i += 1; }
+      else { rows.push({ op: "+", text: midB[j] }); j += 1; }
+    }
+  }
+  const full = [...a.slice(0, head).map((text) => ({ op: " ", text })), ...rows,
+                ...a.slice(a.length - tail).map((text) => ({ op: " ", text }))];
+  const keep = full.map(() => false);
+  full.forEach((row, index) => {
+    if (row.op === " ") return;
+    for (let k = Math.max(0, index - context); k <= Math.min(full.length - 1, index + context); k += 1) keep[k] = true;
+  });
+  const out = [];
+  full.forEach((row, index) => {
+    if (keep[index]) out.push(row);
+    else if (out.length === 0 || out.at(-1).op !== "…") out.push({ op: "…", text: "" });
+  });
+  return out;
+}
+
+// "/con" → "con" while the first word is still being typed; null once there is a space.
+function slashQuery(draft) {
+  const match = /^\/([a-z0-9-]*)$/.exec(String(draft || ""));
+  return match ? match[1] : null;
+}
+
+function matchSkills(skills, query) {
+  if (query === null || query === undefined) return [];
+  return (skills || []).filter((skill) => skill.name.startsWith(query)).slice(0, 8);
+}
+
+// One line under a skill or edit answer: what code actually handed the model.
+function inputsText(inputs) {
+  if (!inputs) return "";
+  const parts = [];
+  const used = inputs.used?.length || 0;
+  if (used) parts.push(`Read ${used} note${used === 1 ? "" : "s"}${inputs.selection ? " and your selection" : ""}`);
+  else if (inputs.selection) parts.push("Read your selection");
+  if (inputs.dropped?.length) parts.push(`${inputs.dropped.length} left out (too long together)`);
+  if (inputs.cut?.length) parts.push(`${inputs.cut.length} cut to fit`);
+  if (inputs.skipped?.length) parts.push(`${inputs.skipped.length} without that section`);
+  for (const name of inputs.missing || []) parts.push(`[[${name}]] not found`);
+  return parts.join(" · ");
+}
+
+// The open note's editor selection, from whichever pane shows it: the sidebar has focus when
+// they press Send, so "the active editor" is not the question.
+function editorSelection(app, path) {
+  for (const leaf of app?.workspace?.getLeavesOfType?.("markdown") || []) {
+    const view = leaf.view;
+    if (view?.file?.path === path && typeof view.editor?.getSelection === "function") {
+      const text = view.editor.getSelection();
+      if (text) return text;
+    }
+  }
+  return "";
+}
+
 // qwen writes \( \) and \[ \] as often as $ $; Obsidian's renderer only knows the dollar
 // forms, and Markdown eats the escaped brackets, so an equation rendered as nothing. Display
 // only: the stored answer is what the model wrote. Code spans and fences are left alone.
@@ -2912,6 +3009,40 @@ class CopilotView extends ItemView {
     this.liveRenderTimer = null;    // the throttled Markdown render of the streaming answer
     this.liveRenderVersion = 0;
     this.liveRenderedAt = 0;
+    this.editMode = false;          // Ask (answers only) or Edit (proposes changes to accept)
+    this.skills = [];               // /commands, from GET /api/copilot/skills
+  }
+
+  // Re-read whenever they start a command: a skill saved in `Skills/` a moment ago is there.
+  async loadSkills() {
+    try {
+      this.skills = (await this.plugin.getJSON("/api/copilot/skills")).skills || [];
+    } catch (error) {
+      console.error("[slim] skills", error);
+    }
+    this.renderSlash();
+  }
+
+  pickSkill(skill) {
+    this.draft = `/${skill.name} `;
+    if (skill.mode === "quick" || skill.mode === "deep") this.mode = skill.mode;
+    this.composerFocused = true;
+    this.render();
+  }
+
+  renderSlash() {
+    const menu = this.el?.slash;
+    if (!menu) return;
+    clear(menu);
+    const hits = matchSkills(this.skills, slashQuery(this.draft));
+    menu.hidden = !hits.length;
+    for (const skill of hits) {
+      const item = create(menu, "button", `slim-slash-item${skill.error ? " is-broken" : ""}`);
+      create(item, "span", "slim-slash-name", `/${skill.name}`);
+      create(item, "small", "slim-slash-about", skill.error ? `Broken: ${skill.error}` : skill.description || "");
+      item.onmousedown = (event) => event.preventDefault();     // keep the composer focused
+      item.onclick = () => this.pickSkill(skill);
+    }
   }
 
   imageURL(threadId, imageId) {
@@ -2933,6 +3064,7 @@ class CopilotView extends ItemView {
       root.addEventListener("click", (event) => this.onLinkClick(event));
     }
     const file = this.app.workspace.getActiveFile ? this.app.workspace.getActiveFile() : null;
+    this.loadSkills();
     await this.setActiveFile(file);
   }
 
@@ -3144,6 +3276,8 @@ class CopilotView extends ItemView {
         images: outgoingImages.map(({ id, name, mime, data, bytes }) =>
           data ? { name, mime, data } : { id, name, mime, bytes }),
         reasoning_mode: this.mode,
+        edit: this.editMode,
+        selection: editorSelection(this.app, this.context.source.path),
       }, {
         stage: (data) => { this.stage = data.stage || "Working"; this.renderStage(); },
         delta: (data) => {
@@ -3423,6 +3557,13 @@ class CopilotView extends ItemView {
         remove.onclick = () => { this.pendingImages.splice(index, 1); this.render(); };
       });
     }
+    const slash = create(composer, "div", "slim-slash-menu");
+    this.el.slash = slash;
+    const editToggle = iconButton(composer, "pencil",
+      this.editMode ? "Edit mode: SLIM proposes changes, you accept each one — click for Ask"
+        : "Ask mode: SLIM only answers — click for Edit",
+      `clickable-icon slim-edit-toggle${this.editMode ? " is-active" : ""}`);
+    editToggle.onclick = () => { this.editMode = !this.editMode; this.render(); };
     const modes = create(composer, "select", "slim-mode-select");
     for (const value of ["quick", "deep"]) {
       const option = create(modes, "option", "", value[0].toUpperCase() + value.slice(1));
@@ -3431,15 +3572,28 @@ class CopilotView extends ItemView {
     }
     modes.onchange = () => { this.mode = modes.value; };
     const input = create(composer, "textarea", "slim-copilot-input");
-    input.placeholder = "Ask SLIM";
+    input.placeholder = this.editMode ? "Ask SLIM to change notes" : "Ask SLIM, or / for skills";
     input.value = this.draft;
     input.rows = 1;
     autoGrow(input);
-    input.oninput = () => { this.draft = input.value; autoGrow(input); };
+    input.oninput = () => {
+      this.draft = input.value;
+      autoGrow(input);
+      if (input.value === "/") this.loadSkills();
+      else this.renderSlash();
+    };
     input.onfocus = () => { this.composerFocused = true; };
     input.onblur = () => { this.composerFocused = false; };
     this.el.input = input;
     input.onkeydown = (event) => {
+      // A half-typed command completes before it sends: "/con" + Enter is "/consolidate… ".
+      const hits = matchSkills(this.skills, slashQuery(this.draft));
+      if (hits.length && (event.key === "Tab"
+          || (event.key === "Enter" && !event.shiftKey && !hits.some((h) => `/${h.name}` === this.draft)))) {
+        event.preventDefault();
+        this.pickSkill(hits[0]);
+        return;
+      }
       if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); this.send(); }
       if ((event.key === "Backspace" || event.key === "Delete") &&
           !event.metaKey && !event.altKey && !event.ctrlKey) {
@@ -3500,7 +3654,11 @@ class CopilotView extends ItemView {
       composer, this.sending ? "square" : "send", this.sending ? "Stop response" : "Send",
       "mod-cta slim-send");
     send.onclick = () => this.sending ? this.cancel() : this.send();
-    if (focused && typeof input.focus === "function") input.focus();
+    this.renderSlash();
+    if (focused && typeof input.focus === "function") {
+      input.focus();
+      input.selectionStart = input.selectionEnd = input.value.length;
+    }
   }
 
   renderThreadList(root, sourceTitle) {
@@ -3560,6 +3718,9 @@ class CopilotView extends ItemView {
           chip.onclick = () => this.openNote(source.path);
         }
       }
+      const read = inputsText(turn.turn?.inputs);
+      if (read) create(message, "small", "slim-inputs", read);
+      if (turn.turn?.proposal) this.renderProposal(message, turn.turn.proposal);
       if (turn.turn?.verification?.truncated) {
         create(message, "small", "slim-verification", "Cut off at the length limit — ask for the rest.");
       }
@@ -3629,6 +3790,120 @@ class CopilotView extends ItemView {
     }
     create(actions, "small", "slim-message-meta", metaText(turn.turn));
   }
+
+  // One box per file: its path, the diff, and Accept / Reject. The decision is saved on the
+  // turn, so a reopened chat shows what was applied and never offers it twice.
+  renderProposal(message, proposal) {
+    const card = create(message, "div", "slim-proposal");
+    const open = (proposal.files || []).filter((file) => file.after != null && !file.status);
+    if (open.length > 1) {
+      const all = create(card, "button", "mod-cta slim-accept-all", `Accept all ${open.length}`);
+      all.disabled = this.sending;
+      all.onclick = () => this.decide(proposal, open, "accept");
+    }
+    for (const file of proposal.files || []) {
+      const box = create(card, "div", "slim-proposal-file");
+      const head = create(box, "div", "slim-proposal-head");
+      const name = create(head, "button", "slim-proposal-path", file.path);
+      name.setAttribute("title", file.path);
+      name.onclick = () => this.openNote(file.path);
+      create(head, "small", "slim-proposal-kind", file.kind === "create" ? "new note" : "edit");
+      for (const block of (file.blocks || []).filter((item) => !item.ok)) {
+        create(box, "div", "slim-proposal-problem", `One change was not applied: ${block.reason}`);
+      }
+      if (file.after == null) continue;
+      const diff = create(box, "div", "slim-diff");
+      this.fillDiff(diff, file).catch((e) => console.error("[slim] diff", e));
+      const actions = create(box, "div", "slim-proposal-actions");
+      if (file.status) {
+        create(actions, "small", `slim-proposal-status is-${file.status}`, proposalStatus(file));
+        continue;
+      }
+      const accept = create(actions, "button", "mod-cta", "Accept");
+      const reject = create(actions, "button", "", "Reject");
+      accept.disabled = reject.disabled = this.sending;
+      accept.onclick = () => this.decide(proposal, [file], "accept");
+      reject.onclick = () => this.decide(proposal, [file], "reject");
+    }
+    for (const item of proposal.dropped || []) {
+      create(card, "div", "slim-proposal-problem",
+        `Not proposed: ${item.path || "a change with no file"} — ${item.reason}`);
+    }
+  }
+
+  async fillDiff(el, file) {
+    let before = "";
+    if (file.kind !== "create") {
+      const target = this.app.vault.getAbstractFileByPath(file.path);
+      before = target ? await this.app.vault.read(target) : "";
+      if (!file.status && sha256Hex(before) !== file.base_hash) {
+        create(el, "div", "slim-proposal-problem",
+          "This note has changed since the proposal; Accept will refuse. Ask again for a fresh one.");
+      }
+    }
+    const rows = lineDiff(before, file.after);
+    for (const row of rows.slice(0, MAX_DIFF_ROWS)) {
+      const cls = row.op === "+" ? "is-add" : row.op === "-" ? "is-del" : row.op === "…" ? "is-gap" : "is-same";
+      create(el, "div", `slim-diff-line ${cls}`, row.op === "…" ? "⋯" : `${row.op} ${row.text}`);
+    }
+    if (rows.length > MAX_DIFF_ROWS) create(el, "div", "slim-diff-line is-gap", `⋯ ${rows.length - MAX_DIFF_ROWS} more lines`);
+  }
+
+  async decide(proposal, files, action) {
+    if (this.sending || !this.activeThread) return;
+    const thread = this.activeThread;
+    const turns = this.turns;
+    for (const file of files) {
+      if (action === "reject") { file.status = "rejected"; continue; }
+      try {
+        file.status = await this.applyFile(file);
+      } catch (error) {
+        file.status = "failed";
+        file.error = error.message || String(error);
+      }
+      // A note is not findable until it is indexed: sync and embed what was just written.
+      if (file.status === "accepted") {
+        this.plugin.postJSON("/api/copilot/context", { path: file.path, related: false })
+          .catch((e) => console.warn("[slim] index after accept", file.path, e.message));
+      }
+    }
+    try {
+      await this.saveRecord(thread, turns);
+    } catch (error) {
+      this.error = error.message || String(error);
+    }
+    this.render();
+  }
+
+  // The only place the copilot writes a note. `vault.process` holds the file for the check and
+  // the write together: a file that no longer hashes to what the proposal was built from is
+  // left exactly as it is.
+  async applyFile(file) {
+    const vault = this.app.vault;
+    if (file.kind === "create") {
+      if (vault.getAbstractFileByPath(file.path)) throw new Error("a note already exists at that path");
+      await vault.create(file.path, file.after);
+      return "accepted";
+    }
+    const target = vault.getAbstractFileByPath(file.path);
+    if (!target) throw new Error("the note is gone");
+    if (typeof this.plugin.saveActiveNote === "function") await this.plugin.saveActiveNote(target);
+    let stale = false;
+    await vault.process(target, (data) => {
+      if (sha256Hex(data) !== file.base_hash) { stale = true; return data; }
+      return file.after;
+    });
+    return stale ? "stale" : "accepted";
+  }
+}
+
+const MAX_DIFF_ROWS = 400;
+
+function proposalStatus(file) {
+  if (file.status === "accepted") return file.kind === "create" ? "Created" : "Applied";
+  if (file.status === "rejected") return "Rejected";
+  if (file.status === "stale") return "Not applied: the note changed since this was proposed";
+  return `Not applied: ${file.error || "unknown error"}`;
 }
 
 /* One durable meeting object per recording/note, with one reserved capture slot.
@@ -4370,3 +4645,9 @@ module.exports.stampSourceAtoms = stampSourceAtoms;
 module.exports.markdownFromEditable = markdownFromEditable;
 module.exports.serverArgv = serverArgv;
 module.exports.serverEnv = serverEnv;
+module.exports.sha256Hex = sha256Hex;
+module.exports.lineDiff = lineDiff;
+module.exports.slashQuery = slashQuery;
+module.exports.matchSkills = matchSkills;
+module.exports.inputsText = inputsText;
+module.exports.editorSelection = editorSelection;

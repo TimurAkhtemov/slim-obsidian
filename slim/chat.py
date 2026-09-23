@@ -1,8 +1,9 @@
 """The Obsidian plugin's local API server — `slim chat`, 127.0.0.1:7546.
 
-Eighteen routes, called by `obsidian/main.js` (and `GET /api/health` also by the stale-server
-hook): the health guard, ten `/api/record*` routes for the recorder and seven `/api/copilot*`
-routes for the open-note sidebar.
+Nineteen routes, called by `obsidian/main.js` (and `GET /api/health` also by the stale-server
+hook): the health guard, ten `/api/record*` routes for the recorder and eight `/api/copilot*`
+routes for the open-note sidebar. The copilot never writes a note: an edit comes back as a
+proposal, and the plugin writes what the owner accepts.
 
 Loopback-only and Host/Origin-gated because this server moves and overwrites vault files. Two
 properties are load-bearing — do not "simplify" either away. `make_server` refuses any bind
@@ -33,7 +34,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from . import (config, copilot as copilot_mod, copilot_images, db,
-               llm, threads as threads_mod,
+               llm, skills as skills_mod, threads as threads_mod,
                trace)
 
 DEFAULT_PORT = 7546          # "slim" on a phone keypad
@@ -1290,6 +1291,11 @@ class _Handler(BaseHTTPRequestHandler):
                  "reasoning_mode": item.reasoning_mode}
                 for item in listed]})
             return
+        if url.path == "/api/copilot/skills":
+            # Read on every call: a skill saved in `Skills/` a moment ago is listed at once.
+            self._send_json(200, {"skills": [
+                skill.listing() for skill in skills_mod.load(config.VAULT).values()]})
+            return
         if url.path == "/api/copilot/image":
             self._handle_copilot_image(parse_qs(url.query))
             return
@@ -1445,6 +1451,11 @@ class _Handler(BaseHTTPRequestHandler):
         history = clean_history(data.get("history"))
         # Quick unless they asked for Deep. There is no third setting to resolve (2026-09-03).
         mode = str(data.get("reasoning_mode") or "quick").strip().lower()
+        # Edit mode proposes changes; the selection is context, and the input of a selection
+        # skill. Neither writes anything here.
+        edit = data.get("edit") is True
+        selection = data.get("selection")
+        selection = selection[:copilot_mod.MAX_SELECTION_CHARS] if isinstance(selection, str) else ""
         thread_id = data.get("thread_id")
         image_lock = None
         try:
@@ -1482,6 +1493,7 @@ class _Handler(BaseHTTPRequestHandler):
             con = db.connect()
             turn = copilot_mod.run_turn(
                 con, source_id, question, history, mode, images=images,
+                edit=edit, selection=selection,
                 on_stage=lambda stage: emit("stage", {"stage": stage}),
                 on_delta=lambda text: emit("delta", {"text": text}))
             turn["attachments"] = attachments

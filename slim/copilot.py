@@ -2,11 +2,16 @@
 them, and name which notes the answer used. Called by `chat.py`'s sidebar routes."""
 from __future__ import annotations
 
+import re
 import time
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 
-from . import config as config_mod, embed as embed_mod, ingest as ingest_mod
-from . import llm, search as search_mod, trace
+from . import config as config_mod, edits as edits_mod, embed as embed_mod, ingest as ingest_mod
+from . import llm, search as search_mod, skills as skills_mod, trace
+from .chunk import (HEADING, body_after_frontmatter, parse_frontmatter, strip_derived_blocks,
+                    strip_meeting_wrapper)
 
 # The persona is short on purpose: ~3,800 words of prompt read as lobotomized (2026-07-31), and
 # an 84-word one that opened with "answer from the numbered evidence" read as a citation bot
@@ -24,10 +29,29 @@ question or a next step; skip it for a quick lookup.
 
 Write Markdown. Write math as $inline$ or $$display$$, never \( \) or \[ \]. Read attached
 screenshots directly; for an equation, state what you see, name any symbol you are unsure of,
-then explain.
+then explain."""
 
-You cannot edit files yet. If they ask you to change a note, say so and give them the text to
-paste."""
+# One of these follows the persona. Ask is the default; Edit is the sidebar's toggle, or a skill
+# whose output is a change. The block format is parsed by `edits.parse`, never trusted: code
+# decides which files a block may touch and applies it itself.
+ASK_RIDER = """In Ask mode you cannot change files. If they ask you to change a note, give them the text to
+paste, and mention that Edit mode can apply it for them."""
+
+EDIT_RIDER = """You can change notes. The owner reviews every change and applies it with one click; nothing
+changes until they accept. First say in a sentence or two what you are changing. Then write one
+block per change, exactly like this:
+
+FILE: <the note's path, as shown after === below>
+<<<<<<< SEARCH
+<lines copied exactly from that note>
+=======
+<the lines that replace them>
+>>>>>>> REPLACE
+
+Copy SEARCH lines exactly, with enough of them to be unique, and change only what needs
+changing. An empty SEARCH adds the text to the end of the note. To create a note, write a new
+path in an existing folder (the open note's folder is `{folder}/`) with an empty SEARCH. A
+recording's frontmatter, its slim-meeting block and its transcript cannot be changed."""
 
 # Sources are decided AFTER the answer by a bounded structured call, not by a contract inside
 # the prose. Measured 2026-09-01: [n] markers made a citation bot; a trailing `Notes used:` line
@@ -40,6 +64,15 @@ SOURCES_NUM_PREDICT = 64
 
 # 1400 clipped a worked example mid-sentence, and Quick is the mode nearly every turn uses.
 QUICK_NUM_PREDICT = 2400
+# A proposal can carry a whole new note or several rewritten sections: room for the text AND,
+# in Deep, the thinking before it. A block cut off mid-way is refused, not half-applied.
+PROPOSE_NUM_PREDICT = {"quick": 8192, "deep": 16384}
+# Skills and edits read WHOLE notes, chosen by code. Half the resident window in chars/4, so
+# the answer and the thinking keep room and every call still uses num_ctx=RESIDENT_CTX (a
+# smaller bespoke window is a second runner). What does not fit is named, never dropped silently.
+INPUT_BUDGET_CHARS = llm.RESIDENT_CTX * 4 // 2
+MAX_SELECTION_CHARS = 20_000
+_LINK = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]")
 # Thinking tokens bill against num_predict but return in a separate field (llm.chat's
 # docstring). Deep mode must budget for the reasoning AND the answer, or a long think returns
 # content="" and reads as "the model can't answer": one benign sample spent ~3k of 4096.
@@ -190,7 +223,7 @@ def system_message(evidence: list[dict]) -> str:
     # 2026-09-01 across three live samples the model bent every answer back to the profile —
     # a career-pivot flourish inside an EQUATION explanation, every time. The persona and the
     # notes are the whole system message.
-    parts = [PERSONA]
+    parts = [PERSONA, ASK_RIDER]
     rendered = "\n\n".join(
         f"### {item['title']}"
         + (f" § {item['heading']}" if item.get("heading") else "")
@@ -198,6 +231,198 @@ def system_message(evidence: list[dict]) -> str:
     parts.append("Notes in view (the open note first):\n"
                  + (rendered or "(nothing indexed for this note yet)"))
     return "\n\n".join(parts)
+
+
+@dataclass
+class Pack:
+    """What a skill or an edit reads: whole notes, in order, and what did not make it in."""
+    docs: list[dict] = field(default_factory=list)      # {path, title, text, role, date}
+    dropped: list[str] = field(default_factory=list)    # did not fit the budget
+    skipped: list[str] = field(default_factory=list)    # had no such section
+    missing: list[str] = field(default_factory=list)    # [[links]] that resolve to nothing
+    cut: list[str] = field(default_factory=list)        # included, but truncated to fit
+
+    @property
+    def paths(self) -> set[str]:
+        return {doc["path"] for doc in self.docs if doc["role"] != "selection"}
+
+
+def _readable(text: str, *, raw: bool) -> str:
+    """A proposal needs the file as it is, so SEARCH lines can match; otherwise the note as a
+    reader sees it — no frontmatter, no derived summary, no meeting fence."""
+    if raw:
+        return text
+    body = strip_meeting_wrapper(strip_derived_blocks(body_after_frontmatter(text)))
+    return re.sub(r"\n{3,}", "\n\n", body).strip()
+
+
+def section_of(text: str, heading: str) -> str | None:
+    """The body under the first heading named `heading`, up to the next heading at its level
+    or above. None when the note has no such section, or it is empty."""
+    want = heading.strip().lstrip("#").strip().casefold()
+    lines = text.splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        match = HEADING.match(line.rstrip("\n"))
+        if not match or match.group(2).strip().casefold() != want:
+            continue
+        level, out = len(match.group(1)), []
+        for later in lines[i + 1:]:
+            nxt = HEADING.match(later.rstrip("\n"))
+            if nxt and len(nxt.group(1)) <= level:
+                break
+            out.append(later)
+        body = "".join(out).strip("\n")
+        return body if body.strip() else None
+    return None
+
+
+def _note_date(path: Path, fm: dict) -> str:
+    for key in ("recorded_at", "date", "created_time"):
+        if fm.get(key):
+            return str(fm[key])
+    return datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds")
+
+
+def _passes(fm: dict, wanted: dict) -> bool:
+    for key, value in wanted.items():
+        have = fm.get(key)
+        values = have if isinstance(have, list) else [have]
+        if value.casefold() not in {str(v).casefold() for v in values if v is not None}:
+            return False
+    return True
+
+
+def resolve_link(con, vault: Path, name: str, near: str) -> str | None:
+    """`[[name]]` to a vault path the way Obsidian reads it: an exact path first, else a note
+    with that file name, the open note's folder first, then the shortest path."""
+    target = name.strip()
+    if not target:
+        return None
+    if not target.lower().endswith(".md"):
+        target += ".md"
+    if edits_mod.note_path(target) and (Path(vault) / target).is_file():
+        return target
+    stem = PurePosixPath(target).name.casefold()
+    rows = con.execute("SELECT path FROM sources WHERE deleted=0 AND path LIKE ?",
+                       (f"%{PurePosixPath(target).name}",)).fetchall()
+    candidates = [row["path"] for row in rows
+                  if PurePosixPath(row["path"]).name.casefold() == stem
+                  and row["path"].casefold().endswith(target.casefold())]
+    parent = PurePosixPath(near).parent.as_posix()
+    candidates.sort(key=lambda path: (PurePosixPath(path).parent.as_posix() != parent, len(path), path))
+    return next((path for path in candidates if (Path(vault) / path).is_file()), None)
+
+
+def gather(con, vault: Path, source: dict, *, skill: skills_mod.Skill | None = None,
+           links_from: str = "", selection: str = "", raw: bool = False) -> Pack:
+    """Build the input for a skill or an edit, in code. Priority: the selection, the open note,
+    each [[link]] in `links_from`, then the folder's notes newest first while the budget lasts."""
+    vault = Path(vault)
+    pack, budget = Pack(), INPUT_BUDGET_CHARS
+    open_path = source["path"]
+    wants = skill.input if skill else "note"
+    section = skill.section if skill else ""
+    selection = (selection or "").strip()[:MAX_SELECTION_CHARS]
+
+    def add(path: str, text: str, role: str, date: str = "", *, may_cut: bool = False) -> bool:
+        nonlocal budget
+        if len(text) > budget:
+            if not may_cut or budget < 1000:
+                pack.dropped.append(path)
+                return False
+            text = text[:budget] + "\n[… cut to fit]"
+            pack.cut.append(path)
+        budget -= len(text)
+        pack.docs.append({"path": path, "title": PurePosixPath(path).stem, "text": text,
+                          "role": role, "date": date})
+        return True
+
+    def read(path: str) -> str | None:
+        try:
+            return (vault / path).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+
+    if wants == "selection" and not selection:
+        raise CopilotError(f"/{skill.name} works on selected text: select some in the note first")
+    if selection:
+        add(open_path, selection, "selection")
+    if wants != "folder":
+        text = read(open_path)
+        if text is None:
+            raise CopilotError("the open note could not be read; refresh the sidebar")
+        body = section_of(text, section) if section else text
+        if body is None:
+            raise CopilotError(f"this note has no \"{section}\" section")
+        add(open_path, _readable(body, raw=raw) if not section else body, "open", may_cut=True)
+
+    for name in dict.fromkeys(match.group(1).strip() for match in _LINK.finditer(links_from)):
+        path = resolve_link(con, vault, name, open_path)
+        if path is None:
+            pack.missing.append(name)
+        elif path not in pack.paths:
+            text = read(path)
+            if text is None:
+                pack.missing.append(name)
+            else:
+                add(path, _readable(text, raw=raw), "linked")
+
+    if wants == "folder":
+        folder = PurePosixPath(open_path).parent
+        if folder.as_posix() == ".":
+            raise CopilotError("the open note is not in a folder")
+        found = []
+        for file in sorted((vault / folder).glob("*.md")):
+            text = read((folder / file.name).as_posix())
+            if text is None:
+                continue
+            fm, _skip = parse_frontmatter(text)
+            if not _passes(fm, skill.filter):
+                continue
+            path = (folder / file.name).as_posix()
+            body = section_of(text, section) if section else _readable(text, raw=raw)
+            if body is None:
+                pack.skipped.append(path)
+                continue
+            found.append((_note_date(file, fm), path, body))
+        if not found and not pack.skipped:
+            wanted = ", ".join(f"{k}: {v}" for k, v in skill.filter.items()) or "any"
+            raise CopilotError(f"no notes in {folder.as_posix()}/ match ({wanted})")
+        kept = []
+        for date, path, body in sorted(found, reverse=True):          # newest first
+            if path in pack.paths:
+                continue
+            if len(body) <= budget:
+                budget -= len(body)
+                kept.append((date, path, body))
+            else:
+                pack.dropped.append(path)
+        for date, path, body in sorted(kept):                         # read oldest first
+            pack.docs.append({"path": path, "title": PurePosixPath(path).stem, "text": body,
+                              "role": "folder", "date": date[:10]})
+        if not kept and found:
+            raise CopilotError("the matching notes are too long to read together")
+        if not kept:
+            raise CopilotError(f"none of the matching notes in {folder.as_posix()}/ has a "
+                               f"\"{section}\" section")
+    return pack
+
+
+def pack_message(pack: Pack, *, proposing: bool, folder: str) -> str:
+    labels = {"open": "the open note", "selection": "the text they selected in this note",
+              "linked": "a note they linked"}
+    rider = EDIT_RIDER.format(folder=folder) if proposing else ASK_RIDER
+    rendered = "\n\n".join(
+        f"=== {doc['path']} · {labels.get(doc['role']) or doc['date'] or 'a note in this folder'} ===\n"
+        f"{doc['text']}" for doc in pack.docs)
+    return "\n\n".join([PERSONA, rider, "Notes in view:\n\n" + (rendered or "(none)")])
+
+
+def pack_inputs(pack: Pack) -> dict:
+    return {"used": [doc["path"] for doc in pack.docs if doc["role"] != "selection"],
+            "selection": any(doc["role"] == "selection" for doc in pack.docs),
+            "dropped": pack.dropped, "skipped": pack.skipped, "missing": pack.missing,
+            "cut": pack.cut}
 
 
 def note_choices(evidence: list[dict]) -> list[dict]:
@@ -243,11 +468,15 @@ def notes_used(messages: list[dict], answer: str, evidence: list[dict]) -> tuple
 
 
 def generate_answer(question: str, history: list[dict], evidence: list[dict], mode: str,
-                    *, images=None, on_stage=None, on_delta=None) -> dict:
+                    *, images=None, on_stage=None, on_delta=None, system: str | None = None,
+                    cited: list[dict] | None = None, proposing: bool = False) -> dict:
     """Generate one answer; reasoning is private and only content deltas are surfaced.
 
     TWO depths, and THEY pick (2026-09-03). Auto spent a whole extra classifier call on a choice
     that is one click in the sidebar, and it resolved to Quick nearly every time.
+
+    A skill or an edit passes its own `system` (whole notes chosen by code) and `cited`: code
+    already knows which notes it read, so the sources call is skipped.
     """
     if mode not in {"quick", "deep"}:
         raise CopilotError("reasoning mode must be quick or deep")
@@ -268,7 +497,7 @@ def generate_answer(question: str, history: list[dict], evidence: list[dict], mo
     current = {"role": "user", "content": question}
     if images:
         current["images"] = list(images)
-    messages = [{"role": "system", "content": system_message(evidence)},
+    messages = [{"role": "system", "content": system or system_message(evidence)},
                 *transcript, current]
     started = time.time()
     last_beat = [started]
@@ -280,7 +509,8 @@ def generate_answer(question: str, history: list[dict], evidence: list[dict], mo
 
     text, stats = llm.chat_stream(
         messages, model=llm.MODEL, num_ctx=llm.RESIDENT_CTX,
-        num_predict=DEEP_NUM_PREDICT if mode == "deep" else QUICK_NUM_PREDICT,
+        num_predict=(PROPOSE_NUM_PREDICT[mode] if proposing
+                     else DEEP_NUM_PREDICT if mode == "deep" else QUICK_NUM_PREDICT),
         temperature=llm.REPLY_TEMPERATURE, think=mode == "deep",
         timeout=600, on_delta=delta, on_thinking=heartbeat)
     answer = (text or "").strip()
@@ -289,9 +519,12 @@ def generate_answer(question: str, history: list[dict], evidence: list[dict], mo
                            "answer — ask again in Quick mode, or ask a narrower question")
     if not answer:
         raise CopilotError("the local model returned no answer")
-    if evidence:
-        stage("Noting sources")
-    citations, sources_stats = notes_used(messages, answer, evidence)
+    if cited is not None:
+        citations, sources_stats = cited, {}
+    else:
+        if evidence:
+            stage("Noting sources")
+        citations, sources_stats = notes_used(messages, answer, evidence)
     return {
         "answer": answer,
         "mode": mode,
@@ -303,35 +536,84 @@ def generate_answer(question: str, history: list[dict], evidence: list[dict], mo
 
 
 def run_turn(con, source_id: str, question: str, history: list[dict], mode: str,
-             *, images=None, on_stage=None, on_delta=None) -> dict:
+             *, images=None, on_stage=None, on_delta=None, edit: bool = False,
+             selection: str = "", vault: Path | None = None) -> dict:
+    """One sidebar turn. A `/command` naming a skill, or Edit mode, reads whole notes chosen by
+    code (`gather`); anything else is today's retrieval turn. Edit mode and a skill whose output
+    is a change end with a proposal the plugin shows for Accept/Reject — nothing is written here."""
+    vault = Path(vault or config_mod.VAULT)
     source_row = con.execute(
         "SELECT id, path, title, type, current_hash FROM sources "
         "WHERE id=? AND deleted=0", (source_id,)).fetchone()
     if source_row is None:
         raise CopilotError("the note is no longer indexed; refresh the sidebar")
     source = dict(source_row)
+    found = skills_mod.invocation(question, skills_mod.load(vault)) if question.startswith("/") else None
+    skill, args = found or (None, "")
+    proposing = edit or bool(skill and skill.proposes)
     # Machine facts only (no prose, no reasoning): the thread JSON keeps completed turns,
     # so this is the one record of a refused or stopped turn.
     entry = {"question": question, "source": source["path"], "source_id": source_id,
              "mode": mode, "history_turns": len(history),
              "images": len(images or []),
-             "history_images": sum(len(turn.get("images") or []) for turn in history)}
+             "history_images": sum(len(turn.get("images") or []) for turn in history),
+             "skill": skill.name if skill else None, "edit": proposing,
+             "selection_chars": len(selection or "")}
     started = time.time()
     try:
-        limit = 12 if mode == "deep" else 6
-        evidence, levels = collect_evidence(con, source, question, limit=limit)
-        result = generate_answer(
-            question, history, evidence, mode, images=images,
-            on_stage=on_stage, on_delta=on_delta)
+        if skill and skill.error:
+            raise CopilotError(f"/{skill.name} cannot run: {skill.error} "
+                               f"({skills_mod.VAULT_DIR}/{skill.name}.md)")
+        if skill or proposing:
+            pack = gather(con, vault, source, skill=skill, links_from=args if skill else question,
+                          selection=selection, raw=proposing)
+            folder = PurePosixPath(source["path"]).parent.as_posix()
+            cited = [{"n": i + 1, "path": doc["path"], "title": doc["title"]}
+                     for i, doc in enumerate(d for d in pack.docs if d["role"] != "selection")]
+            result = generate_answer(
+                skills_mod.render_prompt(skill, args) if skill else question, history, [], mode,
+                images=images, on_stage=on_stage, on_delta=on_delta,
+                system=pack_message(pack, proposing=proposing, folder=folder),
+                cited=cited, proposing=proposing)
+            result["inputs"] = pack_inputs(pack)
+            levels = []
+            if proposing:
+                prose, blocks = edits_mod.parse(result["answer"])
+                result["proposal"] = edits_mod.propose(vault, blocks, in_view=pack.paths)
+                if not blocks:
+                    result["proposal"] = None
+                result["answer"] = prose or "Proposed changes are below."
+        else:
+            limit = 12 if mode == "deep" else 6
+            evidence, levels = collect_evidence(con, source, question, limit=limit)
+            # "What does this mean?" is about what they highlighted: it rides with the question
+            # (the thread keeps their words alone), and retrieval still searches on the question.
+            asked = (f"I selected this in the note:\n\n{selection.strip()}\n\n{question}"
+                     if selection and selection.strip() else question)
+            result = generate_answer(
+                asked, history, evidence, mode, images=images,
+                on_stage=on_stage, on_delta=on_delta)
     except (CopilotError, llm.LLMError) as exc:
         trace.record("copilot", {**entry, "status": "failed", "error": str(exc),
                                  "duration_ms": round((time.time() - started) * 1000)})
         raise
-    result.update({"source": source, "retrieval_levels": levels})
-    trace.record("copilot", {
+    result.update({"source": source, "retrieval_levels": levels, "skill": entry["skill"],
+                   "edit": proposing})
+    record = {
         **entry, "status": "answered",
-        "evidence": [item["path"] for item in evidence], "retrieval_levels": levels,
         "cited": sorted({item["path"] for item in result["citations"]}),
         "truncated": result["verification"]["truncated"], "timing": result["timing"],
-    })
+    }
+    if "inputs" in result:
+        record["inputs"] = result["inputs"]
+    else:
+        record.update({"evidence": [item["path"] for item in evidence], "retrieval_levels": levels})
+    if result.get("proposal"):
+        record["proposal"] = {
+            "files": [{"path": item["path"], "kind": item["kind"],
+                       "applied": sum(block["ok"] for block in item["blocks"]),
+                       "failed": [block["reason"] for block in item["blocks"] if not block["ok"]]}
+                      for item in result["proposal"]["files"]],
+            "dropped": result["proposal"]["dropped"]}
+    trace.record("copilot", record)
     return result
