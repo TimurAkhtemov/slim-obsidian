@@ -18,11 +18,9 @@ DB_PATH = DATA_DIR / "slim.db"
 TRACE_DIR = DATA_DIR / "traces"
 PROJECTS_YAML = Path(os.environ.get("SLIM_PROJECTS", str(REPO_ROOT / "config" / "projects.yaml")))
 
-# Ingestion exclusions: never indexed, never even read. `.versions` holds superseded copies of
-# imported transcripts — kept forever, but each is a near-duplicate of a live note, so indexing
-# them would return the same meeting three times. Exclusion is by explicit NAME: a leading dot
-# excludes nothing on its own.
-EXCLUDED_DIRS = {".obsidian", ".trash", "_triage", ".versions"}
+# Ingestion exclusions: never indexed, never even read. Exclusion is by explicit NAME: a
+# leading dot excludes nothing on its own.
+EXCLUDED_DIRS = {".obsidian", ".trash"}
 # `Profile/` is their self-description, excluded because it is not evidence — and since
 # 2026-09-03 nothing reads it at all. `_Reflections/` is `slim reflect`'s own output: the brain
 # must never retrieve its opinions back as evidence, and `reflect` reads that folder from disk

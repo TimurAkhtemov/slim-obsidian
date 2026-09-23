@@ -10,12 +10,12 @@ from slim.ingest import ingest, ingest_note
 def vault(tmp_path):
     v = tmp_path / "vault"
     (v / "Projects/Demo").mkdir(parents=True)
-    (v / "Inbox/_triage").mkdir(parents=True)
+    (v / ".obsidian").mkdir(parents=True)
     (v / "Projects/Demo/note.md").write_text(
         "---\ntitle: \"Demo Note\"\ntype: meeting-note\ndate: 2026-07-01\n---\n\n"
         "# Demo Note\n\n## Decisions\n\n"
         "We decided to use SQLite with FTS5 for the index.\n")
-    (v / "Inbox/_triage/junk.md").write_text("# quarantined junk\n")
+    (v / ".obsidian/junk.md").write_text("# quarantined junk\n")
     return v
 
 
@@ -40,7 +40,7 @@ def test_idempotent(con, vault):
     assert counts(con) == before
 
 
-def test_triage_is_excluded(con, vault):
+def test_an_excluded_dir_is_never_indexed(con, vault):
     ingest(con, vault)
     paths = [r[0] for r in con.execute("SELECT path FROM sources WHERE deleted=0")]
     assert paths == ["Projects/Demo/note.md"]

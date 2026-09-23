@@ -193,8 +193,8 @@ def _render_note(title: str, when: datetime, t: tx.Transcript, digest: str,
         f"transcribed_at: {datetime.now(timezone.utc).isoformat(timespec='seconds')}",
         "---",
     ]
-    # The `## Transcript` H2 is the same synthetic marker `pull_notion_meetings.py` injects,
-    # and `summarize.py` splits on it. One convention, whatever the source.
+    # The `## Transcript` H2 is the marker `summarize.py` splits on. One convention, whatever
+    # the source.
     return "\n".join(fm) + f"\n\n# {title}\n\n## Transcript\n\n{t.text}\n"
 
 
