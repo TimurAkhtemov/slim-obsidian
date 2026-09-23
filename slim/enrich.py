@@ -113,14 +113,13 @@ so choose the form, never the topic. Decide in this order and stop at the first 
   1. meeting   more than one voice: a call, an interview, a conversation. If people are
                talking to each other it is a `meeting` NO MATTER what it is about — a work
                call is a meeting, a recruiter call is a meeting.
-  2. lecture   they are listening to someone teach: a course lecture, a conference talk, a
-               tutorial. One voice explaining material, and it is not their own.
+  2. lecture   they are taking in material that is not their own: a course lecture, a
+               conference talk, a tutorial, a podcast, an article, a video — or their
+               takeaways from one.
   3. idea      they propose or work out something to build or do, alone.
   4. journal   they reflect — how something went, how they feel, thinking out loud about their
                own life. When a recording is BOTH reflection and idea, prefer journal.
-  5. learning  they are capturing something they CONSUMED — a podcast, an article, a video, a
-               talk — and their takeaways from it. Distinct from `lecture`, which is a course.
-  6. note      a short factual note to themself that is none of the above.
+  5. note      a short factual note to themself that is none of the above.
 The subject belongs in `topics`, never here. "Acme survey meeting" is type `meeting`
 with topics [acme, survey] — putting the subject here throws away what KIND of thing
 it is and files it in the wrong place.

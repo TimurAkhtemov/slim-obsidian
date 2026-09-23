@@ -48,7 +48,6 @@ const EMPTY_MEETING_BLOCK = "````slim-meeting\n\n````\n\n";
 const TYPES = [
   ["meeting-note", "Meeting"],
   ["lecture", "Lecture"],
-  ["learning", "Learning"],
   ["idea", "Idea"],
   ["journal", "Journal"],
   ["note", "Note"],

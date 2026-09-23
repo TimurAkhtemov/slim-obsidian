@@ -9,6 +9,5 @@ are the history. Past ~20 items is a signal about scope, not a reason for headin
 - [ ] Copilot markdown edits: small reads/writes on the open note (the persona still says "You cannot edit files yet").
 - [ ] A `[[wikilink]]` in a rendered copilot answer has no click handler — verify, then delegate clicks on `a.internal-link`.
 - [ ] Cloud providers — ratified 2026-09-01 as DEFERRED guidance; `Journal/` stays local.
-- [ ] `lecture` vs `learning` is an unstable distinction; collapse when the vocabulary is next touched.
 - [ ] Tell remote speakers apart (Speaker 1, Speaker 2): a voice-clustering model on the system channel, replacing `speakers.label_tokens`. Test with a panel podcast played as system audio.
 - [ ] In-room meetings on one microphone: the same model on the mic channel; "which cluster is me" needs an enrollment or a rename on the card. Test with a podcast played out of the speakers into the mic.

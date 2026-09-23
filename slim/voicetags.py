@@ -25,13 +25,15 @@ OPENING_CHARS = 120
 # ONE spoken vocabulary, and it is the whole classifier: explicit, ordered, small on purpose.
 # EARLIEST match wins (see `detect_type`) — a recording lands in exactly one folder, so the
 # type is single-valued, and `type:` and `tags:` are the same word by construction.
-JOURNAL, MEETING, LECTURE, IDEA, NOTE, LEARNING = (
-    "journal", "meeting", "lecture", "idea", "note", "learning")
+# A lecture is anything they TOOK IN — a course, a talk, a podcast, an article. `learning` was a
+# separate type until 2026-09-22; nobody, model or owner, drew that line the same way twice.
+JOURNAL, MEETING, LECTURE, IDEA, NOTE = (
+    "journal", "meeting", "lecture", "idea", "note")
 
 # The closed set of routable types. `enrich.TYPE_TAGS` IS this list — a type they SAID and a
 # type the model inferred have to be the same kind of thing, or the inferred one cannot be
 # routed on.
-ROUTING_TYPES = (JOURNAL, MEETING, LECTURE, IDEA, NOTE, LEARNING)
+ROUTING_TYPES = (JOURNAL, MEETING, LECTURE, IDEA, NOTE)
 
 _TYPE_VOCAB: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bjournal(ing|ling)?\b"), JOURNAL),
@@ -41,7 +43,7 @@ _TYPE_VOCAB: list[tuple[re.Pattern[str], str]] = [
                 r"|\bwatching a talk\b|\bstudy note"), LECTURE),
     (re.compile(r"\bproject idea\b|\b(an? )?idea for\b|\bbrainstorm"), IDEA),
     (re.compile(r"\bpodcast\b|\blistening to\b|\barticle\b|\bwatched a video\b"
-                r"|\btakeaways? from\b"), LEARNING),
+                r"|\btakeaways? from\b"), LECTURE),
     (re.compile(r"\bnote to self\b|\bquick note\b|\bwork (thing|note)\b|\babout work\b"), NOTE),
 ]
 
@@ -73,7 +75,6 @@ TYPE_FRONTMATTER = {
     LECTURE: "lecture",
     IDEA: "idea",
     NOTE: "note",
-    LEARNING: "learning",
 }
 
 # Inferred routing is live by the owner's call (2026-08-01): a misfile costs one drag. A

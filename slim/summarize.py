@@ -356,6 +356,7 @@ _NO_OWNER = frozenset({"", "unnamed", "unknown", "n/a", "na", "none", "someone",
 # transcript, so for a lecture the field holds rhetorical questions they pose and answers and
 # examples on a slide — which, under an "Open questions" heading, read as the owner's confusions
 # (2026-08-26, the NLP lecture). A meeting's unresolved question is real information.
+# `learning` is the pre-2026-09-22 spelling of `lecture`, still written by any older checkout.
 LECTURE_TYPES = frozenset({"lecture", "learning"})
 
 

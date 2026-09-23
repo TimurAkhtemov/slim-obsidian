@@ -35,6 +35,9 @@ def route(text, default_dir="Journal", **kw):
     ("Debrief from the interview.", voicetags.MEETING),
     ("Lecture note, week six.", voicetags.LECTURE),
     ("Class notes for the ML course.", voicetags.LECTURE),
+    # Something they CONSUMED is a lecture too: `learning` was merged into it (2026-09-22).
+    ("Listening to a podcast on sleep.", voicetags.LECTURE),
+    ("Takeaways from an article on pricing.", voicetags.LECTURE),
     ("An idea for a scheduler.", voicetags.IDEA),
     ("Project idea, might be nothing.", voicetags.IDEA),
     ("Note to self, renew the domain.", voicetags.NOTE),
@@ -42,6 +45,15 @@ def route(text, default_dir="Journal", **kw):
 ])
 def test_spoken_type_is_detected_from_the_opening(opening, expected):
     assert voicetags.detect_type(opening) == expected
+
+
+def test_learning_is_not_a_type():
+    """`lecture` vs `learning` was a distinction the model and the owner both drew unstably.
+    One word, so the card, `enrich` and the spoken vocabulary cannot disagree about it."""
+    from slim import enrich
+    assert "learning" not in voicetags.ROUTING_TYPES
+    assert "learning" not in voicetags.TYPE_FRONTMATTER.values()
+    assert "learning" not in enrich.TYPE_TAGS
 
 
 def test_a_type_word_used_later_does_not_retro_label_the_recording():
