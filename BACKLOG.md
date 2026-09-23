@@ -10,11 +10,10 @@ are the history. Past ~20 items is a signal about scope, not a reason for headin
 - [ ] Copilot slash-commands: a sidebar invocation that runs a deterministic tool or skill on the open note.
 - [ ] Copilot markdown edits: small reads/writes on the open note (the persona still says "You cannot edit files yet").
 - [ ] A `[[wikilink]]` in a rendered copilot answer has no click handler — verify, then delegate clicks on `a.internal-link`.
-- [ ] Move `Export-*/` (376 transcripts) out of the working tree — gitignored and never committed, but it does not belong beside the code.
+- [ ] The raw Notion export (`Export-*/`, 376 files) sits in the old `SLIM` checkout, outside the vault and so outside the backup; with Notion gone it is the only copy. Move it under `Attachments/` (backed up, not indexed).
 - [ ] Cloud providers — ratified 2026-09-01 as DEFERRED guidance; `Journal/` stays local.
 - [ ] `lecture` vs `learning` is an unstable distinction; collapse when the vocabulary is next touched.
 - [ ] Stale vault path: `scripts/pdf2md.py:465` (and its usage line 8) defaults `--vault` to `~/Documents/Obsidian Vault`; the vault is now the iCloud container. Route through `vaultpath.discover_vault()`.
-- [ ] `scripts/backup.sh:5` header comment still names `~/Documents/Obsidian Vault`.
 - [ ] `slim status` and `slim trace` never call `require_vault_identity()`, so the one command you'd run to notice a vault/pin mismatch cannot report one.
 - [ ] `slim/llm.py:44` says "Tests pin this" about the explicit `think` parameter, but no test decodes the HTTP body — deleting `"think": think` (`llm.py:118`, `:190`) passes the whole suite and breaks the recorder. Add a wire-level test.
 - [ ] Speaker labels are decided per segment: a resumed segment with one speaker is appended unlabelled under a labelled transcript and reads as the last speaker continuing. Decide at the recording level (render one-speaker stereo segments with their single label when any segment is labelled).

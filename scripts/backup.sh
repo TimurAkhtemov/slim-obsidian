@@ -2,8 +2,8 @@
 #
 # Back up the one SOURCE-CLASS artifact. Re-runnable; safe to cron.
 #
-#   the vault   ~/Documents/Obsidian Vault
-#     The ONLY copy of the meeting archive outside Notion. iCloud is sync, not backup:
+#   the vault   wherever `slim/vaultpath.py` finds it (today, iCloud's Obsidian container)
+#     The ONLY copy of every recording and note. iCloud is sync, not backup:
 #     a delete or a corrupt write propagates to every device. Risk register: "No backups |
 #     High | Certain today."
 #
@@ -61,7 +61,8 @@ command -v restic >/dev/null 2>&1 || die "restic is not installed. Run: brew ins
 # /bin/bash, because FDA on a general-purpose interpreter hands a TCC bypass to every shell
 # script on the machine. The cost of that choice is here: under launchd, bash cannot read the
 # vault, so the iCloud placeholder check below is skipped and restic is the sole reader.
-# It is NOT fatal — restic still has access and will fail loudly (ERR trap) if it does not.
+# It is NOT fatal — restic still has access and will fail loudly (ERR trap) if it does not,
+# and the file-count check after the backup covers the silent case.
 if ls "$VAULT" >/dev/null 2>&1; then
   # The vault lives in iCloud. An evicted file becomes a 0-byte '.icloud' placeholder stub, and
   # a backup of stubs is a backup of nothing — the exact silent failure this script exists to
@@ -71,8 +72,7 @@ if ls "$VAULT" >/dev/null 2>&1; then
        Run: brctl download \"$VAULT\"   then re-run this backup."
 else
   printf 'backup: NOTE — no shell read access to the vault (TCC); skipping the iCloud\n'
-  printf '        placeholder check. restic reads it directly. Expect ~%s files below;\n' "${SLIM_EXPECTED_FILES:-413}"
-  printf '        a sudden collapse in that count means eviction, not a clean backup.\n'
+  printf '        placeholder check. restic reads it directly; its file count is checked below.\n'
 fi
 
 restic cat config >/dev/null 2>&1 || die "repository unreachable. Check .env (B2 credentials, RESTIC_REPOSITORY) and the network first. Only a BRAND-NEW repository needs 'restic init' — running it against a mis-pointed bucket creates an empty repo and every later backup lands there."
@@ -86,6 +86,22 @@ restic backup \
   --exclude '*.icloud' \
   --exclude '.Trash' \
   "$VAULT"
+
+# --- did restic read the whole vault? ------------------------------------------------------
+# Under launchd the placeholder check above never runs, so compare this snapshot's file count
+# with the previous one's. Losing more than a tenth of the files in a day is eviction or a mass
+# delete — a clean-looking backup of neither. Stop before `forget` prunes anything.
+counts="$(restic snapshots --tag slim --latest 2 --json | /usr/bin/python3 -c '
+import json, sys
+snaps = sorted(json.load(sys.stdin), key=lambda s: s["time"])
+print(" ".join(str((s.get("summary") or {}).get("total_files_processed", "")) for s in snaps))')"
+read -r prev now _ <<<"$counts"
+if [[ "$prev" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]]; then
+  (( now * 10 >= prev * 9 )) || die "this snapshot read $now files; the previous one read $prev.
+       Evicted iCloud files or a mass delete. Nothing was pruned. Check the vault, then re-run."
+else
+  printf 'backup: NOTE — no previous file count to compare against (%s); skipping the check.\n' "$counts"
+fi
 
 # --- retention -----------------------------------------------------------------------------
 # Generous on purpose: the archive is irreplaceable and tiny (~400 files). Storage is cheaper
