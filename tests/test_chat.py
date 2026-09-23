@@ -223,14 +223,52 @@ def test_extract_parses_recorder_embeds(tmp_path):
     assert "more notes" in cleaned
 
 
-def test_extract_ignores_non_recorder_embeds(tmp_path):
+def test_extract_sends_an_embed_from_any_folder(tmp_path):
     from slim.chat import _extract_note_images
     img = tmp_path / "Attachments" / "other.png"
     _make_test_image(img)
     notes = "text\n![[Attachments/other.png]]\nmore"
     cleaned, images = _extract_note_images(notes, tmp_path)
-    assert len(images) == 0
-    assert "![[Attachments/other.png]]" in cleaned
+    assert len(images) == 1
+    assert "![[" not in cleaned
+
+
+def test_extract_finds_a_pasted_screenshot_by_name_the_way_obsidian_does(tmp_path):
+    """⚠ The real shape (2026-09-22): Obsidian's own paste writes a BARE name, often with a size,
+    into `./Attachements` beside wherever the note was at the time — and filing then moves the
+    note away from it. Matching only `Attachments/Recorder/…` sent no image to any summary,
+    ever: 43 recorded notes had screenshots and every trace said `n_images: 0`."""
+    from slim.chat import _extract_note_images
+    _make_test_image(tmp_path / "Capture/_unfiled/Attachements/Screenshot 2026-09-17 at 7.59.13 AM.png")
+    _make_test_image(tmp_path / "Capture/_unfiled/Attachements/Screenshot 2026-09-17 at 7.03.34 AM.png")
+    notes = ("## Attention\n![[Screenshot 2026-09-17 at 7.59.13 AM.png|444]]\nsoftmax over scores\n"
+             "![[Screenshot 2026-09-17 at 7.03.34 AM.png]]")
+    cleaned, images = _extract_note_images(notes, tmp_path)
+    assert len(images) == 2
+    assert "Screenshot" not in cleaned and "softmax over scores" in cleaned
+
+
+def test_extract_sends_an_image_embedded_twice_once(tmp_path):
+    from slim.chat import _extract_note_images
+    _make_test_image(tmp_path / "Attachements/shot.png")
+    _, images = _extract_note_images("![[shot.png]]\n![[shot.png|300]]", tmp_path)
+    assert len(images) == 1
+
+
+def test_extract_never_reads_outside_the_vault(tmp_path):
+    from slim.chat import _extract_note_images
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _make_test_image(tmp_path / "secret.png")
+    _, images = _extract_note_images("![[../secret.png]]", vault)
+    assert images == []
+
+
+def test_extract_does_not_search_obsidians_trash(tmp_path):
+    from slim.chat import _extract_note_images
+    _make_test_image(tmp_path / ".trash/gone.png")
+    _, images = _extract_note_images("![[gone.png]]", tmp_path)
+    assert images == []
 
 
 def test_extract_skips_missing_files(tmp_path, monkeypatch):

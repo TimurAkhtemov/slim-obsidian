@@ -461,19 +461,36 @@ def _draft_source(*, vault: Path, draft_rel: str, audio_rel: str | list[str],
     return draft, source
 
 
+# Every image embed, as Obsidian writes it: a vault path or a BARE NAME, with an optional
+# `|size`. ⚠ Obsidian's own paste writes `![[Screenshot … .png|444]]` into `./Attachements`
+# beside wherever the note was then, and filing moves the note away from it; matching only the
+# plugin's `Attachments/Recorder/…` shape sent no image to any summary until 2026-09-22.
 _NOTE_IMAGE_RE = re.compile(
-    r'!\[\[(Attachments/Recorder/[^\]\n]+\.(?:png|jpe?g|webp))\]\]', re.I)
-# The plugin emits bare ![[path]] embeds, never ![[path|size]]; if that changes, widen this.
+    r'!\[\[([^\]|\n]+\.(?:png|jpe?g|webp))(?:\|[^\]\n]*)?\]\]', re.I)
 _MAX_NOTE_IMAGES = 15
 _MAX_IMAGE_FILE_BYTES = 10_000_000
 _IMAGE_MAX_EDGE = 1600
 
 
-def _extract_note_images(notes_md: str, vault: Path) -> tuple[str, list[str]]:
-    """Parse ![[Attachments/Recorder/...]] embeds, load and resize the images.
+def _images_by_name(vault: Path) -> dict[str, list[Path]]:
+    """Every image in the vault by file name, for embeds that name no folder. Hidden folders
+    (`.obsidian`, `.trash`) are not the vault's content, so they are not searched."""
+    found: dict[str, list[Path]] = {}
+    for root, dirs, files in os.walk(vault):
+        dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+        for name in files:
+            if name.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+                found.setdefault(name, []).append(Path(root) / name)
+    return found
 
-    Returns (cleaned_notes, base64_images) where cleaned_notes has the embed lines stripped
-    and base64_images is ready for Ollama's message ``images`` field.
+
+def _extract_note_images(notes_md: str, vault: Path) -> tuple[str, list[str]]:
+    """Find the images embedded in their notes, load and resize them.
+
+    Returns (cleaned_notes, base64_images) where cleaned_notes has the embeds stripped (a file
+    name in the text is noise to the summarizer) and base64_images is ready for Ollama's message
+    ``images`` field. An embed resolves as Obsidian resolves it: a vault path when it names one,
+    else the file of that name anywhere in the vault.
     """
     matches = _NOTE_IMAGE_RE.findall(notes_md)
     if not matches:
@@ -485,13 +502,25 @@ def _extract_note_images(notes_md: str, vault: Path) -> tuple[str, list[str]]:
     images: list[str] = []
     skipped: list[dict] = []
     total_bytes = 0
+    by_name: dict[str, list[Path]] | None = None
+    seen: set[Path] = set()
 
-    for rel in matches[:_MAX_NOTE_IMAGES]:
+    for rel in matches:
+        if len(images) >= _MAX_NOTE_IMAGES:
+            break
         try:
-            path = _vault_path(vault, rel)
-            if not path.is_file():
+            if "/" in rel:
+                path = _vault_path(vault, rel)
+            else:
+                if by_name is None:
+                    by_name = _images_by_name(vault)
+                path = next(iter(by_name.get(rel, [])), None)
+            if path is None or not path.is_file():
                 skipped.append({"path": rel, "reason": "missing"})
                 continue
+            if path.resolve() in seen:
+                continue
+            seen.add(path.resolve())
             raw_size = path.stat().st_size
             if raw_size > _MAX_IMAGE_FILE_BYTES:
                 skipped.append({"path": rel, "reason": f"too large ({raw_size} bytes)"})
