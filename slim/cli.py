@@ -198,6 +198,25 @@ def cmd_trace(args):
         print(json.dumps(entry, indent=2, ensure_ascii=False))
 
 
+def _pin_status(con) -> str:
+    """What `require_vault_identity` would decide, REPORTED rather than enforced: status reads
+    and never pins, so it is the one command that can show a mismatch without acting on it."""
+    try:
+        pinned = pinned_vault()
+    except RuntimeError as exc:
+        return f"⚠ {exc}"
+    if pinned == VAULT:
+        return "matches the vault"
+    has_sources = bool(con.execute("SELECT EXISTS(SELECT 1 FROM sources)").fetchone()[0])
+    if pinned is None and not has_sources:
+        return "none yet (the first ingest pins it)"
+    if pinned is None:
+        return ("⚠ none — this index cannot prove which vault built it; if it is this one, "
+                "`slim ingest --vault-moved`")
+    return (f"⚠ built from {pinned} — every writing command refuses; if the vault moved, "
+            "`slim ingest --vault-moved`")
+
+
 def cmd_status(args):
     con = db.connect()
 
@@ -206,6 +225,7 @@ def cmd_status(args):
 
     vault_status = "" if VAULT.is_dir() else "  ⚠ directory not found"
     print(f"vault:     {VAULT}{vault_status}")
+    print(f"pin:       {_pin_status(con)}")
     print(f"db:        {DB_PATH}")
     print(f"sources:   {one('SELECT COUNT(*) FROM sources WHERE deleted=0')} active, "
           f"{one('SELECT COUNT(*) FROM sources WHERE deleted=1')} deleted")
