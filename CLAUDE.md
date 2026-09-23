@@ -67,7 +67,8 @@ note loses its id. Embedding is part of ingest; `slim status` reports `unembedde
      title and card only decorate it. The audio stays staged; the card offers Try again.
    - Cancel writes and deletes nothing. Resume records a new segment, also on a finished note,
      and leaves the summary alone until Retry summary (which takes a one-line steer).
-   - Pending review is durable (`review_status: pending`). `My notes` saves on blur.
+   - Pending review is durable (`review_status: pending`). `My notes` saves on blur, and on
+     close or quit, where no blur fires.
    - Meeting state is per recording; only capture and the heavy model jobs are global (one
      bounded 32-slot FIFO). Live and batch Parakeet are separate instances. Two recordings
      at once is a supported case.

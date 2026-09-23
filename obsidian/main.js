@@ -1741,6 +1741,9 @@ class RecorderView {
   async saveNotes(baseline) {
     const value = (this.result && this.result.notes_md) || "";
     if (!this.filedNotePath || value === baseline.text) return;   // every blur is not a write
+    // Closing the note blurs the field AND unloads the block; one edit is still one write.
+    if (value === baseline.saving) return;
+    baseline.saving = value;
     try {
       await this.plugin.saveNotes({ note: this.filedNotePath, notes_md: value });
       baseline.text = value;
@@ -1748,7 +1751,15 @@ class RecorderView {
     } catch (e) {
       console.error("[slim] save notes", e);
       new Notice(`SLIM: could not save your notes — ${e.message || e}`);
+    } finally {
+      if (baseline.saving === value) baseline.saving = null;
     }
+  }
+
+  /* Blur never fires when the field is torn down with the caret still in it — the note
+   * closed, the block re-rendered, Obsidian quit. Those paths call this instead. */
+  flushNotes() {
+    return this.notesBaseline ? this.saveNotes(this.notesBaseline) : Promise.resolve();
   }
 
   /* Retry the summary against the transcript the note already holds — Notion's button, and
@@ -2030,6 +2041,7 @@ class RecorderView {
     // was the only writer there, so typing in review and walking away lost the keystrokes —
     // and review is the state they are most likely to walk away from.
     if (this.filedNotePath) {
+      this.notesBaseline = baseline;
       editor.addEventListener("blur", () => this.saveNotes(baseline));
     }
     return editor;
@@ -3765,6 +3777,11 @@ class MeetingSessionManager {
     this.indexSession(session);
   }
 
+  flushNotes() {
+    return Promise.all([...this.sessions.values()].map((session) =>
+      typeof session.flushNotes === "function" ? session.flushNotes() : null));
+  }
+
   onClose() {
     for (const session of this.sessions.values()) {
       if (typeof session.onClose === "function") session.onClose();
@@ -3792,6 +3809,7 @@ module.exports = class SlimRecorderPlugin extends Plugin {
           if (this.meetingBlocks.get(path) === el) this.meetingBlocks.delete(path);
           const session = this.meetings.sessionForPath(path);
           if (session && session.contentEl === el) {
+            if (typeof session.flushNotes === "function") session.flushNotes();
             session.contentEl = null;
             session.editorView = null;
           }
@@ -3832,6 +3850,11 @@ module.exports = class SlimRecorderPlugin extends Plugin {
       }));
       this.registerEvent(this.app.workspace.on("layout-change", () => {
         this.noticeClosedPendingReviews();
+      }));
+      // Quitting with the caret in `My notes` fires no blur. Obsidian awaits quit tasks, and
+      // the server is killed only at unload, after them.
+      this.registerEvent(this.app.workspace.on("quit", (tasks) => {
+        tasks.add(() => this.meetings.flushNotes());
       }));
     }
     this.addSettingTab(new SlimSettingTab(this.app, this));

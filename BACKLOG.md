@@ -4,7 +4,6 @@
 are the history. Past ~20 items is a signal about scope, not a reason for headings.
 
 - [ ] Verify the recorder end to end on the cut code (record → summary → card → file → copilot on the note).
-- [ ] Notes autosave fires only on blur; quitting Obsidian with the caret in the field loses the last edit. Flush on view close.
 - [ ] Send pasted images to the summarizer (`qwen3.6:35b` is vision-capable; a screenshotted formula reaches it as a filename). Needs a cap, a resize, and a measured RSS run.
 - [ ] `filed_by: slim` is never cleared when they accept a card unedited — "SLIM guessed" and "they agreed" look the same.
 - [ ] Copilot slash-commands: a sidebar invocation that runs a deterministic tool or skill on the open note.

@@ -1546,6 +1546,57 @@ test("saving notes moves the baseline, so one edit is one write", async () => {
   assert.equal(calls, 1, "three click-aways after one edit is one write");
 });
 
+test("notes typed and never blurred are saved when the meeting is flushed", async () => {
+  // Quitting Obsidian, or closing the note, with the caret in the field fires no blur; the
+  // last edit was lost (BACKLOG). The manager's flush is what `quit` and the block unload call.
+  const v = view();
+  v.state = "finished";
+  v.activeTab = "notes";
+  v.filedNotePath = "Notes/x.md";
+  v.result = { summary: "s", notes_md: "- one", card: null };
+  v.noteParts = { summary: "s", notes: "- one", transcript: "raw" };
+  const saved = [];
+  v.plugin.saveNotes = async (body) => { saved.push(body.notes_md); return {}; };
+  const manager = new MeetingSessionManager(v.plugin, () => v);
+  manager.createSession();
+
+  const root = fakeContentEl();
+  v.renderSource(root, false);
+  findClass(root, "slim-notes-editor").events.input({ target: { value: "- one\n- two" } });
+  await manager.flushNotes();
+  await manager.flushNotes();
+
+  assert.deepEqual(saved, ["- one\n- two"]);
+});
+
+test("a blur and a flush in the same moment write the notes once", async () => {
+  const v = view();
+  v.state = "finished";
+  v.activeTab = "notes";
+  v.filedNotePath = "Notes/x.md";
+  v.result = { summary: "s", notes_md: "- one", card: null };
+  v.noteParts = { summary: "s", notes: "- one", transcript: "raw" };
+  let calls = 0;
+  let land;
+  v.plugin.saveNotes = () => { calls += 1; return new Promise((r) => { land = r; }); };
+
+  const root = fakeContentEl();
+  v.renderSource(root, false);
+  const editor = findClass(root, "slim-notes-editor");
+  editor.events.input({ target: { value: "- one\n- two" } });
+  const blurred = editor.events.blur();
+  const flushed = v.flushNotes();
+  land({});
+  await Promise.all([blurred, flushed]);
+
+  assert.equal(calls, 1);
+});
+
+test("quitting Obsidian flushes every meeting's notes", () => {
+  const source = readFileSync(path.join(HERE, "main.js"), "utf8");
+  assert.match(source, /workspace\.on\("quit",\s*\(tasks\)\s*=>\s*\{\s*tasks\.add\(\(\)\s*=>\s*this\.meetings\.flushNotes\(\)\)/);
+});
+
 test("a retry updates its status without rebuilding the card under the caret", async () => {
   // Found in review: the retry watcher called render() on every 600ms poll while the state is
   // `card`/`finished` — the states whose DOM holds the live notes editor and the instructions
