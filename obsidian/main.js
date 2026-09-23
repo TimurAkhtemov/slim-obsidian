@@ -2646,51 +2646,76 @@ function sha256Hex(text) {
   return require("crypto").createHash("sha256").update(String(text), "utf8").digest("hex");
 }
 
-// Line diff for the proposal card: common head and tail trimmed, LCS on the middle, then
-// unchanged runs folded to `context` lines around each change.
+// Line diff for the proposal card: Myers' O((N+M)·D) algorithm, so two small edits in a
+// 4,000-line note cost two small hunks, not a quadratic table. Past MAX_DIFF_EDITS the rows are
+// a plain before/after and the result is marked `approximate`: the card then refuses Accept.
+const MAX_DIFF_EDITS = 5000;
+
+function myers(a, b) {
+  const n = a.length, m = b.length, max = n + m, offset = max + 1;
+  const v = new Int32Array(2 * max + 3);
+  const trace = [];
+  for (let d = 0; d <= Math.min(max, MAX_DIFF_EDITS); d += 1) {
+    trace.push(v.slice(offset - d - 1, offset + d + 2));
+    for (let k = -d; k <= d; k += 2) {
+      let x = k === -d || (k !== d && v[offset + k - 1] < v[offset + k + 1])
+        ? v[offset + k + 1] : v[offset + k - 1] + 1;
+      let y = x - k;
+      while (x < n && y < m && a[x] === b[y]) { x += 1; y += 1; }
+      v[offset + k] = x;
+      if (x >= n && y >= m) return backtrack(a, b, trace, d);
+    }
+  }
+  return null;
+}
+
+function backtrack(a, b, trace, depth) {
+  const rows = [];
+  let x = a.length, y = b.length;
+  for (let d = depth; d > 0; d -= 1) {
+    const saved = trace[d];                       // v before step d, indexed k + d + 1
+    const at = (k) => saved[k + d + 1];
+    const k = x - y;
+    const prevK = k === -d || (k !== d && at(k - 1) < at(k + 1)) ? k + 1 : k - 1;
+    const prevX = at(prevK), prevY = prevX - prevK;
+    while (x > prevX && y > prevY) { rows.push({ op: " ", text: a[x - 1] }); x -= 1; y -= 1; }
+    if (x === prevX) rows.push({ op: "+", text: b[y - 1] });
+    else rows.push({ op: "-", text: a[x - 1] });
+    x = prevX; y = prevY;
+  }
+  while (x > 0 && y > 0) { rows.push({ op: " ", text: a[x - 1] }); x -= 1; y -= 1; }
+  return rows.reverse();
+}
+
 function lineDiff(before, after, context = 2) {
   const a = String(before || "").split("\n");
   const b = String(after || "").split("\n");
-  let head = 0;
-  while (head < a.length && head < b.length && a[head] === b[head]) head += 1;
-  let tail = 0;
-  while (tail < a.length - head && tail < b.length - head
-         && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail += 1;
-  const midA = a.slice(head, a.length - tail);
-  const midB = b.slice(head, b.length - tail);
-  const rows = [];
-  if (midA.length * midB.length > 4_000_000) {
-    // Too big to align line by line: show it as a replacement rather than stall the sidebar.
-    for (const text of midA) rows.push({ op: "-", text });
-    for (const text of midB) rows.push({ op: "+", text });
-  } else {
-    const n = midA.length, m = midB.length;
-    const table = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
-    for (let i = n - 1; i >= 0; i -= 1) {
-      for (let j = m - 1; j >= 0; j -= 1) {
-        table[i][j] = midA[i] === midB[j] ? table[i + 1][j + 1] + 1
-          : Math.max(table[i + 1][j], table[i][j + 1]);
-      }
-    }
-    let i = 0, j = 0;
-    while (i < n || j < m) {
-      if (i < n && j < m && midA[i] === midB[j]) { rows.push({ op: " ", text: midA[i] }); i += 1; j += 1; }
-      else if (i < n && (j >= m || table[i + 1][j] >= table[i][j + 1])) { rows.push({ op: "-", text: midA[i] }); i += 1; }
-      else { rows.push({ op: "+", text: midB[j] }); j += 1; }
-    }
+  let rows = myers(a, b);
+  const approximate = rows === null;
+  if (approximate) {
+    rows = [...a.map((text) => ({ op: "-", text })), ...b.map((text) => ({ op: "+", text }))];
   }
-  const full = [...a.slice(0, head).map((text) => ({ op: " ", text })), ...rows,
-                ...a.slice(a.length - tail).map((text) => ({ op: " ", text }))];
-  const keep = full.map(() => false);
-  full.forEach((row, index) => {
+  // Within a hunk, removals read before additions.
+  const ordered = [];
+  let adds = [];
+  for (const row of rows) {
+    if (row.op === "+") { adds.push(row); continue; }
+    if (row.op === " ") { for (const add of adds) ordered.push(add); adds = []; }
+    ordered.push(row);
+  }
+  for (const add of adds) ordered.push(add);
+  rows = ordered;
+  const keep = rows.map(() => false);
+  rows.forEach((row, index) => {
     if (row.op === " ") return;
-    for (let k = Math.max(0, index - context); k <= Math.min(full.length - 1, index + context); k += 1) keep[k] = true;
+    for (let k = Math.max(0, index - context); k <= Math.min(rows.length - 1, index + context); k += 1) keep[k] = true;
   });
   const out = [];
-  full.forEach((row, index) => {
+  rows.forEach((row, index) => {
     if (keep[index]) out.push(row);
     else if (out.length === 0 || out.at(-1).op !== "…") out.push({ op: "…", text: "" });
   });
+  if (approximate) out.approximate = true;
   return out;
 }
 
@@ -2722,15 +2747,21 @@ function inputsText(inputs) {
 // The open note's editor selection, from whichever pane shows it: the sidebar has focus when
 // they press Send, so "the active editor" is not the question.
 function editorSelection(app, path) {
-  for (const leaf of app?.workspace?.getLeavesOfType?.("markdown") || []) {
+  const recent = app?.workspace?.getMostRecentLeaf?.();
+  const leaves = app?.workspace?.getLeavesOfType?.("markdown") || [];
+  for (const leaf of recent && leaves.includes(recent) ? [recent, ...leaves] : leaves) {
     const view = leaf.view;
-    if (view?.file?.path === path && typeof view.editor?.getSelection === "function") {
-      const text = view.editor.getSelection();
-      if (text) return text;
-    }
+    // Reading mode keeps CodeMirror's last selection, which the owner can no longer see.
+    if (view?.file?.path !== path || view.getMode?.() === "preview") continue;
+    if (typeof view.editor?.getSelection !== "function") continue;
+    const text = view.editor.getSelection();
+    if (text) return text.slice(0, MAX_SELECTION_CHARS);
   }
   return "";
 }
+
+// Mirrors copilot.py MAX_SELECTION_CHARS.
+const MAX_SELECTION_CHARS = 20_000;
 
 // qwen writes \( \) and \[ \] as often as $ $; Obsidian's renderer only knows the dollar
 // forms, and Markdown eats the escaped brackets, so an equation rendered as nothing. Display
@@ -3011,6 +3042,8 @@ class CopilotView extends ItemView {
     this.liveRenderedAt = 0;
     this.editMode = false;          // Ask (answers only) or Edit (proposes changes to accept)
     this.skills = [];               // /commands, from GET /api/copilot/skills
+    this.applying = new Set();      // proposal files being written right now
+    this.deletedThreads = new Set(); // a late decision must not save — and so resurrect — these
   }
 
   // Re-read whenever they start a command: a skill saved in `Skills/` a moment ago is there.
@@ -3025,7 +3058,6 @@ class CopilotView extends ItemView {
 
   pickSkill(skill) {
     this.draft = `/${skill.name} `;
-    if (skill.mode === "quick" || skill.mode === "deep") this.mode = skill.mode;
     this.composerFocused = true;
     this.render();
   }
@@ -3156,6 +3188,7 @@ class CopilotView extends ItemView {
     if (file && file.path === path && typeof this.plugin.saveActiveNote === "function") {
       await this.plugin.saveActiveNote(file);
     }
+    await this.saveOpenCopies(path);
     const fresh = await this.plugin.postJSON("/api/copilot/context", { path, related: false });
     this.context = { ...this.context, source: fresh.source };
   }
@@ -3235,7 +3268,9 @@ class CopilotView extends ItemView {
   async send(text = this.draft) {
     const outgoingImages = this.pendingImages;
     const question = String(text || "").trim() || (outgoingImages.length ? "Explain this image." : "");
-    if (!question || !this.context || this.sending) return;
+    // A decision still writing saves the thread when it lands; a question sent meanwhile would
+    // be saved with it as an unanswered turn.
+    if (!question || !this.context || this.sending || this.applying.size) return;
     if (!this.activeThread) this.newThread();
     // Snapshot the thread that ASKED. openThread/newThread/deleteThread stay clickable while
     // an answer streams, and the answer belongs to this thread whatever is active when it
@@ -3269,6 +3304,7 @@ class CopilotView extends ItemView {
         // (MAX_HISTORY_TURNS). Slim turns also carry evidence and stats; re-uploading those
         // on every question grew with the square of the thread. Image bytes stay server-side.
         history: turns.slice(0, -1).slice(-MAX_HISTORY_TURNS)
+          .map((turn) => ({ ...turn, text: historyText(turn) }))
           .map(({ role, text, attachments }) => ({ role, text,
             ...(attachments?.length ? { attachments: attachments.map(
               ({ id, name, mime, bytes }) => ({ id, name, mime, bytes })) } : {}) })),
@@ -3277,7 +3313,10 @@ class CopilotView extends ItemView {
           data ? { name, mime, data } : { id, name, mime, bytes }),
         reasoning_mode: this.mode,
         edit: this.editMode,
-        selection: editorSelection(this.app, this.context.source.path),
+        // Only where it is visibly the input: Edit mode, or a /command. In Ask mode a selection
+        // left in the note rode along with every question, unseen (review, 2026-09-23).
+        selection: this.editMode || question.startsWith("/")
+          ? editorSelection(this.app, this.context.source.path) : "",
       }, {
         stage: (data) => { this.stage = data.stage || "Working"; this.renderStage(); },
         delta: (data) => {
@@ -3341,6 +3380,9 @@ class CopilotView extends ItemView {
     const answer = this.turns.at(-1);
     const asked = this.turns.at(-2);
     if (answer?.role !== "slim" || asked?.role !== "you") return;
+    // Asking again after an accepted change would drop the record of it and could propose the
+    // same append a second time.
+    if (hasAccepted(answer)) return;
     this.turns.splice(-2, 2);
     this.pendingImages = (asked.attachments || []).map((ref) => ({ ...ref }));
     await this.send(asked.text);
@@ -3363,6 +3405,7 @@ class CopilotView extends ItemView {
       this.render();
       return;
     }
+    this.deletedThreads.add(id);
     // A late answer would save into — and so resurrect — the thread being deleted.
     if (this.sending && this.streamingThread?.id === id) this.cancel();
     await this.plugin.postJSON("/api/copilot/thread/delete", { id });
@@ -3413,7 +3456,7 @@ class CopilotView extends ItemView {
     if (!this.el.liveText) return;          // the chat list is showing; the next render catches up
     const transcript = this.el.transcript;
     const follow = atBottom(transcript);      // decided BEFORE the text grows the pane
-    this.el.liveText.textContent = this.streamingText;
+    this.el.liveText.textContent = visibleStream(this.streamingText);
     if (follow) transcript.scrollTop = transcript.scrollHeight;
     this.scheduleLiveRender();
   }
@@ -3458,7 +3501,7 @@ class CopilotView extends ItemView {
     const buffer = create(el.live, "div", "slim-message-text slim-rendered-markdown");
     buffer.hidden = true;
     const host = this.liveHost(buffer);
-    return this.renderMarkdown(buffer, this.streamingText, host).then(() => {
+    return this.renderMarkdown(buffer, visibleStream(this.streamingText), host).then(() => {
       if (version !== this.liveRenderVersion || this.el !== el || !this.sending) { this.dropLive(buffer, host); return; }
       const follow = atBottom(el.transcript);
       this.dropLive(el.liveRendered, el.liveHost);
@@ -3589,7 +3632,8 @@ class CopilotView extends ItemView {
       // A half-typed command completes before it sends: "/con" + Enter is "/consolidate… ".
       const hits = matchSkills(this.skills, slashQuery(this.draft));
       if (hits.length && (event.key === "Tab"
-          || (event.key === "Enter" && !event.shiftKey && !hits.some((h) => `/${h.name}` === this.draft)))) {
+          || (event.key === "Enter" && !event.shiftKey && this.draft.length > 1
+              && !hits.some((h) => `/${h.name}` === this.draft)))) {
         event.preventDefault();
         this.pickSkill(hits[0]);
         return;
@@ -3609,6 +3653,7 @@ class CopilotView extends ItemView {
           input.value = `${input.value.slice(0, start)}${input.value.slice(end)}`;
           input.selectionStart = input.selectionEnd = start;
           this.draft = input.value;
+          this.renderSlash();
         }
       }
     };
@@ -3632,6 +3677,7 @@ class CopilotView extends ItemView {
       input.selectionStart = input.selectionEnd = start + text.length;
       this.draft = input.value;
       autoGrow(input);
+      this.renderSlash();
     };
     const picker = create(composer, "input", "slim-copilot-image-picker");
     picker.type = "file";
@@ -3730,7 +3776,7 @@ class CopilotView extends ItemView {
     if (streamingHere) {
       const live = create(transcript, "article", "slim-message is-slim is-streaming");
       this.el.live = live;
-      this.el.liveText = create(live, "div", "slim-message-text", this.streamingText);
+      this.el.liveText = create(live, "div", "slim-message-text", visibleStream(this.streamingText));
       this.el.stage = create(transcript, "div", "slim-copilot-stage", this.stage || "Working");
     }
     if (this.error) {
@@ -3784,7 +3830,7 @@ class CopilotView extends ItemView {
     copy.onclick = () => {
       if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) navigator.clipboard.writeText(turn.text);
     };
-    if (turn === this.turns.at(-1) && !this.sending) {
+    if (turn === this.turns.at(-1) && !this.sending && !hasAccepted(turn)) {
       const again = iconButton(actions, "refresh-cw", "Regenerate");
       again.onclick = () => this.regenerate();
     }
@@ -3795,10 +3841,11 @@ class CopilotView extends ItemView {
   // turn, so a reopened chat shows what was applied and never offers it twice.
   renderProposal(message, proposal) {
     const card = create(message, "div", "slim-proposal");
+    const busy = this.sending || this.applying.size > 0;
     const open = (proposal.files || []).filter((file) => file.after != null && !file.status);
     if (open.length > 1) {
       const all = create(card, "button", "mod-cta slim-accept-all", `Accept all ${open.length}`);
-      all.disabled = this.sending;
+      all.disabled = busy;
       all.onclick = () => this.decide(proposal, open, "accept");
     }
     for (const file of proposal.files || []) {
@@ -3808,22 +3855,30 @@ class CopilotView extends ItemView {
       name.setAttribute("title", file.path);
       name.onclick = () => this.openNote(file.path);
       create(head, "small", "slim-proposal-kind", file.kind === "create" ? "new note" : "edit");
-      for (const block of (file.blocks || []).filter((item) => !item.ok)) {
-        create(box, "div", "slim-proposal-problem", `One change was not applied: ${block.reason}`);
-      }
-      if (file.after == null) continue;
-      const diff = create(box, "div", "slim-diff");
-      this.fillDiff(diff, file).catch((e) => console.error("[slim] diff", e));
-      const actions = create(box, "div", "slim-proposal-actions");
       if (file.status) {
+        const actions = create(box, "div", "slim-proposal-actions");
         create(actions, "small", `slim-proposal-status is-${file.status}`, proposalStatus(file));
         continue;
       }
-      const accept = create(actions, "button", "mod-cta", "Accept");
-      const reject = create(actions, "button", "", "Reject");
-      accept.disabled = reject.disabled = this.sending;
-      accept.onclick = () => this.decide(proposal, [file], "accept");
-      reject.onclick = () => this.decide(proposal, [file], "reject");
+      for (const block of (file.blocks || []).filter((item) => !item.ok)) {
+        create(box, "div", "slim-proposal-problem", `Not proposed: ${block.reason}`);
+      }
+      if (file.after == null) continue;
+      const summary = create(box, "div", "slim-diff-summary");
+      const diff = create(box, "div", "slim-diff");
+      const actions = create(box, "div", "slim-proposal-actions");
+      if (this.applying.has(file)) {
+        create(actions, "small", "slim-proposal-status", "Applying…");
+      } else {
+        const accept = create(actions, "button", "mod-cta", "Accept");
+        const reject = create(actions, "button", "", "Reject");
+        accept.disabled = reject.disabled = busy;
+        accept.onclick = () => this.decide(proposal, [file], "accept");
+        reject.onclick = () => this.decide(proposal, [file], "reject");
+        this.fillDiff(summary, diff, file, accept).catch((e) => console.error("[slim] diff", e));
+        continue;
+      }
+      this.fillDiff(summary, diff, file, null).catch((e) => console.error("[slim] diff", e));
     }
     for (const item of proposal.dropped || []) {
       create(card, "div", "slim-proposal-problem",
@@ -3831,48 +3886,89 @@ class CopilotView extends ItemView {
     }
   }
 
-  async fillDiff(el, file) {
+  // The diff is against the note as Obsidian reads it NOW. Accept stays off when the owner
+  // cannot see the whole change: a diff too long to show is not a diff they reviewed.
+  async fillDiff(summary, el, file, accept) {
     let before = "";
     if (file.kind !== "create") {
       const target = this.app.vault.getAbstractFileByPath(file.path);
       before = target ? await this.app.vault.read(target) : "";
-      if (!file.status && sha256Hex(before) !== file.base_hash) {
+      if (sha256Hex(before) !== file.base_hash) {
         create(el, "div", "slim-proposal-problem",
-          "This note has changed since the proposal; Accept will refuse. Ask again for a fresh one.");
+          "This note has changed since the proposal, so Accept will refuse. Ask again for a fresh one.");
       }
     }
     const rows = lineDiff(before, file.after);
+    const added = rows.filter((row) => row.op === "+").length;
+    const removed = rows.filter((row) => row.op === "-").length;
+    const lines = before ? before.split("\n").length : 0;
+    create(summary, "span", "", `+${added} −${removed} lines`);
+    if (lines >= 4 && removed / lines > 0.5) {
+      create(summary, "span", "slim-proposal-problem",
+        ` · removes ${Math.round((100 * removed) / lines)}% of this note`);
+    }
     for (const row of rows.slice(0, MAX_DIFF_ROWS)) {
       const cls = row.op === "+" ? "is-add" : row.op === "-" ? "is-del" : row.op === "…" ? "is-gap" : "is-same";
       create(el, "div", `slim-diff-line ${cls}`, row.op === "…" ? "⋯" : `${row.op} ${row.text}`);
     }
-    if (rows.length > MAX_DIFF_ROWS) create(el, "div", "slim-diff-line is-gap", `⋯ ${rows.length - MAX_DIFF_ROWS} more lines`);
+    if (rows.length > MAX_DIFF_ROWS || rows.approximate) {
+      create(el, "div", "slim-proposal-problem",
+        "This change is too large to show in full, so it cannot be accepted here. Ask for a smaller change.");
+      if (accept) { accept.disabled = true; accept.setAttribute("title", "Too large to review here"); }
+    }
   }
 
   async decide(proposal, files, action) {
     if (this.sending || !this.activeThread) return;
     const thread = this.activeThread;
     const turns = this.turns;
-    for (const file of files) {
-      if (action === "reject") { file.status = "rejected"; continue; }
-      try {
-        file.status = await this.applyFile(file);
-      } catch (error) {
-        file.status = "failed";
-        file.error = error.message || String(error);
-      }
-      // A note is not findable until it is indexed: sync and embed what was just written.
-      if (file.status === "accepted") {
-        this.plugin.postJSON("/api/copilot/context", { path: file.path, related: false })
-          .catch((e) => console.warn("[slim] index after accept", file.path, e.message));
-      }
-    }
+    // A second click, or Accept all over a file already in flight, must not apply it twice or
+    // overwrite an "accepted" with the "stale" its own write caused.
+    const todo = files.filter((file) => !file.status && !this.applying.has(file));
+    if (!todo.length) return;
+    for (const file of todo) this.applying.add(file);
+    this.render();
     try {
-      await this.saveRecord(thread, turns);
-    } catch (error) {
-      this.error = error.message || String(error);
+      for (const file of todo) {
+        if (action === "reject") file.status = "rejected";
+        else {
+          try {
+            file.status = await this.applyFile(file);
+          } catch (error) {
+            file.status = "failed";
+            file.error = error.message || String(error);
+          }
+        }
+        // A note is not findable until it is indexed: sync and embed what was just written.
+        if (file.status === "accepted") {
+          this.plugin.postJSON("/api/copilot/context", { path: file.path, related: false })
+            .catch((e) => console.warn("[slim] index after accept", file.path, e.message));
+        }
+        delete file.after;   // decided: never offered again, and a large note stops weighing on the thread
+      }
+    } finally {
+      for (const file of todo) this.applying.delete(file);
+    }
+    // Reopening the chat mid-write loads fresh turn objects: carry the decisions onto them, or
+    // the next save (theirs or a new answer's) would forget what is already on disk.
+    const live = this.activeThread?.id === thread.id ? this.turns : turns;
+    if (live !== turns) copyDecisions(turns, live);
+    if (!this.deletedThreads.has(thread.id)) {
+      try {
+        await this.saveRecord(thread, live);
+      } catch (error) {
+        this.error = error.message || String(error);
+      }
     }
     this.render();
+  }
+
+  // Every pane showing the note writes its buffer first, so the hash check sees what the
+  // owner typed, not the copy from before Obsidian's autosave.
+  async saveOpenCopies(path) {
+    for (const leaf of this.app.workspace?.getLeavesOfType?.("markdown") || []) {
+      if (leaf.view?.file?.path === path && typeof leaf.view.save === "function") await leaf.view.save();
+    }
   }
 
   // The only place the copilot writes a note. `vault.process` holds the file for the check and
@@ -3881,13 +3977,17 @@ class CopilotView extends ItemView {
   async applyFile(file) {
     const vault = this.app.vault;
     if (file.kind === "create") {
-      if (vault.getAbstractFileByPath(file.path)) throw new Error("a note already exists at that path");
+      // The adapter's check is the filesystem's, case-insensitive on macOS: `summary.md` must
+      // not be written over an existing `Summary.md` that the path index spells differently.
+      if (vault.getAbstractFileByPath(file.path) || await vault.adapter?.exists?.(file.path)) {
+        throw new Error("a note already exists at that path");
+      }
       await vault.create(file.path, file.after);
       return "accepted";
     }
     const target = vault.getAbstractFileByPath(file.path);
     if (!target) throw new Error("the note is gone");
-    if (typeof this.plugin.saveActiveNote === "function") await this.plugin.saveActiveNote(target);
+    await this.saveOpenCopies(file.path);
     let stale = false;
     await vault.process(target, (data) => {
       if (sha256Hex(data) !== file.base_hash) { stale = true; return data; }
@@ -3897,7 +3997,38 @@ class CopilotView extends ItemView {
   }
 }
 
-const MAX_DIFF_ROWS = 400;
+function visibleStream(text) {
+  const cut = String(text || "").search(/^\s*(?:FILE\s*:|<{5,}\s*SEARCH)/im);
+  return cut < 0 ? text : `${text.slice(0, cut).trimEnd()}\n\n*Writing the proposed changes…*`;
+}
+
+function copyDecisions(from, to) {
+  from.forEach((turn, index) => {
+    const decided = turn?.turn?.proposal?.files || [];
+    const target = to[index]?.turn?.proposal?.files || [];
+    decided.forEach((file, j) => {
+      if (!file.status || target[j]?.path !== file.path) return;
+      target[j].status = file.status;
+      if (file.error) target[j].error = file.error;
+      delete target[j].after;
+    });
+  });
+}
+
+function hasAccepted(turn) {
+  return (turn?.turn?.proposal?.files || []).some((file) => file.status === "accepted");
+}
+
+// What the model sees of an earlier answer: its prose, plus what it proposed and what became of
+// it — the blocks themselves are not in the prose, so "make it shorter" had nothing to go on.
+function historyText(turn) {
+  const files = turn?.turn?.proposal?.files || [];
+  if (turn?.role !== "slim" || !files.length) return turn?.text;
+  const done = files.map((file) => `${file.path} (${file.kind}, ${file.status || "not yet accepted"})`);
+  return `${turn.text}\n\n[Proposed changes: ${done.join("; ")}]`;
+}
+
+const MAX_DIFF_ROWS = 2000;
 
 function proposalStatus(file) {
   if (file.status === "accepted") return file.kind === "create" ? "Created" : "Applied";
@@ -4651,3 +4782,5 @@ module.exports.slashQuery = slashQuery;
 module.exports.matchSkills = matchSkills;
 module.exports.inputsText = inputsText;
 module.exports.editorSelection = editorSelection;
+module.exports.visibleStream = visibleStream;
+module.exports.historyText = historyText;

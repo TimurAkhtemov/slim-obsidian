@@ -260,17 +260,27 @@ def section_of(text: str, heading: str) -> str | None:
     """The body under the first heading named `heading`, up to the next heading at its level
     or above. None when the note has no such section, or it is empty."""
     want = heading.strip().lstrip("#").strip().casefold()
-    lines = text.splitlines(keepends=True)
+    # SLIM's own summary is blanked first (it may carry a "Notes" heading of its own) and the
+    # `slim-meeting` fence around a recording's sections comes off, as ingest does; then a
+    # `# comment` inside a code fence is code, not a heading — as in `chunk.chunk_markdown`.
+    lines = strip_meeting_wrapper(strip_derived_blocks(text)).splitlines(keepends=True)
+    fenced, in_code = [], False
+    for line in lines:
+        if line.lstrip().startswith("```"):
+            in_code = not in_code
+            fenced.append(True)
+        else:
+            fenced.append(in_code)
     for i, line in enumerate(lines):
-        match = HEADING.match(line.rstrip("\n"))
+        match = None if fenced[i] else HEADING.match(line.rstrip("\n"))
         if not match or match.group(2).strip().casefold() != want:
             continue
         level, out = len(match.group(1)), []
-        for later in lines[i + 1:]:
-            nxt = HEADING.match(later.rstrip("\n"))
+        for j in range(i + 1, len(lines)):
+            nxt = None if fenced[j] else HEADING.match(lines[j].rstrip("\n"))
             if nxt and len(nxt.group(1)) <= level:
                 break
-            out.append(later)
+            out.append(lines[j])
         body = "".join(out).strip("\n")
         return body if body.strip() else None
     return None
@@ -305,9 +315,11 @@ def resolve_link(con, vault: Path, name: str, near: str) -> str | None:
     stem = PurePosixPath(target).name.casefold()
     rows = con.execute("SELECT path FROM sources WHERE deleted=0 AND path LIKE ?",
                        (f"%{PurePosixPath(target).name}",)).fetchall()
+    want = target.casefold()
+    # `[[work/budget]]` must not match `homework/budget.md`: a partial path ends at a `/`.
     candidates = [row["path"] for row in rows
                   if PurePosixPath(row["path"]).name.casefold() == stem
-                  and row["path"].casefold().endswith(target.casefold())]
+                  and (row["path"].casefold() == want or row["path"].casefold().endswith("/" + want))]
     parent = PurePosixPath(near).parent.as_posix()
     candidates.sort(key=lambda path: (PurePosixPath(path).parent.as_posix() != parent, len(path), path))
     return next((path for path in candidates if (Path(vault) / path).is_file()), None)
@@ -400,7 +412,7 @@ def gather(con, vault: Path, source: dict, *, skill: skills_mod.Skill | None = N
         for date, path, body in sorted(kept):                         # read oldest first
             pack.docs.append({"path": path, "title": PurePosixPath(path).stem, "text": body,
                               "role": "folder", "date": date[:10]})
-        if not kept and found:
+        if not kept and any(path not in pack.paths for _date, path, _body in found):
             raise CopilotError("the matching notes are too long to read together")
         if not kept:
             raise CopilotError(f"none of the matching notes in {folder.as_posix()}/ has a "
@@ -548,9 +560,16 @@ def run_turn(con, source_id: str, question: str, history: list[dict], mode: str,
     if source_row is None:
         raise CopilotError("the note is no longer indexed; refresh the sidebar")
     source = dict(source_row)
-    found = skills_mod.invocation(question, skills_mod.load(vault)) if question.startswith("/") else None
+    loaded = skills_mod.load(vault)
+    found = skills_mod.invocation(question, loaded) if question.startswith("/") else None
     skill, args = found or (None, "")
+    if skill and skill.mode in ("quick", "deep"):
+        mode = skill.mode                      # the skill's author chose its depth
     proposing = edit or bool(skill and skill.proposes)
+    # A /command in an earlier turn is its whole prompt to the model: "/quiz" alone never told
+    # the answering turn how to grade.
+    history = [{**turn, "text": skills_mod.expand(turn.get("text") or "", loaded)}
+               if turn.get("role") == "you" else turn for turn in history]
     # Machine facts only (no prose, no reasoning): the thread JSON keeps completed turns,
     # so this is the one record of a refused or stopped turn.
     entry = {"question": question, "source": source["path"], "source_id": source_id,
@@ -564,6 +583,9 @@ def run_turn(con, source_id: str, question: str, history: list[dict], mode: str,
         if skill and skill.error:
             raise CopilotError(f"/{skill.name} cannot run: {skill.error} "
                                f"({skills_mod.VAULT_DIR}/{skill.name}.md)")
+        unknown = re.match(r"^/([a-z0-9][a-z0-9-]*)(?:\s|$)", question)
+        if unknown and not skill:
+            raise CopilotError(f"there is no /{unknown.group(1)} skill; type / to see them")
         if skill or proposing:
             pack = gather(con, vault, source, skill=skill, links_from=args if skill else question,
                           selection=selection, raw=proposing)
@@ -577,6 +599,10 @@ def run_turn(con, source_id: str, question: str, history: list[dict], mode: str,
                 cited=cited, proposing=proposing)
             result["inputs"] = pack_inputs(pack)
             levels = []
+            # An overflowing prompt loses its START — the notes and the edit instructions —
+            # silently. Nothing built on that is offered for Accept.
+            if proposing and result["timing"]["answer"].get("ctx_saturated"):
+                raise CopilotError("these notes are too long for one request; ask about fewer notes")
             if proposing:
                 prose, blocks = edits_mod.parse(result["answer"])
                 result["proposal"] = edits_mod.propose(vault, blocks, in_view=pack.paths)
@@ -586,12 +612,8 @@ def run_turn(con, source_id: str, question: str, history: list[dict], mode: str,
         else:
             limit = 12 if mode == "deep" else 6
             evidence, levels = collect_evidence(con, source, question, limit=limit)
-            # "What does this mean?" is about what they highlighted: it rides with the question
-            # (the thread keeps their words alone), and retrieval still searches on the question.
-            asked = (f"I selected this in the note:\n\n{selection.strip()}\n\n{question}"
-                     if selection and selection.strip() else question)
             result = generate_answer(
-                asked, history, evidence, mode, images=images,
+                question, history, evidence, mode, images=images,
                 on_stage=on_stage, on_delta=on_delta)
     except (CopilotError, llm.LLMError) as exc:
         trace.record("copilot", {**entry, "status": "failed", "error": str(exc),

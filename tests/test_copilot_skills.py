@@ -143,9 +143,55 @@ def test_ask_mode_keeps_retrieval_and_says_edit_mode_exists(con, vault, monkeypa
     monkeypatch.setattr(copilot.llm, "chat_stream",
                         lambda messages, **k: seen.update(system=messages[0]["content"]) or ("ok", {}))
     monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
-    turn = copilot.run_turn(con, source["id"], "/not-a-skill here", [], "quick", vault=vault)
+    turn = copilot.run_turn(con, source["id"], "what is /usr/bin for?", [], "quick", vault=vault)
     assert copilot.ASK_RIDER in seen["system"] and "SEARCH" not in seen["system"]
     assert turn.get("proposal") is None and turn["skill"] is None
+
+
+def test_an_unknown_command_is_refused_not_asked(con, vault, monkeypatch):
+    source = open_source(con, vault, note(vault, "Notes/work/a.md", "text\n"))
+    fake_model(monkeypatch, "never", {})
+    with pytest.raises(copilot.CopilotError, match="no /quizz skill"):
+        copilot.run_turn(con, source["id"], "/quizz me", [], "quick", vault=vault)
+
+
+def test_a_skill_runs_at_its_own_depth_and_its_prompt_rides_in_history(con, vault, monkeypatch):
+    meeting(vault, "Kickoff", "2026-09-01T09:00:00", "ship friday")
+    source = open_source(con, vault, meeting(vault, "Review", "2026-09-08T09:00:00", "monday"))
+    seen = {}
+    fake_model(monkeypatch, "FILE: Capture/work/All.md\n<<<<<<< SEARCH\n=======\nx\n>>>>>>> REPLACE\n", seen)
+    turn = copilot.run_turn(con, source["id"], "/consolidate-my-notes", [], "quick", vault=vault)
+    assert turn["mode"] == "deep"
+    monkeypatch.setattr(copilot.search_mod, "hybrid", lambda *a, **k: [])
+    monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
+    copilot.run_turn(con, source["id"], "my answer is 4", [
+        {"role": "you", "text": "/quiz"}, {"role": "slim", "text": "What is 2+2?"}], "quick", vault=vault)
+    assert seen["messages"][1]["content"].startswith("Quiz me on this note. Ask ONE question now")
+
+
+def test_an_overflowing_prompt_is_never_offered_as_a_proposal(con, vault, monkeypatch):
+    source = open_source(con, vault, note(vault, "Notes/work/a.md", "text\n"))
+    monkeypatch.setattr(copilot.llm, "chat_stream", lambda messages, **k: (
+        "FILE: Notes/work/a.md\n<<<<<<< SEARCH\ntext\n=======\nnew\n>>>>>>> REPLACE\n",
+        {"ctx_saturated": True}))
+    with pytest.raises(copilot.CopilotError, match="too long for one request"):
+        copilot.run_turn(con, source["id"], "fix it", [], "quick", edit=True, vault=vault)
+
+
+def test_section_of_skips_code_fences_and_the_derived_summary():
+    text = ("<!-- slim:summary -->\n## Notes\nmodel opinion\n<!-- /slim:summary -->\n"
+            "## Notes\n\nsetup:\n```bash\n# install deps\n## Notes\n```\nafter\n## Transcript\nMe: x\n")
+    assert copilot.section_of(text, "Notes") == "setup:\n```bash\n# install deps\n## Notes\n```\nafter"
+
+
+def test_a_partial_link_path_ends_at_a_folder_boundary(con, vault):
+    open_path = note(vault, "Notes/work/plan.md", "the plan\n")
+    note(vault, "Notes/homework/budget.md", "wrong\n")
+    right = note(vault, "Notes/work/sub/budget.md", "right\n")
+    for path in ("Notes/homework/budget.md", right):
+        open_source(con, vault, path)
+    assert copilot.resolve_link(con, vault, "work/sub/budget", open_path) == right
+    assert copilot.resolve_link(con, vault, "ork/sub/budget", open_path) is None
 
 
 def test_a_broken_vault_skill_says_which_file_to_fix(con, vault, monkeypatch):
@@ -157,15 +203,14 @@ def test_a_broken_vault_skill_says_which_file_to_fix(con, vault, monkeypatch):
         copilot.run_turn(con, source["id"], "/bad", [], "quick", vault=vault)
 
 
-def test_ask_mode_hands_the_selection_to_the_model_with_the_question(con, vault, monkeypatch):
+def test_ask_mode_never_sends_the_selection(con, vault, monkeypatch):
+    """A selection left in the note rode along with every Ask question, unseen (review 2026-09-23)."""
     source = open_source(con, vault, note(vault, "Notes/work/a.md", "text\n"))
     seen = {}
-    monkeypatch.setattr(copilot.search_mod, "hybrid",
-                        lambda _con, query, **k: seen.update(query=query) or [])
+    monkeypatch.setattr(copilot.search_mod, "hybrid", lambda *a, **k: [])
     monkeypatch.setattr(copilot.llm, "chat_stream",
                         lambda messages, **k: seen.update(user=messages[-1]["content"]) or ("ok", {}))
     monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
     copilot.run_turn(con, source["id"], "what does this mean?", [], "quick",
-                     selection="  $E = mc^2$ ", vault=vault)
-    assert seen["user"] == "I selected this in the note:\n\n$E = mc^2$\n\nwhat does this mean?"
-    assert seen["query"] == "what does this mean?"
+                     selection="leftover", vault=vault)
+    assert seen["user"] == "what does this mean?"

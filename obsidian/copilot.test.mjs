@@ -34,7 +34,8 @@ Module._load = function (request) {
 
 const { CopilotView, RenameModal, SSEParser, groupThreads, streamRequest,
         groupCitations, noteTitle, normalizeMath, SUGGESTED_PROMPTS, metaText,
-        sha256Hex, lineDiff, slashQuery, matchSkills, inputsText, editorSelection } =
+        sha256Hex, lineDiff, slashQuery, matchSkills, inputsText, editorSelection,
+        visibleStream, historyText } =
   createRequire(import.meta.url)(path.join(HERE, "main.js"));
 
 test("SSE parsing survives arbitrary chunk boundaries", () => {
@@ -1154,13 +1155,15 @@ test("the selection comes from the pane showing the open note, not the focused o
   assert.equal(editorSelection(app, "Notes/none.md"), "");
 });
 
-function proposalVault(files) {
+function proposalVault(files, { slow = 0 } = {}) {
   const writes = [];
+  const wait = () => new Promise((done) => setTimeout(done, slow));
   return {
     writes,
+    adapter: { exists: async (p) => Object.keys(files).some((k) => k.toLowerCase() === p.toLowerCase()) },
     getAbstractFileByPath: (p) => (p in files ? { path: p } : null),
     read: async (file) => files[file.path],
-    async process(file, fn) { const next = fn(files[file.path]); writes.push(["modify", file.path]); files[file.path] = next; return next; },
+    async process(file, fn) { await wait(); const next = fn(files[file.path]); if (next !== files[file.path]) writes.push(["modify", file.path]); files[file.path] = next; return next; },
     async create(p, text) { writes.push(["create", p]); files[p] = text; return { path: p }; },
   };
 }
@@ -1173,7 +1176,7 @@ function proposalView(vault, saved = [], indexed = []) {
       return {};
     },
   });
-  view.app = { vault, workspace: { openLinkText() {} } };
+  view.app = { vault, workspace: { openLinkText() {}, getLeavesOfType: () => [] } };
   view.render = () => {};
   view.activeThread = { id: "chat-1", source_id: "s1", source_path: "Notes/a.md" };
   return view;
@@ -1213,6 +1216,12 @@ test("reject writes nothing and a create never overwrites an existing note", asy
   assert.deepEqual(vault.writes, []);
   assert.equal(proposal.files[0].status, "failed");
   assert.match(proposal.files[0].error, /already exists/);
+  // The filesystem's check is case-insensitive: `a.MD`/`notes/A.md` spellings never overwrite.
+  const clash = { path: "notes/A.md", kind: "create", base_hash: null, after: "x\n", blocks: [] };
+  view.turns[0].turn.proposal.files.push(clash);
+  await view.decide(proposal, [clash], "accept");
+  assert.equal(clash.status, "failed");
+  assert.equal(files["Notes/a.md"], "mine\n");
   assert.equal(proposal.files[1].status, "rejected");
 });
 
@@ -1227,7 +1236,7 @@ test("a decided file shows its outcome instead of the buttons", () => {
   const texts = [];
   (function walk(el) { texts.push(el.textContent); el.children.forEach(walk); })(message);
   assert.ok(texts.includes("Applied"));
-  assert.ok(texts.includes("One change was not applied: text not found in the note"));
+  assert.ok(texts.includes("Not proposed: text not found in the note"));
   assert.ok(texts.includes("Not proposed: Notes/o.md — not in view"));
   assert.ok(!texts.includes("Accept"));
 });
@@ -1248,4 +1257,107 @@ test("an edit-mode question carries the toggle and the open note's selection", a
   assert.equal(body.edit, true);
   assert.equal(body.selection, "picked");
   assert.equal(body.question, "/tidy");
+});
+
+
+test("a double click or Accept all over an in-flight file writes once and records it applied", async () => {
+  const files = { "Notes/a.md": "old\n", "Notes/b.md": "b\n" };
+  const vault = proposalVault(files, { slow: 5 });
+  const saved = [];
+  const view = proposalView(vault, saved);
+  const a = { path: "Notes/a.md", kind: "edit", base_hash: sha256Hex("old\n"), after: "new\n", blocks: [] };
+  const b = { path: "Notes/b.md", kind: "edit", base_hash: sha256Hex("b\n"), after: "B\n", blocks: [] };
+  const proposal = { files: [a, b] };
+  view.turns = [{ role: "you", text: "q" }, { role: "slim", text: "x", turn: { proposal } }];
+  await Promise.all([view.decide(proposal, [a], "accept"), view.decide(proposal, [a], "accept"),
+                     view.decide(proposal, [a, b], "accept")]);
+  assert.deepEqual([a.status, b.status], ["accepted", "accepted"]);
+  assert.deepEqual(vault.writes, [["modify", "Notes/a.md"], ["modify", "Notes/b.md"]]);
+  assert.equal(a.after, undefined);                      // decided files stop carrying the text
+  assert.equal(saved.at(-1).turns[1].turn.proposal.files[0].status, "accepted");
+});
+
+test("reopening the chat mid-write keeps the decision; deleting it keeps it deleted", async () => {
+  const files = { "Notes/a.md": "old\n" };
+  const saved = [];
+  const view = proposalView(proposalVault(files, { slow: 5 }), saved);
+  const file = () => ({ path: "Notes/a.md", kind: "edit", base_hash: sha256Hex("old\n"), after: "new\n", blocks: [] });
+  const proposal = { files: [file()] };
+  view.turns = [{ role: "you", text: "q" }, { role: "slim", text: "x", turn: { proposal } }];
+  const pending = view.decide(proposal, proposal.files, "accept");
+  // openThread lands meanwhile with fresh objects from the server.
+  view.turns = [{ role: "you", text: "q" }, { role: "slim", text: "x", turn: { proposal: { files: [file()] } } }];
+  await pending;
+  assert.equal(view.turns[1].turn.proposal.files[0].status, "accepted");
+  assert.equal(saved.at(-1).turns[1].turn.proposal.files[0].status, "accepted");
+
+  const gone = proposalView(proposalVault({ "Notes/a.md": "old\n" }, { slow: 5 }), []);
+  const p2 = { files: [file()] };
+  gone.turns = [{ role: "slim", text: "x", turn: { proposal: p2 } }];
+  gone.plugin.postJSON = async (route, body) => { if (route.endsWith("save")) gone.savedAfterDelete = body; return {}; };
+  const late = gone.decide(p2, p2.files, "accept");
+  gone.deleteArmed = "chat-1";
+  await gone.deleteThread("chat-1");
+  gone.savedAfterDelete = null;
+  await late;
+  assert.equal(gone.savedAfterDelete, null);
+});
+
+test("no regenerate after an accepted change, and no question while a write is in flight", async () => {
+  const view = proposalView(proposalVault({}));
+  const answer = { role: "slim", text: "x", turn: { proposal: { files: [{ path: "a", status: "accepted" }] } } };
+  view.turns = [{ role: "you", text: "q" }, answer];
+  let streamed = false;
+  view.plugin.streamCopilot = async () => { streamed = true; };
+  await view.regenerate();
+  assert.equal(view.turns.length, 2);
+  view.context = { source: { id: "s1", path: "Notes/a.md" } };
+  view.applying.add({});
+  await view.send("next");
+  assert.equal(streamed, false);
+});
+
+test("an Ask question never carries a leftover selection; Edit and /commands do", async () => {
+  const bodies = [];
+  const view = makeView({
+    postJSON: async (route) => route.endsWith("context") ? { source: { id: "s1", path: "Notes/a.md" } } : {},
+    streamCopilot: async (sent, handlers) => { bodies.push(sent); handlers.turn({ answer: "ok", citations: [] }); },
+  });
+  const leaf = { view: { file: { path: "Notes/a.md" }, getMode: () => "source", editor: { getSelection: () => "picked" } } };
+  view.app = { workspace: { getLeavesOfType: () => [leaf], getMostRecentLeaf: () => leaf } };
+  view.render = () => {};
+  view.context = { source: { id: "s1", path: "Notes/a.md" }, related: [] };
+  await view.send("what is this?");
+  await view.send("/explain");
+  view.editMode = true;
+  await view.send("tidy it");
+  assert.deepEqual(bodies.map((b) => b.selection), ["", "picked", "picked"]);
+  leaf.view.getMode = () => "preview";                  // reading mode: the selection is invisible
+  assert.equal(editorSelection(view.app, "Notes/a.md"), "");
+});
+
+test("the streaming view hides the change blocks, and history names what was proposed", () => {
+  assert.equal(visibleStream("I will fix it.\nFILE: Notes/a.md\n<<<<<<< SEARCH\nx"),
+               "I will fix it.\n\n*Writing the proposed changes…*");
+  assert.equal(visibleStream("plain answer"), "plain answer");
+  assert.equal(historyText({ role: "slim", text: "Done.", turn: { proposal: { files: [
+    { path: "Notes/a.md", kind: "edit", status: "accepted" }, { path: "Notes/b.md", kind: "create" }] } } }),
+    "Done.\n\n[Proposed changes: Notes/a.md (edit, accepted); Notes/b.md (create, not yet accepted)]");
+  assert.equal(historyText({ role: "you", text: "q" }), "q");
+});
+
+test("a change too large to show in full cannot be accepted", async () => {
+  const before = Array.from({ length: 6000 }, (_, i) => `line ${i}`).join("\n");
+  const after = Array.from({ length: 6000 }, (_, i) => `other ${i}`).join("\n");
+  const view = proposalView(proposalVault({ "Notes/a.md": before }));
+  const accept = fakeEl("button");
+  await view.fillDiff(fakeEl("div"), fakeEl("div"),
+    { path: "Notes/a.md", kind: "edit", base_hash: sha256Hex(before), after }, accept);
+  assert.equal(accept.disabled, true);
+  const small = fakeEl("div");
+  const ok = fakeEl("button");
+  await view.fillDiff(small, fakeEl("div"),
+    { path: "Notes/a.md", kind: "edit", base_hash: sha256Hex(before), after: before.replace("line 5\n", "") }, ok);
+  assert.notEqual(ok.disabled, true);
+  assert.equal(small.children[0].textContent, "+0 −1 lines");
 });

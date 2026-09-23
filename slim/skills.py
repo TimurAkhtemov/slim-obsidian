@@ -13,7 +13,7 @@ retrieval, and never the model:
     filter:  {type: meeting}             folder only: frontmatter equality
     section: Notes                       keep only this heading's section of each note
     output:  chat | edit | new-note      edit and new-note always propose changes to accept
-    mode:    quick | deep                the default depth; the sidebar's selector still wins
+    mode:    quick | deep                the depth this skill always runs at
 """
 from __future__ import annotations
 
@@ -116,6 +116,14 @@ def invocation(question: str, loaded: dict[str, Skill]) -> tuple[Skill, str] | N
     if not match or match.group(1) not in loaded:
         return None
     return loaded[match.group(1)], (match.group(2) or "").strip()
+
+
+def expand(text: str, loaded: dict[str, Skill]) -> str:
+    """A `/command` turn as the model should read it: the skill's prompt, else the text as is."""
+    found = invocation(text, loaded) if text.startswith("/") else None
+    if not found or found[0].error:
+        return text
+    return render_prompt(*found)
 
 
 def render_prompt(skill: Skill, args: str) -> str:

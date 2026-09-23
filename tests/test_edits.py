@@ -97,17 +97,96 @@ def test_empty_search_appends_to_an_existing_note():
 
 
 def test_recorded_note_protects_frontmatter_block_and_transcript_but_not_what_follows():
-    blocks = [
-        edits.Block("p", "type: meeting\n", "type: lecture\n"),
-        edits.Block("p", "ship friday\n", "ship monday\n"),
-        edits.Block("p", "Me: we ship friday\n", "Me: we ship monday\n"),
-        edits.Block("p", "Afterwards I wrote this line.\n", "Afterwards, a better line.\n"),
-    ]
-    after, results = edits.apply_blocks(MEETING, blocks)
-    assert [r["ok"] for r in results] == [False, False, False, True]
-    assert results[0]["reason"] == "part of the recording; SLIM never edits it"
-    assert "type: meeting" in after and "Me: we ship friday" in after
-    assert after.endswith("Afterwards, a better line.\n")
+    for search, replace in [("type: meeting\n", "type: lecture\n"), ("ship friday\n", "ship monday\n"),
+                            ("Me: we ship friday\n", "Me: we ship monday\n")]:
+        after, results = edits.apply_blocks(MEETING, [edits.Block("p", search, replace)])
+        assert after == MEETING and results[0]["reason"] == edits.PROTECTED
+    after, results = edits.apply_blocks(
+        MEETING, [edits.Block("p", "Afterwards I wrote this line.\n", "Afterwards, a better line.\n")])
+    assert results == [{"ok": True}] and after.endswith("Afterwards, a better line.\n")
+
+
+def test_a_file_applies_all_or_nothing():
+    """A move is a delete plus an insert: the delete alone lost the section (review 2026-09-23)."""
+    text = "# A\nsection A body\n# B\nbody b\n"
+    after, results = edits.apply_blocks(text, [
+        edits.Block("p", "# A\nsection A body\n", ""),
+        edits.Block("p", "body B TYPO\n", "body b\n# A\nsection A body\n")])
+    assert after == text
+    assert results[1] == {"ok": False, "reason": "text not found in the note"}
+    assert results[0]["ok"] is False and results[0]["reason"].startswith("held back")
+
+
+def test_a_repeated_block_applies_once():
+    change = block("Notes/a.md", "## Tasks\n", "## Tasks\n- [ ] call Bob\n")
+    _prose, blocks = edits.parse(change * 3 + block("Notes/a.md", "", "Summary: done\n") * 2)
+    assert len(blocks) == 2
+
+
+def test_a_match_starts_at_a_line_start():
+    after, _ = edits.apply_blocks("Grand Total: 5\nTotal: 5  \nend\n",
+                                  [edits.Block("p", "Total: 5\n", "Total: 6\n")])
+    assert after == "Grand Total: 5\nTotal: 6\nend\n"
+    after, results = edits.apply_blocks("Grand Total: 5\n", [edits.Block("p", "Total: 5\n", "x\n")])
+    assert results[0]["reason"] == "text not found in the note"
+
+
+def test_an_append_lands_before_a_transcript_that_runs_to_the_end():
+    memo = "---\ntype: meeting-note\n---\n\nmy line\n\n## Transcript\n\nMe: we ship friday\n"
+    after, results = edits.apply_blocks(memo, [edits.Block("p", "", "- [ ] follow up\n")])
+    assert results == [{"ok": True}]
+    assert after == ("---\ntype: meeting-note\n---\n\nmy line\n\n- [ ] follow up\n\n"
+                     "## Transcript\n\nMe: we ship friday\n")
+
+
+def test_a_proposal_cannot_unlock_the_transcript_with_a_decoy_fence():
+    memo = "my own line\n\n## Transcript\n\nMe: we ship friday\n"
+    after, results = edits.apply_blocks(memo, [
+        edits.Block("p", "my own line\n", "my own line\n````slim-meeting\n````\n"),
+        edits.Block("p", "Me: we ship friday\n", "Me: we ship NEVER\n")])
+    assert after == memo and not any(r["ok"] for r in results)
+    # Even without adding markers, a change that alters a protected slice is refused whole.
+    after, results = edits.apply_blocks(MEETING, [
+        edits.Block("p", "Afterwards I wrote this line.\n", "x\n"),
+        edits.Block("p", "Me: we ship friday\n", "Me: no\n")])
+    assert after == MEETING
+
+
+def test_a_divider_inside_search_is_not_the_split():
+    note = "Title\n=======\n\nBody\n"
+    answer = ("FILE: Notes/a.md\n<<<<<<< SEARCH\nTitle\n=====\n=======\nBetter Title\n=====\n"
+              ">>>>>>> REPLACE\n")
+    _prose, (only,) = edits.parse(answer)
+    assert (only.search, only.replace) == ("Title\n=====\n", "Better Title\n=====\n")
+    ambiguous = "FILE: Notes/a.md\n<<<<<<< SEARCH\nTitle\n=======\n=======\nx\n>>>>>>> REPLACE\n"
+    _prose, (bad,) = edits.parse(ambiguous)
+    assert bad.problem == "the change was malformed"
+    assert edits.apply_blocks(note, [bad])[0] == note
+
+
+def test_the_file_path_does_not_carry_across_prose_and_prose_file_lines_stay_prose():
+    answer = (block("Notes/a.md", "x\n", "y\n") + "Now the second part.\n"
+              "<<<<<<< SEARCH\nz\n=======\nw\n>>>>>>> REPLACE\n"
+              "File: the quarterly report is attached.\n")
+    prose, blocks = edits.parse(answer)
+    assert [b.path for b in blocks] == ["Notes/a.md", None]
+    assert "File: the quarterly report is attached." in prose
+
+
+def test_backslash_colon_and_case_variant_paths_are_refused():
+    for raw in ["Notes\\..\\..\\escaped.md", "Attachments\\x.md", "C:x.md", "attachments/x.md",
+                "_reflections/x.md", "Notes/.obsidian/x.md", "Notes/cafe\u0301.md"]:
+        assert edits.note_path(raw) is None, raw
+    assert edits.note_path("Notes/work/a note.md") == "Notes/work/a note.md"
+
+
+def test_an_empty_result_and_a_deleted_line_behave():
+    after, results = edits.apply_blocks("only\n", [edits.Block("p", "only\n", "")])
+    assert after == "" and results == [{"ok": True}]          # propose() refuses the empty file
+    after, _ = edits.apply_blocks("a  \nb\n", [edits.Block("p", "a\n", "")])
+    assert after == "b\n"
+    after, _ = edits.apply_blocks("a\nlast", [edits.Block("p", "last\n", "LAST\n")])
+    assert after == "a\nLAST"                                   # no final newline stays so
 
 
 def test_an_ordinary_note_is_editable_everywhere_including_frontmatter():
@@ -134,7 +213,7 @@ def test_propose_edits_notes_in_view_and_creates_notes_in_existing_folders(vault
     edit, create = proposal["files"]
     assert edit["kind"] == "edit" and edit["after"] == "alpha\nBETA\n"
     assert edit["base_hash"] == edits.digest("alpha\nbeta\n")
-    assert create["kind"] == "create" and create["after"] == "# New\n\nhello\n"
+    assert create["kind"] == "create" and create["after"] == "---\norigin: copilot\n---\n\n# New\n\nhello\n"
     assert create["base_hash"] is None
     assert proposal["dropped"] == []
 
@@ -172,3 +251,38 @@ def test_propose_refuses_an_incomplete_block_rather_than_applying_half(vault):
     proposal = edits.propose(vault, blocks, in_view={"Notes/school/a.md"})
     assert proposal["files"][0]["after"] is None
     assert proposal["files"][0]["blocks"][0]["reason"] == "cut off before the change ended"
+
+
+def test_propose_refuses_to_empty_a_note(vault):
+    proposal = edits.propose(vault, [edits.Block("Notes/school/a.md", "alpha\nbeta\n", "")],
+                             in_view={"Notes/school/a.md"})
+    assert proposal["files"][0]["after"] is None
+    assert proposal["files"][0]["blocks"][0]["reason"] == "would leave the note empty"
+
+
+def test_propose_keeps_journal_text_in_journal(vault):
+    (vault / "Journal").mkdir()
+    (vault / "Journal/day.md").write_text("private\n", encoding="utf-8")
+    proposal = edits.propose(vault, [edits.Block("Notes/school/copy.md", "", "private\n"),
+                                     edits.Block("Journal/day.md", "private\n", "private!\n")],
+                             in_view={"Journal/day.md"})
+    assert [f["path"] for f in proposal["files"]] == ["Journal/day.md"]
+    assert proposal["dropped"] == [{"path": "Notes/school/copy.md",
+                                    "reason": "a Journal note's text stays in Journal/"}]
+
+
+def test_propose_refuses_case_variants_crlf_and_huge_notes(vault):
+    (vault / "Notes/school/crlf.md").write_bytes(b"one\r\ntwo\r\n")
+    (vault / "Notes/school/big.md").write_text("x" * (edits.MAX_EDIT_CHARS + 1), encoding="utf-8")
+    proposal = edits.propose(vault, [
+        edits.Block("notes/school/A.md", "alpha\n", "x\n"),
+        edits.Block("notes/School/new.md", "", "x\n"),
+        edits.Block("Notes/school/crlf.md", "one\n", "1\n"),
+        edits.Block("Notes/school/big.md", "", "more\n"),
+    ], in_view={"notes/school/A.md", "Notes/school/crlf.md", "Notes/school/big.md"})
+    assert proposal["files"] == []
+    reasons = {item["path"]: item["reason"] for item in proposal["dropped"]}
+    assert reasons["notes/school/A.md"] == "a note with this name exists in different letter case"
+    assert reasons["notes/School/new.md"] == "folder does not exist"
+    assert reasons["Notes/school/crlf.md"].startswith("uses Windows line endings")
+    assert reasons["Notes/school/big.md"] == "too large to edit from the sidebar"
