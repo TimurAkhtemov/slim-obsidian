@@ -94,6 +94,31 @@ def test_set_frontmatter_replaces_a_block_list_instead_of_appending_a_second_key
     assert "date: 2026-06-01" in out and out.endswith("\nbody\n")
 
 
+def test_a_block_list_reads_as_a_list():
+    """Obsidian's property editor writes every list as a block list. The reader took the bare
+    `tags:` for an empty string and skipped the `- item` lines, so a note edited there lost its
+    tags, topics and audio to every reader."""
+    text = ('---\ntitle: "x"\ntags:\n  - lecture\n  - "ml"\ntopics:\n- svm\n'
+            'date: 2026-06-01\n---\n\nbody\n')
+    fm, skip = chunk.parse_frontmatter(text)
+    assert fm["tags"] == ["lecture", "ml"]
+    assert fm["topics"] == ["svm"]            # YAML allows the dash at the key's own indent
+    assert fm["date"] == "2026-06-01" and skip == 9
+
+
+def test_a_bare_key_with_no_list_is_still_empty():
+    fm, _ = chunk.parse_frontmatter("---\ntitle: x\ntags:\ndate: 2026-06-01\n---\n")
+    assert fm["tags"] == "" and fm["date"] == "2026-06-01"
+
+
+def test_a_hash_tag_item_survives_a_write_and_a_read():
+    """`[idea, #todo]` is YAML for `[idea]` plus a comment: Obsidian would show one tag."""
+    out = chunk.set_frontmatter("---\ntitle: x\n---\n", {"tags": ["idea", "#todo"]})
+    fm, _ = chunk.parse_frontmatter(out)
+    assert fm["tags"] == ["idea", "#todo"]
+    assert ' #' not in out.split("tags:", 1)[1].splitlines()[0]
+
+
 # --- key order (2026-08-06) -----------------------------------------------------------------
 
 def test_a_new_key_lands_at_its_canonical_position_not_at_the_end():

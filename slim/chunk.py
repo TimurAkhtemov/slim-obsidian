@@ -25,9 +25,16 @@ def parse_frontmatter(text: str) -> tuple[dict, int]:
     if not lines or lines[0].strip() != "---":
         return {}, 0
     fm = {}
+    block = None    # a bare `key:` just read, which the `- item` lines below it belong to
     for i, line in enumerate(lines[1:], start=1):
         if line.strip() == "---":
             return fm, i + 1
+        # A BLOCK LIST — `key:` then `  - item` lines — is how Obsidian's property editor
+        # writes every list, so one edit there turns `audio: [a, b]` into this shape.
+        item = re.match(r"^\s*-\s+(.*)$", line)
+        if item and block is not None:
+            fm[block] = [*(fm[block] or []), item.group(1).strip().strip("\"'")]
+            continue
         m = re.match(r"^(\w[\w-]*):\s*(.*)$", line)
         if m:
             key, val = m.group(1), m.group(2).strip().strip("\"'")
@@ -35,6 +42,7 @@ def parse_frontmatter(text: str) -> tuple[dict, int]:
                 fm[key] = [v.strip().strip("\"'") for v in val[1:-1].split(",") if v.strip()]
             else:
                 fm[key] = val
+            block = key if not val else None
     return {}, 0  # unterminated frontmatter: treat as body
 
 
@@ -278,7 +286,9 @@ def set_frontmatter(text: str, updates: dict[str, object]) -> str:
 
     def render(key: str, value) -> str:
         if isinstance(value, (list, tuple)):
-            return f"{key}: [{', '.join(str(v) for v in value)}]"
+            # A bare `#` after a space opens a YAML comment: `[idea, #todo]` is one tag.
+            items = (f'"{v}"' if str(v).startswith("#") else str(v) for v in value)
+            return f"{key}: [{', '.join(items)}]"
         return f"{key}: {value}"
 
     for key, value in updates.items():

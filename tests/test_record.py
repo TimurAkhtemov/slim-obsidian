@@ -432,6 +432,23 @@ def test_a_resumed_segment_can_bring_speakers_to_a_note_that_had_none(tmp_path):
     assert fm.get("speakers_by") == "channels"
 
 
+def test_a_resume_keeps_audio_that_obsidian_rewrote_as_a_block_list(tmp_path):
+    """Editing any property in Obsidian rewrites the note's lists as block lists. The resume
+    read that `audio:` as empty and replaced it with the new segment alone, orphaning the
+    first recording from its note."""
+    r = _write(tmp_path)
+    text = r.note.read_text(encoding="utf-8")
+    fm, _ = parse_frontmatter(text)
+    first, digest = fm["audio"], fm["audio_sha256"]
+    text = text.replace(f"audio: {first}", f"audio:\n  - {first}")
+    text = text.replace(f"audio_sha256: {digest}", f"audio_sha256:\n  - {digest}")
+    grown = record.append_audio_frontmatter(
+        text, rels=["Attachments/Recordings/b.webm"], digests=["b" * 64], seconds=5.0)
+    fm2, _ = parse_frontmatter(grown)
+    assert fm2["audio"] == [first, "Attachments/Recordings/b.webm"]
+    assert fm2["audio_sha256"] == [digest, "b" * 64]
+
+
 def test_audio_frontmatter_has_one_writer(tmp_path):
     """CLAUDE.md: record.py remains the sole writer of a recorded note's frontmatter. The
     append path was setting `audio`, `audio_sha256` and `audio_seconds` from chat.py, reaching
