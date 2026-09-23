@@ -8,7 +8,6 @@ are the history. Past ~20 items is a signal about scope, not a reason for headin
 - [ ] Copilot slash-commands: a sidebar invocation that runs a deterministic tool or skill on the open note.
 - [ ] Copilot markdown edits: small reads/writes on the open note (the persona still says "You cannot edit files yet").
 - [ ] A `[[wikilink]]` in a rendered copilot answer has no click handler — verify, then delegate clicks on `a.internal-link`.
-- [ ] The raw Notion export (`Export-*/`, 376 files) sits in the old `SLIM` checkout, outside the vault and so outside the backup; with Notion gone it is the only copy. Move it under `Attachments/` (backed up, not indexed).
 - [ ] Cloud providers — ratified 2026-09-01 as DEFERRED guidance; `Journal/` stays local.
 - [ ] `lecture` vs `learning` is an unstable distinction; collapse when the vocabulary is next touched.
 - [ ] Stale vault path: `scripts/pdf2md.py:465` (and its usage line 8) defaults `--vault` to `~/Documents/Obsidian Vault`; the vault is now the iCloud container. Route through `vaultpath.discover_vault()`.
