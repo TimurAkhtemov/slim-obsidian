@@ -59,7 +59,7 @@ const TYPES = [
 // machine-specific bug.
 const DEFAULTS = {
   port: 7546,
-  repoPath: `${os.homedir()}/Programming/Personal/SLIM`,
+  repoPath: `${os.homedir()}/Programming/Personal/slim-public`,
   uvPath: `${os.homedir()}/.local/bin/uv`,
   recordVoice: true,
   lastType: "meeting-note",
