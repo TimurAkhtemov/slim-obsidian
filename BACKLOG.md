@@ -9,3 +9,4 @@ are the history. Past ~20 items is a signal about scope, not a reason for headin
 - [ ] Cloud providers — ratified 2026-09-01 as DEFERRED guidance; `Journal/` stays local.
 - [ ] Tell remote speakers apart (Speaker 1, Speaker 2): a voice-clustering model on the system channel, replacing `speakers.label_tokens`. Test with a panel podcast played as system audio.
 - [ ] In-room meetings on one microphone: the same model on the mic channel; "which cluster is me" needs an enrollment or a rename on the card. Test with a podcast played out of the speakers into the mic.
+- [ ] `chunk.parse_frontmatter` reads a block list (`tags:` then `  - item` lines) as `''`, so those tags/topics are invisible to everything that reads the index; 9 notes in `Capture/` and `Notes/` are written that way. Parse block lists; `set_frontmatter` also writes flow lists unquoted, so a `#tag` item would become a YAML comment.
