@@ -2925,11 +2925,38 @@ class CopilotView extends ItemView {
   getIcon() { return "message-square-text"; }
 
   async onOpen() {
+    // On the root, which outlives every render(): answers are rebuilt, the listener is not.
+    const root = this.contentEl;
+    if (typeof this.registerDomEvent === "function") {
+      this.registerDomEvent(root, "click", (event) => this.onLinkClick(event));
+    } else if (root && typeof root.addEventListener === "function") {
+      root.addEventListener("click", (event) => this.onLinkClick(event));
+    }
     const file = this.app.workspace.getActiveFile ? this.app.workspace.getActiveFile() : null;
     await this.setActiveFile(file);
   }
 
   async onClose() { this.cancel(); }
+
+  // MarkdownRenderer turns an answer's [[wikilink]] into <a class="internal-link">, but Obsidian
+  // wires clicks on those only inside its own note views; in this sidebar they were dead.
+  // ⚠ Resolve BEFORE opening: openLinkText creates a missing target (see openNote), and the
+  // model can name a note that does not exist.
+  onLinkClick(event) {
+    const link = event?.target?.closest?.("a.internal-link");
+    if (!link) return;
+    event.preventDefault();
+    const target = link.getAttribute("data-href") || link.getAttribute("href") || "";
+    const source = this.context?.source?.path || "";
+    const linkpath = target.split("#")[0].split("|")[0].trim();
+    const file = this.app.metadataCache?.getFirstLinkpathDest?.(linkpath, source);
+    if (!file) {
+      this.error = `Note not found: ${linkpath}`;
+      this.render();
+      return;
+    }
+    this.app.workspace.openLinkText(target, source, Boolean(event.metaKey || event.ctrlKey));
+  }
 
   async setActiveFile(file) {
     const path = file && String(file.extension || "").toLowerCase() === "md" ? file.path : null;

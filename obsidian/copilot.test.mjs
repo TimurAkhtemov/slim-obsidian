@@ -1049,3 +1049,65 @@ test("completed chat text can be selected and copied in Obsidian's ItemView", ()
   const styles = fs.readFileSync(path.join(HERE, "styles.css"), "utf8");
   assert.match(styles, /\.slim-copilot-transcript\s*\{[^}]*user-select:\s*text\s*;/s);
 });
+
+// A [[wikilink]] in an answer is rendered by MarkdownRenderer as <a class="internal-link">, and
+// Obsidian wires clicks on those only inside its own note views — in this sidebar it was dead.
+function linkView(existing) {
+  const opened = [];
+  const view = makeView({
+    app: {
+      metadataCache: {
+        getFirstLinkpathDest(linkpath, source) {
+          return existing.includes(linkpath) ? { path: `Notes/${linkpath}.md`, source } : null;
+        },
+      },
+      workspace: { openLinkText(...args) { opened.push(args); } },
+    },
+  });
+  view.context = { source: { path: "Notes/open.md" } };
+  view.render = () => {};
+  return { view, opened };
+}
+
+function linkClick(href, mods = {}) {
+  const link = { getAttribute: (name) => (name === "data-href" ? href : null) };
+  const event = {
+    ...mods,
+    target: { closest: (sel) => (sel === "a.internal-link" ? link : null) },
+    prevented: false,
+    preventDefault() { this.prevented = true; },
+  };
+  return event;
+}
+
+test("a wikilink in an answer opens the note it names", () => {
+  const { view, opened } = linkView(["Bayes rule"]);
+  const event = linkClick("Bayes rule#Evidence");
+  view.onLinkClick(event);
+  assert.equal(event.prevented, true);
+  assert.deepEqual(opened, [["Bayes rule#Evidence", "Notes/open.md", false]]);
+});
+
+test("cmd-click opens the linked note in a new tab", () => {
+  const { view, opened } = linkView(["Bayes rule"]);
+  view.onLinkClick(linkClick("Bayes rule", { metaKey: true }));
+  assert.deepEqual(opened, [["Bayes rule", "Notes/open.md", true]]);
+});
+
+test("a wikilink to a note that does not exist never creates one", () => {
+  // openLinkText CREATES a missing target — an empty phantom the next ingest indexes.
+  const { view, opened } = linkView([]);
+  const event = linkClick("Invented title");
+  view.onLinkClick(event);
+  assert.equal(event.prevented, true);
+  assert.deepEqual(opened, []);
+  assert.match(view.error, /Note not found: Invented title/);
+});
+
+test("a click that is not on a wikilink is left alone", () => {
+  const { view, opened } = linkView(["Bayes rule"]);
+  const event = { target: { closest: () => null }, preventDefault() { this.prevented = true; } };
+  view.onLinkClick(event);
+  assert.equal(event.prevented, undefined);
+  assert.deepEqual(opened, []);
+});
