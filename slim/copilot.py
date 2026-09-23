@@ -293,11 +293,11 @@ def _note_date(path: Path, fm: dict) -> str:
     return datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds")
 
 
-def _passes(fm: dict, wanted: dict) -> bool:
-    for key, value in wanted.items():
+def _passes(fm: dict, wanted: dict[str, list[str]]) -> bool:
+    for key, options in wanted.items():
         have = fm.get(key)
-        values = have if isinstance(have, list) else [have]
-        if value.casefold() not in {str(v).casefold() for v in values if v is not None}:
+        values = {str(v).casefold() for v in (have if isinstance(have, list) else [have]) if v is not None}
+        if not values & {option.casefold() for option in options}:
             return False
     return True
 
@@ -398,7 +398,7 @@ def gather(con, vault: Path, source: dict, *, skill: skills_mod.Skill | None = N
                 continue
             found.append((_note_date(file, fm), path, body))
         if not found and not pack.skipped:
-            wanted = ", ".join(f"{k}: {v}" for k, v in skill.filter.items()) or "any"
+            wanted = "; ".join(f"{k}: {' or '.join(v)}" for k, v in skill.filter.items()) or "any"
             raise CopilotError(f"no notes in {folder.as_posix()}/ match ({wanted})")
         kept = []
         for date, path, body in sorted(found, reverse=True):          # newest first
@@ -605,7 +605,12 @@ def run_turn(con, source_id: str, question: str, history: list[dict], mode: str,
                 raise CopilotError("these notes are too long for one request; ask about fewer notes")
             if proposing:
                 prose, blocks = edits_mod.parse(result["answer"])
-                result["proposal"] = edits_mod.propose(vault, blocks, in_view=pack.paths)
+                # What a skill may touch is its frontmatter's word, enforced here: a note in the
+                # pack can carry instructions the model obeys (measured live, 2026-09-23).
+                result["proposal"] = edits_mod.propose(
+                    vault, blocks, in_view=pack.paths,
+                    creates_only=bool(skill and skill.output == "new-note"),
+                    within=(source["path"], selection) if skill and skill.input == "selection" else None)
                 if not blocks:
                     result["proposal"] = None
                 result["answer"] = prose or "Proposed changes are below."

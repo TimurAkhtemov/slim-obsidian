@@ -1361,3 +1361,38 @@ test("a change too large to show in full cannot be accepted", async () => {
   assert.notEqual(ok.disabled, true);
   assert.equal(small.children[0].textContent, "+0 −1 lines");
 });
+
+
+test("a big removal or a lost frontmatter takes a second click and hides Accept all", async () => {
+  const before = "---\ntitle: t\n---\n" + Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n") + "\n";
+  const files = { "Notes/a.md": before };
+  const view = proposalView(proposalVault(files));
+  view.turns = [{ role: "slim", text: "x", turn: { proposal: { files: [] } } }];
+  const file = { path: "Notes/a.md", kind: "edit", base_hash: sha256Hex(before), after: "- one\n- two\n", blocks: [] };
+  view.turns[0].turn.proposal.files.push(file);
+  const summary = fakeEl("div"), accept = fakeEl("button"), all = fakeEl("button");
+  await view.fillDiff(summary, fakeEl("div"), file, accept, all);
+  assert.match(summary.children[1].textContent, /removes 33 of 34 lines · removes the frontmatter/);
+  assert.equal(all.hidden, true);
+  accept.onclick();
+  assert.equal(files["Notes/a.md"], before);          // first click only arms
+  assert.equal(accept.textContent, "Confirm: apply these removals");
+  accept.onclick();
+  await new Promise((done) => setTimeout(done, 10));
+  assert.equal(files["Notes/a.md"], "- one\n- two\n");
+});
+
+test("an edit turn that proposes nothing says nothing will be written", () => {
+  const view = makeView();
+  view.render = CopilotView.prototype.render;
+  const transcript = fakeEl("section");
+  view.el = {};
+  view.turns = [{ role: "slim", text: "I am moving the file.", turn: { edit: true, proposal: { files: [], dropped: [
+    { path: "Notes/archive/a.md", reason: "folder does not exist" }] } } }];
+  view.renderMarkdown = async () => {};
+  view.renderTranscript(transcript);
+  const texts = [];
+  (function walk(el) { texts.push(el.textContent); el.children.forEach(walk); })(transcript);
+  assert.ok(texts.includes("No change was proposed — nothing will be written."));
+  assert.ok(texts.includes("Not proposed: Notes/archive/a.md — folder does not exist"));
+});

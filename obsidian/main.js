@@ -3766,7 +3766,12 @@ class CopilotView extends ItemView {
       }
       const read = inputsText(turn.turn?.inputs);
       if (read) create(message, "small", "slim-inputs", read);
-      if (turn.turn?.proposal) this.renderProposal(message, turn.turn.proposal);
+      if (turn.turn?.proposal?.files?.length || turn.turn?.proposal?.dropped?.length) {
+        this.renderProposal(message, turn.turn.proposal);
+      }
+      if (turn.turn?.edit && !turn.turn?.proposal?.files?.some((file) => file.after != null || file.status)) {
+        create(message, "small", "slim-proposal-none", "No change was proposed — nothing will be written.");
+      }
       if (turn.turn?.verification?.truncated) {
         create(message, "small", "slim-verification", "Cut off at the length limit — ask for the rest.");
       }
@@ -3843,8 +3848,9 @@ class CopilotView extends ItemView {
     const card = create(message, "div", "slim-proposal");
     const busy = this.sending || this.applying.size > 0;
     const open = (proposal.files || []).filter((file) => file.after != null && !file.status);
+    let all = null;
     if (open.length > 1) {
-      const all = create(card, "button", "mod-cta slim-accept-all", `Accept all ${open.length}`);
+      all = create(card, "button", "mod-cta slim-accept-all", `Accept all ${open.length}`);
       all.disabled = busy;
       all.onclick = () => this.decide(proposal, open, "accept");
     }
@@ -3875,7 +3881,7 @@ class CopilotView extends ItemView {
         accept.disabled = reject.disabled = busy;
         accept.onclick = () => this.decide(proposal, [file], "accept");
         reject.onclick = () => this.decide(proposal, [file], "reject");
-        this.fillDiff(summary, diff, file, accept).catch((e) => console.error("[slim] diff", e));
+        this.fillDiff(summary, diff, file, accept, all).catch((e) => console.error("[slim] diff", e));
         continue;
       }
       this.fillDiff(summary, diff, file, null).catch((e) => console.error("[slim] diff", e));
@@ -3888,7 +3894,7 @@ class CopilotView extends ItemView {
 
   // The diff is against the note as Obsidian reads it NOW. Accept stays off when the owner
   // cannot see the whole change: a diff too long to show is not a diff they reviewed.
-  async fillDiff(summary, el, file, accept) {
+  async fillDiff(summary, el, file, accept, all = null) {
     let before = "";
     if (file.kind !== "create") {
       const target = this.app.vault.getAbstractFileByPath(file.path);
@@ -3903,9 +3909,25 @@ class CopilotView extends ItemView {
     const removed = rows.filter((row) => row.op === "-").length;
     const lines = before ? before.split("\n").length : 0;
     create(summary, "span", "", `+${added} −${removed} lines`);
-    if (lines >= 4 && removed / lines > 0.5) {
-      create(summary, "span", "slim-proposal-problem",
-        ` · removes ${Math.round((100 * removed) / lines)}% of this note`);
+    // The model's prose cannot be trusted to mention what goes (measured: a "3-bullet summary"
+    // took the frontmatter with it). Code says it, and a big removal takes a second click.
+    const warnings = [];
+    if (removed > 20 || (lines >= 4 && removed / lines > 0.3)) {
+      warnings.push(`removes ${removed} of ${lines} lines`);
+    }
+    if (/^---\r?\n/.test(before) && !/^---\r?\n/.test(file.after)) warnings.push("removes the frontmatter");
+    if (warnings.length) {
+      create(summary, "span", "slim-proposal-problem", ` · ${warnings.join(" · ")}`);
+      if (all) all.hidden = true;
+      if (accept) {
+        let armed = false;
+        accept.textContent = "Accept…";
+        accept.onclick = () => {
+          if (armed) { this.decide(null, [file], "accept"); return; }
+          armed = true;
+          accept.textContent = "Confirm: apply these removals";
+        };
+      }
     }
     for (const row of rows.slice(0, MAX_DIFF_ROWS)) {
       const cls = row.op === "+" ? "is-add" : row.op === "-" ? "is-del" : row.op === "…" ? "is-gap" : "is-same";

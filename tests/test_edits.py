@@ -230,7 +230,7 @@ def test_propose_drops_paths_the_owner_did_not_put_in_view(vault):
     proposal = edits.propose(vault, blocks, in_view={"Notes/school/a.md"})
     assert proposal["files"] == []
     reasons = {item["path"]: item["reason"] for item in proposal["dropped"]}
-    assert reasons["Notes/school/b.md"] == "not in view; link it as [[b]] to let SLIM edit it"
+    assert reasons["Notes/school/b.md"] == "not part of this request"
     assert reasons["Notes/elsewhere/new.md"] == "folder does not exist"
     assert reasons["../escape.md"] == "not a note path in this vault"
     assert reasons[".obsidian/app.md"] == "not a note path in this vault"
@@ -286,3 +286,23 @@ def test_propose_refuses_case_variants_crlf_and_huge_notes(vault):
     assert reasons["notes/School/new.md"] == "folder does not exist"
     assert reasons["Notes/school/crlf.md"].startswith("uses Windows line endings")
     assert reasons["Notes/school/big.md"] == "too large to edit from the sidebar"
+
+
+def test_a_fuzzy_match_keeps_hard_breaks_on_unchanged_lines():
+    text = "first line  \nsecond line  \nthird\n"
+    after, _ = edits.apply_blocks(text, [edits.Block("p", "first line\nsecond line\n",
+                                                     "first line\nsecond line, fixed\n")])
+    assert after == "first line  \nsecond line, fixed\nthird\n"
+
+
+def test_a_new_note_skill_only_creates_and_a_selection_skill_stays_inside_the_selection(vault):
+    only_new = edits.propose(vault, [edits.Block("Notes/school/a.md", "beta\n", "B\n"),
+                                     edits.Block("Notes/school/n.md", "", "x\n")],
+                             in_view={"Notes/school/a.md"}, creates_only=True)
+    assert [f["path"] for f in only_new["files"]] == ["Notes/school/n.md"]
+    assert only_new["dropped"] == [{"path": "Notes/school/a.md", "reason": "this skill only creates new notes"}]
+    inside = edits.propose(vault, [edits.Block("Notes/school/a.md", "beta\n", "B\n"),
+                                   edits.Block("Notes/school/a.md", "alpha\n", "A\n")],
+                           in_view={"Notes/school/a.md"}, within=("Notes/school/a.md", "beta  \n"))
+    assert inside["files"][0]["after"] == "alpha\nB\n"
+    assert inside["dropped"] == [{"path": "Notes/school/a.md", "reason": "outside the text you selected"}]

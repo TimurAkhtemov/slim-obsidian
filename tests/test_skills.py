@@ -17,7 +17,7 @@ def test_parse_reads_frontmatter_and_body():
         "section: Notes\noutput: new-note\nmode: deep\n---\nConsolidate these. {{args}}\n"), "vault")
     assert (skill.name, skill.description, skill.input, skill.filter, skill.section,
             skill.output, skill.mode, skill.origin, skill.error) == (
-        "digest", "Digest the folder", "folder", {"type": "meeting"}, "Notes",
+        "digest", "Digest the folder", "folder", {"type": ["meeting"]}, "Notes",
         "new-note", "deep", "vault", "")
     assert skill.prompt == "Consolidate these. {{args}}"
 
@@ -39,7 +39,7 @@ def test_builtins_parse_cleanly_and_include_the_consolidation(tmp_path):
         name: skill.error for name, skill in loaded.items() if skill.error}
     consolidate = loaded["consolidate-my-notes"]
     assert (consolidate.input, consolidate.section, consolidate.output) == ("folder", "Notes", "new-note")
-    assert consolidate.filter == {"type": "meeting"}
+    assert consolidate.filter == {"type": ["meeting-note", "meeting"]}      # what the vault spells
 
 
 def test_a_vault_skill_overrides_a_builtin_of_the_same_name(tmp_path):

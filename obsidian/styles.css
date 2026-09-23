@@ -696,3 +696,5 @@
 
 .slim-processing-current .slim-cancel { margin-left: auto; align-self: flex-start; }
 .slim-resume-row { padding: 0 20px 14px; }
+.slim-diff-summary { padding: 4px 8px; color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.slim-proposal-none { display: block; margin-top: 6px; color: var(--text-muted); font-size: var(--font-ui-smaller); }

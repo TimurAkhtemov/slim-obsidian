@@ -1,7 +1,7 @@
 ---
 description: Merge my notes from every meeting in this folder into one new note
 input: folder
-filter: {type: meeting}
+filter: {type: [meeting-note, meeting]}
 section: Notes
 output: new-note
 mode: deep

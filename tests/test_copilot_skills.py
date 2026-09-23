@@ -131,7 +131,7 @@ def test_edit_mode_changes_notes_in_view_and_drops_the_rest(con, vault, monkeypa
     assert files[open_path]["after"] == "# Plan\n\nnew intro\n"
     assert files[linked]["after"] == "- [ ] first\n\n- [ ] second\n"
     assert turn["proposal"]["dropped"] == [
-        {"path": other, "reason": "not in view; link it as [[other]] to let SLIM edit it"}]
+        {"path": other, "reason": "not part of this request"}]
     assert "=== Notes/work/plan.md · the open note ===\n# Plan" in seen["messages"][0]["content"]
     assert (vault / open_path).read_text() == "# Plan\n\nold intro\n"
 

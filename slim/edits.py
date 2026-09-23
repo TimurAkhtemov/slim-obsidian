@@ -237,6 +237,17 @@ def apply_blocks(text: str, blocks: list[Block]) -> tuple[str, list[dict]]:
             results.append({"ok": False, "reason": PROTECTED})
             continue
         replacement = item.replace
+        if not exact:
+            # The match ignored trailing whitespace; an unchanged line keeps its own, or the
+            # two-space Markdown hard breaks in 56 notes would vanish on every nearby edit.
+            kept = {}
+            for line in text[start:end].splitlines(keepends=True):
+                kept.setdefault(line.rstrip(), line.rstrip("\n"))
+            out = []
+            for line in replacement.splitlines(keepends=True):
+                body = line.rstrip("\n")
+                out.append(kept.get(body, body) + line[len(body):] if body == body.rstrip() else line)
+            replacement = "".join(out)
         if not exact and replacement and not replacement.endswith("\n") and text[start:end].endswith("\n"):
             replacement += "\n"
         if end == len(text) and not text.endswith("\n") and replacement.endswith("\n"):
@@ -297,9 +308,18 @@ def _with_origin(text: str) -> str:
     return f"---\norigin: {CREATED_ORIGIN}\n---\n\n{text.lstrip()}"
 
 
-def propose(vault: Path, blocks: list[Block], *, in_view: set[str]) -> dict:
+def _inside(search: str, selection: str) -> bool:
+    lines = lambda text: "\n".join(line.rstrip() for line in text.strip("\n").splitlines())
+    return bool(search.strip()) and lines(search) in lines(selection)
+
+
+def propose(vault: Path, blocks: list[Block], *, in_view: set[str], creates_only: bool = False,
+            within: tuple[str, str] | None = None) -> dict:
     """Group blocks by file and compute each file's new text. Returns
-    {"files": [{path, kind, base_hash, after, blocks}], "dropped": [{path, reason}]}."""
+    {"files": [{path, kind, base_hash, after, blocks}], "dropped": [{path, reason}]}.
+
+    `creates_only`: a new-note skill proposes new notes and nothing else. `within`: a selection
+    skill changes only the selected text of the open note."""
     by_path: dict[str, list[Block]] = {}
     dropped = []
     # `Journal/` is the floor (CLAUDE.md): a journal's words never leave it through a proposal.
@@ -315,6 +335,12 @@ def propose(vault: Path, blocks: list[Block], *, in_view: set[str]) -> dict:
         if journal and not path.casefold().startswith("journal/"):
             dropped.append({"path": path, "reason": "a Journal note's text stays in Journal/"})
             continue
+        if creates_only and (Path(vault) / path).exists():
+            dropped.append({"path": path, "reason": "this skill only creates new notes"})
+            continue
+        if within and (path != within[0] or not _inside(item.search, within[1])):
+            dropped.append({"path": path, "reason": "outside the text you selected"})
+            continue
         by_path.setdefault(path, []).append(item)
     files = []
     for path, group in by_path.items():
@@ -324,9 +350,7 @@ def propose(vault: Path, blocks: list[Block], *, in_view: set[str]) -> dict:
                 dropped.append({"path": path, "reason": "a note with this name exists in different letter case"})
                 continue
             if path not in in_view:
-                stem = PurePosixPath(path).stem
-                dropped.append({"path": path,
-                                "reason": f"not in view; link it as [[{stem}]] to let SLIM edit it"})
+                dropped.append({"path": path, "reason": "not part of this request"})
                 continue
             try:
                 before = _read(target)

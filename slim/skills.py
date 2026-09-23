@@ -10,7 +10,7 @@ retrieval, and never the model:
 
     input:   note | selection | folder   the open note (default), the editor selection, or
                                          the notes in the open note's folder
-    filter:  {type: meeting}             folder only: frontmatter equality
+    filter:  {type: meeting-note}        folder only: frontmatter equality (a list is any-of)
     section: Notes                       keep only this heading's section of each note
     output:  chat | edit | new-note      edit and new-note always propose changes to accept
     mode:    quick | deep                the depth this skill always runs at
@@ -89,7 +89,8 @@ def parse_skill(name: str, text: str, origin: str) -> Skill:
         skill.error = "filter must be key: value pairs"
     elif not skill.prompt:
         skill.error = "the prompt is empty"
-    skill.filter = {str(k): str(v) for k, v in raw_filter.items()} if isinstance(raw_filter, dict) else {}
+    skill.filter = ({str(k): [str(x) for x in (v if isinstance(v, list) else [v])]
+                     for k, v in raw_filter.items()} if isinstance(raw_filter, dict) else {})
     return skill
 
 
