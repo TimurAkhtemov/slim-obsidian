@@ -5,7 +5,9 @@
 """Convert Canvas print-to-PDF course documents into Obsidian Markdown.
 
     uv run scripts/pdf2md.py PDF [PDF ...]
-    uv run scripts/pdf2md.py --vault "~/Documents/Obsidian Vault" --images-dir Attachments/school PDF
+    uv run scripts/pdf2md.py --vault /path/to/vault --images-dir Attachments/school PDF
+
+`--vault` defaults to the vault SLIM itself finds (`slim/vaultpath.py`).
 
 For each PDF this writes `<stem>.md` beside it and its figures to
 `<vault>/<images-dir>/<stem>/fig-NN.png`, embedded as `![[...]]` wikilinks.
@@ -459,14 +461,28 @@ def convert(pdf: Path, vault: Path, images_dir: str) -> Path:
     return out
 
 
+def _discovered_vault() -> Path:
+    """The vault SLIM uses, asked of `slim/vaultpath.py` BY PATH: this script runs in its own
+    uv environment, where `slim` is not importable, and a second copy of the discovery goes
+    stale — as the old hardcoded `~/Documents` default did."""
+    import importlib.util
+
+    module_path = Path(__file__).resolve().parent.parent / "slim" / "vaultpath.py"
+    spec = importlib.util.spec_from_file_location("slim_vaultpath", module_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.discover_vault()
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("pdfs", nargs="+", type=Path)
-    ap.add_argument("--vault", type=Path, default=Path("~/Documents/Obsidian Vault").expanduser())
+    ap.add_argument("--vault", type=Path, help="default: the vault SLIM finds")
     ap.add_argument("--images-dir", default="Attachments/school", help="vault-relative folder for figures")
     a = ap.parse_args()
+    vault = a.vault.expanduser() if a.vault else _discovered_vault()
     for pdf in a.pdfs:
-        convert(pdf, a.vault.expanduser(), a.images_dir)
+        convert(pdf, vault, a.images_dir)
 
 
 if __name__ == "__main__":

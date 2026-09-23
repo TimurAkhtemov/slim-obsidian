@@ -10,7 +10,5 @@ are the history. Past ~20 items is a signal about scope, not a reason for headin
 - [ ] A `[[wikilink]]` in a rendered copilot answer has no click handler — verify, then delegate clicks on `a.internal-link`.
 - [ ] Cloud providers — ratified 2026-09-01 as DEFERRED guidance; `Journal/` stays local.
 - [ ] `lecture` vs `learning` is an unstable distinction; collapse when the vocabulary is next touched.
-- [ ] Stale vault path: `scripts/pdf2md.py:465` (and its usage line 8) defaults `--vault` to `~/Documents/Obsidian Vault`; the vault is now the iCloud container. Route through `vaultpath.discover_vault()`.
-- [ ] `slim status` and `slim trace` never call `require_vault_identity()`, so the one command you'd run to notice a vault/pin mismatch cannot report one.
 - [ ] Tell remote speakers apart (Speaker 1, Speaker 2): a voice-clustering model on the system channel, replacing `speakers.label_tokens`. Test with a panel podcast played as system audio.
 - [ ] In-room meetings on one microphone: the same model on the mic channel; "which cluster is me" needs an enrollment or a rename on the card. Test with a podcast played out of the speakers into the mic.
