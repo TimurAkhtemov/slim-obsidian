@@ -93,7 +93,10 @@ restic backup \
 # delete — a clean-looking backup of neither. Stop before `forget` prunes anything.
 counts="$(restic snapshots --tag slim --latest 2 --json | /usr/bin/python3 -c '
 import json, sys
-snaps = sorted(json.load(sys.stdin), key=lambda s: s["time"])
+try:
+    snaps = sorted(json.load(sys.stdin), key=lambda s: s["time"])
+except (ValueError, KeyError, TypeError):
+    snaps = []
 print(" ".join(str((s.get("summary") or {}).get("total_files_processed", "")) for s in snaps))')"
 read -r prev now _ <<<"$counts"
 if [[ "$prev" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]]; then
