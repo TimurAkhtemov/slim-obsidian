@@ -156,14 +156,22 @@ def test_levels_come_back_per_channel(tmp_path):
 def test_a_two_sided_recording_is_labelled(tmp_path):
     path = _wav(tmp_path / "a.wav", [(0, 2)], [(3, 5)])
     tokens = [tok(" so", 0.4, 0.9), tok(" what", 0.9, 1.5), tok(" yes", 3.4, 4.0)]
-    assert speakers.label(path, tokens) == "**Me:** so what\n\n**Them:** yes"
+    assert speakers.label(path, tokens) == ("**Me:** so what\n\n**Them:** yes", "")
 
 
 @needs_ffmpeg
-def test_one_speaker_is_not_labelled_at_all(tmp_path):
-    """A lecture is all Them. A label on every paragraph of it is noise."""
+def test_one_speaker_is_not_labelled_but_is_named(tmp_path):
+    """A lecture is all Them. A label on every paragraph of it is noise — but a segment resumed
+    onto a labelled call needs its one label, or it reads as the last speaker still talking."""
     path = _wav(tmp_path / "a.wav", [], [(0, 5)])
-    assert speakers.label(path, [tok(" today", 0.5, 1.0), tok(" kernels", 3.0, 3.6)]) is None
+    tokens = [tok(" today", 0.5, 1.0), tok(" kernels", 3.0, 3.6)]
+    assert speakers.label(path, tokens) == (None, speakers.THEM)
+
+
+@needs_ffmpeg
+def test_one_speaker_in_silence_is_nobody(tmp_path):
+    path = _wav(tmp_path / "a.wav", [], [])
+    assert speakers.label(path, [tok(" hm", 0.5, 1.0)]) == (None, "")
 
 
 @needs_ffmpeg
@@ -172,8 +180,8 @@ def test_a_mono_file_is_never_analysed(tmp_path, monkeypatch):
     monkeypatch.setattr(speakers, "channel_levels",
                         lambda p: pytest.fail("a mono file has no sides to compare"))
     assert speakers.channel_count(path) == 1
-    assert speakers.label(path, [tok(" memo", 0.5, 1.0)]) is None
+    assert speakers.label(path, [tok(" memo", 0.5, 1.0)]) == (None, "")
 
 
 def test_no_tokens_means_nothing_to_label(tmp_path):
-    assert speakers.label(tmp_path / "missing.webm", []) is None
+    assert speakers.label(tmp_path / "missing.webm", []) == (None, "")

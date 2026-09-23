@@ -1434,6 +1434,115 @@ def test_speaker_provenance_survives_the_segment_cache(tmp_path, monkeypatch):
     assert (again["speakers_by"], cached) == ("channels", True)
 
 
+def test_the_one_speaker_survives_the_segment_cache(tmp_path, monkeypatch):
+    from slim import chat, transcribe
+
+    _fakes(monkeypatch)
+    monkeypatch.setattr(transcribe, "normalize_container", lambda p: p)
+    monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
+        text="and one more thing", model="fake", audio_seconds=10.0, wall_seconds=1.0,
+        solo_speaker="Me"))
+    staged = tmp_path / "Attachments/_incoming/t-001.webm"
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    staged.write_bytes(b"audio")
+
+    chat._transcribe_segment(staged, transcribe)
+    again, cached = chat._transcribe_segment(staged, transcribe)
+    assert (again["solo_speaker"], cached) == ("Me", True)
+
+
+def _segments_tx(monkeypatch, *results):
+    """One Transcript per segment, in order: (text, speakers_by, solo_speaker)."""
+    from slim import transcribe
+    queue = list(results)
+
+    def fake_tx(p, model=None):
+        text, by, solo = queue.pop(0)
+        return transcribe.Transcript(text=text, model="fake", audio_seconds=60.0,
+                                     wall_seconds=1.0, speakers_by=by, solo_speaker=solo)
+    monkeypatch.setattr(transcribe, "transcribe", fake_tx)
+
+
+def test_a_one_speaker_segment_in_a_labelled_recording_carries_its_label(tmp_path, monkeypatch):
+    """Unlabelled, their closing monologue reads as the last speaker still talking."""
+    from slim import chat
+    _fakes(monkeypatch)
+    _segments_tx(monkeypatch, ("**Me:** so\n\n**Them:** yes", "channels", ""),
+                 ("and one more thing", "", "Me"))
+
+    out = chat.handle_record(audio_rel=[_staged(tmp_path, "r-001.webm"),
+                                        _staged(tmp_path, "r-002.webm")],
+                             notes_md="", declared_type="meeting-note", title="T", when=NOW,
+                             vault=tmp_path)
+    body = (tmp_path / out["note"]).read_text(encoding="utf-8")
+    assert "**Them:** yes\n\n**Me:** and one more thing" in body
+
+
+def test_the_labelled_segment_can_come_second(tmp_path, monkeypatch):
+    from slim import chat
+    _fakes(monkeypatch)
+    _segments_tx(monkeypatch, ("they opened", "", "Them"),
+                 ("**Me:** so\n\n**Them:** yes", "channels", ""))
+
+    out = chat.handle_record(audio_rel=[_staged(tmp_path, "r-001.webm"),
+                                        _staged(tmp_path, "r-002.webm")],
+                             notes_md="", declared_type="meeting-note", title="T", when=NOW,
+                             vault=tmp_path)
+    body = (tmp_path / out["note"]).read_text(encoding="utf-8")
+    assert "**Them:** they opened\n\n**Me:** so" in body
+
+
+def test_a_lecture_in_two_segments_stays_unlabelled(tmp_path, monkeypatch):
+    """Every segment one-sided: nothing to tell apart, so no labels at all."""
+    from slim import chat
+    _fakes(monkeypatch)
+    _segments_tx(monkeypatch, ("part one", "", "Them"), ("part two", "", "Them"))
+
+    out = chat.handle_record(audio_rel=[_staged(tmp_path, "r-001.webm"),
+                                        _staged(tmp_path, "r-002.webm")],
+                             notes_md="", declared_type="lecture", title="T", when=NOW,
+                             vault=tmp_path)
+    body = (tmp_path / out["note"]).read_text(encoding="utf-8")
+    assert "part one\n\npart two" in body and "**Them:**" not in body
+
+
+def test_resuming_a_labelled_note_labels_a_one_speaker_segment(tmp_path, monkeypatch):
+    from slim import chat, record
+    r = _existing(tmp_path, monkeypatch)
+    r.note.write_text(record.append_audio_frontmatter(
+        r.note.read_text(encoding="utf-8"), rels=[], digests=[], seconds=0.0,
+        speakers_by="channels"), encoding="utf-8")
+    _segments_tx(monkeypatch, ("and one more thing", "", "Me"))
+
+    chat.handle_record_append(note=str(r.note.relative_to(tmp_path)),
+                              audio_rel=[_staged(tmp_path, "more-001.webm")], vault=tmp_path)
+    assert "**Me:** and one more thing" in r.note.read_text(encoding="utf-8")
+
+
+def test_resuming_an_unlabelled_note_adds_no_label(tmp_path, monkeypatch):
+    from slim import chat
+    r = _existing(tmp_path, monkeypatch)
+    _segments_tx(monkeypatch, ("and ten minutes more", "", "Them"))
+
+    chat.handle_record_append(note=str(r.note.relative_to(tmp_path)),
+                              audio_rel=[_staged(tmp_path, "more-001.webm")], vault=tmp_path)
+    body = r.note.read_text(encoding="utf-8")
+    assert "and ten minutes more" in body and "**Them:**" not in body
+
+
+def test_the_paused_transcript_labels_segments_the_same_way(tmp_path):
+    from slim import chat
+    first, second = _staged(tmp_path, "r-001.webm"), _staged(tmp_path, "r-002.webm")
+    (tmp_path / first).with_suffix(".webm.transcript.json").write_text(
+        json.dumps({"text": "**Me:** so\n\n**Them:** yes", "speakers_by": "channels"}),
+        encoding="utf-8")
+    (tmp_path / second).with_suffix(".webm.transcript.json").write_text(
+        json.dumps({"text": "and more", "solo_speaker": "Me"}), encoding="utf-8")
+
+    out = chat.handle_record_transcript(audio_rel=[first, second], vault=tmp_path)
+    assert out["text"] == "**Me:** so\n\n**Them:** yes\n\n**Me:** and more"
+
+
 def test_two_writers_on_one_note_take_turns(tmp_path, monkeypatch):
     """⚠ `ThreadingHTTPServer` runs handlers in parallel and four endpoints write the same note.
     Re-reading before the write closed the long-job case; it does NOT close the case where two

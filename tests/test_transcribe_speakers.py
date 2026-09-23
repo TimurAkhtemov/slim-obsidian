@@ -27,7 +27,7 @@ def test_a_two_sided_recording_comes_back_labelled(tmp_path, monkeypatch):
 
     def fake_label(path, tokens):
         seen["tokens"] = [t.text for t in tokens]
-        return "**Me:** so\n\n**Them:** yes"
+        return "**Me:** so\n\n**Them:** yes", ""
 
     monkeypatch.setattr(speakers, "label", fake_label)
     t = transcribe.transcribe(tmp_path / "a.webm")
@@ -37,10 +37,16 @@ def test_a_two_sided_recording_comes_back_labelled(tmp_path, monkeypatch):
 
 
 def test_nothing_to_tell_apart_leaves_the_text_exactly_as_before(tmp_path, monkeypatch):
-    monkeypatch.setattr(speakers, "label", lambda path, tokens: None)
+    monkeypatch.setattr(speakers, "label", lambda path, tokens: (None, ""))
     t = transcribe.transcribe(tmp_path / "a.webm")
     assert t.text == "so yes"
-    assert t.speakers_by == ""
+    assert t.speakers_by == "" and t.solo_speaker == ""
+
+
+def test_one_side_speaking_stays_unlabelled_but_says_who(tmp_path, monkeypatch):
+    monkeypatch.setattr(speakers, "label", lambda path, tokens: (None, "Them"))
+    t = transcribe.transcribe(tmp_path / "a.webm")
+    assert (t.text, t.speakers_by, t.solo_speaker) == ("so yes", "", "Them")
 
 
 def test_a_labelling_failure_never_costs_the_transcript(tmp_path, monkeypatch):

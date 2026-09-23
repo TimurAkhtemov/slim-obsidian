@@ -53,8 +53,9 @@ note loses its id. Embedding is part of ingest; `slim status` reports `unembedde
      labels each word Me or Them by which side was making sound — a measurement, no model —
      and writes `speakers_by: channels`. One speaker (a lecture, a video) or a mono file stays
      unlabelled. `speakers.label_tokens` is the seam a voice-clustering model would replace.
-     ⚠ Labels are decided per SEGMENT, so a resumed segment with one speaker lands unlabelled
-     under a labelled transcript (BACKLOG).
+     Labels are decided per segment; once anything is labelled, a one-sided segment carries
+     its one label (`chat._join_segments`). ⚠ A transcript already filed unlabelled stays so
+     when a resume brings a second speaker: the words on disk are never relabelled.
    - The plugin owns the UI and writes files through the Vault API; every judgement —
      transcribe, summarize, suggest a path — is the Python server's. Audio is appended to
      `Attachments/_incoming` in 5 s chunks as `<id>-NNN.webm`; a `.webm` left there is a

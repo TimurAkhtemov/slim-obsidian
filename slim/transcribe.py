@@ -80,6 +80,8 @@ class Transcript:
     wall_seconds: float
     # How the speakers in `text` were told apart ("channels"), or "" when it carries no labels.
     speakers_by: str = ""
+    # Stereo, but only one side spoke: who it was ("Me"/"Them"). `text` stays unlabelled.
+    solo_speaker: str = ""
 
     @property
     def rtf(self) -> float:
@@ -342,13 +344,13 @@ def transcribe(path: Path, model: str | None = None) -> Transcript:
     # Outside the ASR lock: this is ffmpeg and numpy, and must not hold up live captions.
     from . import speakers, trace
     try:
-        labelled = speakers.label(path, result.tokens)
+        labelled, solo = speakers.label(path, result.tokens)
     except Exception as exc:                       # noqa: BLE001 - labels decorate, never gate
         trace.record("record", {"stage": "speakers", "status": "failed", "error": str(exc)})
-        labelled = None
+        labelled, solo = None, ""
     if labelled:
         text, speakers_by = labelled, speakers.PROVENANCE
     wall = time.perf_counter() - t0
 
     return Transcript(text=text, model=model, audio_seconds=secs, wall_seconds=wall,
-                      speakers_by=speakers_by)
+                      speakers_by=speakers_by, solo_speaker=solo)

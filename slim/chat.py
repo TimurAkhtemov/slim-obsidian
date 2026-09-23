@@ -540,6 +540,29 @@ def _segment_cache(staged: Path) -> Path:
     return staged.with_suffix(staged.suffix + ".transcript.json")
 
 
+def _join_segments(gots: list[dict], labelled: bool = False) -> str:
+    """One transcript from its segments, in order. No seam marker: where they paused is not
+    information they want back inside a lecture transcript, and a marker there would be read by
+    chunking and retrieval as content.
+
+    ⚠ Speakers are decided per segment, and a one-sided segment comes back unlabelled — right
+    for a lecture, wrong beside a labelled call, where it reads as the last speaker still
+    talking. So once anything is labelled (a segment here, or the note it is resumed onto),
+    a one-sided segment carries its one label."""
+    from . import speakers
+
+    labelled = labelled or any(got.get("speakers_by") for got in gots)
+    parts = []
+    for got in gots:
+        text = str(got.get("text") or "").strip()
+        solo = got.get("solo_speaker") or ""
+        if text and labelled and solo and not got.get("speakers_by"):
+            text = speakers.render([(solo, text)])
+        if text:
+            parts.append(text)
+    return "\n\n".join(parts)
+
+
 def _transcribe_segment(staged: Path, transcribe_mod) -> tuple[dict, bool]:
     """One segment's words, from the cache when the cache is still about THIS audio.
 
@@ -566,7 +589,7 @@ def _transcribe_segment(staged: Path, transcribe_mod) -> tuple[dict, bool]:
     t = transcribe_mod.transcribe(staged)
     got = {"text": t.text, "model": t.model, "audio_seconds": t.audio_seconds,
            "words": t.words, "wall_seconds": t.wall_seconds, "rtf": t.rtf,
-           "speakers_by": t.speakers_by}
+           "speakers_by": t.speakers_by, "solo_speaker": t.solo_speaker}
     # After normalize_container, which rewrites the file — hash what was actually read.
     try:
         got["audio_sha256"] = inbox._sha256(staged)
@@ -646,7 +669,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
     # facts about how these words were produced, and the note records them the same way the
     # memo lane does. They stay absent when transcription fails rather than being invented.
     asr_model, audio_seconds, transcribed_at, speakers_by = "", None, None, ""
-    parts, words, seconds, wall = [], 0, 0.0, 0.0
+    gots, words, seconds, wall = [], 0, 0.0, 0.0
     try:
         for i, seg in enumerate(segments, start=1):
             _check_record_cancel(job_id)
@@ -654,15 +677,13 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
             progress("transcribing", f"Transcribing{of}",
                      "Converting the local audio into exact source text")
             got, cached = _transcribe_segment(seg, transcribe)
-            parts.append(got["text"])
+            gots.append(got)
             words += got.get("words") or 0
             seconds += got.get("audio_seconds") or 0.0
             wall += 0.0 if cached else (got.get("wall_seconds") or 0.0)
             asr_model = got.get("model") or asr_model
             speakers_by = got.get("speakers_by") or speakers_by
-        # No seam marker: where they paused is not information they want back inside a lecture
-        # transcript, and a marker there would be read by chunking and retrieval as content.
-        text = "\n\n".join(part.strip() for part in parts if part.strip())
+        text = _join_segments(gots)
         audio_seconds = seconds or None
         transcribed_at = datetime.now(timezone.utc)
         progress("transcribed", "Transcript ready", f"Captured {words} words",
@@ -831,6 +852,7 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
     edited by hand. ⚠ Silence is refused exactly as the recording path refuses it.
     """
     from . import record as record_mod, transcribe
+    from .chunk import parse_frontmatter
     from .config import VAULT as _VAULT
 
     vault = vault or _VAULT
@@ -854,17 +876,18 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
         if on_progress is not None:
             on_progress(stage=stage, label=label, detail=detail, **extra)
 
-    parts, seconds, asr_model, speakers_by = [], 0.0, "", ""
+    gots, seconds, asr_model, speakers_by = [], 0.0, "", ""
     for i, seg in enumerate(segments, start=1):
         _check_record_cancel(job_id)
         of = f" ({i} of {len(segments)})" if len(segments) > 1 else ""
         progress("transcribing", f"Transcribing{of}", "Adding the new words to this note")
         got, _cached = _transcribe_segment(seg, transcribe)
-        parts.append(got["text"])
+        gots.append(got)
         seconds += got.get("audio_seconds") or 0.0
         asr_model = got.get("model") or asr_model
         speakers_by = got.get("speakers_by") or speakers_by
-    addition = "\n\n".join(part.strip() for part in parts if part.strip())
+    fm, _ = parse_frontmatter(text)
+    addition = _join_segments(gots, labelled=bool(fm.get("speakers_by")))
     if not addition:
         raise NoSpeech("no words were captured — nothing was added, and your audio is exactly "
                        "where it was")
@@ -922,17 +945,17 @@ def handle_record_transcript(*, audio_rel: str | list[str],
 
     vault = vault or _VAULT
     rels = [audio_rel] if isinstance(audio_rel, str) else list(audio_rel)
-    parts, pending = [], 0
+    gots, pending = [], 0
     for rel in rels:
         cache = _segment_cache(_vault_path(vault, rel))
         if not cache.is_file():
             pending += 1
             continue
         try:
-            parts.append(str(json.loads(cache.read_text(encoding="utf-8")).get("text") or ""))
+            gots.append(json.loads(cache.read_text(encoding="utf-8")))
         except (OSError, json.JSONDecodeError):
             pending += 1
-    text = "\n\n".join(part.strip() for part in parts if part.strip())
+    text = _join_segments(gots)
     return {"text": text, "pending": pending, "segments": len(rels),
             "words": len(text.split())}
 
