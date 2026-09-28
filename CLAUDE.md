@@ -16,7 +16,7 @@ outsiders and an AGENTS.md pointer.
 ## Commands
 
 ```bash
-uv run pytest -q                        # ~530 tests; `uv` always — the system python may be 3.9
+uv run pytest -q                        # ~625 tests; `uv` always — the system python may be 3.9
 node --test obsidian/*.test.mjs         # plugin tests; no build step
 uv run slim chat --reload               # dev server; respawns on any slim/**/*.py save (not .yaml)
 uv run slim ingest                      # index the vault; embeds at the end; exits non-zero if vectors are missing
