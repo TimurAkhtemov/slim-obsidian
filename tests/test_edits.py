@@ -324,6 +324,26 @@ def test_protected_text_copied_through_unchanged_is_allowed():
     assert results == [{"ok": True}] and "# Call\n\nSummary.\n" in after
 
 
+def test_text_inserted_above_a_kept_transcript_heading_is_allowed():
+    """Live: SEARCH `## Transcript` -> REPLACE `<brief>\\n\\n## Transcript` was refused as adding
+    a heading it only kept. Only MORE markers than the SEARCH held is refused."""
+    memo = "---\ntype: meeting-note\n---\n\n# Call\n\n## Transcript\n\nMe: hi\n"
+    after, results = edits.apply_blocks(memo, [edits.Block(
+        "p", "## Transcript\n", "## Brief\n\nShip friday.\n\n## Transcript\n")])
+    assert results == [{"ok": True}]
+    assert after == memo.replace("# Call\n\n", "# Call\n\n## Brief\n\nShip friday.\n\n")
+    for replace in ("## Brief\n", "## Transcript\n\n## Transcript\n"):
+        after, results = edits.apply_blocks(memo, [edits.Block("p", "## Transcript\n", replace)])
+        assert after == memo and not results[0]["ok"]
+    # Above a recorder block is the owner's; inside it is still record.py's.
+    after, results = edits.apply_blocks(MEETING, [edits.Block(
+        "p", "```slim-meeting\n", "## Brief\n\n```slim-meeting\n")])
+    assert results == [{"ok": True}] and after == MEETING.replace("\n```slim-meeting", "\n## Brief\n\n```slim-meeting")
+    after, results = edits.apply_blocks(MEETING, [edits.Block(
+        "p", "## Transcript\n", "## Brief\n\n## Transcript\n")])
+    assert after == MEETING and results[0]["reason"] == edits.PROTECTED
+
+
 def test_inbox_journal_is_on_the_floor_too(vault):
     (vault / "Inbox/Journal").mkdir(parents=True)
     (vault / "Inbox/Journal/memo.md").write_text("private\n", encoding="utf-8")

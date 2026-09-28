@@ -202,9 +202,15 @@ def _find(text: str, search: str) -> tuple[list[tuple[int, int]], bool]:
     return spans, False
 
 
-def _adds_markers(replace: str) -> bool:
-    return any(_MEETING_OPEN.match(line) or line.strip() == TRANSCRIPT_MARKER
-               for line in replace.splitlines())
+def _markers(text: str) -> tuple[int, int]:
+    lines = text.splitlines()
+    return (sum(bool(_MEETING_OPEN.match(line)) for line in lines),
+            sum(line.strip() == TRANSCRIPT_MARKER for line in lines))
+
+
+def _adds_markers(search: str, replace: str) -> bool:
+    """A marker the SEARCH already held may be kept (text inserted above `## Transcript`)."""
+    return any(after > before for before, after in zip(_markers(search), _markers(replace)))
 
 
 def apply_blocks(text: str, blocks: list[Block]) -> tuple[str, list[dict]]:
@@ -219,7 +225,7 @@ def apply_blocks(text: str, blocks: list[Block]) -> tuple[str, list[dict]]:
         if not item.complete:
             results.append({"ok": False, "reason": "cut off before the change ended"})
             continue
-        if _adds_markers(item.replace):
+        if _adds_markers(item.search, item.replace):
             results.append({"ok": False, "reason": "adds a recording's block or transcript heading"})
             continue
         if not item.search.strip():
