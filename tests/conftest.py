@@ -9,6 +9,7 @@ caught in review. This autouse fixture points the trace directory at a per-test 
 test can never again write a durable operational record into production.
 """
 import json
+import threading
 import urllib.request
 
 import pytest
@@ -54,6 +55,19 @@ def _isolate_default_db(tmp_path, monkeypatch):
         return real_connect(db_path if db_path is not None else tmp_path / "default-slim.db")
 
     monkeypatch.setattr(db, "connect", isolated_connect)
+
+
+@pytest.fixture(autouse=True)
+def _finish_sweeps(monkeypatch):
+    """A recorder test starts a background vault sweep (`chat._schedule_sweep`). One still
+    running when the test ends outlives the patches above: its trace landed in the live file
+    (~700 `record/sweep` records in 2026-09), and a later `db.connect()` would open the live
+    brain with a tmp vault, whose removal pass deletes every source. Torn down before
+    `monkeypatch`, so the sweep finishes inside the isolation."""
+    yield
+    for thread in threading.enumerate():
+        if thread.name == "slim-index-sweep":
+            thread.join(10)
 
 
 @pytest.fixture(autouse=True)
