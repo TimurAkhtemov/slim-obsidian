@@ -196,6 +196,7 @@ function fileBackedView({ type = "lecture", existing = [] } = {}) {
         folders: [],
       }),
       stat: async (p) => (files.has(p) ? { size: (files.get(p).bytes || "x").length } : null),
+      remove: async (p) => { files.delete(p); },
     },
     createFolder: async (p) => { files.set(p, { path: p, folder: true }); },
     create: async (p, text) => {
@@ -1228,6 +1229,52 @@ test("discarding a resumed session removes every segment", async () => {
   assert.equal(files.has("Attachments/_incoming/20260826T210000-deadbeef-001.webm"), false);
   assert.equal(files.has("Attachments/_incoming/20260826T210000-deadbeef-002.webm"), false);
   assert.equal(files.has("Capture/keep.md"), true);
+});
+
+// The server writes `<segment>.transcript.json` outside the Vault API, so Obsidian's index may
+// not hold it yet (or at all). Removing it through the index left it on disk with its audio gone:
+// eleven such orphans had piled up in _incoming by 2026-09-28.
+function unindexedCaches(files, vault) {
+  vault.getAbstractFileByPath = (p) => (p.endsWith(".transcript.json") ? null : files.get(p) || null);
+}
+
+test("discarding a session removes each segment's cached transcript with its audio", async () => {
+  const { v, files } = fileBackedView();
+  unindexedCaches(files, v.app.vault);
+  v.recordingId = "20260826T210000-deadbeef";
+  await v.createDraft();
+  const seg = "Attachments/_incoming/20260826T210000-deadbeef-001.webm";
+  v.segments = [seg];
+  files.set(seg, { path: seg, bytes: Buffer.from([1]) });
+  files.set(`${seg}.transcript.json`, { path: `${seg}.transcript.json`, text: "{}" });
+  v.state = "error";
+
+  await v.discardSession(false);
+
+  assert.equal(files.has(seg), false);
+  assert.equal(files.has(`${seg}.transcript.json`), false);
+});
+
+test("a silent resumed segment is dropped together with its cached transcript", async () => {
+  const { v, files } = fileBackedView();
+  unindexedCaches(files, v.app.vault);
+  const seg = "Attachments/_incoming/20260826T210000-deadbeef-002.webm";
+  files.set(seg, { path: seg, bytes: Buffer.from([1]) });
+  files.set(`${seg}.transcript.json`, { path: `${seg}.transcript.json`, text: "{}" });
+  v.state = "processing";
+  v.recordingId = "20260826T210000-deadbeef";
+  v.appendTo = "Notes/x.md";
+  v.segments = [seg];
+  v.plugin.appendRecording = async () => {
+    const err = new Error("no words were captured — nothing was added");
+    err.silent = true;
+    throw err;
+  };
+
+  await v.submitAppend(v.segments);
+
+  assert.equal(files.has(seg), false);
+  assert.equal(files.has(`${seg}.transcript.json`), false);
 });
 
 test("resuming carries the earlier transcript and the elapsed time forward", () => {

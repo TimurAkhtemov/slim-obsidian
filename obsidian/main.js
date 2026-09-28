@@ -815,6 +815,17 @@ class RecorderView {
     }
   }
 
+  /* A staged segment and the `<segment>.transcript.json` the server cached beside it go
+   * together. ⚠ NOT THROUGH THE INDEX: the server writes the cache outside the Vault API, often
+   * a moment before the response that leads here, so Obsidian may not hold it yet and
+   * `trashManagedPath` skipped it without a word — eleven orphans by 2026-09-28. */
+  async removeStagedSegment(seg) {
+    await this.trashManagedPath(seg);
+    const cache = `${seg}.transcript.json`;
+    const adapter = this.app.vault.adapter;
+    if (await adapter.exists(cache)) await adapter.remove(cache);
+  }
+
   async discardSession(restart) {
     const id = this.recordingId;
     const draft = this.draftRel;
@@ -829,10 +840,7 @@ class RecorderView {
     if (draftIsManaged) await this.trashManagedPath(draft);
     for (const audio of audios) {
       if (!managed(audio)) continue;
-      await this.trashManagedPath(audio);
-      // The server writes `<segment>.transcript.json` beside each segment; discarding the
-      // recording discards its cached words too rather than leaving them in _incoming.
-      await this.trashManagedPath(`${audio}.transcript.json`);
+      await this.removeStagedSegment(audio);
     }
     if (attachmentFolder) await this.trashManagedPath(attachmentFolder);
     this.resetSession();
@@ -1534,8 +1542,7 @@ class RecorderView {
         if (e.silent) {
           new Notice(`SLIM: ${e.message}`);
           for (const seg of this.segments || []) {
-            await this.trashManagedPath(seg).catch(() => {});
-            await this.trashManagedPath(`${seg}.transcript.json`).catch(() => {});
+            await this.removeStagedSegment(seg).catch(() => {});
           }
           this.segments = [];
           this.appendTo = "";
