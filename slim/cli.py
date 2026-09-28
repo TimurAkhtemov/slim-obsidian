@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 import time
 from pathlib import Path
 
@@ -217,6 +218,45 @@ def _pin_status(con) -> str:
             "`slim ingest --vault-moved`")
 
 
+def _staging_lines(vault: Path) -> list[str]:
+    """What sits in the recorder's staging folder. Every `.webm` there is a recording that never
+    finished filing; a `.webm.transcript.json` without its `.webm` is a cache that outlived it."""
+    from . import record
+    staging = vault / record.STAGING_DIR
+    files = sorted(staging.iterdir()) if staging.is_dir() else []
+    names = {f.name for f in files}
+    segments: dict[str, list[Path]] = {}
+    for f in files:
+        if f.suffix == ".webm":
+            segments.setdefault(record.recording_id_from_staged(f.name), []).append(f)
+    orphans = sum(1 for f in files if f.name.endswith(".webm.transcript.json")
+                  and f.name.removesuffix(".transcript.json") not in names)
+
+    if not segments:
+        lines = ["stranded:  none"]
+    else:
+        n = len(segments)
+        lines = [f"stranded:  {n} recording{'s' if n > 1 else ''} in {record.STAGING_DIR} "
+                 "never filed  ⚠"]
+        for rid, segs in segments.items():
+            # The id starts with when recording began; a name without one falls back to disk.
+            day = (f"{rid[:4]}-{rid[4:6]}-{rid[6:8]}" if re.match(r"\d{8}T", rid) else
+                   time.strftime("%Y-%m-%d", time.localtime(segs[0].stat().st_mtime)))
+            more = f"  {len(segs)} segments" if len(segs) > 1 else ""
+            lines.append(f"  {rid}  {day}{more}")
+    if orphans:
+        lines.append(f"orphaned:  {orphans} cached transcript{'s' if orphans > 1 else ''} "
+                     "whose audio is gone")
+    return lines
+
+
+def _last_reflection(vault: Path) -> str:
+    """The newest reflection's date, from its filename (`<date>--reflection[-N].md`)."""
+    from . import reflect
+    dates = [f.name[:10] for f in (vault / reflect.NAMESPACE).glob("*--reflection*.md")]
+    return max(dates, default="never")
+
+
 def cmd_status(args):
     con = db.connect()
 
@@ -237,6 +277,9 @@ def cmd_status(args):
             "SELECT substr(path, 1, instr(path, '/') - 1) AS area, COUNT(*) c "
             "FROM sources WHERE deleted = 0 GROUP BY area ORDER BY c DESC"):
         print(f"  {row['c']:5d}  {row['area']}")
+    for line in _staging_lines(VAULT):
+        print(line)
+    print(f"reflected: {_last_reflection(VAULT)}")
 
 
 def cmd_reflect(args):

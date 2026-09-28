@@ -138,6 +138,12 @@ def test_cmd_status_missing_vault(monkeypatch, tmp_path, capsys):
 
 def _status(monkeypatch, tmp_path, capsys, *, pinned=None, populated=False):
     """Run `slim status` against a vault at tmp_path/Vault and return the `pin:` line."""
+    out = _status_out(monkeypatch, tmp_path, capsys, pinned=pinned, populated=populated)
+    return next(line for line in out.splitlines() if line.startswith("pin:"))
+
+
+def _status_out(monkeypatch, tmp_path, capsys, *, pinned=None, populated=False):
+    """Run `slim status` against a vault at tmp_path/Vault and return everything it printed."""
     from slim import db
     vault = tmp_path / "Vault"
     vault.mkdir(exist_ok=True)
@@ -149,7 +155,7 @@ def _status(monkeypatch, tmp_path, capsys, *, pinned=None, populated=False):
         cli.pin_vault(pinned)
     monkeypatch.setattr(db, "connect", lambda *a, **kw: con)
     cli.cmd_status(SimpleNamespace())
-    return next(line for line in capsys.readouterr().out.splitlines() if line.startswith("pin:"))
+    return capsys.readouterr().out
 
 
 def test_status_reports_a_pin_that_matches(monkeypatch, tmp_path, capsys):
@@ -175,6 +181,44 @@ def test_status_on_a_new_index_is_not_a_warning(monkeypatch, tmp_path, capsys):
     line = _status(monkeypatch, tmp_path, capsys)
     assert "⚠" not in line
     assert cli.pinned_vault() is None
+
+
+def test_status_names_recordings_that_never_filed(monkeypatch, tmp_path, capsys):
+    """A stranded recording is a meeting that never got filed; status is where they look."""
+    incoming = tmp_path / "Vault" / "Attachments" / "_incoming"
+    incoming.mkdir(parents=True)
+    for name in ["20260924T184435-66c7d3cc-001.webm", "20260924T184435-66c7d3cc-001.webm.transcript.json",
+                 "20260925T090000-aaaaaaaa-001.webm", "20260925T090000-aaaaaaaa-002.webm",
+                 "20260827T070252-a742b2b3-001.webm.transcript.json",
+                 "20260910T165802-0bbc930f-001.webm.transcript.json"]:
+        (incoming / name).write_bytes(b"x")
+
+    out = _status_out(monkeypatch, tmp_path, capsys)
+
+    assert "stranded:  2 recordings in Attachments/_incoming never filed" in out
+    assert "20260924T184435-66c7d3cc  2026-09-24" in out
+    assert "20260925T090000-aaaaaaaa  2026-09-25  2 segments" in out
+    assert "orphaned:  2 cached transcripts whose audio is gone" in out
+
+
+def test_status_is_quiet_when_nothing_is_stranded(monkeypatch, tmp_path, capsys):
+    out = _status_out(monkeypatch, tmp_path, capsys)
+    assert "stranded:  none" in out
+    assert "orphaned" not in out
+
+
+def test_status_reports_the_newest_reflection(monkeypatch, tmp_path, capsys):
+    folder = tmp_path / "Vault" / "_Reflections"
+    folder.mkdir(parents=True)
+    for name in ["2026-08-04--reflection.md", "2026-08-22--reflection.md",
+                 "2026-08-22--reflection-2.md", "2026-07-30--reflection.md", "notes.md"]:
+        (folder / name).write_text("", encoding="utf-8")
+
+    assert "reflected: 2026-08-22" in _status_out(monkeypatch, tmp_path, capsys)
+
+
+def test_status_says_when_nothing_was_ever_reflected(monkeypatch, tmp_path, capsys):
+    assert "reflected: never" in _status_out(monkeypatch, tmp_path, capsys)
 
 
 def test_first_ingest_pins_the_vault_it_indexed(monkeypatch, tmp_path):
