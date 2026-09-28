@@ -60,6 +60,24 @@ def test_invocation_parses_only_a_known_command():
     assert skills.invocation("quiz me", loaded) is None
 
 
+def test_a_first_word_of_folder_or_note_sets_the_input_for_this_turn():
+    loaded = {"actions": skills.parse_skill("actions", "List actions. {{args}}", "builtin"),
+              "digest": skills.parse_skill("digest", "---\ninput: folder\n---\nDigest.", "builtin"),
+              "explain": skills.parse_skill("explain", "---\ninput: selection\n---\nExplain.", "builtin")}
+    skill, args = skills.invocation("/actions Folder", loaded)
+    assert (skill.input, args) == ("folder", "")
+    skill, args = skills.invocation("/actions folder only the ones for Bob", loaded)
+    assert (skill.input, args) == ("folder", "only the ones for Bob")
+    assert loaded["actions"].input == "note"                          # the loaded skill is untouched
+    skill, args = skills.invocation("/digest note focus on dates", loaded)
+    assert (skill.input, args) == ("note", "focus on dates")
+    skill, args = skills.invocation("/actions folders of Bob", loaded)
+    assert (skill.input, args) == ("note", "folders of Bob")
+    # A selection skill reads the selection; "note" there is just a word.
+    skill, args = skills.invocation("/explain note the sign", loaded)
+    assert (skill.input, args) == ("selection", "note the sign")
+
+
 def test_render_prompt_fills_args_or_appends_them():
     with_slot = skills.parse_skill("a", "Explain {{args}} simply.", "builtin")
     without = skills.parse_skill("b", "Make flashcards.", "builtin")

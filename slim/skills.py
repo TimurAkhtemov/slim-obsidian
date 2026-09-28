@@ -9,7 +9,8 @@ Frontmatter says what the model reads. Code builds that input (`copilot.gather`)
 retrieval, and never the model:
 
     input:   note | selection | folder   the open note (default), the editor selection, or
-                                         the notes in the open note's folder
+                                         the notes in the open note's folder;
+                                         `/name folder …` or `/name note …` overrides it once
     filter:  {type: meeting-note}        folder only: frontmatter equality (a list is any-of)
     section: Notes                       keep only this heading's section of each note
     output:  chat | edit | new-note      edit and new-note always propose changes to accept
@@ -18,7 +19,7 @@ retrieval, and never the model:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import yaml
@@ -112,11 +113,16 @@ def load(vault: Path) -> dict[str, Skill]:
 
 
 def invocation(question: str, loaded: dict[str, Skill]) -> tuple[Skill, str] | None:
-    """`/name args` → (skill, args), or None when the text does not name a known command."""
+    """`/name args` → (skill, args), or None when the text does not name a known command.
+    A first word `folder` or `note` sets a note or folder skill's input for this turn."""
     match = re.match(r"^/([a-z0-9][a-z0-9-]*)(?:\s+(.*))?$", question.strip(), re.DOTALL)
     if not match or match.group(1) not in loaded:
         return None
-    return loaded[match.group(1)], (match.group(2) or "").strip()
+    skill, args = loaded[match.group(1)], (match.group(2) or "").strip()
+    first, *rest = args.split(maxsplit=1) or [""]
+    if skill.input != "selection" and first.lower() in ("folder", "note"):
+        return replace(skill, input=first.lower()), "".join(rest)
+    return skill, args
 
 
 def expand(text: str, loaded: dict[str, Skill]) -> str:

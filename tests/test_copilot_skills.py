@@ -169,6 +169,18 @@ def test_a_skill_runs_at_its_own_depth_and_its_prompt_rides_in_history(con, vaul
     assert seen["messages"][1]["content"].startswith("Quiz me on this note. Ask ONE question now")
 
 
+def test_a_skill_reads_the_folder_when_the_invocation_says_so(con, vault, monkeypatch):
+    kickoff = meeting(vault, "Kickoff", "2026-09-01T09:00:00", "ship friday")
+    source = open_source(con, vault, meeting(vault, "Review", "2026-09-08T09:00:00", "monday"))
+    seen = {}
+    fake_model(monkeypatch, "- [ ] ship — Me", seen)
+    turn = copilot.run_turn(con, source["id"], "/actions folder only mine", [], "quick", vault=vault)
+    assert turn["inputs"]["used"] == [kickoff, source["path"]]
+    assert "=== Capture/work/Kickoff.md · 2026-09-01 ===" in seen["messages"][0]["content"]
+    assert seen["messages"][-1]["content"].endswith("only mine")
+    assert "folder" not in seen["messages"][-1]["content"]
+
+
 def test_an_overflowing_prompt_is_never_offered_as_a_proposal(con, vault, monkeypatch):
     source = open_source(con, vault, note(vault, "Notes/work/a.md", "text\n"))
     monkeypatch.setattr(copilot.llm, "chat_stream", lambda messages, **k: (
