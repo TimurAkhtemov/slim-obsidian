@@ -827,6 +827,31 @@ def test_the_request_indexes_only_its_note_and_sweeps_the_vault_afterwards(tmp_p
     assert (seen["sweep_ingest"], seen["sweep_embed"]) == (1, 1)
 
 
+def test_a_quiet_sweep_writes_no_trace(tmp_path, monkeypatch):
+    """776 `record/sweep` records in a month, all but a few with nothing changed."""
+    from slim import chat, embed as embed_mod, ingest as ingest_mod, trace
+    quiet = {"unchanged": 3, "new": 0, "edited": 0, "renamed": 0, "removed": 0}
+    results = iter([(quiet, {"embedded": 0, "already": 3}),
+                    ({**quiet, "removed": 1}, {"embedded": 0, "already": 3}),
+                    (quiet, {"embedded": 2, "already": 3}),
+                    (RuntimeError("disk"), None)])
+
+    def fake_ingest(con, vault=None, **k):
+        stats, embedded = next(results)
+        if isinstance(stats, Exception):
+            raise stats
+        fake_ingest.embedded = embedded
+        return stats
+
+    monkeypatch.setattr(ingest_mod, "ingest", fake_ingest)
+    monkeypatch.setattr(embed_mod, "embed_missing", lambda con, **k: fake_ingest.embedded)
+    for _ in range(4):
+        chat._sweep_vault(tmp_path)
+    swept = [r for r in trace.last(10) if r.get("stage") == "sweep"]
+    assert [(r["status"], r.get("ingest", {}).get("removed"), r.get("embed", {}).get("embedded"))
+            for r in swept] == [("ok", 1, 0), ("ok", 0, 2), ("failed", None, None)]
+
+
 def test_the_sweep_runs_on_a_daemon_thread_and_sweeps_serialize(tmp_path, monkeypatch):
     import threading
     from slim import chat

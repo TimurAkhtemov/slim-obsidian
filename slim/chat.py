@@ -404,7 +404,9 @@ def _sweep_vault(vault: Path) -> dict:
             finally:
                 con.close()
             out = {"ingest": stats, "embed": embedded}
-            trace.record("record", {"stage": "sweep", "status": "ok", **out})
+            if any(stats.get(key) for key in ("new", "edited", "renamed", "removed")) \
+                    or embedded.get("embedded"):
+                trace.record("record", {"stage": "sweep", "status": "ok", **out})   # quiet ones write nothing
             return out
         except Exception as exc:                   # noqa: BLE001 - background; never raises
             trace.record("record", {"stage": "sweep", "status": "failed", "error": str(exc)})
