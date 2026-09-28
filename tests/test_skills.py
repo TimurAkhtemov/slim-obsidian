@@ -40,6 +40,9 @@ def test_builtins_parse_cleanly_and_include_the_consolidation(tmp_path):
     consolidate = loaded["consolidate-my-notes"]
     assert (consolidate.input, consolidate.section, consolidate.output) == ("folder", "Notes", "new-note")
     assert consolidate.filter == {"type": ["meeting-note", "meeting"]}      # what the vault spells
+    brief = loaded["brief"]
+    assert (brief.input, brief.output, brief.mode) == ("note", "new-note", "deep")
+    assert "{{args}}" in brief.prompt and "new note in this folder" in brief.prompt
 
 
 def test_a_vault_skill_overrides_a_builtin_of_the_same_name(tmp_path):
