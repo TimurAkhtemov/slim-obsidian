@@ -127,7 +127,7 @@ Module._load = function (request) {
 
 const PluginClass = createRequire(import.meta.url)(path.join(HERE, "main.js"));
 const { RecorderView, splitMeetingNote, embedLegacyMeetingBlock,
-        markdownBlockShortcut, pcm16k, renderPassiveMeetingBlock,
+        markdownBlockShortcut, pcm16k, captureSilence, renderPassiveMeetingBlock,
         MeetingSessionManager, serverArgv, serverEnv } = PluginClass;
 
 test("plugin-started servers are tied to the current Obsidian process", () => {
@@ -533,6 +533,142 @@ test("live captions downsample browser audio to local 16 kHz PCM", () => {
   const pcm = pcm16k(input, 48000);
   assert.equal(pcm.length, 32000);
   assert.ok(Math.abs(pcm.readInt16LE(0) - 16384) < 2);
+});
+
+// --- the digital-silence warning -------------------------------------------------------------
+// 2026-09-24: 157 s of zeros on both channels, and the empty-transcript refusal at the end was
+// the first anyone knew. A meeting you think is being recorded is the worst failure there is.
+
+const ZERO = { mic: 0, system: 0 };
+const SPEECH = 0.05;
+
+function feed(peaks, watch = null) {
+  for (const p of peaks) watch = captureSilence(watch, p);
+  return watch;
+}
+
+test("five seconds of zeros on BOTH channels says nothing is being recorded; four do not", () => {
+  assert.equal(feed(Array(4).fill(ZERO)).warn, "");
+  assert.equal(feed(Array(5).fill(ZERO)).warn, "nothing");
+});
+
+test("a silent mic beside live system audio is the quiet line, not the alarm", () => {
+  // 09-28: a lecture played on the Mac, mic zeros for 20+ min, system fine. It still worked.
+  assert.equal(feed(Array(5).fill({ mic: 0, system: SPEECH })).warn, "mic");
+});
+
+test("system silence alone is never a warning: nobody else is talking", () => {
+  assert.equal(feed(Array(60).fill({ mic: SPEECH, system: 0 })).warn, "");
+});
+
+test("a real noise floor is never silence, even with nobody speaking", () => {
+  // -70 dBFS: a quiet room after noise suppression; the machine playing nothing at all.
+  const floor = 10 ** (-70 / 20);
+  assert.equal(feed(Array(60).fill({ mic: floor, system: 0 })).warn, "");
+});
+
+test("the warning clears the moment the microphone is heard", () => {
+  const warned = feed(Array(6).fill(ZERO));
+  assert.equal(warned.warn, "nothing");
+  assert.equal(captureSilence(warned, { mic: SPEECH, system: 0 }).warn, "");
+});
+
+test("the alarm steps down to the quiet line when only system audio comes back", () => {
+  const warned = feed(Array(6).fill(ZERO));
+  assert.equal(captureSilence(warned, { mic: 0, system: SPEECH }).warn, "mic");
+});
+
+test("a microphone that WAS heard gets 20 s of zeros before anything is said, not 5", () => {
+  // A pause is not zeros — but a headset unplugged mid-meeting is the same loss.
+  const heard = feed([{ mic: SPEECH, system: 0 }]);
+  assert.equal(feed(Array(19).fill(ZERO), heard).warn, "");
+  assert.equal(feed(Array(20).fill(ZERO), heard).warn, "nothing");
+});
+
+function silenceCtx(levels) {
+  const made = { connected: [], disconnected: [] };
+  const node = (name) => ({
+    name,
+    connect(target, output = 0) { made.connected.push([name, target.name, output]); },
+    disconnect() { made.disconnected.push(name); },
+  });
+  let analysers = 0;
+  const ctx = {
+    createMediaStreamSource: () => node("source"),
+    createChannelSplitter: () => node("split"),
+    createAnalyser: () => {
+      const side = analysers++ === 0 ? "mic" : "system";
+      return Object.assign(node(side), {
+        fftSize: 2048,
+        getFloatTimeDomainData(data) { data.fill(0); data[0] = levels[side]; },
+      });
+    },
+    close() {},
+  };
+  return { ctx, made };
+}
+
+test("the watch reads the recorded stream: LEFT is the mic, RIGHT is the machine", () => {
+  const v = view();
+  const { ctx, made } = silenceCtx({ ...ZERO });
+  v.audioCtx = ctx;
+  v.setupSilenceWatch(new FakeStream(["audio"]));
+  assert.deepEqual(made.connected,
+    [["source", "split", 0], ["split", "mic", 0], ["split", "system", 1]]);
+});
+
+test("'Record my voice' off means the left side is empty on purpose: nothing to watch", () => {
+  const v = view({ recordVoice: false });
+  const { ctx, made } = silenceCtx({ ...ZERO });
+  v.audioCtx = ctx;
+  v.setupSilenceWatch(new FakeStream(["audio"]));
+  v.checkSilence();
+  assert.equal(made.connected.length, 0);
+  assert.equal(v.silenceWatch, null);
+});
+
+test("dead capture shows the alarm inside the recording, and the recording continues", () => {
+  const v = view();
+  const levels = { ...ZERO };
+  v.audioCtx = silenceCtx(levels).ctx;
+  v.recorder = { state: "recording" };
+  v.state = "recording";
+  v.contentEl = fakeContentEl();
+  v.setupSilenceWatch(new FakeStream(["audio"]));
+  for (let i = 0; i < 5; i++) v.checkSilence();
+  assert.ok(findClass(v.contentEl, "slim-silence-warning"));
+  assert.equal(v.state, "recording");
+  levels.system = SPEECH;
+  v.checkSilence();
+  assert.equal(findClass(v.contentEl, "slim-silence-warning"), null);
+  assert.ok(findClass(v.contentEl, "slim-silence-mic"));
+  levels.mic = SPEECH;
+  v.checkSilence();
+  assert.equal(findClass(v.contentEl, "slim-silence-mic"), null);
+});
+
+test("two recordings keep their own watch", () => {
+  const a = view();
+  const b = view();
+  a.audioCtx = silenceCtx({ ...ZERO }).ctx;
+  b.audioCtx = silenceCtx({ mic: SPEECH, system: SPEECH }).ctx;
+  a.setupSilenceWatch(new FakeStream(["audio"]));
+  b.setupSilenceWatch(new FakeStream(["audio"]));
+  for (let i = 0; i < 5; i++) { a.checkSilence(); b.checkSilence(); }
+  assert.equal(a.silenceWatch.warn, "nothing");
+  assert.equal(b.silenceWatch.warn, "");
+});
+
+test("stopping disconnects the silence watch", () => {
+  const v = view();
+  const { ctx, made } = silenceCtx({ ...ZERO });
+  v.audioCtx = ctx;
+  v.plugin.postLiveTranscript = async () => ({});
+  v.setupSilenceWatch(new FakeStream(["audio"]));
+  v.teardownStream();
+  assert.deepEqual(made.disconnected.sort(), ["mic", "source", "split", "system"]);
+  assert.equal(v.silenceTap, null);
+  v.checkSilence();   // a late timer tick after teardown is harmless
 });
 
 test("a non-journal recording creates its draft inside Capture/_unfiled", async () => {

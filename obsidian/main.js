@@ -399,6 +399,39 @@ function pcm16k(input, inputRate) {
   return out;
 }
 
+/* Digital silence — exact zeros — on the channels the file gets, said WHILE it can be fixed.
+ *
+ * ⚠ THIS WAS FOUND AT THE END, NOT DURING (2026-09-24): 157 s of zeros on both channels, and
+ * the refusal of the empty transcript was the first anyone knew of it. The same refusal on
+ * 09-04, 09-09 and 09-17. For "I record and forget", a meeting you think is being recorded is
+ * the worst failure there is.
+ *
+ * Two levels, because the mic ALONE can be zeros for a whole recording that still worked:
+ * 09-28, a lecture played on the Mac, mic -91 dB mean for 20+ min, system -23.5. So:
+ *   - "nothing": the mic AND the machine are both zeros. Nothing is being recorded. Loud.
+ *   - "mic":     the mic is zeros, the machine is not. Your side is missing. A quiet line.
+ *   - never the system channel alone: silence there is nobody else talking.
+ *
+ * -80 dBFS PEAK per second. Above what a dead input emits through Chromium's processing (one
+ * 16-bit step is -90 dBFS; AEC3's comfort-noise floor is -96), well below a real room after
+ * noise suppression, and a channel needs to cross it only ONCE a second to count. 5 s at the
+ * start of each segment, when a broken capture is still cheap to fix; 20 s once the mic has been
+ * heard, because a headset unplugged mid-meeting is the same loss and a pause is not zeros. */
+const SILENT_PEAK = 10 ** (-80 / 20);
+const SILENT_START_S = 5;
+const SILENT_LATER_S = 20;
+
+function captureSilence(watch, peaks, seconds = 1) {
+  const prev = watch || { heard: false, micSilent: 0, systemSilent: 0, warn: "" };
+  const mic = peaks.mic >= SILENT_PEAK;
+  const micSilent = mic ? 0 : prev.micSilent + seconds;
+  const systemSilent = peaks.system >= SILENT_PEAK ? 0 : prev.systemSilent + seconds;
+  const limit = prev.heard ? SILENT_LATER_S : SILENT_START_S;
+  let warn = "";
+  if (micSilent >= limit) warn = systemSilent >= limit ? "nothing" : "mic";
+  return { heard: prev.heard || mic, micSilent, systemSilent, warn };
+}
+
 class RecorderView {
   constructor(leaf, plugin) {
     this.leaf = leaf || null;
@@ -421,6 +454,9 @@ class RecorderView {
     this.livePcm = [];
     this.livePcmBytes = 0;
     this.liveProcessor = null;
+    this.silenceTap = null;       // one analyser per recorded channel; see captureSilence
+    this.silenceSamples = null;
+    this.silenceWatch = null;
     this.liveTranscriptActive = false;
     this.liveTranscriptPaused = false;
     this.state = "idle";          // idle | recording | processing | paused | card | finished | error
@@ -1099,12 +1135,14 @@ class RecorderView {
     }
 
     this.setupMeter(mixed);
+    this.setupSilenceWatch(mixed);
     this.elapsed = this.elapsedCarry || 0;
     this.timer = window.setInterval(() => {
       if (this.recorder && this.recorder.state === "recording") {
         this.elapsed += 1;
-        const el = this.contentEl.querySelector(".slim-timer");
+        const el = this.contentEl && this.contentEl.querySelector(".slim-timer");
         if (el) el.setText(hhmmss(this.elapsed));
+        this.checkSilence();
       }
     }, 1000);
     if (typeof this.plugin.registerInterval === "function") this.plugin.registerInterval(this.timer);
@@ -1325,6 +1363,48 @@ class RecorderView {
     }
   }
 
+  /* Both channels of the stream MediaRecorder is writing — what the file gets, not what the
+   * devices claim. Read once a second by the clock's timer, not per frame: rAF stops in a hidden
+   * window, and a meeting is exactly when Obsidian is behind the call. The largest analyser
+   * window (32768 samples, ~0.7 s) sees most of each second. 'Record my voice' off leaves the
+   * left side empty on purpose, and system silence alone is never a warning — so there is
+   * nothing to watch. */
+  setupSilenceWatch(mixed) {
+    this.silenceWatch = null;
+    if (!this.recordVoice) return;
+    try {
+      const source = this.audioCtx.createMediaStreamSource(mixed);
+      const split = this.audioCtx.createChannelSplitter(2);
+      const mic = this.audioCtx.createAnalyser();
+      const system = this.audioCtx.createAnalyser();
+      mic.fftSize = 32768;
+      system.fftSize = 32768;
+      source.connect(split);
+      split.connect(mic, MIC_CHANNEL);
+      split.connect(system, SYSTEM_CHANNEL);
+      this.silenceTap = { source, split, mic, system };
+      this.silenceSamples = new Float32Array(mic.fftSize);
+    } catch (e) {
+      console.error("[slim] silence watch", e);   // a missing warning must never stop a recording
+    }
+  }
+
+  checkSilence() {
+    if (!this.silenceTap) return;
+    const peak = (analyser) => {
+      const data = this.silenceSamples;
+      analyser.getFloatTimeDomainData(data);
+      let max = 0;
+      for (let i = 0; i < data.length; i++) max = Math.max(max, Math.abs(data[i]));
+      return max;
+    };
+    const was = this.silenceWatch ? this.silenceWatch.warn : "";
+    this.silenceWatch = captureSilence(this.silenceWatch, {
+      mic: peak(this.silenceTap.mic), system: peak(this.silenceTap.system),
+    });
+    if (this.silenceWatch.warn !== was) this.render();
+  }
+
   togglePause() {
     if (!this.recorder) return;
     if (this.recorder.state === "recording") {
@@ -1353,6 +1433,13 @@ class RecorderView {
         try { if (node) node.disconnect(); } catch (e) { /* already disconnected */ }
       }
       this.liveProcessor = null;
+    }
+    if (this.silenceTap) {
+      for (const node of Object.values(this.silenceTap)) {
+        try { node.disconnect(); } catch (e) { /* already disconnected */ }
+      }
+      this.silenceTap = null;
+      this.silenceSamples = null;
     }
     if (this.audioCtx) { try { this.audioCtx.close(); } catch (e) { /* already closed */ } }
     this.audioCtx = null;
@@ -2136,6 +2223,18 @@ class RecorderView {
       s.disabled = true; p.disabled = true;
       await this.stop();
     });
+    const silence = this.silenceWatch && this.silenceWatch.warn;
+    if (silence === "nothing") {
+      console.createDiv({
+        cls: "slim-silence-warning", attr: { role: "alert" },
+        text: "Nothing is being recorded — the microphone and system audio are both silent. " +
+              "Check the input device (System Settings › Sound) and Obsidian's microphone " +
+              "permission (Privacy & Security › Microphone). Recording continues.",
+      });
+    } else if (silence === "mic") {
+      console.createDiv({ cls: "slim-silence-mic",
+        text: "Your microphone is silent — only system audio is being recorded." });
+    }
     const level = console.createDiv({ cls: "slim-level" });
     level.createDiv({ cls: "slim-level-fill" });
     const transcript = console.createDiv({ cls: "slim-live-transcript" });
@@ -4789,6 +4888,7 @@ module.exports.splitMeetingNote = splitMeetingNote;
 module.exports.embedLegacyMeetingBlock = embedLegacyMeetingBlock;
 module.exports.markdownBlockShortcut = markdownBlockShortcut;
 module.exports.pcm16k = pcm16k;
+module.exports.captureSilence = captureSilence;
 module.exports.renderPassiveMeetingBlock = renderPassiveMeetingBlock;
 module.exports.CopilotView = CopilotView;
 module.exports.RenameModal = RenameModal;

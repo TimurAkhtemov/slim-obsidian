@@ -313,6 +313,15 @@
   height: 100%; width: 0; background: var(--interactive-accent);
   transition: width 90ms linear;
 }
+.slim-silence-warning {
+  padding: 10px 14px;
+  border: 1px solid var(--text-error);
+  border-radius: var(--radius-s, 5px);
+  background: rgba(var(--color-red-rgb), 0.1);
+  color: var(--text-error);
+  font-size: var(--font-ui-small);
+}
+.slim-silence-mic { color: var(--text-muted); font-size: var(--font-ui-small); }
 .slim-live-transcript {
   min-height: 112px;
   padding: 12px 14px;
