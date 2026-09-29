@@ -127,7 +127,9 @@ def ingest_note(con: sqlite3.Connection, vault: Path, rel_path: str, *,
     if rel.is_absolute() or ".." in rel.parts or rel.suffix.casefold() != ".md":
         raise IngestError("note path must be a vault-relative Markdown path")
     if not indexable(rel):
-        raise IngestError("note is not indexable")
+        raise IngestError("SLIM does not index this note (Attachments/, Profile/, Skills/, "
+                          "_Reflections/ and recording drafts are left out), so the copilot "
+                          "cannot use it")
     target = (vault / rel).resolve()
     try:
         target.relative_to(vault)

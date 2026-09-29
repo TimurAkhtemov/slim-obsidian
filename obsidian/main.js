@@ -3266,7 +3266,11 @@ class CopilotView extends ItemView {
         await this.openThread(wanted.id, version, true);
       }
     } catch (error) {
-      if (version === this.requestVersion) this.error = error.message || String(error);
+      // A 400 is the server refusing THIS note in a sentence meant for them; the route and
+      // status in front of it are for a debugger.
+      if (version === this.requestVersion) {
+        this.error = (error.status === 400 && error.detail) || error.message || String(error);
+      }
     } finally {
       if (version === this.requestVersion) {
         this.loading = false;
@@ -4554,8 +4558,9 @@ module.exports = class SlimRecorderPlugin extends Plugin {
    * (2026-08-23). In July the same trap cost a full day of debugging.
    *
    * It WARNS rather than restarting: the server on the port might be their, with a reloader
-   * attached, and killing that out from under them is its own surprise. Once at load, not per
-   * recording — a warning that appears when they presse Stop is a warning that arrives too late.
+   * attached, and killing that out from under them is its own surprise. ONCE PER SERVER: the
+   * check runs on every request that reuses the server, and saying it each time stacked a
+   * column of 30 s notices over the sidebar (2026-09-29).
    */
   /* This vault's own base path, or null on a mobile adapter that has none. `openDiskFile()`
    * already resolves audio against it; the server has to agree on the same directory. */
@@ -4580,8 +4585,9 @@ module.exports = class SlimRecorderPlugin extends Plugin {
     // A server old enough to predate this endpoint answers 404 — which is itself proof that it
     // is stale, and worth saying so rather than swallowing.
     if (!res || res.status === 404) {
-      new Notice("SLIM: the running server predates /api/health, so it is serving OLD code. " +
-                 `Restart it:\n\nlsof -tiTCP:${this.settings.port} -sTCP:LISTEN | xargs kill`, 30000);
+      this.sayOnce("predates-health",
+        "SLIM: the running server predates /api/health, so it is serving OLD code. " +
+        `Restart it:\n\nlsof -tiTCP:${this.settings.port} -sTCP:LISTEN | xargs kill`);
       return;
     }
     const health = res.json;
@@ -4596,17 +4602,22 @@ module.exports = class SlimRecorderPlugin extends Plugin {
     try { if (base) resolvedBase = fs.realpathSync(base); } catch {}
     const killCmd = `lsof -tiTCP:${this.settings.port} -sTCP:LISTEN | xargs kill`;
     if (resolvedBase && health.vault && health.vault !== resolvedBase) {
-      new Notice(
+      this.sayOnce(`vault:${health.pid}:${health.started_at}`,
         `SLIM: the server on port ${this.settings.port} is using the vault ${health.vault}, ` +
         `but this vault is ${base}. Recordings would be filed in the wrong one. Restart it:` +
-        `\n\n${killCmd}`, 30000);
+        `\n\n${killCmd}`);
       return;
     }
     if (!health.stale) return;
-    new Notice(
+    this.sayOnce(`stale:${health.pid}:${health.started_at}`,
       `SLIM: the running server started ${health.started_at} but ${health.newest_file} changed ` +
-      `${health.newest_source}. It is serving OLD code. Restart it:\n\n` +
-      killCmd, 30000);
+      `${health.newest_source}. It is serving OLD code. Restart it:\n\n` + killCmd);
+  }
+
+  sayOnce(key, text) {
+    if (this.staleSaid === key) return;
+    this.staleSaid = key;
+    new Notice(text, 30000);
   }
 
   async openMeetingPath(path) {
@@ -4834,6 +4845,7 @@ module.exports = class SlimRecorderPlugin extends Plugin {
       const err = new Error(cancelled || silent
         ? detail : `${path} returned ${res.status}: ${detail}`);
       err.status = res.status;
+      err.detail = detail;
       err.cancelled = cancelled;
       err.silent = silent;
       throw err;

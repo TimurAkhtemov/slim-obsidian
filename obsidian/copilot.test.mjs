@@ -137,6 +137,22 @@ test("unsupported active files produce an unavailable state without an HTTP call
   assert.match(view.error, /Markdown note/);
 });
 
+test("a note the server refuses shows the server's sentence, not the route and status", async () => {
+  // 2026-09-29: "/api/copilot/context returned 400: note is not indexable", in red.
+  const view = makeView({
+    postJSON: async () => {
+      const err = new Error("/api/copilot/context returned 400: SLIM leaves this note out");
+      err.status = 400;
+      err.detail = "SLIM leaves this note out";
+      throw err;
+    },
+    getJSON: async () => ({ threads: [] }),
+  });
+  view.render = () => {};
+  await view.setActiveFile({ path: "Skills/brief.md", extension: "md" });
+  assert.equal(view.error, "SLIM leaves this note out");
+});
+
 test("the active Markdown view is saved before its note is synchronized", async () => {
   const order = [];
   const file = { path: "Notes/one.md", extension: "md" };

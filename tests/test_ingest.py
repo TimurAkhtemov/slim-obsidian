@@ -231,7 +231,7 @@ def test_sweep_skips_managed_recorder_drafts_like_the_single_note_path(tmp_path)
     # when filed; indexing the draft gives that note a same-content rival. A `.slim-draft.md`
     # anywhere else is the user's own file.
     assert indexed == {"Notes/own.slim-draft.md", "Notes/kept.md"}
-    with pytest.raises(IngestError, match="not indexable"):
+    with pytest.raises(IngestError, match="does not index this note"):
         ingest_note(con, vault, "Journal/2026-08-25.slim-draft.md")
 
 
