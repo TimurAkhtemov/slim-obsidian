@@ -548,41 +548,37 @@ function feed(peaks, watch = null) {
 }
 
 test("five seconds of zeros on BOTH channels says nothing is being recorded; four do not", () => {
-  assert.equal(feed(Array(4).fill(ZERO)).warn, "");
-  assert.equal(feed(Array(5).fill(ZERO)).warn, "nothing");
+  assert.equal(feed(Array(4).fill(ZERO)).warn, false);
+  assert.equal(feed(Array(5).fill(ZERO)).warn, true);
 });
 
-test("a silent mic beside live system audio is the quiet line, not the alarm", () => {
+test("a silent mic beside live system audio is never a warning: echo cancellation at work", () => {
   // 09-28: a lecture played on the Mac, mic zeros for 20+ min, system fine. It still worked.
-  assert.equal(feed(Array(5).fill({ mic: 0, system: SPEECH })).warn, "mic");
+  assert.equal(feed(Array(60).fill({ mic: 0, system: SPEECH })).warn, false);
 });
 
 test("system silence alone is never a warning: nobody else is talking", () => {
-  assert.equal(feed(Array(60).fill({ mic: SPEECH, system: 0 })).warn, "");
+  assert.equal(feed(Array(60).fill({ mic: SPEECH, system: 0 })).warn, false);
 });
 
 test("a real noise floor is never silence, even with nobody speaking", () => {
   // -70 dBFS: a quiet room after noise suppression; the machine playing nothing at all.
   const floor = 10 ** (-70 / 20);
-  assert.equal(feed(Array(60).fill({ mic: floor, system: 0 })).warn, "");
+  assert.equal(feed(Array(60).fill({ mic: floor, system: 0 })).warn, false);
 });
 
-test("the warning clears the moment the microphone is heard", () => {
+test("the alarm clears the moment either side is heard", () => {
   const warned = feed(Array(6).fill(ZERO));
-  assert.equal(warned.warn, "nothing");
-  assert.equal(captureSilence(warned, { mic: SPEECH, system: 0 }).warn, "");
+  assert.equal(warned.warn, true);
+  assert.equal(captureSilence(warned, { mic: SPEECH, system: 0 }).warn, false);
+  assert.equal(captureSilence(warned, { mic: 0, system: SPEECH }).warn, false);
 });
 
-test("the alarm steps down to the quiet line when only system audio comes back", () => {
-  const warned = feed(Array(6).fill(ZERO));
-  assert.equal(captureSilence(warned, { mic: 0, system: SPEECH }).warn, "mic");
-});
-
-test("a microphone that WAS heard gets 20 s of zeros before anything is said, not 5", () => {
-  // A pause is not zeros — but a headset unplugged mid-meeting is the same loss.
+test("once anything was heard, 20 s of zeros before the alarm, not 5", () => {
+  // A pause is not zeros — but a device lost mid-meeting is the same loss.
   const heard = feed([{ mic: SPEECH, system: 0 }]);
-  assert.equal(feed(Array(19).fill(ZERO), heard).warn, "");
-  assert.equal(feed(Array(20).fill(ZERO), heard).warn, "nothing");
+  assert.equal(feed(Array(19).fill(ZERO), heard).warn, false);
+  assert.equal(feed(Array(20).fill(ZERO), heard).warn, true);
 });
 
 function silenceCtx(levels) {
@@ -641,10 +637,6 @@ test("dead capture shows the alarm inside the recording, and the recording conti
   levels.system = SPEECH;
   v.checkSilence();
   assert.equal(findClass(v.contentEl, "slim-silence-warning"), null);
-  assert.ok(findClass(v.contentEl, "slim-silence-mic"));
-  levels.mic = SPEECH;
-  v.checkSilence();
-  assert.equal(findClass(v.contentEl, "slim-silence-mic"), null);
 });
 
 test("two recordings keep their own watch", () => {
@@ -655,8 +647,8 @@ test("two recordings keep their own watch", () => {
   a.setupSilenceWatch(new FakeStream(["audio"]));
   b.setupSilenceWatch(new FakeStream(["audio"]));
   for (let i = 0; i < 5; i++) { a.checkSilence(); b.checkSilence(); }
-  assert.equal(a.silenceWatch.warn, "nothing");
-  assert.equal(b.silenceWatch.warn, "");
+  assert.equal(a.silenceWatch.warn, true);
+  assert.equal(b.silenceWatch.warn, false);
 });
 
 test("stopping disconnects the silence watch", () => {

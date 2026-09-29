@@ -321,7 +321,6 @@
   color: var(--text-error);
   font-size: var(--font-ui-small);
 }
-.slim-silence-mic { color: var(--text-muted); font-size: var(--font-ui-small); }
 .slim-live-transcript {
   min-height: 112px;
   padding: 12px 14px;

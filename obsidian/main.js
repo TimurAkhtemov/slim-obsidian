@@ -406,30 +406,26 @@ function pcm16k(input, inputRate) {
  * 09-04, 09-09 and 09-17. For "I record and forget", a meeting you think is being recorded is
  * the worst failure there is.
  *
- * Two levels, because the mic ALONE can be zeros for a whole recording that still worked:
- * 09-28, a lecture played on the Mac, mic -91 dB mean for 20+ min, system -23.5. So:
- *   - "nothing": the mic AND the machine are both zeros. Nothing is being recorded. Loud.
- *   - "mic":     the mic is zeros, the machine is not. Your side is missing. A quiet line.
- *   - never the system channel alone: silence there is nobody else talking.
+ * ONE level, and only when BOTH channels are zeros: then nothing at all is being recorded. The
+ * mic ALONE is zeros whenever echo cancellation does its job — 09-28, a lecture played on the
+ * Mac: mic -91 dB for 20+ min, system -23.5, and the recording was fine. A line for that fired
+ * on every lecture, so it was cut (2026-09-29). System silence alone is nobody else talking.
  *
  * -80 dBFS PEAK per second. Above what a dead input emits through Chromium's processing (one
  * 16-bit step is -90 dBFS; AEC3's comfort-noise floor is -96), well below a real room after
  * noise suppression, and a channel needs to cross it only ONCE a second to count. 5 s at the
- * start of each segment, when a broken capture is still cheap to fix; 20 s once the mic has been
- * heard, because a headset unplugged mid-meeting is the same loss and a pause is not zeros. */
+ * start of each segment, when a broken capture is still cheap to fix; 20 s once anything has
+ * been heard, because a pause is not zeros but a device lost mid-meeting is the same loss. */
 const SILENT_PEAK = 10 ** (-80 / 20);
 const SILENT_START_S = 5;
 const SILENT_LATER_S = 20;
 
 function captureSilence(watch, peaks, seconds = 1) {
-  const prev = watch || { heard: false, micSilent: 0, systemSilent: 0, warn: "" };
-  const mic = peaks.mic >= SILENT_PEAK;
-  const micSilent = mic ? 0 : prev.micSilent + seconds;
-  const systemSilent = peaks.system >= SILENT_PEAK ? 0 : prev.systemSilent + seconds;
+  const prev = watch || { heard: false, silent: 0, warn: false };
+  const sound = peaks.mic >= SILENT_PEAK || peaks.system >= SILENT_PEAK;
+  const silent = sound ? 0 : prev.silent + seconds;
   const limit = prev.heard ? SILENT_LATER_S : SILENT_START_S;
-  let warn = "";
-  if (micSilent >= limit) warn = systemSilent >= limit ? "nothing" : "mic";
-  return { heard: prev.heard || mic, micSilent, systemSilent, warn };
+  return { heard: prev.heard || sound, silent, warn: silent >= limit };
 }
 
 class RecorderView {
@@ -1398,7 +1394,7 @@ class RecorderView {
       for (let i = 0; i < data.length; i++) max = Math.max(max, Math.abs(data[i]));
       return max;
     };
-    const was = this.silenceWatch ? this.silenceWatch.warn : "";
+    const was = this.silenceWatch ? this.silenceWatch.warn : false;
     this.silenceWatch = captureSilence(this.silenceWatch, {
       mic: peak(this.silenceTap.mic), system: peak(this.silenceTap.system),
     });
@@ -2223,17 +2219,13 @@ class RecorderView {
       s.disabled = true; p.disabled = true;
       await this.stop();
     });
-    const silence = this.silenceWatch && this.silenceWatch.warn;
-    if (silence === "nothing") {
+    if (this.silenceWatch && this.silenceWatch.warn) {
       console.createDiv({
         cls: "slim-silence-warning", attr: { role: "alert" },
         text: "Nothing is being recorded — the microphone and system audio are both silent. " +
               "Check the input device (System Settings › Sound) and Obsidian's microphone " +
               "permission (Privacy & Security › Microphone). Recording continues.",
       });
-    } else if (silence === "mic") {
-      console.createDiv({ cls: "slim-silence-mic",
-        text: "Your microphone is silent — only system audio is being recorded." });
     }
     const level = console.createDiv({ cls: "slim-level" });
     level.createDiv({ cls: "slim-level-fill" });
