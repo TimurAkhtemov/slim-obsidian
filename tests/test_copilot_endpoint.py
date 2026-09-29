@@ -277,3 +277,17 @@ def test_skills_endpoint_lists_builtins_and_the_vaults_own(server_url, monkeypat
     assert listed["standup"]["description"] == "Mine" and listed["standup"]["origin"] == "vault"
     assert listed["broken"]["error"].startswith("output must be")
     assert listed["consolidate-my-notes"]["output"] == "new-note"
+
+
+def test_folders_endpoint_gives_a_reopened_card_its_tree_and_tags(server_url, monkeypatch, tmp_path):
+    # 2026-09-29: a pending card reopened after a reload showed an empty "browse the vault"
+    # and every topic as "new" — only a fresh recording's response carried either list.
+    (tmp_path / "Capture/job-search").mkdir(parents=True)
+    (tmp_path / "Capture/job-search/a.md").write_text("---\ntopics: [job-search]\n---\nx\n")
+    (tmp_path / "Notes/empty").mkdir(parents=True)
+    monkeypatch.setattr(chat.config, "VAULT", tmp_path)
+    with urllib.request.urlopen(server_url + "/api/record/folders") as response:
+        body = json.load(response)
+    paths = {f["path"]: f["count"] for f in body["folders"]}
+    assert paths["Capture/job-search"] == 1 and paths["Notes/empty"] == 0
+    assert body["tag_counts"].get("job-search") == 1

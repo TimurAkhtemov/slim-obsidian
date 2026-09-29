@@ -1,7 +1,7 @@
 """The Obsidian plugin's local API server — `slim chat`, 127.0.0.1:7546.
 
-Nineteen routes, called by `obsidian/main.js` (and `GET /api/health` also by the stale-server
-hook): the health guard, ten `/api/record*` routes for the recorder and eight `/api/copilot*`
+Twenty routes, called by `obsidian/main.js` (and `GET /api/health` also by the stale-server
+hook): the health guard, eleven `/api/record*` routes for the recorder and eight `/api/copilot*`
 routes for the open-note sidebar. The copilot never writes a note: an edit comes back as a
 proposal, and the plugin writes what the owner accepts.
 
@@ -765,11 +765,16 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
         "summary": summary_md,
         "card": {"dest_dir": card.dest_dir, "confident_depth": card.confident_depth,
                  "type_tag": card.type_tag,
-                 "topics": card.topics,
-                 "tag_counts": suggest.tag_counts(vault),
-                 "folders": [{"path": f.path, "count": f.count}
-                             for f in suggest.folder_tree(vault)]},
+                 "topics": card.topics, **_card_lists(vault)},
     }
+
+
+def _card_lists(vault: Path) -> dict:
+    """What the card browses and badges: every folder a note may go to, every tag in use.
+    Also served alone, for a pending card reopened after a reload (`/api/record/folders`)."""
+    from . import suggest
+    return {"tag_counts": suggest.tag_counts(vault),
+            "folders": [{"path": f.path, "count": f.count} for f in suggest.folder_tree(vault)]}
 
 
 def _record_args(data: dict) -> dict:
@@ -1209,6 +1214,9 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_json(404, {"error": "no such recording job"})
             else:
                 self._send_json(200, state)
+            return
+        if url.path == "/api/record/folders":
+            self._send_json(200, _card_lists(config.VAULT))
             return
         if url.path == "/api/copilot/threads":
             listed = threads_mod.list_copilot_threads()

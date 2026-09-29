@@ -671,6 +671,17 @@ class RecorderView {
     this.activeTab = "summary";
     this.attachEditorObject();
     this.render();
+    // The folder tree and the tag counts come only with a fresh recording's response, so a card
+    // reopened after a reload browsed an empty box and called every topic "new". Not awaited:
+    // the server may still be starting, and the note must open now.
+    const card = this.result.card;
+    this.cardListsLoad = Promise.resolve().then(() => this.plugin.getJSON("/api/record/folders"))
+      .then((lists) => {
+      if (!this.result || this.result.card !== card) return;
+      card.folders = lists.folders || [];
+      card.tag_counts = lists.tag_counts || {};
+      this.render();
+    }).catch((e) => console.error("[slim] card folders", e));
     return true;
   }
 

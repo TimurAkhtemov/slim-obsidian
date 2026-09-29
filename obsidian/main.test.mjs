@@ -2597,6 +2597,30 @@ test("a pending review survives plugin reload while historical notes stay finish
   }
 });
 
+test("a reopened card fetches the vault's folders and tags, and redraws with them", async () => {
+  // 2026-09-29: after a reload "browse the vault" was an empty box and every topic read "new":
+  // only a fresh recording's response carried either list.
+  const path = "Capture/job-search/pending.md";
+  const { v, files, editorLeaf } = fileBackedView();
+  const file = { path, basename: "pending", text: [
+    "---", "origin: recorded", "review_status: pending", "---", "", "````slim-meeting",
+    "## Transcript", "", "words", "````", "",
+  ].join("\n") };
+  files.set(path, file);
+  await editorLeaf.openFile(file);
+  v.app.metadataCache = { getFileCache: () => ({ frontmatter: { origin: "recorded" } }) };
+  const asked = [];
+  v.plugin.getJSON = async (route) => {
+    asked.push(route);
+    return { folders: [{ path: "Capture/job-search", count: 3 }], tag_counts: { "job-search": 3 } };
+  };
+  assert.equal(await v.openExisting(file, editorLeaf), true);
+  await v.cardListsLoad;
+  assert.deepEqual(asked, ["/api/record/folders"]);
+  assert.deepEqual(v.result.card.folders, [{ path: "Capture/job-search", count: 3 }]);
+  assert.deepEqual(v.result.card.tag_counts, { "job-search": 3 });
+});
+
 test("closing a pending review says where it is and offers recovery actions once", () => {
   view(); // reset the notice harness
   const plugin = Object.create(PluginClass.prototype);
