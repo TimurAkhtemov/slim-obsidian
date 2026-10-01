@@ -79,6 +79,15 @@ function serverEnv(vaultBase, env = process.env) {
   return Object.assign({}, env, { SLIM_VAULT: vaultBase });
 }
 
+/* The recording clock, read from the wall. `since` is when it last started running, null while
+ * paused; `base` is the seconds banked before that. ⚠ Counting setInterval ticks undercounted:
+ * Chromium throttles timers in a hidden or occluded window, and with the display asleep a
+ * 51-minute meeting read about 30 while the audio ran the whole time. */
+function clockSeconds(clock, now) {
+  if (!clock) return 0;
+  return Math.floor(clock.base + (clock.since == null ? 0 : (now - clock.since) / 1000));
+}
+
 function hhmmss(totalSeconds) {
   const s = Math.floor(totalSeconds);
   return `${pad(Math.floor(s / 3600))}:${pad(Math.floor((s % 3600) / 60))}:${pad(s % 60)}`;
@@ -467,6 +476,7 @@ class RecorderView {
     this.audioCtx = null;
     this.elapsed = 0;
     this.timer = null;
+    this.clock = null;           // the recording clock; see clockSeconds
     this.recordingId = "";
     this.draftRel = "";
     this.editorFrozen = false;
@@ -1146,19 +1156,21 @@ class RecorderView {
     this.setupMeter(mixed);
     this.setupSilenceWatch(mixed);
     this.elapsed = this.elapsedCarry || 0;
-    this.timer = window.setInterval(() => {
-      if (this.recorder && this.recorder.state === "recording") {
-        this.elapsed += 1;
-        const el = this.contentEl && this.contentEl.querySelector(".slim-timer");
-        if (el) el.setText(hhmmss(this.elapsed));
-        this.checkSilence();
-      }
-    }, 1000);
+    this.clock = { base: this.elapsed, since: Date.now() };
+    this.timer = window.setInterval(() => this.tick(), 1000);
     if (typeof this.plugin.registerInterval === "function") this.plugin.registerInterval(this.timer);
 
     this.state = "recording";
     this.render();
     this.startLiveTranscript(mixed);
+  }
+
+  tick() {
+    if (!this.recorder || this.recorder.state !== "recording") return;
+    this.elapsed = clockSeconds(this.clock, Date.now());
+    const el = this.contentEl && this.contentEl.querySelector(".slim-timer");
+    if (el) el.setText(hhmmss(this.elapsed));
+    this.checkSilence();
   }
 
   /* One recording's captions and clock, across every segment of it. */
@@ -1419,15 +1431,22 @@ class RecorderView {
     if (this.recorder.state === "recording") {
       this.recorder.pause();
       this.liveTranscriptPaused = true;
+      if (this.clock) {
+        this.clock = { base: clockSeconds(this.clock, Date.now()), since: null };
+        this.elapsed = this.clock.base;
+      }
     } else if (this.recorder.state === "paused") {
       this.recorder.resume();
       this.liveTranscriptPaused = false;
+      if (this.clock) this.clock.since = Date.now();
     }
     this.render();
   }
 
   teardownStream() {
     if (this.timer) { window.clearInterval(this.timer); this.timer = null; }
+    // The last tick can be a throttled minute old; stop the clock at the wall's reading.
+    if (this.clock) { this.elapsed = clockSeconds(this.clock, Date.now()); this.clock = null; }
     // EVERY input, not just the mic — a live loopback stream keeps the device busy and the
     // recording indicator on long after the pane is gone.
     this.streams.forEach((s) => s.getTracks().forEach((t) => t.stop()));
@@ -4906,6 +4925,7 @@ module.exports.embedLegacyMeetingBlock = embedLegacyMeetingBlock;
 module.exports.markdownBlockShortcut = markdownBlockShortcut;
 module.exports.pcm16k = pcm16k;
 module.exports.captureSilence = captureSilence;
+module.exports.clockSeconds = clockSeconds;
 module.exports.renderPassiveMeetingBlock = renderPassiveMeetingBlock;
 module.exports.CopilotView = CopilotView;
 module.exports.RenameModal = RenameModal;

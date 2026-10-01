@@ -1437,6 +1437,34 @@ test("resuming carries the earlier transcript and the elapsed time forward", () 
   assert.equal(v.elapsed, 46, "the clock counts the whole recording, not this segment");
 });
 
+test("the clock reads the wall, not the count of timer ticks", () => {
+  // Seen live 2026-10-01: a 51-minute meeting with the display asleep read about 30 minutes.
+  // Chromium throttles timers in an occluded window; the audio kept recording, the ticks did not.
+  const realNow = Date.now;
+  let now = 1_000_000;
+  Date.now = () => now;
+  try {
+    const v = view();
+    v.recorder = { state: "recording", pause() { this.state = "paused"; },
+                   resume() { this.state = "recording"; } };
+    v.clock = { base: 41, since: now };            // a resumed segment, 41 s carried
+    now += 10 * 60_000;                            // ten minutes and a single late tick
+    v.tick();
+    assert.equal(v.elapsed, 41 + 600);
+
+    v.togglePause();
+    now += 5 * 60_000;                             // paused time is not recording time
+    v.togglePause();
+    now += 30_500;
+    v.teardownStream();                            // stop reads the wall, not the last tick
+    assert.equal(v.elapsed, 41 + 600 + 30);
+    v.carryTranscriptAndClock();
+    assert.equal(v.elapsedCarry, 671);
+  } finally {
+    Date.now = realNow;
+  }
+});
+
 test("each attempt gets its own job, so a cancelled one cannot haunt the next", async () => {
   // Seen live: Stop after a resume showed "Cancelled" for the whole run. The job id was the
   // recording id, so the poll found the PREVIOUS attempt's finished-and-cancelled record and
