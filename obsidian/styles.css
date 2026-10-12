@@ -655,15 +655,39 @@
 }
 .slim-proposal-kind { color: var(--text-muted); font-size: var(--font-ui-smaller); flex: 0 0 auto; }
 .slim-proposal-problem { padding: 4px 8px; color: var(--text-warning); font-size: var(--font-ui-smaller); }
-.slim-diff { max-height: 320px; overflow: auto; font-family: var(--font-monospace); font-size: var(--font-ui-smaller); }
-.slim-diff-line { white-space: pre-wrap; word-break: break-word; padding: 0 8px; line-height: 1.5; }
-.slim-diff-line.is-add { background: rgba(var(--color-green-rgb), 0.15); }
-.slim-diff-line.is-del { background: rgba(var(--color-red-rgb), 0.15); text-decoration: line-through; color: var(--text-muted); }
-.slim-diff-line.is-gap { color: var(--text-faint); text-align: center; }
 .slim-proposal-actions { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-top: 1px solid var(--background-modifier-border); }
 .slim-proposal-status { color: var(--text-muted); font-size: var(--font-ui-smaller); }
 .slim-proposal-status.is-accepted { color: var(--text-success); }
 .slim-proposal-status.is-stale, .slim-proposal-status.is-failed { color: var(--text-warning); }
+
+/* A proposal reviewed in the note: what each change would remove and add, until it is decided. */
+.slim-change { box-shadow: inset 3px 0 0 var(--color-orange); }
+.slim-del { background: rgba(var(--color-red-rgb), 0.16); color: var(--text-error); text-decoration: line-through; border-radius: 3px; }
+.slim-del-line { background: rgba(var(--color-red-rgb), 0.06); }
+.slim-edited-line { background: var(--background-modifier-hover); }
+.slim-ins { background: rgba(var(--color-green-rgb), 0.18); color: var(--text-success); border-radius: 3px; }
+.slim-ins-block { background: rgba(var(--color-green-rgb), 0.08); padding: 2px 8px; border-radius: 4px; margin: 2px 0; }
+.slim-ins-block > :first-child { margin-top: 0; }
+.slim-ins-block > :last-child { margin-bottom: 0; }
+.slim-ins-block.is-source { white-space: pre-wrap; }
+.slim-change-bar { display: flex; align-items: center; justify-content: flex-end; gap: 6px; padding: 2px 0 8px;
+  font-family: var(--font-interface); font-size: var(--font-ui-smaller); }
+.slim-change-what { margin-right: auto; color: var(--text-faint); }
+.slim-change-bar button { font-size: var(--font-ui-smaller); height: auto; padding: 2px 10px; }
+.slim-review-count { padding: 4px 8px; color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.slim-review-list { list-style: none; margin: 0; padding: 0 4px 4px; }
+.slim-review-list li { display: flex; align-items: center; gap: 4px; }
+.slim-review-item { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; background: none; box-shadow: none;
+  padding: 2px 4px; height: auto; text-align: left; font-size: var(--font-ui-smaller); }
+.slim-review-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slim-review-state { margin-left: auto; color: var(--text-faint); }
+.slim-review-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--color-orange); }
+.slim-review-dot.is-applied { background: var(--color-green); }
+.slim-review-dot.is-rejected { background: var(--text-faint); }
+.slim-review-dot.is-lost { background: var(--text-warning); }
+.slim-review-dismiss { font-size: var(--font-ui-smaller); height: auto; padding: 1px 8px; }
+.slim-proposal-preview { max-height: 240px; overflow: auto; margin: 0; padding: 6px 8px; white-space: pre-wrap;
+  font-size: var(--font-ui-smaller); }
 .slim-mode-select {
   grid-area: mode; justify-self: start; height: 28px; min-width: 0; padding: 0 24px 0 10px;
   border-radius: 999px; box-shadow: none; font-size: var(--font-ui-smaller); color: var(--text-muted);
@@ -704,5 +728,4 @@
 
 .slim-processing-current .slim-cancel { margin-left: auto; align-self: flex-start; }
 .slim-resume-row { padding: 0 20px 14px; }
-.slim-diff-summary { padding: 4px 8px; color: var(--text-muted); font-size: var(--font-ui-smaller); }
 .slim-proposal-none { display: block; margin-top: 6px; color: var(--text-muted); font-size: var(--font-ui-smaller); }
