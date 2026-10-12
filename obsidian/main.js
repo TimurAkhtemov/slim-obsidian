@@ -3335,6 +3335,13 @@ class CopilotView extends ItemView {
     // be saved with it as an unanswered turn.
     if (!question || !this.context || this.sending || this.applying.size) return;
     if (!this.activeThread) this.newThread();
+    // A failed question waits under its error for Try again. Asking something else instead
+    // takes it off the thread: it would be saved with the next answer and sent as history, and
+    // a refused /command is sent as its whole skill prompt.
+    const failed = this.turns.at(-1);
+    if (this.retryQuestion && failed?.role === "you" && failed.text === this.retryQuestion) this.turns.pop();
+    this.retryQuestion = "";
+    this.retryImages = [];
     // Snapshot the thread that ASKED. openThread/newThread/deleteThread stay clickable while
     // an answer streams, and the answer belongs to this thread whatever is active when it
     // lands — otherwise B was saved with A's answer and A's question was never saved.
@@ -3366,7 +3373,10 @@ class CopilotView extends ItemView {
         // Role, text and small image refs only, and only what the server keeps
         // (MAX_HISTORY_TURNS). Slim turns also carry evidence and stats; re-uploading those
         // on every question grew with the square of the thread. Image bytes stay server-side.
-        history: turns.slice(0, -1).slice(-MAX_HISTORY_TURNS)
+        // A question with no answer after it (a chat saved before a failed one came off) is
+        // not history.
+        history: turns.slice(0, -1).filter((turn, i, all) => turn.role !== "you" || all[i + 1]?.role === "slim")
+          .slice(-MAX_HISTORY_TURNS)
           .map((turn) => ({ ...turn, text: historyText(turn) }))
           .map(({ role, text, attachments }) => ({ role, text,
             ...(attachments?.length ? { attachments: attachments.map(

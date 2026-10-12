@@ -226,6 +226,31 @@ test("retry resends the failed question without duplicating its user turn", asyn
   assert.equal(view.turns[1].text, "Recovered");
 });
 
+test("a failed question leaves the chat when something else is asked, and is never sent as history", async () => {
+  const bodies = [];
+  const view = makeView({
+    streamCopilot: async (body, handlers) => {
+      bodies.push(body);
+      if (bodies.length === 1) throw new Error("/tidy works on selected text: select some in the note first");
+      handlers.turn({ answer: `Answer ${bodies.length}`, mode: "quick", citations: [] });
+    },
+    postJSON: async (route) => route.endsWith("context")
+      ? { source: { id: "source-1", path: "Notes/one.md" } } : {},
+  });
+  view.render = () => {};
+  view.context = { source: { id: "source-1", path: "Notes/one.md" }, related: [] };
+  await view.send("/tidy");
+  assert.equal(view.retryQuestion, "/tidy");
+  await view.send("Any places to expand?");
+  assert.deepEqual(bodies[1].history, []);
+  assert.deepEqual(view.turns.map((turn) => turn.text), ["Any places to expand?", "Answer 2"]);
+  assert.equal(view.retryQuestion, "");
+  // A chat saved before this kept its unanswered question: it stays on screen, and is not sent.
+  view.turns.unshift({ role: "you", text: "/tidy" });
+  await view.send("Ok make the revisions");
+  assert.deepEqual(bodies[2].history.map((turn) => turn.text), ["Any places to expand?", "Answer 2"]);
+});
+
 test("an SSE error handler rejects streamRequest instead of escaping the callback", async () => {
   const server = http.createServer((_request, response) => {
     response.writeHead(200, { "Content-Type": "text/event-stream" });
@@ -515,13 +540,13 @@ test("text-only history carries role and text only, last twelve turns", async ()
   view.render = () => {};
   view.context = { source: { id: "s1", path: "Notes/one.md" }, related: [] };
   view.activeThread = { id: "A", title: "A", source_id: "s1", source_path: "Notes/one.md" };
-  view.turns = Array.from({ length: 15 }, (_v, i) => ({
+  view.turns = Array.from({ length: 16 }, (_v, i) => ({
     role: i % 2 ? "slim" : "you", text: `t${i}`, turn: { evidence: ["big"], citations: [] },
   }));
   await view.send("Q");
   assert.equal(history.length, 12);
   assert.deepEqual(Object.keys(history[0]), ["role", "text"]);
-  assert.equal(history.at(-1).text, "t14");
+  assert.equal(history.at(-1).text, "t15");
 });
 
 test("an attached image is sent once, saved as a ref, and included in later history", async () => {
