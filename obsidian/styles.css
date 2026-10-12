@@ -664,6 +664,7 @@
 .slim-change { box-shadow: inset 3px 0 0 var(--color-orange); }
 .slim-del { background: rgba(var(--color-red-rgb), 0.16); color: var(--text-error); text-decoration: line-through; border-radius: 3px; }
 .slim-del-line { background: rgba(var(--color-red-rgb), 0.06); }
+.slim-format { text-decoration: underline dotted var(--color-orange); text-decoration-thickness: 2px; text-underline-offset: 4px; }
 .slim-edited-line { background: var(--background-modifier-hover); }
 .slim-ins { background: rgba(var(--color-green-rgb), 0.18); color: var(--text-success); border-radius: 3px; }
 .slim-ins-block { background: rgba(var(--color-green-rgb), 0.08); padding: 2px 8px; border-radius: 4px; margin: 2px 0; }

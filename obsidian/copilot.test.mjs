@@ -36,7 +36,7 @@ const { CopilotView, RenameModal, SSEParser, groupThreads, streamRequest,
         groupCitations, noteTitle, normalizeMath, SUGGESTED_PROMPTS, metaText,
         sha256Hex, slashQuery, matchSkills, inputsText, editorSelection,
         visibleStream, historyText, wordTokens, wordOps, markable, placeChanges, changeCounts,
-        changeLabel, removalWarning, proposalStatus, copyDecisions } =
+        changeLabel, formatChange, removalWarning, proposalStatus, copyDecisions } =
   createRequire(import.meta.url)(path.join(HERE, "main.js"));
 
 test("SSE parsing survives arbitrary chunk boundaries", () => {
@@ -1378,6 +1378,7 @@ test("a change gets word marks only when its lines keep their kind and half thei
   assert.equal(markable("For a vector $z$ of $K$ real numbers, defined as:\n", "For a vector $z$ of $K$ real numbers:\n"), true);
   assert.equal(markable("1. **Non-negativity**: positive.\n", "*   **Output**: positive.\n"), false);   // marker changed
   assert.equal(markable("one two three four\n", "five six seven eight\n"), false);                      // rewritten
+  assert.equal(markable("- Syntactic ambiguity: scope.\n", "- **Syntactic ambiguity**: scope.\n"), true); // every word kept
   assert.equal(markable("$$ a + b $$\n", "$$ a + c $$\n"), false);                                     // math stays whole
   assert.equal(markable("a\nb\n", "a\n"), false);
   assert.equal(markable("", "new\n"), false);
@@ -1405,8 +1406,25 @@ test("offsets from the server land on the right text past an emoji", () => {
   assert.deepEqual(placeChanges(doc, [{ from, to: from + 9, old: "old line\n", new: "new line\n" }])[0].state, "open");
 });
 
+test("a change that keeps every word is named for the formatting it moves", () => {
+  assert.equal(formatChange("## Why is NLP Hard?\n", "### Why is NLP Hard?\n"), "Heading level 2 → 3");
+  assert.equal(formatChange("- Lexical ambiguity: many senses.\n- Syntactic ambiguity: scope.\n",
+                            "- **Lexical ambiguity**: many senses.\n- **Syntactic ambiguity**: scope.\n"), "Bold added");
+  assert.equal(formatChange("- Open vocabulary: new words.\n", "- **Open vocabulary**: new words.\n\n"), "Bold added");
+  assert.equal(formatChange("**Note**: x\n", "Note: x\n"), "Bold removed");
+  assert.equal(formatChange("a\nb\n", "a\n\nb\n"), "Spacing only");
+  assert.equal(formatChange("- a\n", "  - a\n"), "Indentation changed");
+  assert.equal(formatChange("- a\n", "1. a\n"), "Formatting only");
+  // Words that change, math that changes, and additions and removals are not formatting.
+  assert.equal(formatChange("## Properties\n", "## Key Properties\n"), "");
+  assert.equal(formatChange("$w_1$\n", "$w1$\n"), "");
+  assert.equal(formatChange("", "new\n"), "");
+  assert.equal(formatChange("old\n", ""), "");
+});
+
 test("the sidebar names a change by its first words and counts what is left", () => {
   assert.equal(changeLabel({ old: "## Properties\n", new: "## Key Properties\n" }), "Key Properties");
+  assert.equal(changeLabel({ old: "- Lexical ambiguity: x\n", new: "- **Lexical ambiguity**: x\n" }), "Bold added: Lexical ambiguity: x");
   assert.equal(changeLabel({ old: "Where:\n* a\n", new: "" }), "Removed: Where: a");
   assert.equal(changeLabel({ old: "", new: "one two three four five six seven\n" }), "Added: one two three four five six…");
   assert.deepEqual(changeCounts({ changes: [{ status: "applied" }, { status: "rejected" }, {}] }),

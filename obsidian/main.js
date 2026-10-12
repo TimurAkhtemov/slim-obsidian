@@ -4264,12 +4264,41 @@ const MARKER = /^\s*(?:#{1,6}\s+|(?:[-*+]|\d+[.)])\s+|>\s?)?/;
 const UNMARKABLE = /^\s*(?:\$\$|```|~~~|\|)/;
 const MAX_WORD_CELLS = 250_000;
 
+// A change that keeps every word and moves only markdown (a heading level, bold, a list marker,
+// blank lines), named for what it does; "" for a change to the words. The note draws it quietly,
+// since striking the words and drawing them again reads as a rewrite.
+function formatChange(before, after) {
+  if (!before || !after) return "";
+  const words = (text) => String(text).split(/\s+/).filter(Boolean).join(" ");
+  const plain = (text) => words(String(text)
+    .replace(/^[ \t]*(?:#{1,6}[ \t]+|>[ \t]?|(?:[-*+]|\d+[.)])[ \t]+)/gm, "")
+    .replace(/\*\*|__|~~|==|`/g, ""));
+  if (plain(before) !== plain(after)) return "";
+  const lines = (text) => String(text).split("\n").filter((line) => line.trim());
+  if (words(before) === words(after)) {
+    const indents = (text) => lines(text).map((line) => /^\s*/.exec(line)[0].length).join();
+    return indents(before) === indents(after) ? "Spacing only" : "Indentation changed";
+  }
+  const what = [];
+  const level = (line) => (/^(#{1,6})\s/.exec(line) || ["", ""])[1].length;
+  const b = lines(after);
+  lines(before).forEach((line, k) => {
+    const from = level(line), to = level(b[k] || "");
+    if (from && to && from !== to) what.push(`Heading level ${from} → ${to}`);
+  });
+  const bold = (text) => (String(text).match(/\*\*|__/g) || []).length;
+  if (bold(after) > bold(before)) what.push("Bold added");
+  if (bold(after) < bold(before)) what.push("Bold removed");
+  return [...new Set(what)].join(" · ") || "Formatting only";
+}
+
 // A change that keeps most of its words is marked word by word; one mostly rewritten shows the
 // old text struck and the new text below it, not a scatter of marks.
 function markable(before, after) {
   const lines = (text) => String(text || "").split("\n").filter((line) => line.trim());
   const a = lines(before), b = lines(after);
   if (!a.length || a.length !== b.length) return false;
+  const kept = Boolean(formatChange(before, after));
   return a.every((line, k) => {
     const other = b[k];
     if (UNMARKABLE.test(line) || UNMARKABLE.test(other)) return false;
@@ -4278,7 +4307,7 @@ function markable(before, after) {
     const x = line.slice(ma.length), y = other.slice(mb.length);
     const xs = wordTokens(x).length, ys = wordTokens(y).length;
     if (!(xs + ys) || xs * ys > MAX_WORD_CELLS) return false;
-    return (2 * wordOps(x, y).filter((op) => op[0] === "=").length) / (xs + ys) >= 0.5;
+    return kept || (2 * wordOps(x, y).filter((op) => op[0] === "=").length) / (xs + ys) >= 0.5;
   });
 }
 
@@ -4322,11 +4351,13 @@ function changeCounts(file) {
 }
 
 function changeLabel(change) {
-  const words = (text) => String(text || "").replace(/^[\s#>*+\-\d.)|]+/gm, " ").split(/\s+/).filter(Boolean);
+  const words = (text) => String(text || "").replace(/^[\s#>*+\-\d.)|]+/gm, " ").replace(/\*\*|__|`/g, "")
+    .split(/\s+/).filter(Boolean);
   const first = (text) => { const w = words(text); return w.slice(0, 6).join(" ") + (w.length > 6 ? "…" : ""); };
   if (!change.old) return `Added: ${first(change.new)}`;
   if (!change.new) return `Removed: ${first(change.old)}`;
-  return first(change.new);
+  const format = formatChange(change.old, change.new);
+  return format ? `${format}: ${first(change.new)}` : first(change.new);
 }
 
 // Accept the rest decides what the owner may not have looked at: a big removal, or a lost
@@ -4491,6 +4522,10 @@ function makeReviewEditor(cm, host) {
         pos = line.to + 1;
       }
       for (const line of lines) ranges.push(Decoration.line({ class: "slim-change" }).range(line.from));
+      // A change that only moves markdown is underlined where it changes, not struck and drawn
+      // again; the caret in it shows its source like any other change.
+      const format = formatChange(item.old, item.new);
+      const quiet = item.state === "open" && Boolean(format) && live && !lines.some((line) => line.number === caret);
       const marked = item.state === "open" && markable(item.old, item.new);
       if (marked) {
         // From the change's own text: while it is open, that is exactly the note's text there.
@@ -4503,18 +4538,23 @@ function makeReviewEditor(cm, host) {
           const other = others[k++];
           const ma = MARKER.exec(text)[0], mb = MARKER.exec(other)[0];
           const raw = !live || doc.lineAt(start).number === caret;
+          const hushed = Boolean(format) && !raw;
           let at = start + ma.length, inserted = "";
           const flush = () => {
             if (inserted) ranges.push(Decoration.widget({ widget: new Inserted(inserted, raw, path), side: 1 }).range(at));
             inserted = "";
           };
           for (const op of wordOps(text.slice(ma.length), other.slice(mb.length))) {
-            if (op[0] === "+") { inserted += op[1]; continue; }
+            if (op[0] === "+") { if (!hushed) inserted += op[1]; continue; }
             flush();
-            if (op[0] === "-") ranges.push(Decoration.mark({ class: "slim-del" }).range(at, at + op[1].length));
+            if (op[0] === "-") ranges.push(Decoration.mark({ class: hushed ? "slim-format" : "slim-del" }).range(at, at + op[1].length));
             at += op[1].length;
           }
           flush();
+        }
+      } else if (quiet) {
+        for (const line of lines) {
+          if (line.text.trim()) ranges.push(Decoration.mark({ class: "slim-format" }).range(line.from, line.to));
         }
       } else {
         for (const line of lines) {
@@ -4527,10 +4567,11 @@ function makeReviewEditor(cm, host) {
       const last = [...lines].reverse().find((line) => line.text.trim()) || lines.at(-1);
       const after = lines.length ? last.to : item.from;
       const side = lines.length ? 1 : -2;
-      if (item.state === "open" && item.new && !marked) {
-        ranges.push(Decoration.widget({ widget: new Added(item.new, !live, path), block: true, side }).range(after));
+      if (item.state === "open" && item.new && !marked && !quiet) {
+        ranges.push(Decoration.widget({ widget: new Added(item.new, !live || Boolean(format), path), block: true, side }).range(after));
       }
-      const label = `Change ${item.index + 1} of ${review.total}`;
+      const kind = !item.old ? "Added" : !item.new ? "Removed" : format;
+      const label = `Change ${item.index + 1} of ${review.total}${kind ? ` · ${kind}` : ""}`;
       ranges.push(Decoration.widget({ widget: new Bar(item.index, label, item.state), block: true, side: side + 1 }).range(after));
     }
     return Decoration.set(ranges, true);
@@ -5516,6 +5557,7 @@ module.exports.markable = markable;
 module.exports.placeChanges = placeChanges;
 module.exports.changeCounts = changeCounts;
 module.exports.changeLabel = changeLabel;
+module.exports.formatChange = formatChange;
 module.exports.removalWarning = removalWarning;
 module.exports.makeReviewEditor = makeReviewEditor;
 module.exports.proposalStatus = proposalStatus;
