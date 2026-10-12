@@ -4323,6 +4323,259 @@ function removalWarning(changes, doc) {
   return warnings.join(" · ");
 }
 
+// The review in an editor: CodeMirror state that maps the changes through every edit, and
+// decorations drawn from it. `cm` is the two CodeMirror modules (Obsidian's, or real ones in a
+// browser test); `host` is the plugin's side: the live editors, Obsidian's editor fields, a
+// Markdown renderer, and `changed`, told whenever a change's state moves.
+function makeReviewEditor(cm, host) {
+  const { StateField, StateEffect } = cm.state;
+  const { EditorView, Decoration, WidgetType, ViewPlugin } = cm.view;
+  const ACCEPT = "slim.accept";
+  const start = StateEffect.define();
+  const decided = StateEffect.define();
+  const end = StateEffect.define();
+  const focused = new WeakMap();
+
+  const reviewField = StateField.define({
+    create: () => null,
+    update(review, tr) {
+      for (const effect of tr.effects) {
+        if (effect.is(start)) review = effect.value;
+        else if (effect.is(end)) review = null;
+      }
+      if (!review) return null;
+      const verdicts = new Map();
+      for (const effect of tr.effects) if (effect.is(decided)) verdicts.set(effect.value.index, effect.value.state);
+      if (!tr.docChanged && !verdicts.size) return review;
+      const doc = tr.newDoc;
+      const map = (pos, assoc) => tr.changes.mapPos(pos, assoc);
+      const items = review.items.map((item) => {
+        const verdict = verdicts.get(item.index);
+        if (verdict === "applied") {
+          if (item.state !== "open") return item;
+          const from = map(item.from, -1);
+          return { ...item, state: "applied", from, to: from + item.new.length };
+        }
+        if (verdict) return { ...item, state: verdict };
+        if (!tr.docChanged || item.state === "rejected") return item;
+        if (item.state === "applied") {
+          // Cmd-Z restores the old text over the applied range: the change is open again.
+          const from = map(item.from, -1), to = map(item.to, 1);
+          return { ...item, from, to, state: doc.sliceString(from, to) === item.old ? "open" : "applied" };
+        }
+        if (tr.isUserEvent("redo")) {
+          const from = map(item.from, -1), to = map(item.to, 1);
+          if (doc.sliceString(from, to) === item.new) return { ...item, from, to, state: "applied" };
+        }
+        // Typing at either edge stays outside the change; typing inside it means the owner
+        // changed what Accept would replace, so it waits until that text is back.
+        const from = map(item.from, item.from === item.to ? -1 : 1);
+        const to = Math.max(from, map(item.to, -1));
+        return { ...item, from, to, state: doc.sliceString(from, to) === item.old ? "open" : "edited" };
+      });
+      return { ...review, items };
+    },
+  });
+
+  const livePreview = (state) => !host.livePreviewField || state.field(host.livePreviewField, false) !== false;
+  const caretLine = (state) => state.doc.lineAt(state.selection.main.head).number;
+
+  class Inserted extends WidgetType {
+    constructor(text, raw, path) { super(); this.text = text; this.raw = raw; this.path = path; }
+    eq(other) { return other.text === this.text && other.raw === this.raw; }
+    toDOM() {
+      const span = document.createElement("span");
+      span.className = "slim-ins";
+      span.textContent = this.text;
+      if (!this.raw) {
+        const holder = document.createElement("div");
+        const text = this.text;
+        Promise.resolve(host.render(holder, text.trim(), this.path)).then(() => {
+          const p = holder.querySelector("p") || holder;
+          span.replaceChildren(/^\s/.test(text) ? " " : "", ...p.childNodes, /\s$/.test(text) ? " " : "");
+        }).catch(() => {});
+      }
+      return span;
+    }
+  }
+
+  class Added extends WidgetType {
+    constructor(text, raw, path) { super(); this.text = text; this.raw = raw; this.path = path; }
+    eq(other) { return other.text === this.text && other.raw === this.raw; }
+    toDOM() {
+      const div = document.createElement("div");
+      div.className = `slim-ins-block slim-change${this.raw ? " is-source" : ""}`;
+      div.textContent = this.text.replace(/\n+$/, "");
+      if (!this.raw) {
+        const text = this.text;
+        div.textContent = "";
+        Promise.resolve(host.render(div, text, this.path)).catch(() => { div.textContent = text; });
+      }
+      return div;
+    }
+    ignoreEvent() { return true; }
+  }
+
+  class Bar extends WidgetType {
+    constructor(index, label, state) { super(); this.index = index; this.label = label; this.state = state; }
+    eq(other) { return other.index === this.index && other.label === this.label && other.state === this.state; }
+    toDOM(view) {
+      const bar = document.createElement("div");
+      bar.className = "slim-change-bar";
+      const what = bar.appendChild(document.createElement("span"));
+      what.className = "slim-change-what";
+      what.textContent = this.state === "edited" ? `${this.label} · You edited this part` : this.label;
+      const button = (text, status, cta) => {
+        const el = bar.appendChild(document.createElement("button"));
+        el.textContent = text;
+        if (cta) el.className = "mod-cta";
+        el.onmousedown = (event) => event.preventDefault();          // keep the caret where it is
+        el.onclick = (event) => { event.preventDefault(); api.decide(view, this.index, status); };
+      };
+      if (this.state === "edited") button("Dismiss", "rejected");
+      else { button("Reject", "rejected"); button("Accept", "applied", true); }
+      return bar;
+    }
+    ignoreEvent() { return true; }
+  }
+
+  function draw(state) {
+    const review = state.field(reviewField, false);
+    if (!review) return Decoration.none;
+    const { doc } = state;
+    const live = livePreview(state);
+    const caret = caretLine(state);
+    const path = review.entry.path;
+    const ranges = [];
+    for (const item of review.items) {
+      if (item.state !== "open" && item.state !== "edited") continue;
+      const lines = [];
+      for (let pos = item.from; pos < item.to;) {
+        const line = doc.lineAt(pos);
+        lines.push(line);
+        pos = line.to + 1;
+      }
+      for (const line of lines) ranges.push(Decoration.line({ class: "slim-change" }).range(line.from));
+      const marked = item.state === "open" && markable(item.old, item.new);
+      if (marked) {
+        const others = item.new.split("\n").filter((text) => text.trim());
+        let k = 0;
+        for (const line of lines) {
+          if (!line.text.trim()) continue;
+          const other = others[k++];
+          const ma = MARKER.exec(line.text)[0], mb = MARKER.exec(other)[0];
+          const raw = !live || line.number === caret;
+          let at = line.from + ma.length, inserted = "";
+          const flush = () => {
+            if (inserted) ranges.push(Decoration.widget({ widget: new Inserted(inserted, raw, path), side: 1 }).range(at));
+            inserted = "";
+          };
+          for (const op of wordOps(line.text.slice(ma.length), other.slice(mb.length))) {
+            if (op[0] === "+") { inserted += op[1]; continue; }
+            flush();
+            if (op[0] === "-") ranges.push(Decoration.mark({ class: "slim-del" }).range(at, at + op[1].length));
+            at += op[1].length;
+          }
+          flush();
+        }
+      } else {
+        for (const line of lines) {
+          ranges.push(Decoration.line({ class: item.state === "edited" ? "slim-edited-line" : "slim-del-line" }).range(line.from));
+          if (line.text && item.state === "open") ranges.push(Decoration.mark({ class: "slim-del" }).range(line.from, line.to));
+        }
+      }
+      // Below the change's last written line (its blank lines are the gap to the next block);
+      // an addition sits above the line it goes before.
+      const last = [...lines].reverse().find((line) => line.text.trim()) || lines.at(-1);
+      const after = lines.length ? last.to : item.from;
+      const side = lines.length ? 1 : -2;
+      if (item.state === "open" && item.new && !marked) {
+        ranges.push(Decoration.widget({ widget: new Added(item.new, !live, path), block: true, side }).range(after));
+      }
+      const label = `Change ${item.index + 1} of ${review.total}`;
+      ranges.push(Decoration.widget({ widget: new Bar(item.index, label, item.state), block: true, side: side + 1 }).range(after));
+    }
+    return Decoration.set(ranges, true);
+  }
+
+  const decorations = StateField.define({
+    create: draw,
+    update(value, tr) {
+      const was = tr.startState, now = tr.state;
+      const review = now.field(reviewField, false);
+      if (!review && !was.field(reviewField, false)) return Decoration.none;
+      if (tr.docChanged || review !== was.field(reviewField, false) || caretLine(was) !== caretLine(now)
+          || livePreview(was) !== livePreview(now)) return draw(now);
+      return value;
+    },
+    provide: (field) => EditorView.decorations.from(field),
+  });
+
+  // Every live editor, so the plugin finds the one showing a note; and each change's new state,
+  // so the sidebar and the saved chat follow what happened in the note (Accept, Cmd-Z, typing).
+  const tracker = ViewPlugin.fromClass(class {
+    constructor(view) {
+      this.view = view;
+      host.views.add(view);
+      focused.set(view, view.hasFocus ? Date.now() : 0);
+      host.opened?.(view);
+    }
+    update(update) {
+      if (update.focusChanged && update.view.hasFocus) focused.set(update.view, Date.now());
+      const was = update.startState.field(reviewField, false), now = update.state.field(reviewField, false);
+      if (!was || !now || was === now || was.entry !== now.entry) return;
+      now.items.forEach((item, k) => {
+        if (was.items[k] && was.items[k].state !== item.state) host.changed(update.view, now.entry, item.index, item.state);
+      });
+    }
+    destroy() { host.views.delete(this.view); }
+  });
+
+  const api = {
+    extension: [reviewField, decorations, tracker],
+    review: (view) => view.state.field(reviewField, false) || null,
+    pathOf: (view) => (host.infoField && view.state.field(host.infoField, false)?.file?.path) || null,
+    focusedAt: (view) => focused.get(view) || 0,
+    start(view, entry, items) {
+      view.dispatch({ effects: start.of({ entry, items, total: (entry.file.changes || []).length }) });
+    },
+    end(view) { if (api.review(view)) view.dispatch({ effects: end.of(null) }); },
+    decide(view, index, status) {
+      const item = api.review(view)?.items.find((candidate) => candidate.index === index);
+      if (!item) return false;
+      if (status === "applied") {
+        if (item.state !== "open" || view.state.doc.sliceString(item.from, item.to) !== item.old) return false;
+        view.dispatch({ changes: { from: item.from, to: item.to, insert: item.new },
+                        effects: decided.of({ index, state: "applied" }), userEvent: ACCEPT });
+        return true;
+      }
+      if (item.state !== "open" && item.state !== "edited") return false;
+      view.dispatch({ effects: decided.of({ index, state: "rejected" }) });
+      return true;
+    },
+    decideAll(view, status) {
+      const review = api.review(view);
+      if (!review) return 0;
+      const { doc } = view.state;
+      const open = review.items.filter((item) => item.state === "open"
+        && (status !== "applied" || doc.sliceString(item.from, item.to) === item.old));
+      const all = status === "rejected" ? [...open, ...review.items.filter((item) => item.state === "edited")] : open;
+      if (!all.length) return 0;
+      view.dispatch({
+        changes: status === "applied" ? open.map((item) => ({ from: item.from, to: item.to, insert: item.new })) : [],
+        effects: all.map((item) => decided.of({ index: item.index, state: status })),
+        userEvent: ACCEPT,
+      });
+      return all.length;
+    },
+    reveal(view, index) {
+      const item = api.review(view)?.items.find((candidate) => candidate.index === index);
+      if (item && item.from >= 0) view.dispatch({ effects: EditorView.scrollIntoView(item.from, { y: "center" }) });
+    },
+  };
+  return api;
+}
+
 /* One durable meeting object per recording/note, with one reserved capture slot.
  *
  * RecorderView deliberately remains the session controller: it already owns the draft, staged
@@ -5087,3 +5340,4 @@ module.exports.placeChanges = placeChanges;
 module.exports.changeCounts = changeCounts;
 module.exports.changeLabel = changeLabel;
 module.exports.removalWarning = removalWarning;
+module.exports.makeReviewEditor = makeReviewEditor;
