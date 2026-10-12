@@ -4262,6 +4262,7 @@ function wordOps(before, after) {
 
 const MARKER = /^\s*(?:#{1,6}\s+|(?:[-*+]|\d+[.)])\s+|>\s?)?/;
 const UNMARKABLE = /^\s*(?:\$\$|```|~~~|\|)/;
+const BLOCKISH = /^\s*(?:\$\$|```|~~~|\||>|!\[\[|---\s*$)/;
 const MAX_WORD_CELLS = 250_000;
 
 // A change that keeps every word and moves only markdown (a heading level, bold, a list marker,
@@ -4482,6 +4483,24 @@ function makeReviewEditor(cm, host) {
     ignoreEvent() { return true; }
   }
 
+  // A formatting change's result, drawn over the text it replaces. A click puts the caret where
+  // it starts, which shows the change's source (the editor's own click would land beside a block,
+  // and the source appearing under a held button would turn the click into a selection).
+  const reveal = (view, el) => {
+    el.onmousedown = (event) => {
+      event.preventDefault();
+      view.dispatch({ selection: { anchor: view.posAtDOM(el) }, userEvent: "select.pointer" });
+      view.focus();
+    };
+    return el;
+  };
+  class Formatted extends Inserted {
+    toDOM(view) { const span = super.toDOM(); span.className = "slim-format"; return reveal(view, span); }
+  }
+  class FormattedBlock extends Added {
+    toDOM(view) { const div = super.toDOM(); div.className = "slim-format-block slim-change"; return reveal(view, div); }
+  }
+
   class Bar extends WidgetType {
     constructor(index, label, state) { super(); this.index = index; this.label = label; this.state = state; }
     eq(other) { return other.index === this.index && other.label === this.label && other.state === this.state; }
@@ -4539,22 +4558,39 @@ function makeReviewEditor(cm, host) {
           const ma = MARKER.exec(text)[0], mb = MARKER.exec(other)[0];
           const raw = !live || doc.lineAt(start).number === caret;
           const hushed = Boolean(format) && !raw;
-          let at = start + ma.length, inserted = "";
+          // `cut` is where the run of removed words being replaced starts.
+          let at = start + ma.length, cut = at, inserted = "";
           const flush = () => {
-            if (inserted) ranges.push(Decoration.widget({ widget: new Inserted(inserted, raw, path), side: 1 }).range(at));
+            if (hushed && at > cut) {
+              // The result over the old words; the space after them stays the note's own.
+              const end = cut + doc.sliceString(cut, at).trimEnd().length;
+              const widget = inserted.trim() ? new Formatted(inserted.trimEnd(), false, path) : null;
+              ranges.push(widget ? Decoration.replace({ widget }).range(cut, end) : Decoration.mark({ class: "slim-format" }).range(cut, end));
+            } else if (inserted) {
+              const widget = hushed ? new Formatted(inserted, false, path) : new Inserted(inserted, raw, path);
+              ranges.push(Decoration.widget({ widget, side: 1 }).range(at));
+            }
             inserted = "";
+            cut = at;
           };
           for (const op of wordOps(text.slice(ma.length), other.slice(mb.length))) {
-            if (op[0] === "+") { if (!hushed) inserted += op[1]; continue; }
-            flush();
-            if (op[0] === "-") ranges.push(Decoration.mark({ class: hushed ? "slim-format" : "slim-del" }).range(at, at + op[1].length));
+            if (op[0] === "+") { inserted += op[1]; continue; }
+            if (op[0] === "=" || inserted) flush();
+            if (op[0] === "-" && !hushed) ranges.push(Decoration.mark({ class: "slim-del" }).range(at, at + op[1].length));
             at += op[1].length;
+            if (op[0] === "=") cut = at;
           }
           flush();
         }
       } else if (quiet) {
-        for (const line of lines) {
-          if (line.text.trim()) ranges.push(Decoration.mark({ class: "slim-format" }).range(line.from, line.to));
+        // Over whole lines, unless the editor draws them as a block of its own (math, code, a
+        // table, a callout): two blocks over one range do not mix, so those keep their text.
+        const written = lines.filter((line) => line.text.trim());
+        if (written.some((line) => BLOCKISH.test(line.text))) {
+          for (const line of written) ranges.push(Decoration.mark({ class: "slim-format" }).range(line.from, line.to));
+        } else {
+          const widget = new FormattedBlock(item.new, false, path);
+          ranges.push(Decoration.replace({ widget, block: true }).range(written[0].from, written.at(-1).to));
         }
       } else {
         for (const line of lines) {
