@@ -1466,3 +1466,100 @@ test("the sidebar names a change by its first words and counts what is left", ()
     "removes 3 of 5 lines · removes the frontmatter");
   assert.equal(removalWarning([{ from: 9, old: "x\n", new: "y\n", status: "applied" }], "a\n".repeat(30)), "");
 });
+
+const SlimRecorderPlugin = createRequire(import.meta.url)(path.join(HERE, "main.js"));
+
+function fakeReviewEditor() {
+  const shown = new Map();
+  return {
+    shown,
+    pathOf: (view) => view.path,
+    focusedAt: (view) => view.focusedAt || 0,
+    review: (view) => shown.get(view) || null,
+    start: (view, entry, items) => shown.set(view, { entry, items }),
+    end: (view) => shown.delete(view),
+    decideAll: (view) => (shown.get(view)?.items.length || 0),
+    reveal: (view, index) => { view.revealed = index; },
+  };
+}
+
+function reviewPlugin() {
+  const plugin = new SlimRecorderPlugin();
+  plugin.reviews = new Map();
+  plugin.reviewViews = new Set();
+  plugin.reviewEditor = fakeReviewEditor();
+  plugin.app = { vault: { getAbstractFileByPath: (p) => ({ path: p }), read: async () => "" },
+                 workspace: { getLeavesOfType: () => [], getLeaf: () => ({ openFile: async () => {} }) } };
+  return plugin;
+}
+
+const editorOf = (path, text, focusedAt = 0) => ({ path, focusedAt, state: { doc: { toString: () => text } } });
+
+test("a review starts only on the note as proposed; a change that lost its place waits in the sidebar", () => {
+  const plugin = reviewPlugin();
+  const text = "a\nb\nc\n";
+  const view = editorOf("Notes/a.md", text);
+  plugin.reviewViews.add(view);
+  const file = { path: "Notes/a.md", kind: "edit", base_hash: sha256Hex("other\n"), changes: [{ from: 0, to: 2, old: "a\n", new: "A\n" }] };
+  const entry = { path: file.path, file, copilot: { render() {} }, lost: new Set() };
+  plugin.offerReview(entry);
+  assert.equal(entry.stale, true);
+  assert.equal(plugin.reviewEditor.review(view), null);
+  assert.equal(plugin.reviews.has("Notes/a.md"), false);
+  file.base_hash = sha256Hex(text);
+  entry.stale = false;
+  file.changes.push({ from: 4, to: 6, old: "x\n", new: "y\n" });
+  plugin.offerReview(entry);
+  assert.deepEqual(plugin.reviewEditor.review(view).items.map((item) => item.index), [0]);
+  assert.deepEqual([...entry.lost], [1]);
+});
+
+test("switching back to a half-reviewed note places the rest after the applied ones", () => {
+  const plugin = reviewPlugin();
+  const file = { path: "Notes/a.md", kind: "edit", base_hash: "not checked once decided", changes: [
+    { from: 0, to: 2, old: "a\n", new: "AAAA\n", status: "applied" }, { from: 2, to: 4, old: "b\n", new: "B\n" }] };
+  const view = editorOf("Notes/a.md", "AAAA\nb\n");
+  plugin.reviewViews.add(view);
+  plugin.offerReview({ path: file.path, file, copilot: { render() {} }, lost: new Set() });
+  assert.deepEqual(plugin.reviewEditor.review(view).items.map(({ index, from }) => [index, from]), [[1, 5]]);
+});
+
+test("only the editor focused last shows a note's review", () => {
+  const plugin = reviewPlugin();
+  const text = "a\n";
+  const file = { path: "Notes/a.md", kind: "edit", base_hash: sha256Hex(text), changes: [{ from: 0, to: 2, old: "a\n", new: "A\n" }] };
+  const older = editorOf("Notes/a.md", text, 1), newer = editorOf("Notes/a.md", text, 2);
+  plugin.reviewViews.add(older); plugin.reviewViews.add(newer);
+  plugin.offerReview({ path: file.path, file, copilot: { render() {} }, lost: new Set() });
+  assert.equal(plugin.reviewEditor.review(older), null);
+  assert.ok(plugin.reviewEditor.review(newer));
+});
+
+test("Show in note opens a linked note beside the chat without taking focus", async () => {
+  const opened = [];
+  const plugin = reviewPlugin();
+  plugin.app.workspace = { getLeavesOfType: () => [],
+    getLeaf: (how) => ({ openFile: async (file, state) => opened.push([how, file.path, state.active]) }) };
+  const entry = { path: "Notes/linked.md", file: { changes: [] }, lost: new Set(),
+                  copilot: { context: { source: { path: "Notes/a.md" } }, render() {} } };
+  await plugin.showReview(entry);
+  entry.path = "Notes/a.md";
+  await plugin.showReview(entry);
+  assert.deepEqual(opened, [["split", "Notes/linked.md", false], [false, "Notes/a.md", true]]);
+});
+
+test("a decision in the note reaches the chat; Reject the rest also dismisses lost changes", async () => {
+  const plugin = reviewPlugin();
+  const told = [];
+  const file = { path: "Notes/a.md", changes: [{ old: "a" }, { old: "b" }] };
+  const entry = { path: file.path, file, lost: new Set([1]), copilot: { reviewChanged: (e) => told.push(e.file.changes.map((c) => c.status)), render() {} } };
+  plugin.reviewChanged(entry, 0, "edited");
+  assert.deepEqual(told, []);                               // nothing to save
+  plugin.reviewChanged(entry, 0, "applied");
+  assert.deepEqual(told.at(-1), ["applied", undefined]);
+  plugin.reviewChanged(entry, 0, "open");                     // Cmd-Z
+  assert.deepEqual(told.at(-1), [undefined, undefined]);
+  await plugin.decideRest(entry, "rejected");
+  assert.deepEqual(told.at(-1), [undefined, "rejected"]);
+  assert.equal(entry.lost.size, 0);
+});

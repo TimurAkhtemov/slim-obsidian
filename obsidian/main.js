@@ -28,7 +28,8 @@
 "use strict";
 
 const { Plugin, ItemView, MarkdownView, MarkdownRenderer, MarkdownRenderChild, Modal,
-        PluginSettingTab, Setting, Notice, requestUrl, setIcon } = require("obsidian");
+        PluginSettingTab, Setting, Notice, requestUrl, setIcon,
+        editorInfoField, editorLivePreviewField } = require("obsidian");
 const { spawn } = require("child_process");
 const { randomUUID } = require("crypto");
 const http = require("http");
@@ -4770,6 +4771,7 @@ module.exports = class SlimRecorderPlugin extends Plugin {
     this._ensuring = null;
     this.meetingBlocks = new Map();
     this.meetings = new MeetingSessionManager(this);
+    this.setupReview();
     this.registerMarkdownCodeBlockProcessor("slim-meeting", (_source, el, ctx) => {
       const path = ctx.sourcePath;
       el.addClass("slim-meeting-block");
@@ -4818,10 +4820,13 @@ module.exports = class SlimRecorderPlugin extends Plugin {
           }
         }
         queueMicrotask(() => this.noticeClosedPendingReviews());
+        this.syncReviews();
       }));
       this.registerEvent(this.app.workspace.on("layout-change", () => {
         this.noticeClosedPendingReviews();
+        this.syncReviews();
       }));
+      this.registerEvent(this.app.workspace.on("file-open", () => queueMicrotask(() => this.syncReviews())));
       // Quitting with the caret in `My notes` fires no blur. Obsidian awaits quit tasks, and
       // the server is killed only at unload, after them.
       this.registerEvent(this.app.workspace.on("quit", (tasks) => {
@@ -5106,6 +5111,127 @@ module.exports = class SlimRecorderPlugin extends Plugin {
         this.showPendingReviewNotice(session);
       }
     }
+  }
+
+  // ---- reviewing a proposal in the note ----------------------------------------------------
+  // The copilot offers each note's newest undecided proposal; the editor focused last that
+  // shows the note draws it. Without CodeMirror (node tests) there is no review to draw.
+  setupReview() {
+    this.reviews = new Map();
+    this.reviewViews = new Set();
+    let cm;
+    try {
+      cm = { state: require("@codemirror/state"), view: require("@codemirror/view") };
+    } catch (e) {
+      return;
+    }
+    this.reviewEditor = makeReviewEditor(cm, {
+      views: this.reviewViews,
+      infoField: editorInfoField,
+      livePreviewField: editorLivePreviewField,
+      render: (el, markdown, sourcePath) => MarkdownRenderer.render(this.app, markdown, el, sourcePath, this),
+      changed: (_view, entry, index, state) => this.reviewChanged(entry, index, state),
+      opened: () => queueMicrotask(() => this.syncReviews()),
+    });
+    this.registerEditorExtension(this.reviewEditor.extension);
+  }
+
+  offerReview(entry) {
+    this.reviews.set(entry.path, entry);
+    this.syncReviews();
+  }
+
+  reviewViewFor(path) {
+    const api = this.reviewEditor;
+    let best = null;
+    for (const view of (api ? this.reviewViews : [])) {
+      if (api.pathOf(view) === path && (!best || api.focusedAt(view) > api.focusedAt(best))) best = view;
+    }
+    return best;
+  }
+
+  syncReviews() {
+    const api = this.reviewEditor;
+    if (!api) return;
+    for (const view of [...this.reviewViews]) {
+      const path = api.pathOf(view);
+      const entry = path ? this.reviews.get(path) : null;
+      const shown = api.review(view);
+      if (!entry || this.reviewViewFor(path) !== view) {
+        // A fully decided review stays quietly in its editor, so Cmd-Z can reopen a change.
+        if (shown?.items.some((item) => item.state === "open" || item.state === "edited")) api.end(view);
+        continue;
+      }
+      if (shown?.entry !== entry) this.startReview(view, entry);
+    }
+  }
+
+  // First start: the note must be exactly as proposed. Later starts (switching back) place each
+  // open change after the ones already applied (placeChanges).
+  startReview(view, entry) {
+    const doc = view.state.doc.toString();
+    const fresh = !(entry.file.changes || []).some((change) => change.status);
+    if (fresh && sha256Hex(doc) !== entry.file.base_hash) {
+      entry.stale = true;
+      this.reviews.delete(entry.path);
+      entry.copilot?.render?.();
+      return;
+    }
+    const placed = placeChanges(doc, entry.file.changes);
+    entry.lost = new Set(placed.filter((item) => item.state === "lost").map((item) => item.index));
+    this.reviewEditor.start(view, entry, placed.filter((item) => item.state === "open"));
+    entry.copilot?.render?.();
+  }
+
+  // The copilot's own note opens where it is; a linked note opens beside it without focus, so
+  // the sidebar keeps the chat the proposal came from. Reading view switches to editing.
+  async showReview(entry, index = null) {
+    this.reviews.set(entry.path, entry);
+    const { workspace, vault } = this.app;
+    const leaves = (workspace.getLeavesOfType("markdown") || []).filter((leaf) => leaf.view?.file?.path === entry.path);
+    if (!leaves.length) {
+      const file = vault.getAbstractFileByPath(entry.path);
+      if (!file) return null;
+      const own = entry.copilot?.context?.source?.path === entry.path;
+      await workspace.getLeaf(own ? false : "split").openFile(file, { active: own });
+    }
+    for (const leaf of leaves) {
+      if (leaf.view?.getMode?.() === "preview") {
+        const state = leaf.getViewState();
+        await leaf.setViewState({ ...state, state: { ...state.state, mode: "source" } });
+      }
+    }
+    this.syncReviews();
+    const view = this.reviewViewFor(entry.path);
+    if (view && index != null) this.reviewEditor.reveal(view, index);
+    return view;
+  }
+
+  async decideRest(entry, status) {
+    const view = await this.showReview(entry);
+    const decided = view ? this.reviewEditor.decideAll(view, status) : 0;
+    if (status === "rejected") for (const index of [...(entry.lost || [])]) this.reviewChanged(entry, index, "rejected");
+    return decided;
+  }
+
+  async reviewDoc(path) {
+    const view = this.reviewViewFor(path);
+    if (view) return view.state.doc.toString();
+    const file = this.app.vault.getAbstractFileByPath(path);
+    return file ? this.app.vault.read(file) : "";
+  }
+
+  // A change's state in the note → its status on the chat turn. `edited` and `open` (from
+  // edited) change nothing saved; `open` from applied is Cmd-Z.
+  reviewChanged(entry, index, state) {
+    const change = entry.file.changes?.[index];
+    if (!change) return;
+    const status = state === "applied" || state === "rejected" ? state : undefined;
+    if (state === "rejected") entry.lost?.delete(index);
+    if (change.status === status) { entry.copilot?.render?.(); return; }
+    if (status) change.status = status;
+    else delete change.status;
+    entry.copilot?.reviewChanged(entry);
   }
 
   stopServer() {
