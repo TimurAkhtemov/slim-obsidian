@@ -596,8 +596,10 @@ def test_a_rewrite_is_cut_into_one_change_per_block():
         ("## Example", ""),
     ]
     assert cut[2]["new"] == "" and cut[2]["old"].endswith("sum to 1.\n\n")
-    # A blank line belongs to the block above it, so the heading change is the heading alone.
-    assert cut[3]["old"] == "## Properties\n\n" and cut[3]["new"] == "## Key Properties\n\n"
+    # Blank lines both sides keep are no part of a change: the heading change is the heading
+    # alone, and typing a new paragraph after a changed one does not touch the change.
+    assert cut[3]["old"] == "## Properties\n" and cut[3]["new"] == "## Key Properties\n"
+    assert cut[0]["old"].endswith("classification.\n")
     assert cut[0]["above"] == ""                                # the line above is blank
 
 
@@ -645,3 +647,13 @@ def test_propose_attaches_changes_to_an_edit(vault):
                         in_view={"Notes/school/a.md"})
     assert out["files"][0]["changes"] == [
         {"from": 6, "to": 11, "old": "beta\n", "new": "BETA\n", "above": "alpha"}]
+
+
+def test_cutting_a_long_rewrite_stays_fast():
+    import time
+    before = "".join(f"Paragraph {i} says one thing.\n\n" for i in range(800))
+    after = "".join(f"Paragraph {i} says another thing.\n\n" for i in range(800))
+    started = time.perf_counter()
+    cut = edits.changes(before, after)
+    assert time.perf_counter() - started < 2
+    assert apply_changes(before, cut) == after

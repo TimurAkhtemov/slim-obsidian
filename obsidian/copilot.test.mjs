@@ -1465,7 +1465,7 @@ test("a review starts only on the note as proposed; a change that lost its place
 
 test("switching back to a half-reviewed note places the rest after the applied ones", () => {
   const plugin = reviewPlugin();
-  const file = { path: "Notes/a.md", kind: "edit", base_hash: "not checked once decided", changes: [
+  const file = { path: "Notes/a.md", kind: "edit", base_hash: "not checked once drawn", drawn: true, changes: [
     { from: 0, to: 2, old: "a\n", new: "AAAA\n", status: "applied" }, { from: 2, to: 4, old: "b\n", new: "B\n" }] };
   const view = editorOf("Notes/a.md", "AAAA\nb\n");
   plugin.reviewViews.add(view);
@@ -1595,4 +1595,68 @@ test("history and status count what was applied", () => {
   const fresh = [{ role: "slim", turn: { proposal: { files: [{ path: "a", changes: [{}, {}] }] } } }];
   copyDecisions(turns, fresh);
   assert.equal(fresh[0].turn.proposal.files[0].changes[0].status, "applied");
+});
+
+test("once drawn, a review survives the owner's edits elsewhere when it is drawn again", () => {
+  const plugin = reviewPlugin();
+  const text = "a\nb\n";
+  const file = { path: "Notes/a.md", kind: "edit", base_hash: sha256Hex(text), changes: [{ from: 2, to: 4, old: "b\n", new: "B\n" }] };
+  const saves = [];
+  const entry = { path: file.path, file, lost: new Set(), copilot: { render() {}, saveDecisions: () => saves.push(1) } };
+  const first = editorOf("Notes/a.md", text);
+  plugin.reviewViews.add(first);
+  plugin.offerReview(entry);
+  assert.equal(file.drawn, true);
+  assert.equal(saves.length, 1);                              // the mark is saved with the chat
+  plugin.reviewViews.delete(first);                          // switched away, a typo fixed, shown again
+  const again = editorOf("Notes/a.md", "typo fixed\nb\n");
+  plugin.reviewViews.add(again);
+  plugin.syncReviews();
+  assert.ok(!entry.stale);
+  assert.deepEqual(plugin.reviewEditor.review(again).items.map((item) => item.from), [11]);
+  const other = { path: file.path, file: { ...file, base_hash: "not this note", drawn: false }, lost: new Set(), copilot: { render() {} } };
+  plugin.offerReview(other);
+  assert.equal(other.stale, true);
+  assert.equal(plugin.reviewEditor.review(again), null);      // its marks go with it
+});
+
+test("a chat reloaded with fresh objects keeps its review entry and what was decided since the last save", () => {
+  const view = makeView({});
+  const old = { path: "Notes/a.md", kind: "edit", drawn: true, changes: [{ old: "a", new: "A", status: "applied" }, { old: "b", new: "B" }] };
+  const entry = view.reviewEntry({ id: "t" }, [{ role: "slim", turn: { proposal: { files: [old] } } }], old);
+  const fresh = { path: "Notes/a.md", kind: "edit", changes: [{ old: "a", new: "A" }, { old: "b", new: "B", status: "rejected" }] };
+  const turns = [{ role: "slim", turn: { proposal: { files: [fresh] } } }];
+  assert.equal(view.reviewEntry({ id: "t" }, turns, fresh), entry);
+  assert.equal(entry.file, fresh);
+  assert.equal(entry.turns, turns);
+  assert.deepEqual(fresh.changes.map((change) => change.status), ["applied", undefined]);
+  assert.equal(fresh.drawn, true);
+});
+
+test("Accept the rest reaches the chat as one decision, not one per change", () => {
+  const plugin = reviewPlugin();
+  let calls = 0;
+  const file = { path: "Notes/a.md", changes: [{ old: "a" }, { old: "b" }, { old: "c" }] };
+  const entry = { path: file.path, file, lost: new Set(), copilot: { reviewChanged: () => { calls += 1; }, render() {} } };
+  plugin.reviewsChanged(entry, [[0, "applied"], [1, "applied"], [2, "applied"]]);
+  assert.equal(calls, 1);
+  assert.deepEqual(file.changes.map((change) => change.status), ["applied", "applied", "applied"]);
+});
+
+test("deleting a chat takes its reviews out of the notes", async () => {
+  const view = makeView({ postJSON: async () => ({}) });
+  view.render = () => {};
+  const ended = [];
+  view.plugin.reviews = new Map([["Notes/a.md", { thread: { id: "gone" } }], ["Notes/b.md", { thread: { id: "kept" } }]]);
+  view.plugin.syncReviews = () => ended.push([...view.plugin.reviews.keys()]);
+  view.deleteArmed = "gone";
+  await view.deleteThread("gone");
+  assert.deepEqual([...view.plugin.reviews.keys()], ["Notes/b.md"]);
+  assert.deepEqual(ended, [["Notes/b.md"]]);
+});
+
+test("a change found again by search must start a line", () => {
+  assert.deepEqual(placeChanges("this is fine.\nother\n", [{ from: 40, to: 46, old: "fine.\n", new: "good.\n" }])
+    .map((p) => p.state), ["lost"]);
+  assert.deepEqual(placeChanges("x\nfine.\n", [{ from: 40, to: 46, old: "fine.\n", new: "good.\n" }]).map((p) => p.from), [2]);
 });

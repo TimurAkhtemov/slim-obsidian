@@ -3101,7 +3101,6 @@ class CopilotView extends ItemView {
     this.skills = [];               // /commands, from GET /api/copilot/skills
     this.applying = new Set();      // proposal files being written right now
     this.deletedThreads = new Set(); // a late decision must not save — and so resurrect — these
-    this.reviewEntries = new WeakMap(); // proposal file -> its review entry (never saved)
     this.savingDecisions = null;        // decisions save one after another
   }
 
@@ -3471,6 +3470,11 @@ class CopilotView extends ItemView {
       return;
     }
     this.deletedThreads.add(id);
+    // Its proposals are no one's to decide any more: their marks leave the notes.
+    for (const [path, entry] of this.plugin.reviews || []) {
+      if (entry.thread?.id === id) this.plugin.reviews.delete(path);
+    }
+    this.plugin.syncReviews?.();
     // A late answer would save into — and so resurrect — the thread being deleted.
     if (this.sending && this.streamingThread?.id === id) this.cancel();
     await this.plugin.postJSON("/api/copilot/thread/delete", { id });
@@ -3909,14 +3913,38 @@ class CopilotView extends ItemView {
 
   // One box per file: its path, the diff, and Accept / Reject. The decision is saved on the
   // turn, so a reopened chat shows what was applied and never offers it twice.
+  // One entry per proposal, kept by the plugin across chat reloads, which bring fresh objects
+  // from the server: the review drawn in the note, and what was decided there since the last
+  // save, carry over to the newest copy.
   reviewEntry(thread, turns, file) {
-    let entry = this.reviewEntries.get(file);
+    const entries = this.plugin.reviewEntries || (this.plugin.reviewEntries = new Map());
+    const turn = turns.findIndex((item) => item?.turn?.proposal?.files?.includes(file));
+    const key = `${thread?.id}:${turn}:${file.path}`;
+    let entry = entries.get(key);
     if (!entry) {
-      entry = { key: `${thread?.id}:${file.path}`, path: file.path, file, thread, turns, copilot: this,
-                lost: new Set(), stale: false };
-      this.reviewEntries.set(file, entry);
+      entry = { key, path: file.path, file, thread, turns, copilot: this, lost: new Set(), stale: false };
+      entries.set(key, entry);
+      return entry;
     }
+    if (entry.file !== file) {
+      (entry.file.changes || []).forEach((change, k) => {
+        const into = file.changes?.[k];
+        if (!into) return;
+        if (change.status) into.status = change.status;
+        else delete into.status;
+      });
+      if (entry.file.drawn) file.drawn = true;
+      if (entry.file.status) file.status = entry.file.status;
+      else delete file.status;
+    }
+    Object.assign(entry, { file, thread, turns, copilot: this });
     return entry;
+  }
+
+  renderSoon() {
+    if (this.renderQueued) return;
+    this.renderQueued = true;
+    queueMicrotask(() => { this.renderQueued = false; this.render(); });
   }
 
   // Each note's newest undecided proposal in this chat goes to the note.
@@ -3951,7 +3979,7 @@ class CopilotView extends ItemView {
       this.plugin.reviews?.set(entry.path, entry);
     }
     this.saveDecisions(entry.thread, entry.turns);
-    this.render();
+    this.renderSoon();
   }
 
   saveDecisions(thread, turns) {
@@ -4255,7 +4283,7 @@ function markable(before, after) {
 }
 
 // Where each undecided change sits in `doc` now: its proposed place, moved by the changes
-// already applied above it, if its old text is there; else the one place that text occurs.
+// already applied above it, if its old text is there; else the one line where that text starts.
 // An addition is checked by the line above it. A change found nowhere is `lost`.
 function placeChanges(doc, changes) {
   const text = String(doc || "");
@@ -4270,8 +4298,11 @@ function placeChanges(doc, changes) {
     if (old) {
       if (text.slice(want, want + old.length) === old) at = want;
       else {
-        const first = text.indexOf(old);
-        if (first >= 0 && text.indexOf(old, first + 1) < 0) at = first;
+        const starts = [];
+        for (let i = text.indexOf(old); i >= 0 && starts.length < 2; i = text.indexOf(old, i + 1)) {
+          if (i === 0 || text[i - 1] === "\n") starts.push(i);
+        }
+        if (starts.length === 1) at = starts[0];
       }
     } else if (want === 0 ? !change.above : text[want - 1] === "\n"
                && text.slice(text.lastIndexOf("\n", want - 2) + 1, want - 1) === (change.above || "")) {
@@ -4338,28 +4369,43 @@ function makeReviewEditor(cm, host) {
       if (!tr.docChanged && !verdicts.size) return review;
       const doc = tr.newDoc;
       const map = (pos, assoc) => tr.changes.mapPos(pos, assoc);
+      // A range maps inward, so a neighbour's change at its edge stays outside it; an empty one
+      // maps outward, so the text Cmd-Z puts back at that point is inside it.
+      const span = (from, to) => {
+        const empty = from === to;
+        const start = map(from, empty ? -1 : 1);
+        return [start, Math.max(start, map(to, empty ? 1 : -1))];
+      };
       const items = review.items.map((item) => {
         const verdict = verdicts.get(item.index);
         if (verdict === "applied") {
           if (item.state !== "open") return item;
-          const from = map(item.from, -1);
+          const from = map(item.from, item.from === item.to ? -1 : 1);
           return { ...item, state: "applied", from, to: from + item.new.length };
         }
         if (verdict) return { ...item, state: verdict };
         if (!tr.docChanged || item.state === "rejected") return item;
         if (item.state === "applied") {
           // Cmd-Z restores the old text over the applied range: the change is open again.
-          const from = map(item.from, -1), to = map(item.to, 1);
+          const [from, to] = span(item.from, item.to);
           return { ...item, from, to, state: doc.sliceString(from, to) === item.old ? "open" : "applied" };
         }
         if (tr.isUserEvent("redo")) {
-          const from = map(item.from, -1), to = map(item.to, 1);
+          const [from, to] = span(item.from, item.to);
           if (doc.sliceString(from, to) === item.new) return { ...item, from, to, state: "applied" };
         }
         // Typing at either edge stays outside the change; typing inside it means the owner
-        // changed what Accept would replace, so it waits until that text is back.
-        const from = map(item.from, item.from === item.to ? -1 : 1);
-        const to = Math.max(from, map(item.to, -1));
+        // changed what Accept would replace, so it waits until that text is back — in place, or
+        // put back whole where it was (Cmd-Z after deleting it).
+        let from = map(item.from, item.from === item.to ? -1 : 1);
+        let to = Math.max(from, map(item.to, -1));
+        if (doc.sliceString(from, to) !== item.old && item.old) {
+          tr.changes.iterChangedRanges((_fromA, _toA, fromB, toB) => {
+            if (fromB > to || toB < from) return;
+            const text = doc.sliceString(fromB, toB), at = text.indexOf(item.old);
+            if (at >= 0 && text.indexOf(item.old, at + 1) < 0) { from = fromB + at; to = from + item.old.length; }
+          });
+        }
         return { ...item, from, to, state: doc.sliceString(from, to) === item.old ? "open" : "edited" };
       });
       return { ...review, items };
@@ -4447,19 +4493,22 @@ function makeReviewEditor(cm, host) {
       for (const line of lines) ranges.push(Decoration.line({ class: "slim-change" }).range(line.from));
       const marked = item.state === "open" && markable(item.old, item.new);
       if (marked) {
+        // From the change's own text: while it is open, that is exactly the note's text there.
         const others = item.new.split("\n").filter((text) => text.trim());
-        let k = 0;
-        for (const line of lines) {
-          if (!line.text.trim()) continue;
+        let k = 0, next = item.from;
+        for (const text of item.old.split("\n")) {
+          const start = next;
+          next += text.length + 1;
+          if (!text.trim()) continue;
           const other = others[k++];
-          const ma = MARKER.exec(line.text)[0], mb = MARKER.exec(other)[0];
-          const raw = !live || line.number === caret;
-          let at = line.from + ma.length, inserted = "";
+          const ma = MARKER.exec(text)[0], mb = MARKER.exec(other)[0];
+          const raw = !live || doc.lineAt(start).number === caret;
+          let at = start + ma.length, inserted = "";
           const flush = () => {
             if (inserted) ranges.push(Decoration.widget({ widget: new Inserted(inserted, raw, path), side: 1 }).range(at));
             inserted = "";
           };
-          for (const op of wordOps(line.text.slice(ma.length), other.slice(mb.length))) {
+          for (const op of wordOps(text.slice(ma.length), other.slice(mb.length))) {
             if (op[0] === "+") { inserted += op[1]; continue; }
             flush();
             if (op[0] === "-") ranges.push(Decoration.mark({ class: "slim-del" }).range(at, at + op[1].length));
@@ -4501,7 +4550,8 @@ function makeReviewEditor(cm, host) {
   });
 
   // Every live editor, so the plugin finds the one showing a note; and each change's new state,
-  // so the sidebar and the saved chat follow what happened in the note (Accept, Cmd-Z, typing).
+  // so the sidebar and the saved chat follow what happened in the note (Accept, Cmd-Z, typing):
+  // `host.changed(view, entry, [[index, state], ...])`.
   const tracker = ViewPlugin.fromClass(class {
     constructor(view) {
       this.view = view;
@@ -4513,9 +4563,12 @@ function makeReviewEditor(cm, host) {
       if (update.focusChanged && update.view.hasFocus) focused.set(update.view, Date.now());
       const was = update.startState.field(reviewField, false), now = update.state.field(reviewField, false);
       if (!was || !now || was === now || was.entry !== now.entry) return;
+      const moved = [];
       now.items.forEach((item, k) => {
-        if (was.items[k] && was.items[k].state !== item.state) host.changed(update.view, now.entry, item.index, item.state);
+        if (was.items[k] && was.items[k].state !== item.state) moved.push([item.index, item.state]);
       });
+      // One report per transaction (Accept the rest is one), after CodeMirror's update.
+      if (moved.length) queueMicrotask(() => host.changed(update.view, now.entry, moved));
     }
     destroy() { host.views.delete(this.view); }
   });
@@ -5118,7 +5171,7 @@ module.exports = class SlimRecorderPlugin extends Plugin {
       infoField: editorInfoField,
       livePreviewField: editorLivePreviewField,
       render: (el, markdown, sourcePath) => MarkdownRenderer.render(this.app, markdown, el, sourcePath, this),
-      changed: (_view, entry, index, state) => this.reviewChanged(entry, index, state),
+      changed: (_view, entry, updates) => this.reviewsChanged(entry, updates),
       opened: () => queueMicrotask(() => this.syncReviews()),
     });
     this.registerEditorExtension(this.reviewEditor.extension);
@@ -5154,16 +5207,20 @@ module.exports = class SlimRecorderPlugin extends Plugin {
     }
   }
 
-  // First start: the note must be exactly as proposed. Later starts (switching back) place each
-  // open change after the ones already applied (placeChanges).
+  // The first drawing needs the note exactly as proposed. After that the owner's edits
+  // elsewhere are theirs to make: each open change is placed by its own text (placeChanges).
   startReview(view, entry) {
     const doc = view.state.doc.toString();
-    const fresh = !(entry.file.changes || []).some((change) => change.status);
-    if (fresh && sha256Hex(doc) !== entry.file.base_hash) {
-      entry.stale = true;
-      this.reviews.delete(entry.path);
-      entry.copilot?.render?.();
-      return;
+    if (!entry.file.drawn) {
+      if (sha256Hex(doc) !== entry.file.base_hash) {
+        entry.stale = true;
+        this.reviews.delete(entry.path);
+        this.reviewEditor.end(view);
+        entry.copilot?.render?.();
+        return;
+      }
+      entry.file.drawn = true;
+      entry.copilot?.saveDecisions?.(entry.thread, entry.turns);
     }
     const placed = placeChanges(doc, entry.file.changes);
     entry.lost = new Set(placed.filter((item) => item.state === "lost").map((item) => item.index));
@@ -5198,7 +5255,7 @@ module.exports = class SlimRecorderPlugin extends Plugin {
   async decideRest(entry, status) {
     const view = await this.showReview(entry);
     const decided = view ? this.reviewEditor.decideAll(view, status) : 0;
-    if (status === "rejected") for (const index of [...(entry.lost || [])]) this.reviewChanged(entry, index, "rejected");
+    if (status === "rejected" && entry.lost?.size) this.reviewsChanged(entry, [...entry.lost].map((index) => [index, "rejected"]));
     return decided;
   }
 
@@ -5209,18 +5266,25 @@ module.exports = class SlimRecorderPlugin extends Plugin {
     return file ? this.app.vault.read(file) : "";
   }
 
-  // A change's state in the note → its status on the chat turn. `edited` and `open` (from
-  // edited) change nothing saved; `open` from applied is Cmd-Z.
-  reviewChanged(entry, index, state) {
-    const change = entry.file.changes?.[index];
-    if (!change) return;
-    const status = state === "applied" || state === "rejected" ? state : undefined;
-    if (state === "rejected") entry.lost?.delete(index);
-    if (change.status === status) { entry.copilot?.render?.(); return; }
-    if (status) change.status = status;
-    else delete change.status;
-    entry.copilot?.reviewChanged(entry);
+  // Changes' states in the note → their statuses on the chat turn, as one decision. `edited`,
+  // and `open` from edited, change nothing saved; `open` from applied is Cmd-Z.
+  reviewsChanged(entry, updates) {
+    let moved = false;
+    for (const [index, state] of updates) {
+      const change = entry.file.changes?.[index];
+      if (!change) continue;
+      const status = state === "applied" || state === "rejected" ? state : undefined;
+      if (state === "rejected") entry.lost?.delete(index);
+      if (change.status === status) continue;
+      if (status) change.status = status;
+      else delete change.status;
+      moved = true;
+    }
+    if (moved) entry.copilot?.reviewChanged(entry);
+    else entry.copilot?.render?.();
   }
+
+  reviewChanged(entry, index, state) { this.reviewsChanged(entry, [[index, state]]); }
 
   stopServer() {
     const child = this.server;

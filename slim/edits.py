@@ -610,9 +610,11 @@ def _cut(a: list[str], b: list[str]) -> list[tuple[int, int, int, int]]:
 
 
 def _regions(a: list[str], b: list[str]) -> list[tuple[int, int, int, int]]:
-    """Changed line regions; an unchanged run of blank lines does not split one."""
+    """Changed line regions; an unchanged run of blank lines does not split one. Blank lines
+    never anchor a match: thousands of identical ones made a long rewrite's diff take minutes."""
     out: list[tuple[int, int, int, int]] = []
-    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+    matcher = difflib.SequenceMatcher(lambda line: not line.strip(), a, b, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "equal":
             continue
         if out and not any(line.strip() for line in a[out[-1][1]:i1]):
@@ -620,6 +622,17 @@ def _regions(a: list[str], b: list[str]) -> list[tuple[int, int, int, int]]:
         else:
             out.append((i1, i2, j1, j2))
     return out
+
+
+def _trimmed(a: list[str], b: list[str], cut: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    """A change without the blank lines both sides keep at its edges, so typing a new paragraph
+    next to a changed one does not touch the change."""
+    i1, i2, j1, j2 = cut
+    while i2 > i1 and j2 > j1 and not a[i2 - 1].strip() and a[i2 - 1] == b[j2 - 1]:
+        i2, j2 = i2 - 1, j2 - 1
+    while i1 < i2 and j1 < j2 and not a[i1].strip() and a[i1] == b[j1]:
+        i1, j1 = i1 + 1, j1 + 1
+    return i1, i2, j1, j2
 
 
 def _spliced(text: str, spans: list[tuple[int, int, str]]) -> str:
@@ -637,10 +650,10 @@ def _stretch_changes(old: str, new: str) -> list[tuple[int, int, str]]:
     at_a = [0, *itertools.accumulate(len(line) for line in a)]
     at_b = [0, *itertools.accumulate(len(line) for line in b)]
     regions = _regions(a, b)
-    fine = [(i1 + o1, i1 + o2, j1 + n1, j1 + n2) for i1, i2, j1, j2 in regions
+    fine = [_trimmed(a, b, (i1 + o1, i1 + o2, j1 + n1, j1 + n2)) for i1, i2, j1, j2 in regions
             for o1, o2, n1, n2 in _cut(a[i1:i2], b[j1:j2])]
     spans: list[tuple[int, int, str]] = []
-    for cuts in (fine, regions, [(0, len(a), 0, len(b))]):
+    for cuts in (fine, [_trimmed(a, b, region) for region in regions], [(0, len(a), 0, len(b))]):
         spans = [(at_a[i1], at_a[i2], new[at_b[j1]:at_b[j2]]) for i1, i2, j1, j2 in cuts
                  if old[at_a[i1]:at_a[i2]] != new[at_b[j1]:at_b[j2]]]
         if _spliced(old, spans) == new:
