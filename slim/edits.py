@@ -18,8 +18,10 @@ plus an insert, and applying the delete alone lost the section.
 """
 from __future__ import annotations
 
+import bisect
 import difflib
 import hashlib
+import itertools
 import os
 import re
 import unicodedata
@@ -511,6 +513,168 @@ def apply_blocks(text: str, blocks: list[Block]) -> tuple[str, list[dict]]:
     return text, results
 
 
+# The owner reviews a proposal in the note, one change at a time. A change is one block — a
+# heading, a paragraph, a list, a table, a quote, fenced code or `$$` math — or a run of removed
+# or added ones, so accepting some and rejecting others leaves whole blocks, never half a line.
+_HEADING = re.compile(r"#{1,6}\s")
+_LIST_ITEM = re.compile(r"(?:[-*+]|\d+[.)])\s")
+
+
+def _kind(line: str) -> str:
+    text = line.strip()
+    if _HEADING.match(text):
+        return "heading"
+    if text.startswith(("```", "~~~")):
+        return "fence"
+    if text.startswith("$$"):
+        return "math"
+    if text.startswith("|"):
+        return "table"
+    if _LIST_ITEM.match(text):
+        return "list"
+    if text.startswith(">"):
+        return "quote"
+    return "para"
+
+
+def _blocks(lines: list[str]) -> list[tuple[str, int, int]]:
+    """(kind, start, end) blocks covering `lines` in order. Blank lines belong to the block
+    before them, so a heading renamed is the heading alone; leading ones to the first block."""
+    out: list[tuple[str, int, int]] = []
+    i, n = 0, len(lines)
+    while i < n:
+        start = i
+        while i < n and not lines[i].strip():
+            i += 1
+        if i == n:
+            out.append(("blank", start, n))
+            break
+        kind, first = _kind(lines[i]), lines[i].strip()
+        i += 1
+        if kind == "fence" or (kind == "math" and (first == "$$" or not first.endswith("$$"))):
+            close = first[:3] if kind == "fence" else "$$"
+            while i < n and not lines[i].strip().startswith(close):
+                i += 1
+            i = min(i + 1, n)
+        elif kind == "list":
+            while i < n and lines[i].strip() and (lines[i][:1] in " \t" or _kind(lines[i]) == "list"):
+                i += 1
+        elif kind != "heading":
+            while i < n and lines[i].strip() and _kind(lines[i]) == kind:
+                i += 1
+        while i < n and not lines[i].strip():
+            i += 1
+        out.append((kind, start, i))
+    return out
+
+
+def _pairs(a: list[str], b: list[str]) -> list[tuple[int, int]]:
+    """Index pairs of a longest common subsequence of two lists of block kinds."""
+    n, m = len(a), len(b)
+    table = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(n - 1, -1, -1):
+        for j in range(m - 1, -1, -1):
+            table[i][j] = table[i + 1][j + 1] + 1 if a[i] == b[j] else max(table[i + 1][j], table[i][j + 1])
+    out, i, j = [], 0, 0
+    while i < n and j < m:
+        if a[i] == b[j]:
+            out.append((i, j))
+            i, j = i + 1, j + 1
+        elif table[i + 1][j] >= table[i][j + 1]:
+            i += 1
+        else:
+            j += 1
+    return out
+
+
+def _cut(a: list[str], b: list[str]) -> list[tuple[int, int, int, int]]:
+    """A changed region as line ranges (old start, old end, new start, new end): an old block
+    and a new block of the same kind, in order, are one change; what lies between two such
+    pairs is one change too."""
+    old, new = _blocks(a), _blocks(b)
+
+    def span(blocks, lo, hi, total):
+        if lo < hi:
+            return blocks[lo][1], blocks[hi - 1][2]
+        at = blocks[lo][1] if lo < len(blocks) else total
+        return at, at
+
+    out, oi, ni = [], 0, 0
+    for pi, pj in _pairs([k for k, _, _ in old], [k for k, _, _ in new]) + [(len(old), len(new))]:
+        if pi > oi or pj > ni:
+            out.append((*span(old, oi, pi, len(a)), *span(new, ni, pj, len(b))))
+        if pi < len(old):
+            out.append((old[pi][1], old[pi][2], new[pj][1], new[pj][2]))
+        oi, ni = pi + 1, pj + 1
+    return out
+
+
+def _regions(a: list[str], b: list[str]) -> list[tuple[int, int, int, int]]:
+    """Changed line regions; an unchanged run of blank lines does not split one."""
+    out: list[tuple[int, int, int, int]] = []
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if tag == "equal":
+            continue
+        if out and not any(line.strip() for line in a[out[-1][1]:i1]):
+            out[-1] = (out[-1][0], i2, out[-1][2], j2)
+        else:
+            out.append((i1, i2, j1, j2))
+    return out
+
+
+def _spliced(text: str, spans: list[tuple[int, int, str]]) -> str:
+    out, at = [], 0
+    for start, end, new in spans:
+        out += [text[at:start], new]
+        at = end
+    return "".join(out) + text[at:]
+
+
+def _stretch_changes(old: str, new: str) -> list[tuple[int, int, str]]:
+    """(start, end, replacement) within `old`; together they turn `old` into `new`. Falls back
+    to one change per region, then to one for the whole stretch, if a finer cut does not."""
+    a, b = old.splitlines(keepends=True), new.splitlines(keepends=True)
+    at_a = [0, *itertools.accumulate(len(line) for line in a)]
+    at_b = [0, *itertools.accumulate(len(line) for line in b)]
+    regions = _regions(a, b)
+    fine = [(i1 + o1, i1 + o2, j1 + n1, j1 + n2) for i1, i2, j1, j2 in regions
+            for o1, o2, n1, n2 in _cut(a[i1:i2], b[j1:j2])]
+    spans: list[tuple[int, int, str]] = []
+    for cuts in (fine, regions, [(0, len(a), 0, len(b))]):
+        spans = [(at_a[i1], at_a[i2], new[at_b[j1]:at_b[j2]]) for i1, i2, j1, j2 in cuts
+                 if old[at_a[i1]:at_a[i2]] != new[at_b[j1]:at_b[j2]]]
+        if _spliced(old, spans) == new:
+            break
+    return spans
+
+
+def changes(before: str, after: str) -> list[dict] | None:
+    """`after` as the changes the owner reviews in the note, in order and never overlapping:
+    {from, to, old, new, above}. `from`/`to` count UTF-16 units, the plugin's string indices;
+    `above` is the line above the change, which finds an addition again after the note was
+    reopened. A recording is compared only between its own parts, so no change — and no set of
+    changes the owner accepts — touches them. None if a protected part is missing from
+    `after`, which apply_blocks never lets through."""
+    stretches, b_at, a_at = [], 0, 0
+    for begin, end in protected_ranges(before):
+        found = after.find(before[begin:end], a_at)
+        if found < 0:
+            return None
+        stretches.append((b_at, before[b_at:begin], after[a_at:found]))
+        b_at, a_at = end, found + (end - begin)
+    stretches.append((b_at, before[b_at:], after[a_at:]))
+    astral = [i for i, ch in enumerate(before) if ord(ch) > 0xFFFF]
+    units = lambda i: i + bisect.bisect_left(astral, i)
+    out = []
+    for at, old, new in stretches:
+        for start, end, text in _stretch_changes(old, new) if old != new else []:
+            start, end = at + start, at + end
+            above = before[before.rfind("\n", 0, start - 1) + 1:start - 1] if start else ""
+            out.append({"from": units(start), "to": units(end), "old": before[start:end],
+                        "new": text, "above": above})
+    return out
+
+
 def note_path(raw: str | None) -> str | None:
     """A vault-relative Markdown path, or None. Obsidian's `normalizePath` turns `\\` into `/`,
     so a backslash could smuggle `..` past a POSIX check; such a path is refused outright."""
@@ -565,7 +729,8 @@ def _inside(search: str, selection: str) -> bool:
 def propose(vault: Path, blocks: list[Block], *, in_view: set[str], creates_only: bool = False,
             within: tuple[str, str] | None = None) -> dict:
     """Group blocks by file and compute each file's new text. Returns
-    {"files": [{path, kind, base_hash, after, blocks}], "dropped": [{path, reason}]}.
+    {"files": [{path, kind, base_hash, after, blocks, changes?}], "dropped": [{path, reason}]}.
+    `changes` (an edit only): the proposal as the changes the owner reviews in the note.
 
     `creates_only`: a new-note skill proposes new notes and nothing else. `within`: a selection
     skill changes only the selected text of the open note."""
@@ -629,6 +794,13 @@ def propose(vault: Path, blocks: list[Block], *, in_view: set[str], creates_only
         changed = all(result["ok"] for result in results) and after != before
         if changed and kind == "create":
             after = _with_origin(after)
-        files.append({"path": path, "kind": kind, "base_hash": base,
-                      "after": after if changed else None, "blocks": results})
+        entry = {"path": path, "kind": kind, "base_hash": base,
+                 "after": after if changed else None, "blocks": results}
+        if changed and kind == "edit":
+            cut = changes(before, after)
+            if cut is None:
+                dropped.append({"path": path, "reason": "could not be cut into changes"})
+                continue
+            entry["changes"] = cut
+        files.append(entry)
     return {"files": files, "dropped": dropped}

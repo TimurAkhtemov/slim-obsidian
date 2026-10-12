@@ -730,6 +730,7 @@ def run_turn(con, source_id: str, question: str, history: list[dict], mode: str,
         record["proposal"] = {
             "files": [{"path": item["path"], "kind": item["kind"],
                        "applied": sum(block["ok"] for block in item["blocks"]),
+                       "changes": len(item.get("changes") or []),
                        "failed": [block["reason"] for block in item["blocks"] if not block["ok"]]}
                       for item in result["proposal"]["files"]],
             "dropped": result["proposal"]["dropped"]}

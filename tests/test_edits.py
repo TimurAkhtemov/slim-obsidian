@@ -528,3 +528,120 @@ def test_inbox_journal_is_on_the_floor_too(vault):
                              in_view={"Inbox/Journal/memo.md", "Notes/school/a.md"})
     assert proposal["dropped"] == [{"path": "Notes/school/a.md",
                                     "reason": "a Journal note's text stays in Journal/"}]
+
+
+def apply_changes(before, cut):
+    """Apply `changes()` output; offsets are UTF-16, so convert through UTF-16 text."""
+    units = before.encode("utf-16-le")
+    out, at = [], 0
+    for change in cut:
+        out += [units[2 * at:2 * change["from"]], change["new"].encode("utf-16-le")]
+        assert units[2 * change["from"]:2 * change["to"]].decode("utf-16-le") == change["old"]
+        at = change["to"]
+    return b"".join(out + [units[2 * at:]]).decode("utf-16-le")
+
+
+DRAFT = (
+    "\n# Softmax Function\n\n"
+    "The softmax function converts a vector of raw scores (logits) into a probability distribution. "
+    "It is commonly used in the output layer of neural networks for multi-class classification.\n\n"
+    "## Formula\n\n"
+    "For a vector $z$ of $K$ real numbers, the softmax function $\\sigma(z)$ is defined as:\n\n"
+    "$$ \\sigma(z)_i = \\frac{e^{z_i}}{\\sum_{j=1}^{K} e^{z_j}} $$\n\n"
+    "Where:\n"
+    "*   $z_i$ is the $i$-th element of the input vector (logit).\n"
+    "*   $e^{z_i}$ is the exponential of the $i$-th element.\n"
+    "*   The denominator $\\sum_{j=1}^{K} e^{z_j}$ is the sum of exponentials for all elements, ensuring the outputs sum to 1.\n\n"
+    "## Properties\n\n"
+    "1. **Non-negativity**: All output values are positive ($>0$).\n"
+    "2. **Normalization**: The sum of all output probabilities equals 1 ($\\sum_{i=1}^{K} \\sigma(z)_i = 1$).\n"
+    "3. **Differentiability**: It is smooth and differentiable, which is crucial for gradient-based optimization.\n\n"
+    "## Example\n\n"
+    "If the input logits are $z = [1.0, 2.0, 3.0]$:\n\n"
+    "1. Calculate exponentials:\n"
+    "   $$ e^{1.0} \\approx 2.718 $$\n"
+    "   $$ e^{2.0} \\approx 7.389 $$\n\n"
+    "2. Sum of exponentials:\n"
+    "   $$ 2.718 + 7.389 = 10.107 $$\n\n"
+    "Check: $0.090 + 0.245 + 0.665 = 1.0$\n"
+)
+SIMPLER = (
+    "\n# Softmax Function\n\n"
+    "The softmax function converts a vector of raw scores (logits) into a probability distribution, "
+    "commonly used in multi-class classification output layers.\n\n"
+    "## Formula\n\n"
+    "For a vector $z$ of $K$ real numbers:\n\n"
+    "$$ \\sigma(z)_i = \\frac{e^{z_i}}{\\sum_{j=1}^{K} e^{z_j}} $$\n\n"
+    "## Key Properties\n\n"
+    "*   **Output**: Values are positive and sum to 1.\n"
+    "*   **Behavior**: Amplifies large differences between logits; suppresses small ones.\n"
+    "*   **Gradient**: Smooth and differentiable, enabling backpropagation.\n"
+)
+
+
+def test_a_rewrite_is_cut_into_one_change_per_block():
+    cut = edits.changes(DRAFT, SIMPLER)
+    assert apply_changes(DRAFT, cut) == SIMPLER
+    assert [(c["old"].split("\n")[0], c["new"].split("\n")[0]) for c in cut] == [
+        ("The softmax function converts a vector of raw scores (logits) into a probability distribution. "
+         "It is commonly used in the output layer of neural networks for multi-class classification.",
+         "The softmax function converts a vector of raw scores (logits) into a probability distribution, "
+         "commonly used in multi-class classification output layers."),
+        ("For a vector $z$ of $K$ real numbers, the softmax function $\\sigma(z)$ is defined as:",
+         "For a vector $z$ of $K$ real numbers:"),
+        ("Where:", ""),
+        ("## Properties", "## Key Properties"),
+        ("1. **Non-negativity**: All output values are positive ($>0$).",
+         "*   **Output**: Values are positive and sum to 1."),
+        ("## Example", ""),
+    ]
+    assert cut[2]["new"] == "" and cut[2]["old"].endswith("sum to 1.\n\n")
+    # A blank line belongs to the block above it, so the heading change is the heading alone.
+    assert cut[3]["old"] == "## Properties\n\n" and cut[3]["new"] == "## Key Properties\n\n"
+    assert cut[0]["above"] == ""                                # the line above is blank
+
+
+def test_an_addition_records_the_line_above_it_and_a_move_is_a_removal_plus_an_addition():
+    before = "# A\n\none\n\n## Moved\n\nbody\n\n## Last\n\nend\n"
+    after = "# A\n\none\n\n## Last\n\nend\n\n## Moved\n\nbody\n"
+    cut = edits.changes(before, after)
+    assert apply_changes(before, cut) == after
+    # Two changes the owner sees apart: an addition and a removal, never one half-move.
+    assert sorted((bool(c["old"]), bool(c["new"])) for c in cut) == [(False, True), (True, False)]
+    added = edits.changes("a\nb\n", "a\nnew\nb\n")
+    assert added == [{"from": 2, "to": 2, "old": "", "new": "new\n", "above": "a"}]
+
+
+def test_no_set_of_changes_touches_a_recordings_own_parts():
+    import itertools
+    before = MEMO.replace("one\ntwo\n", "one\ntwo\n\nthree\n")
+    after = before.replace("# Call", "# The call").replace("one\n", "ONE\n").replace("three\n", "")
+    cut = edits.changes(before, after)
+    assert apply_changes(before, cut) == after
+    protected = [before[b:e] for b, e in edits.protected_ranges(before)]
+    for size in range(len(cut) + 1):
+        for subset in itertools.combinations(cut, size):
+            result = apply_changes(before, list(subset))
+            assert all(part in result for part in protected)
+    meeting = edits.changes(MEETING, MEETING.replace("Afterwards I wrote this line.", "Afterwards, one line."))
+    assert [c["old"] for c in meeting] == ["Afterwards I wrote this line.\n"]
+
+
+def test_offsets_count_utf16_units_past_an_emoji():
+    before = "🎙️ note\n\nold line\n"
+    cut = edits.changes(before, "🎙️ note\n\nnew line\n")
+    assert cut[0]["from"] == len("🎙️ note\n\n".encode("utf-16-le")) // 2
+    assert apply_changes(before, cut) == "🎙️ note\n\nnew line\n"
+
+
+def test_a_cut_that_cannot_rebuild_the_note_falls_back_to_bigger_changes(monkeypatch):
+    monkeypatch.setattr(edits, "_cut", lambda a, b: [(0, 0, 0, 0)])
+    before, after = "a\nb\nc\n", "a\nB\nc\n"
+    assert edits.changes(before, after) == [{"from": 2, "to": 4, "old": "b\n", "new": "B\n", "above": "a"}]
+
+
+def test_propose_attaches_changes_to_an_edit(vault):
+    out = edits.propose(vault, [edits.Block("Notes/school/a.md", "beta\n", "BETA\n")],
+                        in_view={"Notes/school/a.md"})
+    assert out["files"][0]["changes"] == [
+        {"from": 6, "to": 11, "old": "beta\n", "new": "BETA\n", "above": "alpha"}]
