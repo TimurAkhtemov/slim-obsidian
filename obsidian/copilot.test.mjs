@@ -34,9 +34,9 @@ Module._load = function (request) {
 
 const { CopilotView, RenameModal, SSEParser, groupThreads, streamRequest,
         groupCitations, noteTitle, normalizeMath, SUGGESTED_PROMPTS, metaText,
-        sha256Hex, lineDiff, slashQuery, matchSkills, inputsText, editorSelection,
+        sha256Hex, slashQuery, matchSkills, inputsText, editorSelection,
         visibleStream, historyText, wordTokens, wordOps, markable, placeChanges, changeCounts,
-        changeLabel, removalWarning } =
+        changeLabel, removalWarning, proposalStatus, copyDecisions } =
   createRequire(import.meta.url)(path.join(HERE, "main.js"));
 
 test("SSE parsing survives arbitrary chunk boundaries", () => {
@@ -1145,18 +1145,6 @@ test("a slash command completes only while its first word is being typed", () =>
   assert.deepEqual(matchSkills(skills, null), []);
 });
 
-test("the diff folds unchanged runs and marks what was added and removed", () => {
-  const before = ["a", "b", "c", "d", "e", "f", "g", "h"].join("\n");
-  const after = ["a", "b", "c", "d", "E", "f", "g", "h", "i"].join("\n");
-  assert.deepEqual(lineDiff(before, after, 1), [
-    { op: "…", text: "" },
-    { op: " ", text: "d" }, { op: "-", text: "e" }, { op: "+", text: "E" }, { op: " ", text: "f" },
-    { op: "…", text: "" },
-    { op: " ", text: "h" }, { op: "+", text: "i" },
-  ]);
-  assert.deepEqual(lineDiff("", "new\nnote").filter((r) => r.op === "+").map((r) => r.text), ["new", "note"]);
-});
-
 test("the inputs line says what code handed the model, including what it left out", () => {
   assert.equal(inputsText({ used: ["a", "b"], selection: false, dropped: ["c"], cut: [],
                             skipped: ["d"], missing: ["Nope"] }),
@@ -1199,23 +1187,21 @@ function proposalView(vault, saved = [], indexed = []) {
   return view;
 }
 
-test("accept writes only a file that still hashes as proposed, then indexes it", async () => {
-  const files = { "Notes/a.md": "old\n", "Notes/b.md": "edited since\n" };
+test("accept creates a new note and indexes it, and never writes over one that appeared meanwhile", async () => {
+  const files = { "Notes/b.md": "theirs\n" };
   const vault = proposalVault(files);
   const saved = [], indexed = [];
   const view = proposalView(vault, saved, indexed);
   const proposal = { files: [
-    { path: "Notes/a.md", kind: "edit", base_hash: sha256Hex("old\n"), after: "new\n", blocks: [] },
-    { path: "Notes/b.md", kind: "edit", base_hash: sha256Hex("original\n"), after: "x\n", blocks: [] },
     { path: "Notes/c.md", kind: "create", base_hash: null, after: "# C\n", blocks: [] },
+    { path: "Notes/b.md", kind: "create", base_hash: null, after: "mine\n", blocks: [] },
   ], dropped: [] };
   view.turns = [{ role: "you", text: "q" }, { role: "slim", text: "a", turn: { proposal } }];
   await view.decide(proposal, proposal.files, "accept");
-  assert.deepEqual(proposal.files.map((f) => f.status), ["accepted", "stale", "accepted"]);
-  assert.equal(files["Notes/a.md"], "new\n");
-  assert.equal(files["Notes/b.md"], "edited since\n");            // their edit survives
+  assert.deepEqual(proposal.files.map((f) => f.status), ["accepted", "failed"]);
   assert.equal(files["Notes/c.md"], "# C\n");
-  assert.deepEqual(indexed.sort(), ["Notes/a.md", "Notes/c.md"]);
+  assert.equal(files["Notes/b.md"], "theirs\n");               // never written over
+  assert.deepEqual(indexed, ["Notes/c.md"]);
   assert.equal(saved.at(-1).turns[1].turn.proposal.files[0].status, "accepted");
 });
 
@@ -1244,7 +1230,6 @@ test("reject writes nothing and a create never overwrites an existing note", asy
 
 test("a decided file shows its outcome instead of the buttons", () => {
   const view = proposalView(proposalVault({}));
-  view.fillDiff = async () => {};
   const message = fakeEl("article");
   view.renderProposal(message, { files: [
     { path: "Notes/a.md", kind: "edit", after: "x", status: "accepted", blocks: [] },
@@ -1278,27 +1263,27 @@ test("an edit-mode question carries the toggle and the open note's selection", a
 
 
 test("a double click or Accept all over an in-flight file writes once and records it applied", async () => {
-  const files = { "Notes/a.md": "old\n", "Notes/b.md": "b\n" };
+  const files = {};
   const vault = proposalVault(files, { slow: 5 });
   const saved = [];
   const view = proposalView(vault, saved);
-  const a = { path: "Notes/a.md", kind: "edit", base_hash: sha256Hex("old\n"), after: "new\n", blocks: [] };
-  const b = { path: "Notes/b.md", kind: "edit", base_hash: sha256Hex("b\n"), after: "B\n", blocks: [] };
+  const a = { path: "Notes/a.md", kind: "create", base_hash: null, after: "new\n", blocks: [] };
+  const b = { path: "Notes/b.md", kind: "create", base_hash: null, after: "B\n", blocks: [] };
   const proposal = { files: [a, b] };
   view.turns = [{ role: "you", text: "q" }, { role: "slim", text: "x", turn: { proposal } }];
   await Promise.all([view.decide(proposal, [a], "accept"), view.decide(proposal, [a], "accept"),
                      view.decide(proposal, [a, b], "accept")]);
   assert.deepEqual([a.status, b.status], ["accepted", "accepted"]);
-  assert.deepEqual(vault.writes, [["modify", "Notes/a.md"], ["modify", "Notes/b.md"]]);
+  assert.deepEqual(vault.writes, [["create", "Notes/a.md"], ["create", "Notes/b.md"]]);
   assert.equal(a.after, undefined);                      // decided files stop carrying the text
   assert.equal(saved.at(-1).turns[1].turn.proposal.files[0].status, "accepted");
 });
 
 test("reopening the chat mid-write keeps the decision; deleting it keeps it deleted", async () => {
-  const files = { "Notes/a.md": "old\n" };
+  const files = {};
   const saved = [];
   const view = proposalView(proposalVault(files, { slow: 5 }), saved);
-  const file = () => ({ path: "Notes/a.md", kind: "edit", base_hash: sha256Hex("old\n"), after: "new\n", blocks: [] });
+  const file = () => ({ path: "Notes/a.md", kind: "create", base_hash: null, after: "new\n", blocks: [] });
   const proposal = { files: [file()] };
   view.turns = [{ role: "you", text: "q" }, { role: "slim", text: "x", turn: { proposal } }];
   const pending = view.decide(proposal, proposal.files, "accept");
@@ -1308,7 +1293,7 @@ test("reopening the chat mid-write keeps the decision; deleting it keeps it dele
   assert.equal(view.turns[1].turn.proposal.files[0].status, "accepted");
   assert.equal(saved.at(-1).turns[1].turn.proposal.files[0].status, "accepted");
 
-  const gone = proposalView(proposalVault({ "Notes/a.md": "old\n" }, { slow: 5 }), []);
+  const gone = proposalView(proposalVault({}, { slow: 5 }), []);
   const p2 = { files: [file()] };
   gone.turns = [{ role: "slim", text: "x", turn: { proposal: p2 } }];
   gone.plugin.postJSON = async (route, body) => { if (route.endsWith("save")) gone.savedAfterDelete = body; return {}; };
@@ -1363,42 +1348,6 @@ test("the streaming view hides the change blocks, and history names what was pro
     { path: "Notes/a.md", kind: "edit", status: "accepted" }, { path: "Notes/b.md", kind: "create" }] } } }),
     "Done.\n\n[Proposed changes: Notes/a.md (edit, accepted); Notes/b.md (create, not yet accepted)]");
   assert.equal(historyText({ role: "you", text: "q" }), "q");
-});
-
-test("a change too large to show in full cannot be accepted", async () => {
-  const before = Array.from({ length: 6000 }, (_, i) => `line ${i}`).join("\n");
-  const after = Array.from({ length: 6000 }, (_, i) => `other ${i}`).join("\n");
-  const view = proposalView(proposalVault({ "Notes/a.md": before }));
-  const accept = fakeEl("button");
-  await view.fillDiff(fakeEl("div"), fakeEl("div"),
-    { path: "Notes/a.md", kind: "edit", base_hash: sha256Hex(before), after }, accept);
-  assert.equal(accept.disabled, true);
-  const small = fakeEl("div");
-  const ok = fakeEl("button");
-  await view.fillDiff(small, fakeEl("div"),
-    { path: "Notes/a.md", kind: "edit", base_hash: sha256Hex(before), after: before.replace("line 5\n", "") }, ok);
-  assert.notEqual(ok.disabled, true);
-  assert.equal(small.children[0].textContent, "+0 −1 lines");
-});
-
-
-test("a big removal or a lost frontmatter takes a second click and hides Accept all", async () => {
-  const before = "---\ntitle: t\n---\n" + Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n") + "\n";
-  const files = { "Notes/a.md": before };
-  const view = proposalView(proposalVault(files));
-  view.turns = [{ role: "slim", text: "x", turn: { proposal: { files: [] } } }];
-  const file = { path: "Notes/a.md", kind: "edit", base_hash: sha256Hex(before), after: "- one\n- two\n", blocks: [] };
-  view.turns[0].turn.proposal.files.push(file);
-  const summary = fakeEl("div"), accept = fakeEl("button"), all = fakeEl("button");
-  await view.fillDiff(summary, fakeEl("div"), file, accept, all);
-  assert.match(summary.children[1].textContent, /removes 33 of 34 lines · removes the frontmatter/);
-  assert.equal(all.hidden, true);
-  accept.onclick();
-  assert.equal(files["Notes/a.md"], before);          // first click only arms
-  assert.equal(accept.textContent, "Confirm: apply these removals");
-  accept.onclick();
-  await new Promise((done) => setTimeout(done, 10));
-  assert.equal(files["Notes/a.md"], "- one\n- two\n");
 });
 
 test("an edit turn that proposes nothing says nothing will be written", () => {
@@ -1562,4 +1511,88 @@ test("a decision in the note reaches the chat; Reject the rest also dismisses lo
   await plugin.decideRest(entry, "rejected");
   assert.deepEqual(told.at(-1), [undefined, "rejected"]);
   assert.equal(entry.lost.size, 0);
+});
+
+test("an edit is reviewed in the note: the card counts its changes and lists them, with no line diff", () => {
+  const view = proposalView(proposalVault({}));
+  view.plugin.offerReview = () => {};
+  const message = fakeEl("article");
+  const file = { path: "Notes/a.md", kind: "edit", after: "x", blocks: [], changes: [
+    { old: "## Properties\n", new: "## Key Properties\n", status: "applied" },
+    { old: "Where:\n", new: "", status: "rejected" },
+    { old: "", new: "A new line\n" }] };
+  view.turns = [{ role: "slim", text: "x", turn: { proposal: { files: [file] } } }];
+  view.renderProposal(message, view.turns[0].turn.proposal);
+  const texts = [];
+  (function walk(el) { texts.push(el.textContent); el.children.forEach(walk); })(message);
+  for (const want of ["3 changes · 1 to review · 1 applied · 1 rejected", "Key Properties", "Removed: Where:",
+                      "Added: A new line", "Show in note", "Reject the rest", "Accept the rest"]) {
+    assert.ok(texts.includes(want), want);
+  }
+  assert.ok(!texts.some((t) => /^[+−-]\d+ /.test(t)));
+});
+
+test("Accept the rest takes a second click when it would remove much of the note", async () => {
+  const decided = [];
+  const view = proposalView(proposalVault({}));
+  Object.assign(view.plugin, { offerReview() {}, decideRest: async (_entry, status) => decided.push(status),
+                               reviewDoc: async () => "x\n".repeat(10) });
+  const file = { path: "Notes/a.md", kind: "edit", blocks: [], changes: [{ from: 0, to: 10, old: "x\n".repeat(5), new: "" }] };
+  view.turns = [{ role: "slim", text: "x", turn: { proposal: { files: [file] } } }];
+  const message = fakeEl("article");
+  view.renderProposal(message, view.turns[0].turn.proposal);
+  const accept = find(message, (el) => el.textContent === "Accept the rest");
+  await accept.onclick();
+  assert.deepEqual(decided, []);
+  assert.equal(accept.textContent, "Confirm: removes 5 of 11 lines");
+  await accept.onclick();
+  assert.deepEqual(decided, ["applied"]);
+});
+
+test("the last decision closes the file, saves it and re-indexes the note; Cmd-Z reopens it", async () => {
+  const saved = [], indexed = [];
+  const view = proposalView(proposalVault({}), saved, indexed);
+  view.saveOpenCopies = async () => {};
+  view.plugin.reviews = new Map();
+  const file = { path: "Notes/a.md", kind: "edit", base_hash: "h", after: "x", blocks: [],
+                 changes: [{ old: "a", new: "A" }, { old: "b", new: "" }] };
+  view.turns = [{ role: "you", text: "q" }, { role: "slim", text: "x", turn: { proposal: { files: [file] } } }];
+  const entry = view.reviewEntry(view.activeThread, view.turns, file);
+  view.plugin.reviews.set(file.path, entry);
+  file.changes[0].status = "applied"; view.reviewChanged(entry);
+  assert.equal(file.status, undefined);
+  file.changes[1].status = "rejected"; view.reviewChanged(entry);
+  await view.savingDecisions;
+  await new Promise((done) => setTimeout(done, 0));
+  assert.equal(file.status, "accepted");
+  assert.equal(file.after, undefined);
+  assert.equal(view.plugin.reviews.has(file.path), false);
+  assert.deepEqual(indexed, ["Notes/a.md"]);
+  assert.equal(saved.at(-1).turns[1].turn.proposal.files[0].changes[1].status, "rejected");
+  delete file.changes[0].status; view.reviewChanged(entry);
+  assert.equal(file.status, undefined);
+  assert.equal(view.plugin.reviews.get(file.path), entry);
+});
+
+test("a chat offers each note's newest undecided proposal for review", () => {
+  const offered = [];
+  const view = makeView({ offerReview: (entry) => offered.push(entry) });
+  const edit = (path, extra = {}) => ({ path, kind: "edit", changes: [{ old: "a", new: "b" }], ...extra });
+  const older = edit("Notes/a.md"), newer = edit("Notes/a.md"), done = edit("Notes/b.md", { status: "accepted" }), other = edit("Notes/c.md");
+  view.offerReviews({ id: "t" }, [{ role: "slim", turn: { proposal: { files: [older, other] } } },
+                                   { role: "slim", turn: { proposal: { files: [newer, done] } } }]);
+  assert.deepEqual(offered.map((entry) => entry.file), [newer, other]);
+});
+
+test("history and status count what was applied", () => {
+  const file = { path: "Notes/a.md", kind: "edit", status: "accepted",
+                 changes: [{ status: "applied" }, { status: "rejected" }, { status: "applied" }] };
+  assert.equal(proposalStatus(file), "Applied 2 of 3 changes");
+  assert.equal(historyText({ role: "slim", text: "Done.", turn: { proposal: { files: [file] } } }),
+    "Done.\n\n[Proposed changes: Notes/a.md (edit, applied 2 of 3 changes)]");
+  const partial = { files: [{ path: "a", changes: [{ status: "applied" }, {}] }] };
+  const turns = [{ role: "slim", turn: { proposal: partial } }];
+  const fresh = [{ role: "slim", turn: { proposal: { files: [{ path: "a", changes: [{}, {}] }] } } }];
+  copyDecisions(turns, fresh);
+  assert.equal(fresh[0].turn.proposal.files[0].changes[0].status, "applied");
 });

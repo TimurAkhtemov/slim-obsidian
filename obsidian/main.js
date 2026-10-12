@@ -2769,85 +2769,11 @@ function groupCitations(citations) {
 /* ---- copilot skills and edit proposals ----------------------------------------------------
  * The server never writes a note from the copilot. An Edit-mode turn (or a skill whose output
  * is a change) returns a proposal: per file, the text it WOULD have and the sha256 of the text
- * it was computed from. The owner accepts or rejects each file here; Accept writes through the
- * Vault API only if the file on disk still hashes the same, so an edit made in between is
- * never overwritten.
+ * it was computed from. A new note is accepted or rejected here and written through the Vault
+ * API; an edit is reviewed in the note itself, one change at a time (`makeReviewEditor`).
  */
 function sha256Hex(text) {
   return require("crypto").createHash("sha256").update(String(text), "utf8").digest("hex");
-}
-
-// Line diff for the proposal card: Myers' O((N+M)·D) algorithm, so two small edits in a
-// 4,000-line note cost two small hunks, not a quadratic table. Past MAX_DIFF_EDITS the rows are
-// a plain before/after and the result is marked `approximate`: the card then refuses Accept.
-const MAX_DIFF_EDITS = 5000;
-
-function myers(a, b) {
-  const n = a.length, m = b.length, max = n + m, offset = max + 1;
-  const v = new Int32Array(2 * max + 3);
-  const trace = [];
-  for (let d = 0; d <= Math.min(max, MAX_DIFF_EDITS); d += 1) {
-    trace.push(v.slice(offset - d - 1, offset + d + 2));
-    for (let k = -d; k <= d; k += 2) {
-      let x = k === -d || (k !== d && v[offset + k - 1] < v[offset + k + 1])
-        ? v[offset + k + 1] : v[offset + k - 1] + 1;
-      let y = x - k;
-      while (x < n && y < m && a[x] === b[y]) { x += 1; y += 1; }
-      v[offset + k] = x;
-      if (x >= n && y >= m) return backtrack(a, b, trace, d);
-    }
-  }
-  return null;
-}
-
-function backtrack(a, b, trace, depth) {
-  const rows = [];
-  let x = a.length, y = b.length;
-  for (let d = depth; d > 0; d -= 1) {
-    const saved = trace[d];                       // v before step d, indexed k + d + 1
-    const at = (k) => saved[k + d + 1];
-    const k = x - y;
-    const prevK = k === -d || (k !== d && at(k - 1) < at(k + 1)) ? k + 1 : k - 1;
-    const prevX = at(prevK), prevY = prevX - prevK;
-    while (x > prevX && y > prevY) { rows.push({ op: " ", text: a[x - 1] }); x -= 1; y -= 1; }
-    if (x === prevX) rows.push({ op: "+", text: b[y - 1] });
-    else rows.push({ op: "-", text: a[x - 1] });
-    x = prevX; y = prevY;
-  }
-  while (x > 0 && y > 0) { rows.push({ op: " ", text: a[x - 1] }); x -= 1; y -= 1; }
-  return rows.reverse();
-}
-
-function lineDiff(before, after, context = 2) {
-  const a = String(before || "").split("\n");
-  const b = String(after || "").split("\n");
-  let rows = myers(a, b);
-  const approximate = rows === null;
-  if (approximate) {
-    rows = [...a.map((text) => ({ op: "-", text })), ...b.map((text) => ({ op: "+", text }))];
-  }
-  // Within a hunk, removals read before additions.
-  const ordered = [];
-  let adds = [];
-  for (const row of rows) {
-    if (row.op === "+") { adds.push(row); continue; }
-    if (row.op === " ") { for (const add of adds) ordered.push(add); adds = []; }
-    ordered.push(row);
-  }
-  for (const add of adds) ordered.push(add);
-  rows = ordered;
-  const keep = rows.map(() => false);
-  rows.forEach((row, index) => {
-    if (row.op === " ") return;
-    for (let k = Math.max(0, index - context); k <= Math.min(rows.length - 1, index + context); k += 1) keep[k] = true;
-  });
-  const out = [];
-  rows.forEach((row, index) => {
-    if (keep[index]) out.push(row);
-    else if (out.length === 0 || out.at(-1).op !== "…") out.push({ op: "…", text: "" });
-  });
-  if (approximate) out.approximate = true;
-  return out;
 }
 
 // "/con" → "con" while the first word is still being typed; null once there is a space.
@@ -3175,6 +3101,8 @@ class CopilotView extends ItemView {
     this.skills = [];               // /commands, from GET /api/copilot/skills
     this.applying = new Set();      // proposal files being written right now
     this.deletedThreads = new Set(); // a late decision must not save — and so resurrect — these
+    this.reviewEntries = new WeakMap(); // proposal file -> its review entry (never saved)
+    this.savingDecisions = null;        // decisions save one after another
   }
 
   // Re-read whenever they start a command: a skill saved in `Skills/` a moment ago is there.
@@ -3356,6 +3284,7 @@ class CopilotView extends ItemView {
     }
     this.activeThread = data;
     this.turns = data.turns || [];
+    this.offerReviews(data, this.turns);
     this.pendingImages = [];
     this.retryImages = [];
     // A legacy "auto" on disk must not reach the mode selector; `saveRecord` normalizes the
@@ -3470,6 +3399,7 @@ class CopilotView extends ItemView {
       this.retryImages = [];
       thread.reasoning_mode = this.mode;
       await this.saveRecord(thread, turns);
+      this.offerReviews(thread, turns);
     } catch (error) {
       if (error.name === "AbortError") {
         // Stopped before an answer: the question is theirs — hand it back rather than leave a
@@ -3979,10 +3909,109 @@ class CopilotView extends ItemView {
 
   // One box per file: its path, the diff, and Accept / Reject. The decision is saved on the
   // turn, so a reopened chat shows what was applied and never offers it twice.
+  reviewEntry(thread, turns, file) {
+    let entry = this.reviewEntries.get(file);
+    if (!entry) {
+      entry = { key: `${thread?.id}:${file.path}`, path: file.path, file, thread, turns, copilot: this,
+                lost: new Set(), stale: false };
+      this.reviewEntries.set(file, entry);
+    }
+    return entry;
+  }
+
+  // Each note's newest undecided proposal in this chat goes to the note.
+  offerReviews(thread, turns) {
+    if (typeof this.plugin.offerReview !== "function") return;
+    const seen = new Set();
+    for (const turn of [...turns].reverse()) {
+      for (const file of turn?.turn?.proposal?.files || []) {
+        if (file.kind !== "edit" || !file.changes?.length || file.status || seen.has(file.path)) continue;
+        seen.add(file.path);
+        this.plugin.offerReview(this.reviewEntry(thread, turns, file));
+      }
+    }
+  }
+
+  // A change decided in the note (or undone there). The last decision closes the file and
+  // re-indexes the note, as Accept did; an undo after that opens it again.
+  reviewChanged(entry) {
+    const { file } = entry;
+    const { open, applied } = changeCounts(file);
+    if (open === 0) {
+      file.status = applied ? "accepted" : "rejected";
+      delete file.after;
+      if (this.plugin.reviews?.get(entry.path) === entry) this.plugin.reviews.delete(entry.path);
+      if (applied) {
+        this.saveOpenCopies(file.path)
+          .then(() => this.plugin.postJSON("/api/copilot/context", { path: file.path, related: false }))
+          .catch((e) => console.warn("[slim] index after review", file.path, e.message));
+      }
+    } else if (file.status) {
+      delete file.status;
+      this.plugin.reviews?.set(entry.path, entry);
+    }
+    this.saveDecisions(entry.thread, entry.turns);
+    this.render();
+  }
+
+  saveDecisions(thread, turns) {
+    const live = this.activeThread?.id === thread?.id ? this.turns : turns;
+    if (live !== turns) copyDecisions(turns, live);
+    if (!thread || this.deletedThreads.has(thread.id)) return this.savingDecisions;
+    this.savingDecisions = (this.savingDecisions || Promise.resolve())
+      .then(() => this.saveRecord(thread, live))
+      .catch((error) => { this.error = error.message || String(error); this.render(); });
+    return this.savingDecisions;
+  }
+
+  renderReview(box, file) {
+    const entry = this.reviewEntry(this.activeThread, this.turns, file);
+    const counts = changeCounts(file);
+    const parts = [`${counts.total} change${counts.total === 1 ? "" : "s"}`, `${counts.open} to review`];
+    if (counts.applied) parts.push(`${counts.applied} applied`);
+    if (counts.rejected) parts.push(`${counts.rejected} rejected`);
+    create(box, "div", "slim-review-count", counts.open ? parts.join(" · ") : proposalStatus(file));
+    if (entry.stale) {
+      create(box, "div", "slim-proposal-problem",
+        "This note has changed since the proposal. Ask again for a fresh one.");
+      return;
+    }
+    const list = create(box, "ul", "slim-review-list");
+    file.changes.forEach((change, index) => {
+      const item = create(list, "li", "");
+      const row = create(item, "button", "slim-review-item");
+      const lost = !change.status && entry.lost?.has(index);
+      create(row, "span", `slim-review-dot is-${change.status || (lost ? "lost" : "open")}`);
+      create(row, "span", "slim-review-label", changeLabel(change));
+      create(row, "span", "slim-review-state", change.status === "applied" ? "applied"
+        : change.status === "rejected" ? "rejected" : lost ? "changed since" : "");
+      row.onclick = () => this.plugin.showReview?.(entry, index);
+      if (lost) {
+        const dismiss = create(item, "button", "slim-review-dismiss", "Dismiss");
+        dismiss.onclick = () => this.plugin.reviewChanged?.(entry, index, "rejected");
+      }
+    });
+    if (!counts.open) return;
+    const actions = create(box, "div", "slim-proposal-actions");
+    const show = create(actions, "button", "", "Show in note");
+    show.onclick = () => this.plugin.showReview?.(entry);
+    const reject = create(actions, "button", "", "Reject the rest");
+    reject.onclick = () => this.plugin.decideRest?.(entry, "rejected");
+    const accept = create(actions, "button", "mod-cta", "Accept the rest");
+    let armed = false;
+    accept.onclick = async () => {
+      if (!armed) {
+        const warning = removalWarning(file.changes, await this.plugin.reviewDoc?.(file.path));
+        if (warning) { armed = true; accept.textContent = `Confirm: ${warning}`; return; }
+      }
+      await this.plugin.decideRest?.(entry, "applied");
+    };
+  }
+
   renderProposal(message, proposal) {
     const card = create(message, "div", "slim-proposal");
     const busy = this.sending || this.applying.size > 0;
-    const open = (proposal.files || []).filter((file) => file.after != null && !file.status);
+    const open = (proposal.files || []).filter((file) => file.kind === "create" && file.after != null && !file.status);
     let all = null;
     if (open.length > 1) {
       all = create(card, "button", "mod-cta slim-accept-all", `Accept all ${open.length}`);
@@ -4004,74 +4033,28 @@ class CopilotView extends ItemView {
       for (const block of (file.blocks || []).filter((item) => !item.ok)) {
         create(box, "div", "slim-proposal-problem", `Not proposed: ${block.reason}`);
       }
-      if (file.after == null) continue;
-      const summary = create(box, "div", "slim-diff-summary");
-      const diff = create(box, "div", "slim-diff");
+      if (file.after == null && !file.changes) continue;
+      if (file.kind === "edit") {
+        if (file.changes) this.renderReview(box, file);
+        else create(box, "div", "slim-proposal-problem",
+          "Proposed before in-note review. Ask again to review it in the note.");
+        continue;
+      }
+      create(box, "pre", "slim-proposal-preview", file.after);
       const actions = create(box, "div", "slim-proposal-actions");
       if (this.applying.has(file)) {
         create(actions, "small", "slim-proposal-status", "Applying…");
-      } else {
-        const accept = create(actions, "button", "mod-cta", "Accept");
-        const reject = create(actions, "button", "", "Reject");
-        accept.disabled = reject.disabled = busy;
-        accept.onclick = () => this.decide(proposal, [file], "accept");
-        reject.onclick = () => this.decide(proposal, [file], "reject");
-        this.fillDiff(summary, diff, file, accept, all).catch((e) => console.error("[slim] diff", e));
         continue;
       }
-      this.fillDiff(summary, diff, file, null).catch((e) => console.error("[slim] diff", e));
+      const accept = create(actions, "button", "mod-cta", "Accept");
+      const reject = create(actions, "button", "", "Reject");
+      accept.disabled = reject.disabled = busy;
+      accept.onclick = () => this.decide(proposal, [file], "accept");
+      reject.onclick = () => this.decide(proposal, [file], "reject");
     }
     for (const item of proposal.dropped || []) {
       create(card, "div", "slim-proposal-problem",
         `Not proposed: ${item.path || "a change with no file"} — ${item.reason}`);
-    }
-  }
-
-  // The diff is against the note as Obsidian reads it NOW. Accept stays off when the owner
-  // cannot see the whole change: a diff too long to show is not a diff they reviewed.
-  async fillDiff(summary, el, file, accept, all = null) {
-    let before = "";
-    if (file.kind !== "create") {
-      const target = this.app.vault.getAbstractFileByPath(file.path);
-      before = target ? await this.app.vault.read(target) : "";
-      if (sha256Hex(before) !== file.base_hash) {
-        create(el, "div", "slim-proposal-problem",
-          "This note has changed since the proposal, so Accept will refuse. Ask again for a fresh one.");
-      }
-    }
-    const rows = lineDiff(before, file.after);
-    const added = rows.filter((row) => row.op === "+").length;
-    const removed = rows.filter((row) => row.op === "-").length;
-    const lines = before ? before.split("\n").length : 0;
-    create(summary, "span", "", `+${added} −${removed} lines`);
-    // The model's prose cannot be trusted to mention what goes (measured: a "3-bullet summary"
-    // took the frontmatter with it). Code says it, and a big removal takes a second click.
-    const warnings = [];
-    if (removed > 20 || (lines >= 4 && removed / lines > 0.3)) {
-      warnings.push(`removes ${removed} of ${lines} lines`);
-    }
-    if (/^---\r?\n/.test(before) && !/^---\r?\n/.test(file.after)) warnings.push("removes the frontmatter");
-    if (warnings.length) {
-      create(summary, "span", "slim-proposal-problem", ` · ${warnings.join(" · ")}`);
-      if (all) all.hidden = true;
-      if (accept) {
-        let armed = false;
-        accept.textContent = "Accept…";
-        accept.onclick = () => {
-          if (armed) { this.decide(null, [file], "accept"); return; }
-          armed = true;
-          accept.textContent = "Confirm: apply these removals";
-        };
-      }
-    }
-    for (const row of rows.slice(0, MAX_DIFF_ROWS)) {
-      const cls = row.op === "+" ? "is-add" : row.op === "-" ? "is-del" : row.op === "…" ? "is-gap" : "is-same";
-      create(el, "div", `slim-diff-line ${cls}`, row.op === "…" ? "⋯" : `${row.op} ${row.text}`);
-    }
-    if (rows.length > MAX_DIFF_ROWS || rows.approximate) {
-      create(el, "div", "slim-proposal-problem",
-        "This change is too large to show in full, so it cannot be accepted here. Ask for a smaller change.");
-      if (accept) { accept.disabled = true; accept.setAttribute("title", "Too large to review here"); }
     }
   }
 
@@ -4120,37 +4103,26 @@ class CopilotView extends ItemView {
     this.render();
   }
 
-  // Every pane showing the note writes its buffer first, so the hash check sees what the
-  // owner typed, not the copy from before Obsidian's autosave.
+  // Every pane showing the note writes its buffer first, so what reads the file next (a sync,
+  // an index) sees what the owner typed, not the copy from before Obsidian's autosave.
   async saveOpenCopies(path) {
     for (const leaf of this.app.workspace?.getLeavesOfType?.("markdown") || []) {
       if (leaf.view?.file?.path === path && typeof leaf.view.save === "function") await leaf.view.save();
     }
   }
 
-  // The only place the copilot writes a note. `vault.process` holds the file for the check and
-  // the write together: a file that no longer hashes to what the proposal was built from is
-  // left exactly as it is.
+  // A new note is the one thing the sidebar writes; an edit goes in through the editor, one
+  // change per Accept (makeReviewEditor).
   async applyFile(file) {
     const vault = this.app.vault;
-    if (file.kind === "create") {
-      // The adapter's check is the filesystem's, case-insensitive on macOS: `summary.md` must
-      // not be written over an existing `Summary.md` that the path index spells differently.
-      if (vault.getAbstractFileByPath(file.path) || await vault.adapter?.exists?.(file.path)) {
-        throw new Error("a note already exists at that path");
-      }
-      await vault.create(file.path, file.after);
-      return "accepted";
+    if (file.kind !== "create") throw new Error("an edit is reviewed in the note");
+    // The adapter's check is the filesystem's, case-insensitive on macOS: `summary.md` must
+    // not be written over an existing `Summary.md` that the path index spells differently.
+    if (vault.getAbstractFileByPath(file.path) || await vault.adapter?.exists?.(file.path)) {
+      throw new Error("a note already exists at that path");
     }
-    const target = vault.getAbstractFileByPath(file.path);
-    if (!target) throw new Error("the note is gone");
-    await this.saveOpenCopies(file.path);
-    let stale = false;
-    await vault.process(target, (data) => {
-      if (sha256Hex(data) !== file.base_hash) { stale = true; return data; }
-      return file.after;
-    });
-    return stale ? "stale" : "accepted";
+    await vault.create(file.path, file.after);
+    return "accepted";
   }
 }
 
@@ -4164,16 +4136,24 @@ function copyDecisions(from, to) {
     const decided = turn?.turn?.proposal?.files || [];
     const target = to[index]?.turn?.proposal?.files || [];
     decided.forEach((file, j) => {
-      if (!file.status || target[j]?.path !== file.path) return;
-      target[j].status = file.status;
-      if (file.error) target[j].error = file.error;
-      delete target[j].after;
+      const into = target[j];
+      if (!into || into.path !== file.path) return;
+      (file.changes || []).forEach((change, k) => {
+        if (!into.changes?.[k]) return;
+        if (change.status) into.changes[k].status = change.status;
+        else delete into.changes[k].status;
+      });
+      if (!file.status) return;
+      into.status = file.status;
+      if (file.error) into.error = file.error;
+      delete into.after;
     });
   });
 }
 
 function hasAccepted(turn) {
-  return (turn?.turn?.proposal?.files || []).some((file) => file.status === "accepted");
+  return (turn?.turn?.proposal?.files || []).some((file) => file.status === "accepted"
+    || (file.changes || []).some((change) => change.status === "applied"));
 }
 
 // What the model sees of an earlier answer: its prose, plus what it proposed and what became of
@@ -4181,14 +4161,22 @@ function hasAccepted(turn) {
 function historyText(turn) {
   const files = turn?.turn?.proposal?.files || [];
   if (turn?.role !== "slim" || !files.length) return turn?.text;
-  const done = files.map((file) => `${file.path} (${file.kind}, ${file.status || "not yet accepted"})`);
+  const done = files.map((file) => {
+    const { total, applied } = changeCounts(file);
+    const outcome = file.status === "accepted" && total ? `applied ${applied} of ${total} changes`
+      : file.status || "not yet accepted";
+    return `${file.path} (${file.kind}, ${outcome})`;
+  });
   return `${turn.text}\n\n[Proposed changes: ${done.join("; ")}]`;
 }
 
-const MAX_DIFF_ROWS = 2000;
 
 function proposalStatus(file) {
-  if (file.status === "accepted") return file.kind === "create" ? "Created" : "Applied";
+  if (file.status === "accepted") {
+    if (file.kind === "create") return "Created";
+    const { total, applied } = changeCounts(file);
+    return total ? `Applied ${applied} of ${total} changes` : "Applied";
+  }
   if (file.status === "rejected") return "Rejected";
   if (file.status === "stale") return "Not applied: the note changed since this was proposed";
   return `Not applied: ${file.error || "unknown error"}`;
@@ -5452,7 +5440,6 @@ module.exports.markdownFromEditable = markdownFromEditable;
 module.exports.serverArgv = serverArgv;
 module.exports.serverEnv = serverEnv;
 module.exports.sha256Hex = sha256Hex;
-module.exports.lineDiff = lineDiff;
 module.exports.slashQuery = slashQuery;
 module.exports.matchSkills = matchSkills;
 module.exports.inputsText = inputsText;
@@ -5467,3 +5454,5 @@ module.exports.changeCounts = changeCounts;
 module.exports.changeLabel = changeLabel;
 module.exports.removalWarning = removalWarning;
 module.exports.makeReviewEditor = makeReviewEditor;
+module.exports.proposalStatus = proposalStatus;
+module.exports.copyDecisions = copyDecisions;
