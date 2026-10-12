@@ -1,7 +1,9 @@
 """EDITS — turn the copilot's proposed changes into exact file contents the owner can accept.
 
 The model writes SEARCH/REPLACE blocks as plain text, never JSON: a JSON grammar loops on a
-long string field and LaTeX backslashes do not survive it (CLAUDE.md, Ollama traps). Code
+long string field and LaTeX backslashes do not survive it (CLAUDE.md, Ollama traps). To rewrite
+most of a note it writes a NOTE block, the note's whole new text, instead of copying it all into
+a SEARCH first; a recording's own parts stay as they are whatever it writes for them. Code
 parses the blocks, applies them to the file ON DISK, and hands the plugin each file's new text
 with the hash it was computed from. Nothing here writes: the plugin writes only what the owner
 accepts, and only if the file still hashes the same.
@@ -16,11 +18,12 @@ plus an insert, and applying the delete alone lost the section.
 """
 from __future__ import annotations
 
+import difflib
 import hashlib
 import os
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
 from .chunk import TRANSCRIPT_MARKER, parse_frontmatter, set_frontmatter
@@ -30,8 +33,23 @@ _FILE = re.compile(r"^\s*(?:\*\*)?file(?:\*\*)?\s*:\s*(.+?)\s*$", re.IGNORECASE)
 _SEARCH = re.compile(r"^<{5,}\s*SEARCH\s*$")
 _DIVIDER = re.compile(r"^={5,}\s*$")
 _REPLACE = re.compile(r"^>{5,}\s*REPLACE\s*$")
+_NOTE = re.compile(r"^<{5,}\s*NOTE\s*$")
+# The model closes a NOTE with REPLACE's marker, its own opening one, or a bare `NOTE` (2026-10-12).
+_NOTE_END = re.compile(r"^(?:>{5,}\s*(?:NOTE|REPLACE)|<{5,}\s*NOTE|NOTE)\s*$")
 _FENCE = re.compile(r"^\s*```[\w-]*\s*$")
 _MEETING_OPEN = re.compile(r"^\s*(`{3,})slim-meeting")
+# A lone `...` in new text is the model's "the rest as before", and it would delete the rest.
+_ELISION = re.compile(r"^[ \t]*(?:\.\.\.|…)[ \t]*$", re.MULTILINE)
+# A SEARCH copied from a long passage carries mistakes: 6 of 20 whole-note rewrites were refused
+# for a mistyped line, each copy with the note's line count and 95-99.7% of its lines exact
+# (2026-10-12). Past this many lines it matches by its first and last lines, if nearly every
+# line between them is the note's.
+MIN_CLOSE_LINES = 5
+CLOSE_RATIO = 0.9
+# A SEARCH copying a note from its top is a rewrite of the note. Past this many lines, or a
+# quarter of the note's, the copilot cuts it off and the model writes the note once instead,
+# as a NOTE block: the copy cost as much as the new text and was where the mistakes were.
+REWRITE_AFTER_LINES = 8
 # Binaries, SLIM's own derived output and Obsidian's config are never a copilot edit target.
 _NEVER_TOP = {"attachments", "_reflections"}
 _EXCLUDED_CF = {name.casefold() for name in EXCLUDED_DIRS}
@@ -42,6 +60,7 @@ MAX_EDIT_CHARS = 400_000
 CREATED_ORIGIN = "copilot"
 
 PROTECTED = "part of the recording; SLIM never edits it"
+SKIPS = "the new text skips lines with `...`"
 
 
 @dataclass
@@ -51,6 +70,7 @@ class Block:
     replace: str
     complete: bool = True
     problem: str = ""
+    whole: bool = False          # a NOTE block: `replace` is the note's whole new text
 
 
 def digest(text: str) -> str:
@@ -58,7 +78,8 @@ def digest(text: str) -> str:
 
 
 def _clean_path(raw: str) -> str:
-    path = (raw or "").strip().strip("`*\"'").strip()
+    # `· the open note` is the pack's label after the path, which the model copies.
+    path = (raw or "").split(" · ")[0].strip().strip("`*\"'=").strip()
     return path[2:] if path.startswith("./") else path
 
 
@@ -68,10 +89,18 @@ def _split_body(lines: list[str]) -> tuple[str, str] | None:
     dividers = [i for i, line in enumerate(lines) if _DIVIDER.match(line.rstrip("\n"))]
     if len(dividers) > 1:
         dividers = [i for i in dividers if lines[i].strip() == "======="]
+    if len(dividers) == 2 and dividers[1] == len(lines) - 1:
+        # The model echoes the divider just before `>>>>>>> REPLACE` (3 rewrites in 20).
+        lines, dividers = lines[:-1], dividers[:1]
     if len(dividers) != 1:
         return None
     at = dividers[0]
     return "".join(lines[:at]), "".join(lines[at + 1:])
+
+
+def _opens(line: str) -> bool:
+    bare = line.rstrip("\n")
+    return bool(_SEARCH.match(bare) or _NOTE.match(bare))
 
 
 def parse(answer: str) -> tuple[str, list[Block]]:
@@ -82,6 +111,7 @@ def parse(answer: str) -> tuple[str, list[Block]]:
     blocks: list[Block] = []
     path = None
     body: list[str] | None = None
+    whole = False
     after_block = False
 
     def is_file(line: str) -> str | None:
@@ -89,17 +119,29 @@ def parse(answer: str) -> tuple[str, list[Block]]:
         value = _clean_path(match.group(1)) if match else ""
         return value if value.lower().endswith(".md") else None
 
+    def names_file(i: int) -> str | None:
+        """A FILE line, or a bare note path right above a block: on a long path the model
+        drops the `FILE:` (1 run in 4, 2026-10-12)."""
+        found = is_file(lines[i])
+        if found or not _opens(next((later for later in lines[i + 1:] if later.strip()), "")):
+            return found
+        value = _clean_path(lines[i])
+        return value if value.lower().endswith(".md") else None
+
     # A fence that OPENS a FILE/SEARCH group: the next non-blank line starts the group.
     opening = set()
     for i, line in enumerate(lines):
         if _FENCE.match(line):
             nxt = next((later for later in lines[i + 1:] if later.strip()), "")
-            if is_file(nxt) or _SEARCH.match(nxt.rstrip("\n")):
+            if is_file(nxt) or _opens(nxt):
                 opening.add(i)
     for i, line in enumerate(lines):
         bare = line.rstrip("\n")
         if body is not None:
-            if _REPLACE.match(bare):
+            if whole and _NOTE_END.match(bare):
+                blocks.append(Block(path, "", "".join(body), whole=True))
+                body, after_block = None, True
+            elif not whole and _REPLACE.match(bare):
                 split = _split_body(body)
                 if split is None:
                     blocks.append(Block(path, "", "", problem="the change was malformed"))
@@ -111,10 +153,10 @@ def parse(answer: str) -> tuple[str, list[Block]]:
             continue
         if i in opening:
             continue
-        if _SEARCH.match(bare):
-            body = []
+        if _opens(line):
+            body, whole = [], bool(_NOTE.match(bare))
             continue
-        found = is_file(line)
+        found = names_file(i)
         if found:
             path, after_block = found, True
             continue
@@ -125,11 +167,22 @@ def parse(answer: str) -> tuple[str, list[Block]]:
             after_block, path = False, None if blocks else path
         prose.append(line)
     if body is not None:
-        blocks.append(Block(path, "".join(body), "", complete=False))
+        # A second divider where `>>>>>>> REPLACE` belongs closes the block (1 run in 8); one
+        # divider alone at the end is a block cut off before its new text.
+        closed = (not whole and body[-1:] and body[-1].strip() == "======="
+                  and sum(line.strip() == "=======" for line in body) == 2)
+        if closed:
+            blocks.append(Block(path, *_split_body(body)))
+        elif whole:
+            # A NOTE the model closed with a divider ends with one (1 run in 8).
+            blocks.append(Block(path, "", "".join(body), whole=True,
+                                complete=bool(body) and body[-1].strip() == "======="))
+        else:
+            blocks.append(Block(path, "".join(body), "", complete=False))
     # Greedy decoding repeats itself; a repeated append must not append twice.
     unique, seen = [], set()
     for item in blocks:
-        key = (item.path, item.search, item.replace, item.complete, item.problem)
+        key = (item.path, item.search, item.replace, item.complete, item.problem, item.whole)
         if key not in seen:
             seen.add(key)
             unique.append(item)
@@ -202,6 +255,172 @@ def _find(text: str, search: str) -> tuple[list[tuple[int, int]], bool]:
     return spans, False
 
 
+def _close(text: str, search: str) -> list[tuple[int, int]]:
+    """A long SEARCH copied with a few mistakes: its first and last lines match one place each,
+    in that order, and nearly every line between them is the note's."""
+    want = [line.rstrip() for line in search.strip("\n").splitlines()]
+    if sum(bool(line.strip()) for line in want) < MIN_CLOSE_LINES:
+        return []
+    have = [line.rstrip() for line in text.splitlines()]
+    firsts = [i for i, line in enumerate(have) if line == want[0]]
+    if len(firsts) != 1:
+        return []
+    lasts = [j for j in range(firsts[0] + 1, len(have)) if have[j] == want[-1]]
+    if len(lasts) != 1:
+        return []
+    begin, end = firsts[0], lasts[0] + 1
+    if difflib.SequenceMatcher(None, have[begin:end], want, autojunk=False).ratio() < CLOSE_RATIO:
+        return []
+    starts = _line_starts(text)
+    return [(starts[begin], starts[end])]
+
+
+def _undivided(text: str, item: Block) -> Block:
+    """A NOTE written like a SEARCH/REPLACE, as text, a divider and more text (3 rewrites in 8,
+    2026-10-12): a copy of the note before the divider makes it one, else the text after the
+    divider is the note, and a divider at the end closed it. A note with a 7-`=` line of its
+    own (a setext heading) keeps its NOTE as written."""
+    lines = item.replace.splitlines(keepends=True)
+    cuts = [i for i, line in enumerate(lines) if line.strip() == "======="]
+    if not item.whole or len(cuts) != 1 or any(line.strip() == "=======" for line in text.splitlines()):
+        return item
+    before, after = "".join(lines[:cuts[0]]), "".join(lines[cuts[0] + 1:])
+    if not after.strip():
+        return replace(item, replace=before)
+    if before.strip() and (_find(text, before)[0] or _close(text, before)):
+        return Block(item.path, before, after)
+    return replace(item, replace=after)
+
+
+def _append(text: str, added: str) -> str | None:
+    """`added` at the end of the note: before a transcript that runs to the end, never in it."""
+    tail = next((begin for begin, end in protected_ranges(text) if end >= len(text)), None)
+    if tail == 0:
+        return None
+    head, rest = (text, "") if tail is None else (text[:tail], text[tail:])
+    added = added.strip("\n") + "\n"
+    return (head.rstrip("\n") + "\n\n" if head.strip() else "") + added + ("\n" + rest if rest else "")
+
+
+def _kept(text: str, new: str = "") -> list[tuple[int, int]]:
+    """What a NOTE block leaves as it is: a recording's parts, or the frontmatter of a note
+    whose new text has none of its own."""
+    keep = protected_ranges(text)
+    _fm, skip = parse_frontmatter(text)
+    if not keep and skip and not parse_frontmatter(new.lstrip("\n"))[1]:
+        keep = [(0, _line_starts(text)[skip])]
+    return keep
+
+
+def _rewrite(text: str, new: str) -> str | None:
+    """The note after a NOTE block: `new` takes the place of the owner's text, and what the
+    model wrote for a recording's frontmatter, block or transcript is dropped, never applied.
+    None when a recording holds the owner's text in more than one place."""
+    keep = _kept(text, new)
+    if protected_ranges(text):
+        for begin, end in reversed(protected_ranges(new)):
+            new = new[:begin] + new[end:]
+        new = new.lstrip("\n")
+        _fm, own = parse_frontmatter(new)
+        new = new[_line_starts(new)[own]:] if own else new
+    gaps, at = [], 0
+    for begin, end in sorted(keep):
+        gaps.append((at, begin))
+        at = end
+    gaps.append((at, len(text)))
+    owned = [(begin, end) for begin, end in gaps if text[begin:end].strip()]
+    if len(owned) > 1:
+        return None
+    if not owned:
+        return _append(text, new)
+    begin, end = owned[0]
+    gap, body = text[begin:end], new.strip("\n")
+    lead, trail = gap[:len(gap) - len(gap.lstrip("\n"))], gap[len(gap.rstrip("\n")):]
+    return text[:begin] + lead + (body + trail if body else "") + text[end:]
+
+
+def _tops(text: str) -> dict[str, int]:
+    """Where a copy of the whole note starts, by its first line: the note's first line of text,
+    after any frontmatter, and the first after each part of a recording."""
+    starts = _line_starts(text)
+    _fm, skip = parse_frontmatter(text)
+    tops = {}
+    for at in sorted({starts[skip]} | {end for _begin, end in protected_ranges(text)}):
+        line = next((line.rstrip() for line in text[at:].splitlines() if line.strip()), "")
+        tops.setdefault(line, at)
+    tops.pop("", None)
+    return tops
+
+
+def _file_above(lines: list[str], at: int) -> tuple[int | None, str]:
+    """The line naming a block's file, above the block opening at `at`, and its path."""
+    above = next((i for i in range(at - 1, -1, -1) if lines[i].strip()), None)
+    if above is None:
+        return None, ""
+    match = _FILE.match(lines[above])
+    named = _clean_path(match.group(1) if match else lines[above])
+    return (above, named) if named.lower().endswith(".md") else (None, "")
+
+
+def rewrite_prefill(answer: str, notes: dict[str, str]) -> tuple[bool, str | None]:
+    """Is the unfinished answer's first SEARCH copying one of `notes` from its top?
+    (False, None) until enough of it has arrived to tell; (True, None) when it is not; and
+    (True, prefill) when it is: the answer up to that block with a NOTE block for that note
+    opened in its place, holding the note as it is up to where the copy began (its frontmatter,
+    a recording's block), for the model to continue."""
+    lines = answer.splitlines(keepends=True)
+    at = next((i for i, line in enumerate(lines) if _SEARCH.match(line.rstrip("\n"))), None)
+    if at is None:
+        return False, None
+    if any(_DIVIDER.match(line.rstrip("\n")) for line in lines[at + 1:]):
+        return True, None
+    copied = [line.rstrip() for line in lines[at + 1:] if line.endswith("\n")]
+    if copied[:1] == ["---"]:                           # a copied frontmatter is not the text
+        close = next((i for i in range(1, len(copied)) if copied[i] == "---"), None)
+        copied = [] if close is None else copied[close + 1:]
+    while copied and not copied[0].strip():
+        copied.pop(0)
+    if not copied:
+        return False, None
+    above, named = _file_above(lines, at)
+    candidates = {named: notes[named]} if named in notes else notes
+    path = next((path for path, text in candidates.items() if copied[0] in _tops(text)), None)
+    if path is None:
+        return True, None
+    text = notes[path]
+    own = text.count("\n") - sum(text[begin:end].count("\n") for begin, end in _kept(text))
+    if len(copied) < max(REWRITE_AFTER_LINES, own // 4):
+        return False, None
+    head = "".join(lines[:at if above is None else above])
+    return True, head + f"FILE: {path}\n<<<<<<< NOTE\n" + text[:_tops(text)[copied[0]]]
+
+
+def recording_prefill(answer: str, notes: dict[str, str]) -> tuple[str, bool] | None:
+    """An open NOTE block for a recording whose last line begins one of the recording's own
+    parts: the answer with that part as it is on disk in place of the model's copy, and True
+    when the block ends there instead (at a transcript, which runs to the end). The model wrote
+    a whole meeting block and transcript into a NOTE, 32k characters, and ran out (2026-10-12)."""
+    lines = answer.splitlines(keepends=True)
+    last = lines[-1].rstrip("\n") if lines and lines[-1].endswith("\n") else ""
+    fence, transcript = _MEETING_OPEN.match(last), last.strip() == TRANSCRIPT_MARKER
+    if not (fence or transcript):
+        return None
+    at = next((i for i in range(len(lines) - 2, -1, -1)
+               if _opens(lines[i]) or _NOTE_END.match(lines[i].rstrip("\n"))
+               or _REPLACE.match(lines[i].rstrip("\n"))), None)
+    if at is None or not _NOTE.match(lines[at].rstrip("\n")):
+        return None
+    text = notes.get(_file_above(lines, at)[1])
+    ranges = protected_ranges(text) if text else []
+    if not ranges:
+        return None
+    head = "".join(lines[:-1])
+    if transcript:
+        return head + ">>>>>>> NOTE\n", True
+    block = next((text[begin:end] for begin, end in ranges if _MEETING_OPEN.match(text[begin:end])), None)
+    return (head + block, False) if block else None
+
+
 def _markers(text: str) -> tuple[int, int]:
     lines = text.splitlines()
     return (sum(bool(_MEETING_OPEN.match(line)) for line in lines),
@@ -219,27 +438,39 @@ def apply_blocks(text: str, blocks: list[Block]) -> tuple[str, list[dict]]:
     original, before = text, _protected_slices(text)
     results = []
     for item in blocks:
+        item = _undivided(text, item)
         if item.problem:
             results.append({"ok": False, "reason": item.problem})
             continue
         if not item.complete:
             results.append({"ok": False, "reason": "cut off before the change ended"})
             continue
+        if item.whole:
+            after = _rewrite(text, item.replace)
+            if after is None:
+                results.append({"ok": False, "reason": "this recording has your text in more than "
+                                                       "one place; change one part at a time"})
+            elif _adds_markers(text, after):
+                results.append({"ok": False, "reason": "adds a recording's block or transcript heading"})
+            elif len(_ELISION.findall(after)) > len(_ELISION.findall(text)):
+                results.append({"ok": False, "reason": SKIPS})
+            else:
+                text = after
+                results.append({"ok": True})
+            continue
         if _adds_markers(item.search, item.replace):
             results.append({"ok": False, "reason": "adds a recording's block or transcript heading"})
             continue
         if not item.search.strip():
-            # An append lands before a transcript that runs to the end of the note, never in it.
-            tail = next((begin for begin, end in protected_ranges(text) if end >= len(text)), None)
-            if tail == 0:
+            after = _append(text, item.replace)
+            if after is None:
                 results.append({"ok": False, "reason": PROTECTED})
-                continue
-            head, rest = (text, "") if tail is None else (text[:tail], text[tail:])
-            added = item.replace.strip("\n") + "\n"
-            text = (head.rstrip("\n") + "\n\n" if head.strip() else "") + added + ("\n" + rest if rest else "")
-            results.append({"ok": True})
+            else:
+                text = after
+                results.append({"ok": True})
             continue
         spans, exact = _find(text, item.search)
+        spans = spans or _close(text, item.search)
         if not spans:
             results.append({"ok": False, "reason": "text not found in the note"})
             continue
@@ -247,6 +478,9 @@ def apply_blocks(text: str, blocks: list[Block]) -> tuple[str, list[dict]]:
             results.append({"ok": False, "reason": f"matches {len(spans)} places; include more lines"})
             continue
         start, end = spans[0]
+        if len(_ELISION.findall(item.replace)) > len(_ELISION.findall(text[start:end])):
+            results.append({"ok": False, "reason": SKIPS})
+            continue
         replacement = item.replace
         if not exact:
             # The match ignored trailing whitespace; an unchanged line keeps its own, or the

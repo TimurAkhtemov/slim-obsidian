@@ -1355,6 +1355,8 @@ test("an Ask question never carries a leftover selection; Edit and /commands do"
 test("the streaming view hides the change blocks, and history names what was proposed", () => {
   assert.equal(visibleStream("I will fix it.\nFILE: Notes/a.md\n<<<<<<< SEARCH\nx"),
                "I will fix it.\n\n*Writing the proposed changes…*");
+  assert.equal(visibleStream("Shorter.\n<<<<<<< NOTE\n# Whole new note"),
+               "Shorter.\n\n*Writing the proposed changes…*");
   assert.equal(visibleStream("plain answer"), "plain answer");
   assert.equal(historyText({ role: "slim", text: "Done.", turn: { proposal: { files: [
     { path: "Notes/a.md", kind: "edit", status: "accepted" }, { path: "Notes/b.md", kind: "create" }] } } }),

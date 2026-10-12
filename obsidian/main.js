@@ -4154,7 +4154,7 @@ class CopilotView extends ItemView {
 }
 
 function visibleStream(text) {
-  const cut = String(text || "").search(/^\s*(?:FILE\s*:|<{5,}\s*SEARCH)/im);
+  const cut = String(text || "").search(/^\s*(?:FILE\s*:|<{5,}\s*(?:SEARCH|NOTE))/im);
   return cut < 0 ? text : `${text.slice(0, cut).trimEnd()}\n\n*Writing the proposed changes…*`;
 }
 

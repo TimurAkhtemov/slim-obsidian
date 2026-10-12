@@ -49,7 +49,14 @@ FILE: <the note's path, as shown after === below>
 >>>>>>> REPLACE
 
 Copy SEARCH lines exactly, with enough of them to be unique, and change only what needs
-changing. An empty SEARCH adds the text to the end of the note. To create a note, write a new
+changing. To rewrite most of a note, write the whole new note once instead:
+
+FILE: <the note's path>
+<<<<<<< NOTE
+<the whole new note>
+>>>>>>> NOTE
+
+An empty SEARCH adds the text to the end of the note. To create a note, write a new
 path in an existing folder (the open note's folder is `{folder}/`) with an empty SEARCH. A
 recording's frontmatter, its slim-meeting block and its transcript cannot be changed."""
 
@@ -73,6 +80,8 @@ PROPOSE_NUM_PREDICT = {"quick": 8192, "deep": 16384}
 INPUT_BUDGET_CHARS = llm.RESIDENT_CTX * 4 // 2
 MAX_SELECTION_CHARS = 20_000
 _LINK = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]")
+# A proposal's stream is stopped and continued at most this often (`_Steer`); then it runs on.
+MAX_STEERS = 4
 # Thinking tokens bill against num_predict but return in a separate field (llm.chat's
 # docstring). Deep mode must budget for the reasoning AND the answer, or a long think returns
 # content="" and reads as "the model can't answer": one benign sample spent ~3k of 4096.
@@ -89,6 +98,15 @@ MAX_NOTE_IMAGES = 6
 
 class CopilotError(RuntimeError):
     """A user-facing copilot request refusal."""
+
+
+class _Steer(Exception):
+    """Raised inside a proposal's stream to stop the model and go on from `prefill` instead: a
+    SEARCH copying a whole note becomes a NOTE, and a NOTE never retypes a recording's parts."""
+
+    def __init__(self, prefill: str, done: bool):
+        super().__init__("go on from a prefill")
+        self.prefill, self.done = prefill, done
 
 
 def sync_note(con, vault: Path, path: str, *, embed: bool = True) -> dict:
@@ -502,14 +520,17 @@ def open_note_images(vault: Path, source: dict, evidence: list[dict]) -> tuple[l
 def generate_answer(question: str, history: list[dict], evidence: list[dict], mode: str,
                     *, images=None, note_images=None, on_stage=None, on_delta=None,
                     system: str | None = None, cited: list[dict] | None = None,
-                    proposing: bool = False) -> dict:
+                    proposing: bool = False, notes: dict[str, str] | None = None) -> dict:
     """Generate one answer; reasoning is private and only content deltas are surfaced.
 
     TWO depths, and THEY pick (2026-09-03). Auto spent a whole extra classifier call on a choice
     that is one click in the sidebar, and it resolved to Quick nearly every time.
 
     A skill or an edit passes its own `system` (whole notes chosen by code) and `cited`: code
-    already knows which notes it read, so the sources call is skipped.
+    already knows which notes it read, so the sources call is skipped. A proposal passes the
+    `notes` it may change: a SEARCH that starts copying one of them whole is cut off and the
+    model continues with a NOTE block (`edits.rewrite_prefill`), and a NOTE that starts
+    retyping a recording's block or transcript gets them from disk (`edits.recording_prefill`).
     """
     if mode not in {"quick", "deep"}:
         raise CopilotError("reasoning mode must be quick or deep")
@@ -548,12 +569,46 @@ def generate_answer(question: str, history: list[dict], evidence: list[dict], mo
             last_beat[0] = time.time()
             stage("Thinking deeply")
 
-    text, stats = llm.chat_stream(
-        messages, model=llm.MODEL, num_ctx=llm.RESIDENT_CTX,
-        num_predict=(PROPOSE_NUM_PREDICT[mode] if proposing
-                     else DEEP_NUM_PREDICT if mode == "deep" else QUICK_NUM_PREDICT),
-        temperature=llm.REPLY_TEMPERATURE, think=mode == "deep",
-        timeout=600, on_delta=delta, on_thinking=heartbeat)
+    prefill, streamed, watching = "", [], [bool(notes)]
+
+    def watch(chunk):
+        delta(chunk)
+        streamed.append(chunk)
+        if not notes or "\n" not in chunk:
+            return
+        answer = prefill + "".join(streamed)
+        if watching[0]:
+            decided, rewrite = edits_mod.rewrite_prefill(answer, notes)
+            watching[0] = not decided
+            if rewrite:
+                raise _Steer(rewrite, done=False)
+        kept = edits_mod.recording_prefill(answer, notes)
+        if kept:
+            raise _Steer(*kept)
+
+    options = {"model": llm.MODEL, "num_ctx": llm.RESIDENT_CTX, "timeout": 600,
+               "temperature": llm.REPLY_TEMPERATURE,
+               "num_predict": (PROPOSE_NUM_PREDICT[mode] if proposing
+                               else DEEP_NUM_PREDICT if mode == "deep" else QUICK_NUM_PREDICT)}
+    steered = []
+    while True:
+        # Closing the stream stops the model; it goes on from its own words, as code left them.
+        turn = [{"role": "assistant", "content": prefill}] if prefill else []
+        try:
+            text, stats = llm.chat_stream(
+                [*messages, *turn], think=mode == "deep" and not prefill,
+                on_delta=watch if len(steered) < MAX_STEERS else delta,
+                on_thinking=heartbeat, **options)
+            text = prefill + text
+            break
+        except _Steer as steer:
+            steered.append(len(streamed))
+            prefill, streamed = steer.prefill, []
+            if steer.done:
+                text, stats = prefill, {"model": llm.MODEL, "num_ctx": llm.RESIDENT_CTX}
+                break
+    if steered:
+        stats = {**stats, "steered_after_tokens": steered}
     answer = (text or "").strip()
     if not answer and stats.get("thinking_ate_the_budget"):
         raise CopilotError("the model spent its whole output budget thinking and wrote no "
@@ -628,7 +683,9 @@ def run_turn(con, source_id: str, question: str, history: list[dict], mode: str,
                 skills_mod.render_prompt(skill, args) if skill else question, history, [], mode,
                 images=images, note_images=shown, on_stage=on_stage, on_delta=on_delta,
                 system=pack_message(pack, proposing=proposing, folder=folder),
-                cited=cited, proposing=proposing)
+                cited=cited, proposing=proposing,
+                notes={doc["path"]: doc["text"] for doc in pack.docs
+                       if doc["role"] in ("open", "linked")} if proposing else None)
             result["inputs"] = pack_inputs(pack)
             levels = []
             # An overflowing prompt loses its START — the notes and the edit instructions —

@@ -111,8 +111,13 @@ note loses its id. Embedding is part of ingest; `slim status` reports `unembedde
      cut to one section, `[[links]]`), inside a fixed budget, and names what it left out.
      Code knows what it read, so a skill turn makes no sources call.
    - **Ask / Edit.** Edit mode (or a skill whose `output` is a change) PROPOSES; nothing is
-     written by the server. The model writes SEARCH/REPLACE blocks as plain text, `edits.py`
-     applies them to the file on disk, and the plugin shows a diff per file. Accept writes
+     written by the server. The model writes SEARCH/REPLACE blocks as plain text, or a NOTE
+     block with a note's whole new text; `edits.py` applies them to the file on disk, and the
+     plugin shows a diff per file. ⚠ To rewrite a note the model copies it whole into a SEARCH,
+     whatever the rider says, and a mistyped character in the copy refused the change: a
+     SEARCH that copies a note from its top is cut off mid-stream and the model continues it
+     as a NOTE (an assistant prefill), and a long SEARCH matches despite a few wrong lines.
+     A NOTE never rewrites a recording's own parts, whatever it says for them. Accept writes
      through the Vault API only if the file still hashes as proposed, then syncs and embeds.
      Editable: notes in view and new notes in existing folders; a recording's frontmatter,
      `slim-meeting` block and transcript never. One pass, one proposal — not a tool loop.

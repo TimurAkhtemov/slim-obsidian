@@ -243,3 +243,52 @@ def test_edit_mode_sees_the_open_notes_images(con, vault, monkeypatch):
     shown = seen["messages"][-2]
     assert len(shown["images"]) == 2
     assert shown["content"].index("`psi.png`") < shown["content"].index("`mle.png`")
+
+
+def test_a_search_copying_the_whole_note_is_cut_off_and_continued_as_a_note_block(con, vault, monkeypatch):
+    """The copy cost as much as the rewrite and was where the mistakes were (2026-10-12): code
+    stops it, and the model goes on from its own words with the note written once."""
+    body = "# Softmax\n\n" + "".join(f"Line {i} of the long explanation.\n" for i in range(12))
+    path = note(vault, "Notes/work/softmax.md", body)
+    source = open_source(con, vault, path)
+    calls, shown = [], []
+
+    def fake_stream(messages, **kwargs):
+        calls.append({"messages": messages, "think": kwargs["think"]})
+        if len(calls) == 1:
+            answer = f"Shorter.\n\nFILE: {path}\n<<<<<<< SEARCH\n" + body + "=======\n"
+            for line in answer.splitlines(keepends=True):
+                kwargs["on_delta"](line)
+            pytest.fail("the copy was not cut off")
+        kwargs["on_delta"]("# Softmax\n\nOne line.\n>>>>>>> NOTE\n")
+        return "# Softmax\n\nOne line.\n>>>>>>> NOTE\n", {"output_tokens": 9}
+
+    monkeypatch.setattr(copilot.llm, "chat_stream", fake_stream)
+    turn = copilot.run_turn(con, source["id"], "make it simpler", [], "deep", edit=True,
+                            vault=vault, on_delta=shown.append)
+    assert len(calls) == 2 and calls[1]["think"] is False
+    assert calls[1]["messages"][-1] == {"role": "assistant", "content":
+                                        f"Shorter.\n\nFILE: {path}\n<<<<<<< NOTE\n"}
+    (only,) = turn["proposal"]["files"]
+    assert only["after"] == "# Softmax\n\nOne line.\n" and turn["answer"] == "Shorter."
+    assert turn["timing"]["answer"]["steered_after_tokens"] == [len(shown) - 1]
+    assert (vault / path).read_text() == body
+
+
+def test_a_note_block_ends_where_it_starts_retyping_a_transcript(con, vault, monkeypatch):
+    path = note(vault, "Capture/work/call.md",
+                "---\ntype: meeting-note\n---\n\n# Call\n\none\ntwo\n\n## Transcript\n\nMe: hi\n")
+    source = open_source(con, vault, path)
+    calls = []
+
+    def fake_stream(messages, **kwargs):
+        calls.append(messages)
+        for line in f"Shorter.\n\nFILE: {path}\n<<<<<<< NOTE\n# Call\n\nOne line.\n\n## Transcript\n".splitlines(True):
+            kwargs["on_delta"](line)
+        pytest.fail("the transcript was retyped")
+
+    monkeypatch.setattr(copilot.llm, "chat_stream", fake_stream)
+    turn = copilot.run_turn(con, source["id"], "shorten my notes", [], "quick", edit=True, vault=vault)
+    assert len(calls) == 1
+    assert turn["proposal"]["files"][0]["after"] == (
+        "---\ntype: meeting-note\n---\n\n# Call\n\nOne line.\n\n## Transcript\n\nMe: hi\n")
