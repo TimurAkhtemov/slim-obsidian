@@ -4193,6 +4193,136 @@ function proposalStatus(file) {
   return `Not applied: ${file.error || "unknown error"}`;
 }
 
+/* ---- reviewing a proposal in the note ---------------------------------------------------------
+ * The server cuts an edit into changes (`edits.changes`): a block, or a run of removed or added
+ * blocks, each with its place in the note as proposed. Nothing is written while the owner reviews:
+ * the changes are drawn on the note, and Accept puts one in through the editor.
+ */
+
+// Words with the whitespace after them. Math, bold, code and links stay whole, so a mark never
+// splits their syntax.
+function wordTokens(text) {
+  const s = String(text || "");
+  const out = [];
+  let i = 0;
+  while (i < s.length) {
+    let j = i;
+    while (j < s.length && !/\s/.test(s[j])) {
+      let close = 0;
+      if (s[j] === "$") close = s.indexOf("$", j + 1) + 1;
+      else if (s.startsWith("**", j)) close = s.indexOf("**", j + 2) + 2;
+      else if (s[j] === "`") close = s.indexOf("`", j + 1) + 1;
+      else if (s.startsWith("[[", j)) close = s.indexOf("]]", j + 2) + 2;
+      j = close > j + 1 ? close : j + 1;
+    }
+    while (j < s.length && /\s/.test(s[j])) j += 1;
+    out.push(s.slice(i, j));
+    i = j;
+  }
+  return out;
+}
+
+// The longest common run of words; a replaced run reads removals first.
+function wordOps(before, after) {
+  const a = wordTokens(before), b = wordTokens(after);
+  const n = a.length, m = b.length;
+  const same = (i, j) => a[i].trimEnd() === b[j].trimEnd();
+  const t = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i -= 1) {
+    for (let j = m - 1; j >= 0; j -= 1) {
+      t[i][j] = same(i, j) ? t[i + 1][j + 1] + 1 : Math.max(t[i + 1][j], t[i][j + 1]);
+    }
+  }
+  const ops = [];
+  let i = 0, j = 0;
+  while (i < n || j < m) {
+    if (i < n && j < m && same(i, j)) { ops.push(["=", a[i], b[j]]); i += 1; j += 1; }
+    else if (j >= m || (i < n && t[i + 1][j] >= t[i][j + 1])) { ops.push(["-", a[i]]); i += 1; }
+    else { ops.push(["+", b[j]]); j += 1; }
+  }
+  return ops;
+}
+
+const MARKER = /^\s*(?:#{1,6}\s+|(?:[-*+]|\d+[.)])\s+|>\s?)?/;
+const UNMARKABLE = /^\s*(?:\$\$|```|~~~|\|)/;
+const MAX_WORD_CELLS = 250_000;
+
+// A change that keeps most of its words is marked word by word; one mostly rewritten shows the
+// old text struck and the new text below it, not a scatter of marks.
+function markable(before, after) {
+  const lines = (text) => String(text || "").split("\n").filter((line) => line.trim());
+  const a = lines(before), b = lines(after);
+  if (!a.length || a.length !== b.length) return false;
+  return a.every((line, k) => {
+    const other = b[k];
+    if (UNMARKABLE.test(line) || UNMARKABLE.test(other)) return false;
+    const ma = MARKER.exec(line)[0], mb = MARKER.exec(other)[0];
+    if (ma.trim() !== mb.trim()) return false;
+    const x = line.slice(ma.length), y = other.slice(mb.length);
+    const xs = wordTokens(x).length, ys = wordTokens(y).length;
+    if (!(xs + ys) || xs * ys > MAX_WORD_CELLS) return false;
+    return (2 * wordOps(x, y).filter((op) => op[0] === "=").length) / (xs + ys) >= 0.5;
+  });
+}
+
+// Where each undecided change sits in `doc` now: its proposed place, moved by the changes
+// already applied above it, if its old text is there; else the one place that text occurs.
+// An addition is checked by the line above it. A change found nowhere is `lost`.
+function placeChanges(doc, changes) {
+  const text = String(doc || "");
+  const out = [];
+  let shift = 0;
+  (changes || []).forEach((change, index) => {
+    if (change.status === "applied") { shift += (change.new || "").length - (change.to - change.from); return; }
+    if (change.status) return;
+    const old = change.old || "";
+    const want = change.from + shift;
+    let at = -1;
+    if (old) {
+      if (text.slice(want, want + old.length) === old) at = want;
+      else {
+        const first = text.indexOf(old);
+        if (first >= 0 && text.indexOf(old, first + 1) < 0) at = first;
+      }
+    } else if (want === 0 ? !change.above : text[want - 1] === "\n"
+               && text.slice(text.lastIndexOf("\n", want - 2) + 1, want - 1) === (change.above || "")) {
+      at = want;
+    }
+    out.push({ index, from: at, to: at < 0 ? -1 : at + old.length, old, new: change.new || "",
+               state: at < 0 ? "lost" : "open" });
+  });
+  return out;
+}
+
+function changeCounts(file) {
+  const all = file?.changes || [];
+  const applied = all.filter((change) => change.status === "applied").length;
+  const rejected = all.filter((change) => change.status === "rejected").length;
+  return { total: all.length, applied, rejected, open: all.length - applied - rejected };
+}
+
+function changeLabel(change) {
+  const words = (text) => String(text || "").replace(/^[\s#>*+\-\d.)|]+/gm, " ").split(/\s+/).filter(Boolean);
+  const first = (text) => { const w = words(text); return w.slice(0, 6).join(" ") + (w.length > 6 ? "…" : ""); };
+  if (!change.old) return `Added: ${first(change.new)}`;
+  if (!change.new) return `Removed: ${first(change.old)}`;
+  return first(change.new);
+}
+
+// Accept the rest decides what the owner may not have looked at: a big removal, or a lost
+// frontmatter, takes a second click (the model's prose cannot be trusted to mention it).
+function removalWarning(changes, doc) {
+  const open = (changes || []).filter((change) => !change.status);
+  const removed = open.reduce((n, change) => n + (change.old ? change.old.replace(/\n$/, "").split("\n").length : 0), 0);
+  const lines = String(doc || "").split("\n").length;
+  const warnings = [];
+  if (removed > 20 || (lines >= 4 && removed / lines > 0.3)) warnings.push(`removes ${removed} of ${lines} lines`);
+  if (open.some((change) => change.from === 0 && /^---\r?\n/.test(change.old) && !/^---\r?\n/.test(change.new || ""))) {
+    warnings.push("removes the frontmatter");
+  }
+  return warnings.join(" · ");
+}
+
 /* One durable meeting object per recording/note, with one reserved capture slot.
  *
  * RecorderView deliberately remains the session controller: it already owns the draft, staged
@@ -4950,3 +5080,10 @@ module.exports.inputsText = inputsText;
 module.exports.editorSelection = editorSelection;
 module.exports.visibleStream = visibleStream;
 module.exports.historyText = historyText;
+module.exports.wordTokens = wordTokens;
+module.exports.wordOps = wordOps;
+module.exports.markable = markable;
+module.exports.placeChanges = placeChanges;
+module.exports.changeCounts = changeCounts;
+module.exports.changeLabel = changeLabel;
+module.exports.removalWarning = removalWarning;

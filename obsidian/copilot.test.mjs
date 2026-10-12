@@ -35,7 +35,8 @@ Module._load = function (request) {
 const { CopilotView, RenameModal, SSEParser, groupThreads, streamRequest,
         groupCitations, noteTitle, normalizeMath, SUGGESTED_PROMPTS, metaText,
         sha256Hex, lineDiff, slashQuery, matchSkills, inputsText, editorSelection,
-        visibleStream, historyText } =
+        visibleStream, historyText, wordTokens, wordOps, markable, placeChanges, changeCounts,
+        changeLabel, removalWarning } =
   createRequire(import.meta.url)(path.join(HERE, "main.js"));
 
 test("SSE parsing survives arbitrary chunk boundaries", () => {
@@ -1413,4 +1414,55 @@ test("an edit turn that proposes nothing says nothing will be written", () => {
   (function walk(el) { texts.push(el.textContent); el.children.forEach(walk); })(transcript);
   assert.ok(texts.includes("No change was proposed — nothing will be written."));
   assert.ok(texts.includes("Not proposed: Notes/archive/a.md — folder does not exist"));
+});
+
+test("words keep math, bold, code and links whole, so a mark never splits their syntax", () => {
+  assert.deepEqual(wordTokens("a $x + y$ **b c** `d e` [[f g]] h"),
+    ["a ", "$x + y$ ", "**b c** ", "`d e` ", "[[f g]] ", "h"]);
+  assert.deepEqual(wordOps("For a vector, the softmax is:", "For a vector:"), [
+    ["=", "For ", "For "], ["=", "a ", "a "], ["-", "vector, "], ["-", "the "], ["-", "softmax "],
+    ["-", "is:"], ["+", "vector:"]]);
+});
+
+test("a change gets word marks only when its lines keep their kind and half their words", () => {
+  assert.equal(markable("## Properties\n", "## Key Properties\n"), true);
+  assert.equal(markable("For a vector $z$ of $K$ real numbers, defined as:\n", "For a vector $z$ of $K$ real numbers:\n"), true);
+  assert.equal(markable("1. **Non-negativity**: positive.\n", "*   **Output**: positive.\n"), false);   // marker changed
+  assert.equal(markable("one two three four\n", "five six seven eight\n"), false);                      // rewritten
+  assert.equal(markable("$$ a + b $$\n", "$$ a + c $$\n"), false);                                     // math stays whole
+  assert.equal(markable("a\nb\n", "a\n"), false);
+  assert.equal(markable("", "new\n"), false);
+});
+
+test("a change is found again where it was, after the ones applied above it, or once anywhere", () => {
+  const changes = [
+    { from: 0, to: 2, old: "a\n", new: "AAA\n", status: "applied" },
+    { from: 4, to: 6, old: "c\n", new: "C\n" },
+    { from: 6, to: 6, old: "", new: "new\n", above: "c" },
+    { from: 8, to: 10, old: "e\n", new: "", status: "rejected" },
+    { from: 10, to: 12, old: "x\n", new: "y\n" },
+  ];
+  assert.deepEqual(placeChanges("AAA\nb\nc\nd\ne\n", changes).map(({ index, from, state }) => [index, from, state]),
+    [[1, 6, "open"], [2, 8, "open"], [4, -1, "lost"]]);
+  // Typed above while the note was closed: the old text is searched, and used if it occurs once.
+  assert.deepEqual(placeChanges("typed\nAAA\nb\nc\nd\n", changes.slice(0, 2)).map((p) => p.from), [12]);
+  assert.deepEqual(placeChanges("c\nc\n", [{ from: 9, to: 11, old: "c\n", new: "C\n" }]).map((p) => p.state), ["lost"]);
+});
+
+test("offsets from the server land on the right text past an emoji", () => {
+  const doc = "🎙️ note\n\nold line\n";
+  const from = doc.indexOf("old");                      // what edits.changes sends: UTF-16 units
+  assert.equal(from, 10);
+  assert.deepEqual(placeChanges(doc, [{ from, to: from + 9, old: "old line\n", new: "new line\n" }])[0].state, "open");
+});
+
+test("the sidebar names a change by its first words and counts what is left", () => {
+  assert.equal(changeLabel({ old: "## Properties\n", new: "## Key Properties\n" }), "Key Properties");
+  assert.equal(changeLabel({ old: "Where:\n* a\n", new: "" }), "Removed: Where: a");
+  assert.equal(changeLabel({ old: "", new: "one two three four five six seven\n" }), "Added: one two three four five six…");
+  assert.deepEqual(changeCounts({ changes: [{ status: "applied" }, { status: "rejected" }, {}] }),
+    { total: 3, applied: 1, rejected: 1, open: 1 });
+  assert.equal(removalWarning([{ from: 0, old: "---\nt: 1\n---\n", new: "" }], "---\nt: 1\n---\nbody\n"),
+    "removes 3 of 5 lines · removes the frontmatter");
+  assert.equal(removalWarning([{ from: 9, old: "x\n", new: "y\n", status: "applied" }], "a\n".repeat(30)), "");
 });
