@@ -1347,3 +1347,14 @@ def test_two_edits_beside_a_four_item_plan_count_as_its_first_two_steps(turn, mo
         {"index": 1, "state": "doing"}, {"index": 2, "state": "doing"},
         {"index": 1, "state": "done"}, {"index": 2, "state": "done"}]
     assert got["edit_run"]["steps_done"] == 4
+
+
+# --- M1: only a gate that said "change" nudges a text reply ------------------------------------
+
+@pytest.mark.parametrize("intent", ["error", "not json"])
+def test_a_gate_that_could_not_tell_lets_a_text_reply_stand_as_the_answer(turn, monkeypatch, intent):
+    seen = scripted(monkeypatch, ("A is the first section.", []), intent=intent)
+    got, events = turn("what is A?")
+    assert len(seen) == 1 and seen[0]["tools"] == ["plan", *STEP_TOOLS]
+    assert got["answer"] == "A is the first section." and got["deltas"] == ["A is the first section."]
+    assert got["edit_run"] is None and events == []

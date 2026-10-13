@@ -87,8 +87,9 @@ STEP_TOOLS = ("replace", "edit_text", "insert", "move")
 # "No": today's Ask path (retrieval, no handles, a streamed answer, the sources call). Otherwise
 # the edit path, with the tools at STEP_TEMPERATURE: retyping at 0.7 drifted (a plural dropped,
 # quotes straightened), and a text-only reply is nudged once. A gate that fails or cannot tell
-# counts as a change. Off, every question takes the edit path. FIRST_TEMPERATURE is the edit
-# path's first call when no gate decided, and a new note's.
+# counts as a change but is never nudged: a text reply then is the answer. Off, every question
+# takes the edit path. FIRST_TEMPERATURE is the edit path's first call when no gate decided,
+# and a new note's.
 INTENT_GATE = True
 GATE_SYSTEM = ("You decide whether the owner's last message asks to change the note they have open. "
                "Reply with JSON only.")
@@ -1247,7 +1248,7 @@ def _answer_or_edit(con, vault: Path, source: dict, question: str, history: list
         stage("Thinking deeply" if mode == "deep" else "Writing")
         out = _turn(list(messages), think=mode == "deep", tools=tools, step_tools=step_tools,
                     note=note, before_text=text, only=only, create=create, temperature=temperature,
-                    nudge=not skill and INTENT_GATE, on_edit=on_edit or (lambda _event, _payload: None),
+                    nudge=intent is True, on_edit=on_edit or (lambda _event, _payload: None),
                     should_stop=should_stop)
     last = out["timing"][-1] if out["timing"] else {}
     run = None
