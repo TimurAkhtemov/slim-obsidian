@@ -548,19 +548,21 @@ def open_note_images(vault: Path, source: dict, evidence: list[dict]) -> tuple[l
                                       limit=MAX_NOTE_IMAGES)
 
 
+def _tokens(message: dict) -> float:
+    """A message's tokens as THE WINDOW RULE estimates them."""
+    return len(message["content"]) / CHARS_PER_TOKEN + IMAGE_TOKENS * len(message.get("images") or ())
+
+
 def fit_window(transcript: list[dict], others: list[dict], num_predict: int) -> list[dict]:
     """The newest messages of `transcript`, each whole, that fit the resident window beside
     `others` (the system message, the open note's images, the question) and the reply's
     `num_predict`, which in Deep mode holds the thinking too. When the conversation does not
     fit, its OLDEST messages go, whole: a cut inside one (1,000 characters, never measured)
     kept the start of an answer and dropped its end, where the plan or the offer sits."""
-    def tokens(message):
-        return (len(message["content"]) / CHARS_PER_TOKEN
-                + IMAGE_TOKENS * len(message.get("images") or ()))
-    room = llm.RESIDENT_CTX - num_predict - sum(map(tokens, others))
+    room = llm.RESIDENT_CTX - num_predict - sum(map(_tokens, others))
     kept = []
     for message in reversed(transcript):
-        room -= tokens(message)
+        room -= _tokens(message)
         if room < 0:
             break
         kept.append(message)
@@ -927,6 +929,13 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
         if spent > budget:
             out["stopped"] = "token budget"
         out["timing"].append(reply.stats)
+        if reply.stats.get("ctx_saturated"):
+            # The prompt lost its start — the note and the rider — so this reply's calls are
+            # guesses: none of them lands.
+            if out["kind"] == "answer":
+                raise CopilotError("this note is too long for one request; edit it in Obsidian")
+            out["stopped"] = "error: the note no longer fits the model's window"
+            raise _Stopped
         out["malformed"] += reply.malformed
         messages.append(reply.message)
         return reply
@@ -963,9 +972,6 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
     try:
         first_predict = QUICK_NUM_PREDICT + (THINK_BUDGET if think else 0)
         first = ask(tools, think, temperature, first_predict)
-        # An overflowing prompt loses its START — the note and the rider — silently.
-        if first.stats.get("ctx_saturated"):
-            raise CopilotError("this note is too long for one request; edit it in Obsidian")
         plans, edits = split(first)
         unread = first.malformed and not first.calls
         if not plans and not edits and not out["stopped"]:
@@ -1244,8 +1250,10 @@ def _answer_or_edit(con, vault: Path, source: dict, question: str, history: list
 
         transcript, embedded, current = _conversation(history, prompt, images, shown)
         system_turn = {"role": "system", "content": system}
-        recent = fit_window(transcript, [system_turn, *embedded, current],
-                            QUICK_NUM_PREDICT + (THINK_BUDGET if mode == "deep" else 0))
+        room = QUICK_NUM_PREDICT + (THINK_BUDGET if mode == "deep" else 0)
+        if sum(map(_tokens, [system_turn, *embedded, current])) + room > llm.RESIDENT_CTX:
+            raise CopilotError("this note is too long for one request; edit it in Obsidian")
+        recent = fit_window(transcript, [system_turn, *embedded, current], room)
         messages = [system_turn, *recent, *embedded, current]
         stage("Thinking deeply" if mode == "deep" else "Writing")
         out = _turn(list(messages), think=mode == "deep", tools=tools, step_tools=step_tools,

@@ -1374,3 +1374,29 @@ def test_deeps_thinking_does_not_eat_the_steps_budget(turn, monkeypatch):
     deep, calls = run("deep")
     assert deep["stopped"] is None and calls == 3 and len(deep["changes"]) == 2
     assert copilot.RUN_OUTPUT_TOKENS + copilot.THINK_BUDGET == 20192
+
+
+# --- M3: the window is watched on every call, and estimated before the first ---------------------
+
+def test_a_step_whose_prompt_overflowed_stops_the_run_before_its_calls_land(turn, monkeypatch):
+    seen = scripted(monkeypatch, ("", [("plan", {"intro": "x", "steps": ["Rename A", "Rename B", "Rename C"]})]),
+                    ("", [("replace", {"target": "b3", "markdown": "## A2"})]),
+                    ("", [("replace", {"target": "b7", "markdown": "## B2"})]))
+    scripted_call = copilot.llm.chat_tools
+
+    def chat_tools(messages, tools=None, **opts):
+        msg, stats = scripted_call(messages, tools, **opts)
+        return msg, {**stats, "ctx_saturated": len(seen) == 3}
+    monkeypatch.setattr(copilot.llm, "chat_tools", chat_tools)
+    got, _ = turn("rename all")
+    run = got["edit_run"]
+    assert run["stopped"] == "error: the note no longer fits the model's window" and len(seen) == 3
+    assert [c["label"] for c in run["changes"]] == ["Replaced b3"]            # step 2's call never landed
+
+
+def test_a_note_too_long_for_the_window_is_refused_before_its_edit_call(turn, monkeypatch):
+    seen = scripted(monkeypatch, ("", [("replace", {"target": "b3", "markdown": "## A2"})]))
+    monkeypatch.setattr(copilot.llm, "RESIDENT_CTX", copilot.QUICK_NUM_PREDICT + 50)
+    with pytest.raises(copilot.CopilotError, match="too long for one request"):
+        turn("rename A")
+    assert seen == []
