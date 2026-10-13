@@ -354,14 +354,15 @@ def test_the_stream_emits_the_edit_events_in_order(server_url, a_note):
     status, _headers, body = stream(server_url, source, "rename A and add a line")
     assert status == 200
     events = events_of(body)
-    assert [e for e, _ in events] == ["stage", "edit", "plan", "step", "change", "step", "step", "change",
-                                      "step", "turn"]
+    assert [e for e, _ in events] == ["stage", "edit", "plan", "step", "stage", "change", "step", "step", "stage",
+                                      "change", "step", "turn"]    # each model call names its stage as it starts
     edit = events[1][1]
     assert set(edit) == {"before_ref", "hash_before"} and edit["hash_before"] == edits.digest(NOTE)
     assert threads.load_before("chat-1", edit["before_ref"]) == NOTE
     assert events[2][1] == {"intro": "Rename A and add a line.", "steps": ["Rename A", "Add a line"],
                             "outline": None}
-    assert events[4][1]["id"] == "c1" and events[7][1]["id"] == "c2"
+    assert events[5][1]["id"] == "c1" and events[9][1]["id"] == "c2"
+    assert [p["stage"] for e, p in events if e == "stage"] == ["Writing"] * 3
     run = events[-1][1]["edit_run"]
     assert run["before_ref"] == edit["before_ref"] and run["hash_before"] == edit["hash_before"]
     text = NOTE

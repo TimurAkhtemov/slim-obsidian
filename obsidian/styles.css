@@ -610,7 +610,7 @@
 }
 .slim-suggest:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
 .slim-copilot-stage, .slim-copilot-status { color: var(--text-muted); font-size: var(--font-ui-small); }
-.slim-copilot-stage { animation: slim-copilot-pulse 1.6s ease-in-out infinite; }
+.slim-copilot-stage { animation: slim-copilot-pulse 1.6s ease-in-out infinite; font-variant-numeric: tabular-nums; }
 @keyframes slim-copilot-pulse { 50% { opacity: .45; } }
 @media (prefers-reduced-motion: reduce) {
   .slim-copilot-stage, .slim-message.is-streaming .slim-message-text::after { animation: none; }

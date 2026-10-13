@@ -36,7 +36,7 @@ const { CopilotView, RenameModal, SSEParser, groupThreads, streamRequest,
         groupCitations, noteTitle, normalizeMath, SUGGESTED_PROMPTS, metaText,
         sha256Hex, slashQuery, matchSkills, inputsText, editorSelection,
         historyText, editOutcome, wordTokens, wordOps, markable, formatChange,
-        changeMarks, beforeBlocks, textDiff, excerpt } =
+        changeMarks, beforeBlocks, textDiff, excerpt, stageLine } =
   createRequire(import.meta.url)(path.join(HERE, "main.js"));
 
 test("SSE parsing survives arbitrary chunk boundaries", () => {
@@ -828,9 +828,72 @@ test("a delta updates the streaming answer in place instead of rebuilding the vi
   assert.equal(rebuilds(), before);                       // ~40 tokens/s must not mean 40 teardowns/s
   assert.equal(text(root).textContent, "Grounded");
   view.stage = "Writing";
+  view.stageSince = Date.now();
   view.renderStage();
   assert.equal(rebuilds(), before);
-  assert.equal(find(root, (node) => node.cls === "slim-copilot-stage").textContent, "Writing");
+  assert.equal(find(root, (node) => node.cls === "slim-copilot-stage").textContent, "Writing…");
+});
+
+test("the stage line names the stage and counts the seconds of the call that runs", () => {
+  assert.equal(stageLine("Writing", 1000, 1900), "Writing…");
+  assert.equal(stageLine("Writing", 1000, 13_400), "Writing… 12 s");
+  assert.equal(stageLine("", 1000, 5000), "Working… 4 s");
+  assert.equal(stageLine("Writing", 0, 5000), "Writing…");
+});
+
+test("a new stage or a new step starts the count again; the same stage sent again does not", async () => {
+  const realNow = Date.now;
+  let now = 1_000_000;
+  Date.now = () => now;
+  try {
+    const { live, editor } = fakeLive();
+    const seen = [];
+    const view = editView({ live, editor, events: async (_body, handlers) => {
+      const line = () => stageLine(view.stage, view.stageSince, Date.now());
+      now += 2000;
+      seen.push(line());                                   // the gate: still Starting
+      handlers.stage({ stage: "Thinking deeply" });
+      now += 5000;
+      handlers.stage({ stage: "Thinking deeply" });        // a heartbeat: the same call
+      now += 4000;
+      seen.push(line());
+      handlers.edit({ before_ref: "a".repeat(32), hash_before: sha256Hex("# A\n\nold\n") });
+      handlers.plan(PLAN);
+      handlers.step({ index: 1, state: "doing" });
+      handlers.stage({ stage: "Writing" });
+      now += 3000;
+      seen.push(line());
+      handlers.change(change("c1", 1));
+      handlers.step({ index: 1, state: "done" });
+      handlers.step({ index: 2, state: "doing" });
+      handlers.stage({ stage: "Writing" });
+      now += 7000;
+      seen.push(line());
+      handlers.turn({ answer: PLAN.intro, mode: "deep", citations: [], edit_run: {
+        plan: PLAN, steps_done: 2, changes: [change("c1", 1)], stopped: null } });
+    } });
+    view.mode = "deep";
+    await view.send("Make the revisions");
+    assert.deepEqual(seen, ["Starting… 2 s", "Thinking deeply… 9 s", "Writing… 3 s", "Writing… 7 s"]);
+    assert.equal(view.stageClock, null);                    // the count stops with the turn
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("the stage line stays under the steps while the run's calls go on", () => {
+  const { view, root } = renderedView();
+  view.sending = true;
+  view.streamingTurns = view.turns;
+  view.stage = "Writing";
+  view.stageSince = Date.now();
+  view.editRun = { plan: PLAN, steps: ["doing"], changes: [], started: Date.now() };
+  view.render();
+  view.renderEdit();
+  const transcript = transcriptOf(root);
+  const stage = find(root, (node) => node.cls === "slim-copilot-stage");
+  assert.equal(stage?.textContent, "Writing…");
+  assert.equal(transcript.children.at(-1), stage);           // after the run's steps
 });
 
 test("the transcript follows the streaming answer when they were reading the bottom", () => {

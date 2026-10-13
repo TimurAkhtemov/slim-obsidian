@@ -649,12 +649,13 @@ def turn(con, vault, monkeypatch):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8")
         source = copilot.sync_note(con, vault, path, embed=False)
-        events, deltas = [], []
+        events, deltas, stages = [], [], []
         sent = {"doc": text, "doc_hash": edits.digest(text)} if doc else {}
         result = copilot.run_turn(con, source["id"], question, list(history), mode, vault=vault,
                                   on_edit=lambda event, payload: events.append((event, payload)),
-                                  on_delta=deltas.append, should_stop=should_stop, selection=selection, **sent)
-        result["deltas"] = deltas
+                                  on_delta=deltas.append, on_stage=stages.append, should_stop=should_stop,
+                                  selection=selection, **sent)
+        result["deltas"], result["stages"] = deltas, stages
         result["final"] = text if result["edit_run"] is None else _final(text, result)
         return result, events
     return go
@@ -1460,3 +1461,13 @@ def test_a_text_answer_on_the_edit_path_keeps_bare_words_that_look_like_handles(
     scripted(monkeypatch, ("Use an s3 bucket; see block b3.", []), ("Use an s3 bucket; see block b3.", []))
     got, _ = turn("how do I store files?")
     assert got["answer"] == "Use an s3 bucket; see “A”."
+
+
+def test_every_model_call_of_an_edit_run_names_its_stage_as_it_starts(turn, monkeypatch):
+    # The chat counts each call's seconds from its stage: steps write, whatever the first call did.
+    scripted(monkeypatch, ("", [("plan", {"intro": "Capitalize both.", "outline": [], "steps": ["Fix a", "Fix b"]})]),
+             ("", [("edit_text", {"target": "b4", "old": "Text a.", "new": "Text A."})]),
+             ("", [("edit_text", {"target": "b8", "old": "Text b.", "new": "Text B."})]))
+    got, _ = turn("Capitalize both", mode="deep")
+    assert got["edit_run"]["steps_done"] == 2
+    assert got["stages"] == ["Thinking deeply", "Writing", "Writing"]

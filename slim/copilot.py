@@ -869,7 +869,8 @@ def _intent(question: str, history: list[dict]) -> tuple[bool | None, dict]:
 
 def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tuple[str, ...],
           note: edits_mod.Note | None, before_text: str, only: set[str] | None = None, create=None,
-          temperature: float = FIRST_TEMPERATURE, nudge: bool = False, on_edit, should_stop) -> dict:
+          temperature: float = FIRST_TEMPERATURE, nudge: bool = False, on_edit, should_stop,
+          on_stage=lambda _name: None) -> dict:
     """One editing turn. Every call offers the same `tools`, in the same order: they sit at the
     top of the prompt, and a different list re-reads the whole note. `step_tools` are those that
     change something. The first call answers in text, makes a small change at once, or plans a
@@ -878,7 +879,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
     measured against the note, for the trace. Code holds the plan, applies every call to the draft
     `note` (or makes a new note through `create`), enforces every limit, and hands each part to
     `on_edit` as it lands: "start", "plan", "step" and "change". `should_stop()` is asked before
-    every call."""
+    every call, and `on_stage` hears each call start, so the chat can count its seconds."""
     out = {"kind": "answer", "answer": "", "plan": None, "changes": [], "steps_done": 0, "calls": 0,
            "refusals": [], "malformed": [], "empty_steps": 0, "stopped": None, "summary": "",
            "finished_early": False, "replanned": False, "outline": None, "outline_met": None,
@@ -898,6 +899,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
             out["stopped"] = "stopped"
         if out["stopped"]:
             raise _Stopped
+        on_stage("Thinking deeply" if think else "Writing")
         return _call(messages, offered, think=think, temperature=temperature, num_predict=num_predict)
 
     def ask(offered, think, temperature, num_predict) -> _Reply:
@@ -1234,11 +1236,10 @@ def _answer_or_edit(con, vault: Path, source: dict, question: str, history: list
             raise CopilotError("this note is too long for one request; edit it in Obsidian")
         recent = fit_window(transcript, [system_turn, *embedded, current], room)
         messages = [system_turn, *recent, *embedded, current]
-        stage("Thinking deeply" if mode == "deep" else "Writing")
         out = _turn(list(messages), think=mode == "deep", tools=tools, step_tools=step_tools,
                     note=note, before_text=text, only=only, create=create, temperature=temperature,
                     nudge=intent is True, on_edit=on_edit or (lambda _event, _payload: None),
-                    should_stop=should_stop)
+                    should_stop=should_stop, on_stage=stage)
     last = out["timing"][-1] if out["timing"] else {}
     run = None
     if out["kind"] == "answer":     # a text reply on the edit path: said once, whole

@@ -2859,6 +2859,13 @@ function metaText(turn) {
   return Number.isFinite(ms) && ms > 0 ? `${mode} · ${Math.max(1, Math.round(ms / 1000))} s` : mode;
 }
 
+// The line under a turn while a model call runs: what it is doing and, from its first second, for
+// how long. A call writes for 10 to 30 s before anything else shows.
+function stageLine(stage, since, now) {
+  const seconds = since ? Math.floor((now - since) / 1000) : 0;
+  return `${stage || "Working"}…${seconds >= 1 ? ` ${seconds} s` : ""}`;
+}
+
 const SUGGESTED_PROMPTS = [
   "Explain this note like I'm new to it",
   "Quiz me on this note",
@@ -3101,6 +3108,8 @@ class CopilotView extends ItemView {
     this.deletedThreads = new Set(); // a late save must not resurrect these
     this.editRun = null;            // the editing run streaming now: its plan, steps and changes
     this.editClock = null;          // its seconds, in the chat while it runs
+    this.stageSince = 0;            // when the call running now started, by the stage it named
+    this.stageClock = null;         // the stage line's seconds, while a turn runs
     this.runTurns = new Map();      // before_ref -> the thread and turns its turn lives in
     this.savingRuns = null;         // a run's turn saves one save after another
     this.beforeTexts = new Map();   // before_ref -> the note as it was before that run
@@ -3359,6 +3368,7 @@ class CopilotView extends ItemView {
     this.showThreads = false;
     this.sending = true;
     this.stage = "Starting";
+    this.stageStarted();
     this.error = "";
     let streamed = "";
     this.streamingText = "";
@@ -3413,7 +3423,7 @@ class CopilotView extends ItemView {
         // along with every question, unseen (review, 2026-09-23).
         selection: question.startsWith("/") ? editorSelection(this.app, path) : "",
       }, {
-        stage: (data) => { this.stage = data.stage || "Working"; this.renderStage(); },
+        stage: (data) => this.setStage(data.stage),
         delta: (data) => {
           streamed += data.text || "";
           this.streamingText = streamed;
@@ -3436,6 +3446,7 @@ class CopilotView extends ItemView {
           this.renderEdit();
         }),
         step: on((data) => {
+          if (data.state === "doing") this.stageStarted();      // a step is a call of its own
           if (!run || !(data.index >= 1)) return;
           run.steps[data.index - 1] = data.state;
           this.renderEdit();
@@ -3483,6 +3494,8 @@ class CopilotView extends ItemView {
     } finally {
       if (local) this.plugin.live?.dropRun(tracked, local);
       if (run) this.finishRun(run);
+      clearInterval(this.stageClock);
+      this.stageClock = null;
       this.abort = null;
       this.sending = false;
       this.stopLiveRender();
@@ -3608,6 +3621,25 @@ class CopilotView extends ItemView {
     clearInterval(this.editClock);
     this.editClock = setInterval(() => { if (this.el?.liveEdit) this.renderEdit(); }, 1000);
     this.editClock.unref?.();
+  }
+
+  // A call started: its seconds count from now, ticking on the second.
+  stageStarted() {
+    this.stageSince = Date.now();
+    clearInterval(this.stageClock);
+    this.stageClock = setInterval(() => { if (this.el?.stage) this.renderStage(); }, 1000);
+    this.stageClock.unref?.();
+  }
+
+  // The server names a stage as each model call starts. The same one again is that call still
+  // running (Deep's heartbeat while it thinks); a new one, or a new step, starts the count again.
+  setStage(name) {
+    const stage = name || "Working";
+    if (stage !== this.stage) {
+      this.stage = stage;
+      this.stageStarted();
+    }
+    this.renderStage();
   }
 
   cancel() {
@@ -3761,7 +3793,7 @@ class CopilotView extends ItemView {
   renderStage() {
     if (!this.el) { this.render(); return; }
     if (!this.el.stage) return;
-    this.el.stage.textContent = this.stage || "Working";
+    this.el.stage.textContent = stageLine(this.stage, this.stageSince, Date.now());
   }
 
   renderMarkdown(el, markdown, host = this.mdHost || this) {
@@ -4025,7 +4057,7 @@ class CopilotView extends ItemView {
       } else {
         this.el.liveText = create(live, "div", "slim-message-text", this.streamingText);
       }
-      if (!this.editRun?.plan) this.el.stage = create(transcript, "div", "slim-copilot-stage", this.stage || "Working");
+      this.el.stage = create(transcript, "div", "slim-copilot-stage", stageLine(this.stage, this.stageSince, Date.now()));
     }
     if (this.error) {
       const error = create(transcript, "div", "slim-copilot-error", this.error);
@@ -4099,7 +4131,6 @@ class CopilotView extends ItemView {
     const follow = atBottom(this.el.transcript);
     clear(this.el.liveEdit);
     this.drawLiveEdit(this.el.liveEdit);
-    if (this.editRun?.plan && this.el.stage) { this.el.stage.remove?.(); this.el.stage = null; }
     if (follow) this.el.transcript.scrollTop = this.el.transcript.scrollHeight;
   }
 
@@ -6229,6 +6260,7 @@ module.exports.groupCitations = groupCitations;
 module.exports.normalizeMath = normalizeMath;
 module.exports.SUGGESTED_PROMPTS = SUGGESTED_PROMPTS;
 module.exports.metaText = metaText;
+module.exports.stageLine = stageLine;
 module.exports.noteTitle = noteTitle;
 module.exports.streamRequest = streamRequest;
 module.exports.inlineMarkdown = inlineMarkdown;
