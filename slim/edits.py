@@ -578,10 +578,24 @@ def _copied(note: Note, markdown: str, mine: range, place: str) -> None:
                             f"{place}, and replace it afterwards if it needs new text.", "copy")
 
 
+def _renames(note: Note, i: int, j: int, markdown: str) -> bool:
+    """A whole section replaced by a heading alone: the model meant a rename, not to drop the text."""
+    one = _spans(markdown.splitlines(keepends=True))
+    return (j - i > 1 and note.blocks[i].level > 0 and (i, j) == note.span("s" + note.blocks[i].handle[1:])
+            and len(one) == 1 and one[0][0] == "heading")
+
+
 def _replace(note: Note, args: dict, ctx: dict):
     markdown = strip_labels(_text(args, "markdown", False) or "")
     i, j, target, trimmed = note.pick(_handle(note, args, "target"), ctx["only"])
     _written(markdown, "".join(b.text for b in note.blocks[i:j]))
+    if _renames(note, i, j, markdown):
+        _copied(note, markdown, range(i, i + 1), "to where you want it")
+        heading = note.blocks[i].handle
+        needs = note.owners(i, i + 1)
+        new = note.replace(i, i + 1, markdown, ctx["id"], keep=heading)
+        return needs, f"Renamed {heading}", (f"renamed the heading; the section's text is kept:\n"
+                                             f"{note.render(new).rstrip()}\n{note.then(i + 1)}")
     _copied(note, markdown, range(i, j), "to where you want it")
     needs = note.owners(i, j)
     new = note.replace(i, j, markdown, ctx["id"], keep=note.blocks[i].handle if j - i == 1 else None)
@@ -589,6 +603,29 @@ def _replace(note: Note, args: dict, ctx: dict):
     if not markdown:
         return needs, f"Deleted {target}", f"deleted {done}\n{then}"
     return needs, f"Replaced {target}", f"replaced {done}; it now reads:\n{note.render(new).rstrip()}\n{then}"
+
+
+def _edit_text(note: Note, args: dict, ctx: dict):
+    """A wording fix inside a block or range: the model quotes what changes, never retypes the rest."""
+    i, j, target, _ = note.pick(_handle(note, args, "target"), ctx["only"])
+    old, new = args.get("old"), args.get("new") or ""
+    if not isinstance(old, str) or not old:
+        raise ToolError("old is empty; quote the exact text to change", "args")
+    if not isinstance(new, str):
+        raise ToolError("new must be text", "args")
+    text = "".join(b.text for b in note.blocks[i:j])
+    found = text.count(old)
+    if not found:
+        raise ToolError(f"'{old}' is not in {target}; it reads: {text.rstrip()[:300]}", "quote")
+    if found > 1:
+        raise ToolError(f"'{old}' appears {found} times in {target}; quote a little more around it", "quote")
+    changed = text.replace(old, new, 1)
+    _written(changed, text)
+    _copied(note, changed, range(i, j), "to where you want it")
+    needs = note.owners(i, j)
+    made = note.replace(i, j, changed.rstrip("\n"), ctx["id"], keep=note.blocks[i].handle if j - i == 1 else None)
+    then = note.then(i + len(made))
+    return needs, f"Edited {target}", f"edited {target}; it now reads:\n{note.render(made).rstrip()}\n{then}"
 
 
 def _insert(note: Note, args: dict, ctx: dict):
@@ -663,6 +700,13 @@ TOOLS: dict[str, dict] = {
         "parameters": {"type": "object", "properties": {"target": _HANDLE_ARG, "markdown": {"type": "string"}},
                        "required": ["target", "markdown"]},
         "apply": _replace},
+    "edit_text": {
+        "description": "Change a few words inside one block: quote the exact text to change (old) and its "
+                       "replacement (new). Use this for wording fixes; it keeps the rest of the block as it is.",
+        "parameters": {"type": "object", "properties": {"target": _HANDLE_ARG, "old": {"type": "string"},
+                                                       "new": {"type": "string"}},
+                       "required": ["target", "old", "new"]},
+        "apply": _edit_text},
     "insert": {
         "description": "Insert new markdown after or before a block or section. Give exactly one of after or before.",
         "parameters": {"type": "object", "properties": {"markdown": {"type": "string"}, "after": _HANDLE_ARG,

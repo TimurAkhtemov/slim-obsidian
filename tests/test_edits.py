@@ -424,6 +424,59 @@ def test_new_text_may_not_add_a_recordings_marker_or_skip_lines_with_dots():
     assert kept.text() == "A\n\n...\n\nb\n"
 
 
+
+ITEM = ("## Hard\n\n- **Lexical ambiguity**: multiple meanings (bank/rivier vs bank/money), compounds/idioms "
+        "(“take out”), portmanteaus, metaphors.\n- **Open vocabulary**: doomscrolling.\n")
+
+
+def test_edit_text_fixes_a_word_and_keeps_the_rest_of_the_block_byte_for_byte():
+    note = Note(ITEM)
+    change, said = apply(note, "edit_text", {"target": "b2", "old": "rivier", "new": "river"}, change_id="c1", step=1)
+    assert note.text() == ITEM.replace("rivier", "river") and change.label == "Edited b2"
+    assert said.startswith("edited b2; it now reads:\n[b2] - **Lexical ambiguity**: multiple meanings (bank/river")
+    assert said.endswith("\nthen: [b3] - **Open vocabulary**: doomscrolling.")
+
+
+def test_edit_text_refuses_text_it_cannot_find_once():
+    note = Note(ITEM)
+    with pytest.raises(ToolError) as refused:
+        apply(note, "edit_text", {"target": "b2", "old": "rivers", "new": "x"}, change_id="c1", step=1)
+    assert str(refused.value) == f"'rivers' is not in b2; it reads: {ITEM.split(chr(10))[2]}"[:len("'rivers' is not in b2; it reads: ") + 300]
+    assert refused.value.code == "quote"
+    with pytest.raises(ToolError, match="'bank' appears 2 times in b2; quote a little more around it"):
+        apply(note, "edit_text", {"target": "b2", "old": "bank", "new": "shore"}, change_id="c1", step=1)
+    with pytest.raises(ToolError, match="old is empty"):
+        apply(note, "edit_text", {"target": "b2", "old": "", "new": "x"}, change_id="c1", step=1)
+    with pytest.raises(ToolError, match="part of the recording"):
+        apply(Note(RECORDING), "edit_text", {"target": "b2", "old": "id: 1", "new": "id: 2"}, change_id="c1", step=1)
+    with pytest.raises(ToolError, match="outside the selected"):
+        apply(note, "edit_text", {"target": "b3", "old": "doom", "new": "x"}, change_id="c1", step=1, only={"b2"})
+    assert note.text() == ITEM
+
+
+def test_edit_text_may_delete_words_and_is_offered_beside_replace():
+    note = Note(ITEM)
+    apply(note, "edit_text", {"target": "b2", "old": ", portmanteaus", "new": ""}, change_id="c1", step=1)
+    assert "(“take out”), metaphors." in note.text()
+    [tool] = ollama_tools(["edit_text"])
+    assert tool["function"]["parameters"]["required"] == ["target", "old", "new"]
+    assert tool["function"]["description"].startswith("Change a few words inside one block")
+    assert list(edits.TOOLS).index("edit_text") == list(edits.TOOLS).index("replace") + 1
+
+
+def test_a_section_replaced_by_only_a_heading_is_a_rename_and_keeps_its_text():
+    for target in ("s3", "b3-b6"):
+        note = Note(NOTE)
+        change, said = apply(note, "replace", {"target": target, "markdown": "## New name"}, change_id="c1", step=1)
+        assert note.text() == NOTE.replace("## A\n", "## New name\n") and change.label == "Renamed b3", target
+        assert said == "renamed the heading; the section's text is kept:\n[b3] ## New name\nthen: [b4] Text a."
+    note = Note(NOTE)
+    _, said = apply(note, "replace", {"target": "b3", "markdown": "## A2"}, change_id="c1", step=1)
+    assert note.text() == NOTE.replace("## A\n", "## A2\n") and said.startswith("replaced b3; it now reads:")
+    note = Note(NOTE)
+    apply(note, "replace", {"target": "s3", "markdown": "## A\n\nAll new."}, change_id="c1", step=1)
+    assert note.text() == "# Title\n\nIntro para.\n\n## A\n\nAll new.\n\n## B\n\nText b.\n"
+
 # --- a new note -------------------------------------------------------------------------------
 
 @pytest.fixture
