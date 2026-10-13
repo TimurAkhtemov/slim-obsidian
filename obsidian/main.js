@@ -2956,8 +2956,6 @@ function cancelledError() {
   return error;
 }
 
-// Mirrors chat.py MAX_HISTORY_TURNS: what the server keeps of a question's history.
-const MAX_HISTORY_TURNS = 12;
 const MAX_COPILOT_IMAGES = 3;
 const MAX_COPILOT_IMAGE_BYTES = 2_000_000;
 const MAX_COPILOT_IMAGE_INPUT_BYTES = 20_000_000;
@@ -3370,13 +3368,12 @@ class CopilotView extends ItemView {
       if (abort.signal.aborted) throw cancelledError();
       await this.plugin.streamCopilot({
         thread_id: thread.id, source_id: this.context.source.id, question,
-        // Role, text and small image refs only, and only what the server keeps
-        // (MAX_HISTORY_TURNS). Slim turns also carry evidence and stats; re-uploading those
-        // on every question grew with the square of the thread. Image bytes stay server-side.
-        // A question with no answer after it (a chat saved before a failed one came off) is
-        // not history.
+        // Role, text and small image refs only, every turn whole: the server fits the
+        // conversation to the model's window (copilot.fit_window). Slim turns also carry
+        // evidence and stats; re-uploading those on every question grew with the square of the
+        // thread. Image bytes stay server-side. A question with no answer after it (a chat
+        // saved before a failed one came off) is not history.
         history: turns.slice(0, -1).filter((turn, i, all) => turn.role !== "you" || all[i + 1]?.role === "slim")
-          .slice(-MAX_HISTORY_TURNS)
           .map((turn) => ({ ...turn, text: historyText(turn) }))
           .map(({ role, text, attachments }) => ({ role, text,
             ...(attachments?.length ? { attachments: attachments.map(

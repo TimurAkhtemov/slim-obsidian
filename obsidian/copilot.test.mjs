@@ -526,9 +526,10 @@ test("deleting the thread that is streaming stops the stream first", async () =>
   assert.equal(view.sending, false);
 });
 
-test("text-only history carries role and text only, last twelve turns", async () => {
+test("text-only history carries role and text only, the whole conversation", async () => {
   // Each stored slim turn carries its evidence pack and stats; re-uploading all of it on
-  // every question grew with the square of the thread, and the server keeps 12 turns anyway.
+  // every question grew with the square of the thread. Every turn goes, each whole: the
+  // server fits the conversation to the model's window.
   let history;
   const view = makeView({
     postJSON: async (route) => contextFor(route) || {},
@@ -541,11 +542,14 @@ test("text-only history carries role and text only, last twelve turns", async ()
   view.context = { source: { id: "s1", path: "Notes/one.md" }, related: [] };
   view.activeThread = { id: "A", title: "A", source_id: "s1", source_path: "Notes/one.md" };
   view.turns = Array.from({ length: 16 }, (_v, i) => ({
-    role: i % 2 ? "slim" : "you", text: `t${i}`, turn: { evidence: ["big"], citations: [] },
+    role: i % 2 ? "slim" : "you", text: i === 1 ? "a".repeat(3123) : `t${i}`,
+    turn: { evidence: ["big"], citations: [] },
   }));
   await view.send("Q");
-  assert.equal(history.length, 12);
+  assert.equal(history.length, 16);
   assert.deepEqual(Object.keys(history[0]), ["role", "text"]);
+  assert.equal(history[0].text, "t0");
+  assert.equal(history[1].text.length, 3123);
   assert.equal(history.at(-1).text, "t15");
 });
 

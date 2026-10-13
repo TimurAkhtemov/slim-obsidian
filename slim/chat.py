@@ -221,13 +221,6 @@ def record_progress(job_id: str) -> dict | None:
                 "metrics": dict(state["metrics"])}
 
 
-# The copilot's history window: what the plugin sends back with each question, cleaned by
-# `clean_history` before it reaches the model. Bounded so a long sidebar thread cannot crowd
-# the evidence out of the resident's context.
-MAX_HISTORY_TURNS = 12
-MAX_HISTORY_TURN_CHARS = 1000
-
-
 class ChatError(Exception):
     """A refusal with an authored message (bad bind address). Reaches the user verbatim."""
 
@@ -278,8 +271,9 @@ def _origin_allowed(value: str) -> bool:
 
 
 def clean_history(raw) -> list[dict]:
-    """Sanitize the page-supplied transcript: keep only well-formed recent turns, bounded.
-    Bad history is DROPPED, never a 400 — a broken transcript must not brick the chat."""
+    """Sanitize the page-supplied transcript: keep only well-formed turns, each whole; what fits
+    the model's window is `copilot.fit_window`'s call. Bad history is DROPPED, never a 400 — a
+    broken transcript must not brick the chat."""
     if not isinstance(raw, list):
         return []
     turns = []
@@ -289,14 +283,14 @@ def clean_history(raw) -> list[dict]:
         role, text = item.get("role"), item.get("text")
         if role not in ("you", "slim") or not isinstance(text, str) or not text.strip():
             continue
-        turn = {"role": role, "text": text.strip()[:MAX_HISTORY_TURN_CHARS]}
+        turn = {"role": role, "text": text.strip()}
         if role == "you" and item.get("attachments"):
             try:
                 turn["attachments"] = copilot_images.clean_refs(item.get("attachments"))
             except copilot_images.ImageError:
                 pass                         # malformed history never bricks a new question
         turns.append(turn)
-    return turns[-MAX_HISTORY_TURNS:]
+    return turns
 
 
 # --------------------------------------------------------------------------

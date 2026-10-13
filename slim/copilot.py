@@ -94,6 +94,18 @@ HEARTBEAT_S = 1.0
 # prompt tokens and ~1.3 s before the first word (measured 2026-09-22 on the resident), and a
 # lecture note embeds up to 60, so a turn sends at most this; the median note embeds 4.
 MAX_NOTE_IMAGES = 6
+# THE WINDOW RULE (`fit_window`): the conversation goes to the model whole, and the resident
+# window is its only limit. Ollama has no tokenize endpoint, so tokens are estimated from
+# characters. Real copilot prompts rebuilt from the threads and divided by the prompt_tokens
+# Ollama reported ran 3.8-4.1 characters per token (2026-10-12, three prompts, template
+# included). At 3 the estimate counts more tokens than any of them used, so history goes early
+# rather than overflowing; denser text (LaTeX, code) runs lower, and `ctx_saturated` is the
+# backstop.
+CHARS_PER_TOKEN = 3
+# The most an image can cost: the model reads 32-pixel squares (patch 16, merge 2) and every
+# image arrives at most 1600 pixels on a side (`copilot_images.NOTE_IMAGE_MAX_EDGE`, and the
+# plugin's resize of a paste). A typical screenshot costs ~450 (MAX_NOTE_IMAGES' measurement).
+IMAGE_TOKENS = (1600 // 32) ** 2
 
 
 class CopilotError(RuntimeError):
@@ -517,6 +529,25 @@ def open_note_images(vault: Path, source: dict, evidence: list[dict]) -> tuple[l
                                       limit=MAX_NOTE_IMAGES)
 
 
+def fit_window(transcript: list[dict], others: list[dict], num_predict: int) -> list[dict]:
+    """The newest messages of `transcript`, each whole, that fit the resident window beside
+    `others` (the system message, the open note's images, the question) and the reply's
+    `num_predict`, which in Deep mode holds the thinking too. When the conversation does not
+    fit, its OLDEST messages go, whole: a cut inside one (1,000 characters, never measured)
+    kept the start of an answer and dropped its end, where the plan or the offer sits."""
+    def tokens(message):
+        return (len(message["content"]) / CHARS_PER_TOKEN
+                + IMAGE_TOKENS * len(message.get("images") or ()))
+    room = llm.RESIDENT_CTX - num_predict - sum(map(tokens, others))
+    kept = []
+    for message in reversed(transcript):
+        room -= tokens(message)
+        if room < 0:
+            break
+        kept.append(message)
+    return kept[::-1]
+
+
 def generate_answer(question: str, history: list[dict], evidence: list[dict], mode: str,
                     *, images=None, note_images=None, on_stage=None, on_delta=None,
                     system: str | None = None, cited: list[dict] | None = None,
@@ -538,29 +569,33 @@ def generate_answer(question: str, history: list[dict], evidence: list[dict], mo
     delta = on_delta or (lambda _text: None)
     stage("Thinking deeply" if mode == "deep" else "Writing")
     transcript = []
-    for turn in history[-12:]:
+    for turn in history:
         if not isinstance(turn, dict) or turn.get("role") not in {"you", "slim"}:
             continue
         message = {
             "role": "user" if turn["role"] == "you" else "assistant",
-            "content": str(turn.get("text") or "")[:4000],
+            "content": str(turn.get("text") or ""),
         }
         if message["role"] == "user" and turn.get("images"):
             message["images"] = list(turn["images"])
         transcript.append(message)
+    embedded = []
     if note_images:
         # Their own message, so a screenshot they pasted is never mistaken for the note's. The
         # names are the embeds as the note spells them, which is how the model places them.
         names = ", ".join(f"`{name}`" for name, _data in note_images)
-        transcript.append({"role": "user",
-                           "content": "(These are the images embedded in the open note itself, "
-                                      f"not ones I attached: {names}.)",
-                           "images": [data for _name, data in note_images]})
+        embedded.append({"role": "user",
+                         "content": "(These are the images embedded in the open note itself, "
+                                    f"not ones I attached: {names}.)",
+                         "images": [data for _name, data in note_images]})
     current = {"role": "user", "content": question}
     if images:
         current["images"] = list(images)
-    messages = [{"role": "system", "content": system or system_message(evidence)},
-                *transcript, current]
+    num_predict = (PROPOSE_NUM_PREDICT[mode] if proposing
+                   else DEEP_NUM_PREDICT if mode == "deep" else QUICK_NUM_PREDICT)
+    system_turn = {"role": "system", "content": system or system_message(evidence)}
+    recent = fit_window(transcript, [system_turn, *embedded, current], num_predict)
+    messages = [system_turn, *recent, *embedded, current]
     started = time.time()
     last_beat = [started]
 
@@ -587,9 +622,7 @@ def generate_answer(question: str, history: list[dict], evidence: list[dict], mo
             raise _Steer(*kept)
 
     options = {"model": llm.MODEL, "num_ctx": llm.RESIDENT_CTX, "timeout": 600,
-               "temperature": llm.REPLY_TEMPERATURE,
-               "num_predict": (PROPOSE_NUM_PREDICT[mode] if proposing
-                               else DEEP_NUM_PREDICT if mode == "deep" else QUICK_NUM_PREDICT)}
+               "temperature": llm.REPLY_TEMPERATURE, "num_predict": num_predict}
     steered = []
     while True:
         # Closing the stream stops the model; it goes on from its own words, as code left them.
@@ -626,6 +659,7 @@ def generate_answer(question: str, history: list[dict], evidence: list[dict], mo
         "mode": mode,
         "citations": citations,
         "verification": {"truncated": bool(stats.get("output_truncated"))},
+        "history_dropped": len(transcript) - len(recent),
         "timing": {"total_ms": round((time.time() - started) * 1000),
                    "answer": stats, "sources": sources_stats},
     }
@@ -720,7 +754,8 @@ def run_turn(con, source_id: str, question: str, history: list[dict], mode: str,
     record = {
         **entry, "status": "answered",
         "cited": sorted({item["path"] for item in result["citations"]}),
-        "truncated": result["verification"]["truncated"], "timing": result["timing"],
+        "truncated": result["verification"]["truncated"],
+        "history_dropped": result["history_dropped"], "timing": result["timing"],
     }
     if "inputs" in result:
         record["inputs"] = result["inputs"]

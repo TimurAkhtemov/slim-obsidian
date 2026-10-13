@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from slim import copilot, db, threads
+from slim import chat, copilot, db, threads
 
 
 @pytest.fixture
@@ -285,6 +285,65 @@ def test_persona_and_notes_ride_in_the_system_message(monkeypatch):
     assert got["answer"] == "Sure." and got["citations"] == []
 
 
+def _capture(monkeypatch):
+    sent = {}
+
+    def fake_stream(messages, **kwargs):
+        sent["messages"], sent["kwargs"] = messages, kwargs
+        return "Done.", {"duration_s": 1}
+
+    monkeypatch.setattr(copilot.llm, "chat_stream", fake_stream)
+    monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
+    return sent
+
+
+def test_a_long_answer_reaches_the_model_whole_through_the_server(monkeypatch):
+    # A 3,123-character answer whose plan began at character 2,424: a cut at 1,000 sent its
+    # opening and dropped the plan, so "Ok make the revisions" made a narrow edit.
+    answer = ("Here is what the note covers. " * 81)[:2422] + "\n\n## Proposed Structure\n"
+    answer += "x" * (3123 - len(answer))
+    assert len(answer) == 3123 and answer.index("## Proposed Structure") == 2424
+    raw = [{"role": "you", "text": "How could this note be organised?"},
+           {"role": "slim", "text": answer}]
+    sent = _capture(monkeypatch)
+    got = copilot.generate_answer("Ok make the revisions", chat.clean_history(raw), [], "quick")
+    assert sent["messages"][2] == {"role": "assistant", "content": answer}
+    assert got["history_dropped"] == 0
+
+
+def test_every_turn_is_sent_when_the_conversation_fits(monkeypatch):
+    history = [{"role": "slim" if i % 2 else "you", "text": f"turn {i}"} for i in range(30)]
+    sent = _capture(monkeypatch)
+    copilot.generate_answer("Next", chat.clean_history(history), [], "quick")
+    assert [m["content"] for m in sent["messages"][1:-1]] == [f"turn {i}" for i in range(30)]
+    assert sent["kwargs"]["num_ctx"] == copilot.llm.RESIDENT_CTX
+
+
+def test_a_conversation_too_long_for_the_window_loses_its_oldest_turns_whole(monkeypatch):
+    big = copilot.llm.RESIDENT_CTX * copilot.CHARS_PER_TOKEN // 5
+    history = [{"role": "slim" if i % 2 else "you", "text": f"{i}" + "w" * big} for i in range(8)]
+    sent = _capture(monkeypatch)
+    got = copilot.generate_answer("Next", history, [], "deep")
+    kept = sent["messages"][1:-1]
+    assert 0 < len(kept) < len(history)
+    # The newest kept, each whole, in order; the window still holds the reply's room.
+    assert [m["content"] for m in kept] == [turn["text"] for turn in history[-len(kept):]]
+    assert got["history_dropped"] == len(history) - len(kept)
+    chars = sum(len(m["content"]) for m in sent["messages"])
+    assert chars / copilot.CHARS_PER_TOKEN + copilot.DEEP_NUM_PREDICT <= copilot.llm.RESIDENT_CTX
+    assert sent["kwargs"]["num_ctx"] == copilot.llm.RESIDENT_CTX
+
+
+def test_images_count_against_the_window(monkeypatch):
+    room = copilot.llm.RESIDENT_CTX - copilot.QUICK_NUM_PREDICT
+    text = "w" * (room - 2 * copilot.IMAGE_TOKENS) * copilot.CHARS_PER_TOKEN
+    history = [{"role": "you", "text": "old"}, {"role": "slim", "text": text}]
+    sent = _capture(monkeypatch)
+    got = copilot.generate_answer("", history, [], "quick", images=["A", "B", "C"])
+    assert got["history_dropped"] == 2
+    assert [m["role"] for m in sent["messages"]] == ["system", "user"]
+
+
 def test_thinking_that_eats_the_budget_is_a_clear_refusal(monkeypatch):
     monkeypatch.setattr(copilot.llm, "chat_stream", lambda messages, **kwargs: (
         "", {"thinking_chars": 9000, "thinking_ate_the_budget": True, "output_truncated": True}))
@@ -336,8 +395,25 @@ def test_run_turn_writes_a_replayable_trace(con, vault, monkeypatch):
     assert payload["retrieval_levels"] == ["note"]
     assert payload["cited"] == ["Notes/school/lesson.md"]
     assert payload["history_turns"] == 1
+    assert payload["history_dropped"] == 0
     assert payload["timing"]["answer"]["output_tokens"] == 5
     assert "answer" not in payload            # machine facts only; the thread holds the prose
+
+
+def test_the_trace_counts_the_turns_the_window_dropped(con, vault, monkeypatch):
+    write(vault, "Notes/school/lesson.md", "gradient descent")
+    source = copilot.sync_note(con, vault, "Notes/school/lesson.md", embed=False)
+    monkeypatch.setattr(copilot.search_mod, "hybrid", lambda *args, **kwargs: [])
+    monkeypatch.setattr(copilot.llm, "chat_stream", lambda messages, **kwargs: ("Answer", {}))
+    monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
+    records = []
+    monkeypatch.setattr(copilot.trace, "record", lambda kind, payload: records.append(payload))
+    window = "w" * (copilot.llm.RESIDENT_CTX * copilot.CHARS_PER_TOKEN)
+    history = [{"role": "you", "text": "a" + window}, {"role": "slim", "text": "b" + window},
+               {"role": "you", "text": "short"}, {"role": "slim", "text": "reply"}]
+    got = copilot.run_turn(con, source["id"], "What is this?", history, "quick")
+    assert got["history_dropped"] == 2
+    assert records[0]["history_turns"] == 4 and records[0]["history_dropped"] == 2
 
 
 def test_run_turn_traces_a_refused_turn(con, vault, monkeypatch):
