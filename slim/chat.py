@@ -1,7 +1,7 @@
 """The Obsidian plugin's local API server — `slim chat`, 127.0.0.1:7546.
 
-Twenty-one routes, called by `obsidian/main.js` (and `GET /api/health` also by the stale-server
-hook): the health guard, eleven `/api/record*` routes for the recorder and nine `/api/copilot*`
+Twenty-two routes, called by `obsidian/main.js` (and `GET /api/health` also by the stale-server
+hook): the health guard, eleven `/api/record*` routes for the recorder and ten `/api/copilot*`
 routes for the open-note sidebar. The copilot never writes a note: an edit streams back as
 changes, and the plugin applies each one through the editor.
 
@@ -55,6 +55,8 @@ MAX_COPILOT_STREAM_BODY_BYTES = (
 # which the plugin writes into the vault itself precisely because a recording dwarfs any
 # sane HTTP cap. An hour of typed notes still fits comfortably here.
 MAX_RECORD_BODY_BYTES = 1_000_000
+RESTORE_REFUSED = ("This recording changed since (a new transcript or card edit); restoring would remove "
+                   "that. Use ↺ on the changes instead.")
 
 # Recorder progress is local, short-lived diagnostic state. The recording request remains the
 # source of truth; this registry only lets the Obsidian object observe a long synchronous job.
@@ -1279,6 +1281,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_copilot_context()
         elif path == "/api/copilot/stream":
             self._handle_copilot_stream()
+        elif path == "/api/copilot/restore":
+            self._handle_copilot_restore()
         elif path == "/api/copilot/thread/save":
             self._handle_copilot_thread_save()
         elif path == "/api/copilot/thread/delete":
@@ -1386,6 +1390,31 @@ class _Handler(BaseHTTPRequestHandler):
             "status": "saved", "id": summary.id, "updated_at": summary.updated_at,
             "turns": summary.turns, "source_id": summary.source_id,
             "source_path": summary.source_path, "reasoning_mode": summary.reasoning_mode})
+
+    def _handle_copilot_restore(self):
+        """The note as it was before an editing run, to put back — unless the recording's own parts
+        changed since (a resume added a transcript, the card was edited): restoring would undo
+        that, so it is refused with what to do instead."""
+        if self._refuse_cross_site_write():
+            return
+        data = self._read_json_body(MAX_THREAD_BODY_BYTES)
+        if data is None:
+            return
+        doc = data.get("doc")
+        if not isinstance(doc, str):
+            self._send_json(400, {"error": "doc must be text"})
+            return
+        try:
+            before = threads_mod.load_before(data.get("thread_id"), data.get("ref"))
+        except threads_mod.ThreadError as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        if before is None:
+            self._send_json(404, {"error": "no such copy"})
+        elif edits_mod.same_recording(before, doc):
+            self._send_json(200, {"text": before})
+        else:
+            self._send_json(200, {"refused": RESTORE_REFUSED})
 
     def _handle_copilot_stream(self):
         if self._refuse_cross_site_write():

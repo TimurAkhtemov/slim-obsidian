@@ -203,7 +203,7 @@ def test_copilot_thread_delete_invalid_id_is_authored_400(server_url, evil):
 
 # --- the shared write gate covers every mutating copilot route -----------------------------
 
-COPILOT_WRITES = ("/api/copilot/context", "/api/copilot/stream",
+COPILOT_WRITES = ("/api/copilot/context", "/api/copilot/stream", "/api/copilot/restore",
                   "/api/copilot/thread/save", "/api/copilot/thread/delete")
 
 
@@ -470,3 +470,44 @@ def test_a_client_that_hangs_up_stops_the_run_after_the_current_call(server_url,
     # The changes stay in the editor and the plugin keeps the turn, so its image stays too.
     assert len(list((threads.THREADS_DIR / "chat-1.images").glob("*.png"))) == 1
     client.close()
+
+
+
+# --- Restore: the note as it was, unless a recording's own parts changed since -------------------
+
+MEETING = ("---\ntitle: Call\n---\n\n```slim-meeting\n## Transcript\n\nMe: hello\n```\n\n"
+           "My notes, long and rambling.\n")
+REFUSED = ("This recording changed since (a new transcript or card edit); restoring would remove that. "
+           "Use ↺ on the changes instead.")
+
+
+def restore(url, ref, doc, thread="chat-1"):
+    status, _headers, body = post(url, "/api/copilot/restore", {"thread_id": thread, "ref": ref, "doc": doc})
+    return status, json.loads(body)
+
+
+def test_restore_gives_back_the_copy_when_the_recordings_parts_are_as_they_were(server_url):
+    ref = threads.save_before("chat-1", MEETING)
+    now = MEETING.replace("My notes, long and rambling.", "My notes.")
+    assert restore(server_url, ref, now) == (200, {"text": MEETING})
+
+
+def test_restore_is_refused_when_the_recording_changed_since(server_url):
+    ref = threads.save_before("chat-1", MEETING)
+    resumed = MEETING.replace("Me: hello\n", "Me: hello\nThem: and a second segment\n")
+    assert restore(server_url, ref, resumed) == (200, {"refused": REFUSED})
+    carded = MEETING.replace("title: Call", "title: Call with Ana")
+    assert restore(server_url, ref, carded) == (200, {"refused": REFUSED})
+
+
+def test_a_plain_note_is_always_restorable(server_url):
+    ref = threads.save_before("chat-1", NOTE)
+    assert restore(server_url, ref, "anything at all\n") == (200, {"text": NOTE})
+
+
+def test_restore_validates_its_ids_and_its_doc(server_url):
+    ref = threads.save_before("chat-1", NOTE)
+    assert restore(server_url, "0" * 32, NOTE)[0] == 404
+    assert restore(server_url, "../x", NOTE)[0] == 400
+    assert restore(server_url, ref, NOTE, thread="../x")[0] == 400
+    assert restore(server_url, ref, 5)[0] == 400

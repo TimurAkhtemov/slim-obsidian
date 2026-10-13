@@ -89,6 +89,14 @@ def protected_ranges(text: str) -> list[tuple[int, int]]:
     return ranges
 
 
+def same_recording(before: str, now: str) -> bool:
+    """Are a recording's own parts (frontmatter, meeting block, transcript) the same in both?
+    Restoring `before` over `now` would otherwise undo a resume or a card edit. Two plain notes
+    have none, so they are always the same."""
+    take = lambda text: [text[start:stop] for start, stop in protected_ranges(text)]
+    return take(before) == take(now)
+
+
 def _markers(text: str) -> tuple[int, int]:
     lines = text.splitlines()
     return (sum(bool(_MEETING_OPEN.match(line)) for line in lines),
