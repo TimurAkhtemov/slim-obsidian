@@ -1573,11 +1573,17 @@ test("a new note from a skill is created at once, and its ↺ moves it to Obsidi
     trash: async (file, system) => { trashed.push([file.path, system]); delete files[file.path]; },
   };
   files["Notes/taken.md"] = "theirs";
+  vault.create = async (p, text) => {
+    if (p.includes("?")) throw new Error("File name cannot contain any of the following characters: * \" \\ / < > : | ?");
+    files[p] = text;
+    return { path: p };
+  };
   const view = editView({ live, editor, vault, events: async (_body, handlers) => {
     handlers.edit({ before_ref: "8".repeat(32), hash_before: "h0" });
     handlers.plan({ intro: "", steps: [] });
     handlers.change({ id: "c1", step: 1, op: "create", label: "Created Notes/brief.md", needs: [], path: "Notes/brief.md", text: "# Brief\n" });
     handlers.change({ id: "c2", step: 1, op: "create", label: "Created Notes/taken.md", needs: [], path: "Notes/taken.md", text: "mine" });
+    handlers.change({ id: "c3", step: 1, op: "create", label: "Created Notes/why?.md", needs: [], path: "Notes/why?.md", text: "x" });
     handlers.turn({ answer: "Done", mode: "quick", citations: [], edit_run: { plan: { intro: "", steps: [] }, steps_done: 0,
       changes: [], stopped: null, summary: "Done: 2 changes", before_ref: "8".repeat(32) } });
   } });
@@ -1586,7 +1592,17 @@ test("a new note from a skill is created at once, and its ↺ moves it to Obsidi
   assert.equal(files["Notes/taken.md"], "theirs");                        // never written over
   assert.equal(live.calls.some((c) => c[0] === "apply"), false);          // a new note is not an editor change
   const run = view.turns.at(-1).turn.edit_run;
-  assert.deepEqual(run.changes.map(({ path, state }) => [path, state]), [["Notes/brief.md", "created"], ["Notes/taken.md", "failed"]]);
+  assert.deepEqual(run.changes.map(({ path, state, reason }) => [path, state, reason]), [
+    ["Notes/brief.md", "created", undefined],
+    ["Notes/taken.md", "failed", "a note is already there"],
+    ["Notes/why?.md", "failed", "File name cannot contain any of the following characters: * \" \\ / < > : | ?"]]);
+  const { view: shown, root } = renderedView({ live });
+  shown.turns = view.turns;
+  shown.render();
+  const texts = [];
+  (function walk(el) { if (el.textContent) texts.push(el.textContent); el.children.forEach(walk); })(root);
+  assert.ok(texts.some((t) => t.includes("Not created (a note is already there):")), texts.join(" | "));
+  assert.ok(texts.some((t) => t.includes("Not created (File name cannot contain")), texts.join(" | "));
   await view.trashCreated(view.turns.at(-1), run.changes[0]);
   assert.deepEqual(trashed, [["Notes/brief.md", false]]);
   assert.equal(run.changes[0].state, "trashed");

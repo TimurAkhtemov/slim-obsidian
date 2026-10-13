@@ -3505,7 +3505,7 @@ class CopilotView extends ItemView {
     if (change.op === "create") {
       entry.path = change.path;
       entry.state = "creating";
-      run.pending.push(this.createNote(change).then((state) => { entry.state = state; this.renderEdit(); }));
+      run.pending.push(this.createNote(change).then((made) => { Object.assign(entry, made); this.renderEdit(); }));
     } else if (this.inView(run)) {
       entry.state = "skipped";            // if the editor throws, the change did not land
       entry.state = this.plugin.live.applyChange(run.view, run.ref, change);
@@ -3525,21 +3525,24 @@ class CopilotView extends ItemView {
     return shows === null || shows === run.path;
   }
 
+  // {state: "created"}, or {state: "failed", reason} in words the owner can act on.
   async createNote(change) {
     const vault = this.app.vault;
     try {
       // The adapter's check is the filesystem's, case-insensitive on macOS: `summary.md` must
       // not be written over an existing `Summary.md` that the path index spells differently.
-      if (vault.getAbstractFileByPath(change.path) || await vault.adapter?.exists?.(change.path)) return "failed";
+      if (vault.getAbstractFileByPath(change.path) || await vault.adapter?.exists?.(change.path)) {
+        return { state: "failed", reason: "a note is already there" };
+      }
       await vault.create(change.path, change.text);
     } catch (error) {
       console.error("[slim] create note", change.path, error);
-      return "failed";
+      return { state: "failed", reason: String(error?.message || error).split("\n")[0].slice(0, 200) };
     }
     // A note is not findable until it is indexed.
     this.plugin.postJSON("/api/copilot/context", { path: change.path, related: false })
       .catch((e) => console.warn("[slim] index new note", change.path, e.message));
-    return "created";
+    return { state: "created" };
   }
 
   async trashCreated(turn, entry) {
@@ -3567,8 +3570,9 @@ class CopilotView extends ItemView {
       plan: run.plan || server.plan || { intro: "", steps: [] },
       steps_done: server.steps_done ?? run.steps.filter((state) => state && state !== "doing").length,
       step_states: run.steps.map((state) => state || null),
-      changes: run.changes.map(({ id, step, op, label, needs, path, state }) => ({
-        id, step, op, label, needs, ...(path ? { path } : {}), state: states.get(id) || state })),
+      changes: run.changes.map(({ id, step, op, label, needs, path, state, reason }) => ({
+        id, step, op, label, needs, ...(path ? { path } : {}), state: states.get(id) || state,
+        ...(reason ? { reason } : {}) })),
       stopped: server.stopped ?? null,
       outline_met: server.outline_met ?? null,
       fixups: server.fixups ?? 0,
@@ -4135,7 +4139,8 @@ class CopilotView extends ItemView {
       }
       if (change.op !== "create") continue;
       const row = create(box, "div", "slim-edit-note slim-edit-created");
-      const what = { creating: "Creating", created: "Created", trashed: "Moved to trash:", failed: "Not created, a note is already there:" }[change.state] || "";
+      const what = { creating: "Creating", created: "Created", trashed: "Moved to trash:",
+                     failed: `Not created (${change.reason || "it failed"}):` }[change.state] || "";
       create(row, "span", "", `${what} `);
       const name = create(row, "button", "slim-link", change.path);
       name.onclick = () => this.openNote(change.path);
