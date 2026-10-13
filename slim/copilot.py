@@ -898,7 +898,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
            "outline_details": None,
            "first_temperature": temperature}
     spent, failed = 0, []
-    current = {"k": None, "landed": 0, "refused": False}      # the step being worked
+    current = {"k": None, "count": 1, "landed": 0, "refused": False}      # the step(s) being worked
     steps: list[str] = []
 
     def attempt(offered, think, temperature, num_predict):
@@ -928,10 +928,11 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
         messages.append(reply.message)
         return reply
 
-    def open_step(k: int) -> None:
-        current.update(k=k, landed=0, refused=False)
-        if steps[k] != ONE_REPLY:
-            on_edit("step", {"index": k + 1, "state": "doing"})
+    def open_step(k: int, count: int = 1) -> None:
+        current.update(k=k, count=count, landed=0, refused=False)
+        for n in range(k, k + count):
+            if steps[n] != ONE_REPLY:
+                on_edit("step", {"index": n + 1, "state": "doing"})
 
     def close_step() -> None:
         k = current["k"]
@@ -939,8 +940,9 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
             return
         current["k"] = None
         state = "skipped" if not current["landed"] else "partial" if current["refused"] else "done"
-        if steps[k] != ONE_REPLY:
-            on_edit("step", {"index": k + 1, "state": state})
+        for n in range(k, k + current["count"]):
+            if steps[n] != ONE_REPLY:
+                on_edit("step", {"index": n + 1, "state": state})
 
     def finish() -> dict:
         close_step()
@@ -985,10 +987,15 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
         args = plans[0]["arguments"] if plans and isinstance(plans[0]["arguments"], dict) else {}
         steps += _steps(args.get("steps"))[:MAX_STEPS]
         intro = str(args.get("intro") or "").strip() if plans else first.content.strip()
-        listed = _listed_plan(first.content) if edits and not plans else None
-        if listed:                      # a plan written as prose: its first change is step 1
+        # A plan written as prose beside the first changes: a list naming more than the reply did
+        # (a list of as many is a recap). The first reply's edit calls are its first steps.
+        made = [c for c in edits if c["name"] in step_tools]
+        listed = _listed_plan(first.content) if edits and not plans and note is not None else None
+        covered = 1
+        if listed and len(listed[1]) > len(made):
             intro, written = listed
             steps += written
+            covered = len(made)
         elif edits and not steps:       # edits with no plan, or with an empty one: a one-step run
             steps.append(ONE_REPLY)
         shown = [] if steps == [ONE_REPLY] else list(steps)
@@ -1022,12 +1029,14 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
             change, said = edits_mod.apply(note, name, args, change_id=change_id, step=number, only=only)
             return asdict(change), said
 
-        def apply_calls(calls: list[dict], number: int) -> int:
+        def apply_calls(calls: list[dict], number) -> int:
+            """`number`: the step each call belongs to — one for all, or one per call."""
             nonlocal results, in_row
             results, landed, refused = [], 0, False
-            for call in calls:
+            for index, call in enumerate(calls):
                 out["calls"] += 1
                 name = call["name"]
+                at = number[index] if isinstance(number, list) else number
                 if name == "done":          # the work is finished: this step's calls stand, no more steps
                     out.update(summary=_summary(call), finished_early=True)
                     break
@@ -1041,9 +1050,9 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
                 try:
                     if name not in step_tools:
                         raise edits_mod.ToolError(f"{name} is not available now", "tool")
-                    change, said = land(name, call.get("arguments") or {}, number)
+                    change, said = land(name, call.get("arguments") or {}, at)
                 except edits_mod.ToolError as exc:
-                    out["refusals"].append({"step": number, "tool": name, "code": exc.code})
+                    out["refusals"].append({"step": at, "tool": name, "code": exc.code})
                     results.append(f"refused: {exc}")
                     refused, in_row = True, in_row + 1
                     if in_row >= MAX_REFUSALS:
@@ -1067,17 +1076,21 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
         k, retried, pending = 0, False, first if edits else None
         while k < len(steps) and not out["stopped"]:
             if not retried:
-                open_step(k)
-            if pending:                 # the first reply already holds step 1's calls
+                open_step(k, covered if pending else 1)
+            if pending:                 # the first reply already holds the first steps' calls
                 reply, pending = pending, None
-                landed = out["first_call_edits"] = apply_calls(edits, 1)
+                numbers, m = [], 0
+                for call in edits:
+                    numbers.append(min(m, covered - 1) + 1)
+                    m += call["name"] in step_tools
+                landed = out["first_call_edits"] = apply_calls(edits, numbers)
                 results = (["ok: plan accepted"] if plans else []) + results
             else:
                 reply, landed = step(instruction(k), k + 1)
             if out["stopped"]:
                 break
             if out["finished_early"]:
-                k = out["steps_done"] = k + 1
+                k = out["steps_done"] = k + current["count"]
                 break
             acted = [c for c in reply.calls if c["name"] != "plan"]
             if reply.malformed and not acted:
@@ -1086,9 +1099,11 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
                 out["empty_steps"] += 1
             if (acted or reply.malformed) and not landed and not retried:
                 retried = True              # every call refused or unreadable: the same step once more, with why
+                current["count"] = 1        # (the steps after it run as their own)
                 continue
+            span = current["count"]
             close_step()
-            k = out["steps_done"] = k + 1
+            k = out["steps_done"] = k + span
             retried = False
         close_step()
 

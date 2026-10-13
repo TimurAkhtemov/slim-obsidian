@@ -321,3 +321,12 @@ def test_brief_makes_one_new_note_in_the_open_notes_folder(con, vault, monkeypat
     assert "the open note's folder is `Capture/work/`" in seen[0]["messages"][0]["content"]
     assert [p["path"] for e, p in events if e == "change"] == ["Capture/work/Pricing brief.md"]
     assert turn["edit_run"]["summary"] == "Wrote the brief." and not (vault / "Capture/work/Pricing brief.md").exists()
+
+
+def test_a_new_notes_prose_list_is_never_read_as_a_plan(con, vault, monkeypatch):
+    meeting(vault, "Kickoff", "2026-09-01T09:00:00", "ship friday")
+    source = open_source(con, vault, meeting(vault, "Review", "2026-09-08T09:00:00", "monday"))
+    prose = "Merged them.\n- Shipping\n- Dates\n- Owners"
+    seen = tooled(monkeypatch, (prose, [("create_note", {"path": "All.md", "markdown": "# All"})]))
+    turn = copilot.run_turn(con, source["id"], "/consolidate-my-notes", [], "deep", vault=vault)
+    assert len(seen) == 1 and turn["edit_run"]["plan"]["steps"] == []

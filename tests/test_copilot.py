@@ -1313,3 +1313,37 @@ def test_a_plan_whose_steps_came_as_one_string_runs_each_of_them(turn, monkeypat
     got, _ = turn("go")
     assert got["edit_run"]["plan"]["steps"] == ["Rename A", "Move B up"] and len(seen) == 3
     assert "Step 2 of 2: Move B up" in seen[2]["messages"][-1]["content"]
+
+
+# --- I4: a list is a plan only when it names more than the reply already did -------------------
+
+def test_a_recap_of_the_fixes_just_made_ends_after_one_call(turn, monkeypatch):
+    recap = "Fixed both:\n- renamed A\n- shortened B"
+    seen = scripted(monkeypatch, (recap, [("replace", {"target": "b3", "markdown": "## A renamed"}),
+                                          ("replace", {"target": "b8", "markdown": "B."})]))
+    got, events = turn("rename A and shorten B")
+    assert len(seen) == 1 and got["edit_run"]["plan"]["steps"] == [] and len(got["edit_run"]["changes"]) == 2
+
+
+def test_a_five_item_plan_with_one_edit_continues_from_step_two(turn, monkeypatch):
+    plan = "I'll do it in five.\n1. Rename A\n2. Rename B\n3. Shorten A\n4. Shorten B\n5. Check"
+    seen = scripted(monkeypatch, (plan, [("replace", {"target": "b3", "markdown": "## A renamed"})]),
+                    *[("", [])] * 4)
+    got, _ = turn("tidy")
+    assert len(seen) == 5 and "Step 2 of 5: Rename B" in seen[1]["messages"][-1]["content"]
+    assert got["edit_run"]["steps_done"] == 5
+
+
+def test_two_edits_beside_a_four_item_plan_count_as_its_first_two_steps(turn, monkeypatch):
+    plan = "Four parts.\n- Rename A\n- Rename B\n- Shorten A\n- Shorten B"
+    seen = scripted(monkeypatch, (plan, [("replace", {"target": "b3", "markdown": "## A2"}),
+                                         ("replace", {"target": "b7", "markdown": "## B2"})]),
+                    ("", [("replace", {"target": "b4", "markdown": "A."})]),
+                    ("", [("replace", {"target": "b8", "markdown": "B."})]))
+    got, events = turn("tidy")
+    assert len(seen) == 3 and "Step 3 of 4: Shorten A" in seen[1]["messages"][-1]["content"]
+    assert [c["step"] for c in got["edit_run"]["changes"]] == [1, 2, 3, 4]
+    assert [p for e, p in events if e == "step"][:4] == [
+        {"index": 1, "state": "doing"}, {"index": 2, "state": "doing"},
+        {"index": 1, "state": "done"}, {"index": 2, "state": "done"}]
+    assert got["edit_run"]["steps_done"] == 4
