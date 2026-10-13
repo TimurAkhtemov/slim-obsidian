@@ -13,7 +13,8 @@ retrieval, and never the model:
                                          `/name folder …` or `/name note …` overrides it once
     filter:  {type: meeting-note}        folder only: frontmatter equality (a list is any-of)
     section: Notes                       keep only this heading's section of each note
-    output:  chat | edit | new-note      edit and new-note always propose changes to accept
+    output:  chat | edit | new-note      edit changes the open note, new-note creates notes;
+                                         either lands at once, each change undoable
     mode:    quick | deep                the depth this skill always runs at
 """
 from __future__ import annotations
@@ -45,10 +46,6 @@ class Skill:
     mode: str = ""
     origin: str = "builtin"
     error: str = ""
-
-    @property
-    def proposes(self) -> bool:
-        return self.output in ("edit", "new-note")
 
     def listing(self) -> dict:
         return {"name": self.name, "description": self.description, "input": self.input,

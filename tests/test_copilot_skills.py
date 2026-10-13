@@ -280,3 +280,28 @@ def test_a_new_note_call_that_could_not_be_read_is_asked_for_once_more(con, vaul
         "refused: your tool call could not be read (a tool call came back as text); write it again\n\n"
         "Make the new note with the create_note tool.")}
     assert [c["path"] for c in turn["edit_run"]["changes"]] == ["Capture/work/All.md"]
+
+
+def test_the_built_in_skills_speak_of_changes_not_search_blocks(vault):
+    loaded = skills.load(vault)
+    for skill in loaded.values():
+        assert "SEARCH" not in skill.prompt and "ONE change" not in skill.prompt, skill.name
+    assert " ".join(loaded["tidy"].prompt.split()) == (
+        "Clean up the formatting of the selected text: consistent list markers, headings, spacing and "
+        "emphasis. Keep every word. {{args}}")
+    assert (loaded["tidy"].input, loaded["tidy"].output) == ("selection", "edit")
+    assert not hasattr(loaded["tidy"], "proposes")
+
+
+def test_brief_makes_one_new_note_in_the_open_notes_folder(con, vault, monkeypatch):
+    source = open_source(con, vault, meeting(vault, "Pricing call", "2026-09-08T09:00:00", "raise to 12"))
+    seen = tooled(monkeypatch, ("", [("create_note", {"path": "Pricing brief.md", "markdown": "## Goal\n\nx"}),
+                                     ("done", {"summary": "Wrote the brief."})]))
+    events = []
+    turn = copilot.run_turn(con, source["id"], "/brief", [], "quick", vault=vault,
+                            on_edit=lambda event, payload: events.append((event, payload)))
+    assert seen[0]["tools"] == ["create_note", "done"] and seen[0]["opts"]["think"] is True    # its own depth
+    assert "ONE new note in this folder" in seen[0]["messages"][-1]["content"]
+    assert "the open note's folder is `Capture/work/`" in seen[0]["messages"][0]["content"]
+    assert [p["path"] for e, p in events if e == "change"] == ["Capture/work/Pricing brief.md"]
+    assert turn["edit_run"]["summary"] == "Wrote the brief." and not (vault / "Capture/work/Pricing brief.md").exists()
