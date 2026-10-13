@@ -128,8 +128,9 @@ note loses its id. Embedding is part of ingest; `slim status` reports `unembedde
      marks, then syncs and embeds the note. ↺ undoes a change and those built on it; Undo all and
      Redo; Cmd-Z is the editor's own. The note as it was before the run is kept beside the chat,
      outside the vault (`threads.save_before`), so See before and Restore work after the note
-     is closed; Restore warns when the note has changed since. A recording's frontmatter,
-     `slim-meeting` block and transcript are [locked] blocks no call may touch.
+     is closed; Restore warns when the note has changed since, and is refused when a recording's
+     own parts have (`/api/copilot/restore`). A recording's frontmatter, `slim-meeting` block and
+     transcript are [locked] blocks no call may touch, and no change's splices may reach them.
 
 ## Where things live
 
