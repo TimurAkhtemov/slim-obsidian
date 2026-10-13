@@ -817,10 +817,12 @@ def _intent(question: str, history: list[dict]) -> tuple[bool | None, dict]:
     return (said if isinstance(said, bool) else None), stats or {}
 
 
-def _turn(messages: list[dict], *, think: bool, first_tools: list[str], step_tools: tuple[str, ...],
+def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tuple[str, ...],
           note: edits_mod.Note | None, before_text: str, only: set[str] | None = None, create=None,
           temperature: float = FIRST_TEMPERATURE, nudge: bool = False, on_edit, should_stop) -> dict:
-    """One editing turn. The first call answers in text, makes a small change at once, or plans a
+    """One editing turn. Every call offers the same `tools`, in the same order: they sit at the
+    top of the prompt, and a different list re-reads the whole note. `step_tools` are those that
+    change something. The first call answers in text, makes a small change at once, or plans a
     larger one, at `temperature`; with `nudge` (the gate wanted a change) a text-only reply is
     asked once to use the tools. A plan is carried out one call per step, then up to MAX_FIXUPS
     calls if the headings miss its outline. Code holds the plan, applies every call to the draft
@@ -891,26 +893,26 @@ def _turn(messages: list[dict], *, think: bool, first_tools: list[str], step_too
 
     try:
         first_predict = QUICK_NUM_PREDICT + (THINK_BUDGET if think else 0)
-        first = ask(first_tools, think, temperature, first_predict)
+        first = ask(tools, think, temperature, first_predict)
         # An overflowing prompt loses its START — the note and the rider — silently.
         if first.stats.get("ctx_saturated"):
             raise CopilotError("this note is too long for one request; edit it in Obsidian")
         plans, edits = split(first)
         unread = first.malformed and not first.calls
         if not plans and not edits and not out["stopped"]:
-            if unread or first.calls and "plan" in first_tools:
+            if unread or first.calls and "plan" in tools:
                 # Calls that change nothing, or a call code could not read: the plan asked for once
                 # more (a new note, where there is no plan, once more).
                 out["replanned"] = True
                 said = _unreadable(first.malformed) if unread else "refused: start with a plan"
                 messages.extend(_results([said], "Make the plan first: one sentence for the owner, and the "
-                                                 "steps in order." if "plan" in first_tools else
+                                                 "steps in order." if "plan" in tools else
                                                  "Make the new note with the create_note tool."))
             elif nudge and not first.calls:     # the gate said change, and the reply is only text
                 out["nudged"] = True
                 messages.extend(_results([], NUDGE))
             if out["replanned"] or out["nudged"]:
-                first = ask(first_tools, think, temperature, first_predict)
+                first = ask(tools, think, temperature, first_predict)
                 plans, edits = split(first)
         if not plans and not edits:
             out["answer"] = first.content.strip() or next(
@@ -942,7 +944,7 @@ def _turn(messages: list[dict], *, think: bool, first_tools: list[str], step_too
             sections = note.sections() if note is not None else ""
             now = f"\n\nSections now:\n{sections}" if sections else ""
             messages.extend(_results(results, instruction + now))
-            reply = ask(list(step_tools), False, STEP_TEMPERATURE, STEP_NUM_PREDICT)
+            reply = ask(tools, False, STEP_TEMPERATURE, STEP_NUM_PREDICT)
             return reply, apply_calls(reply.calls, number)
 
         def land(name: str, args, number: int) -> tuple[dict, str]:
@@ -1122,7 +1124,7 @@ def _answer_or_edit(con, vault: Path, source: dict, question: str, history: list
         text = doc if doc is not None else _note_text(vault, source["path"])
         prompt = skills_mod.render_prompt(skill, args) if skill else question
         note, only, create, inputs, cited = edits_mod.Note(text), None, None, None, None
-        first_tools, step_tools = ["plan", *STEP_TOOLS], STEP_TOOLS
+        tools, step_tools = ["plan", *STEP_TOOLS], STEP_TOOLS
         # A change the gate wanted, or an edit skill's, is written at STEP_TEMPERATURE.
         temperature = STEP_TEMPERATURE if not skill and INTENT_GATE else FIRST_TEMPERATURE
         if skill and skill.output == "new-note":
@@ -1131,7 +1133,7 @@ def _answer_or_edit(con, vault: Path, source: dict, question: str, history: list
             cited = [{"n": i + 1, "path": d["path"], "title": d["title"]}
                      for i, d in enumerate(d for d in pack.docs if d["role"] != "selection")]
             inputs, note = pack_inputs(pack), None
-            first_tools, step_tools = ["create_note", "done"], ("create_note",)
+            tools, step_tools = ["create_note", "done"], ("create_note",)
             made: set[str] = set()
 
             def create(path, markdown):
@@ -1150,7 +1152,7 @@ def _answer_or_edit(con, vault: Path, source: dict, question: str, history: list
                 if skill.input == "selection":
                     only = _selected(note, text, selection, skill)
                     prompt += f"\n\nSelected text:\n{selection.strip()}"
-                    first_tools, step_tools = ["plan", "replace", "edit_text"], ("replace", "edit_text")
+                    tools, step_tools = ["plan", "replace", "edit_text"], ("replace", "edit_text")
             system = edit_message(source["path"], note)
         # No retrieval orders the edit path's images, so they come in note order.
         shown, skipped = open_note_images(vault, source, [])
@@ -1162,7 +1164,7 @@ def _answer_or_edit(con, vault: Path, source: dict, question: str, history: list
                             QUICK_NUM_PREDICT + (THINK_BUDGET if mode == "deep" else 0))
         messages = [system_turn, *recent, *embedded, current]
         stage("Thinking deeply" if mode == "deep" else "Writing")
-        out = _turn(list(messages), think=mode == "deep", first_tools=first_tools, step_tools=step_tools,
+        out = _turn(list(messages), think=mode == "deep", tools=tools, step_tools=step_tools,
                     note=note, before_text=text, only=only, create=create, temperature=temperature,
                     nudge=not skill and INTENT_GATE, on_edit=on_edit or (lambda _event, _payload: None),
                     should_stop=should_stop)

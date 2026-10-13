@@ -748,7 +748,7 @@ def test_a_plan_streams_its_events_in_order_and_returns_the_run(turn, monkeypatc
     assert run["summary"] == "Rename A and move B up." and got["answer"] == run["summary"]
     assert got["final"].index("## B") < got["final"].index("## A renamed")
     assert run["hash_before"] == edits.digest(NOTE) and run["hash_after"] == edits.digest(got["final"])
-    assert [c["tools"] for c in seen] == [["plan", *STEP_TOOLS], STEP_TOOLS, STEP_TOOLS]   # no summary call
+    assert [c["tools"] for c in seen] == [["plan", *STEP_TOOLS]] * 3     # one list; no summary call
     assert "Step 2 of 2: Move B above A" in seen[2]["messages"][-1]["content"]
     assert seen[0]["opts"]["think"] is True and seen[1]["opts"]["think"] is False
     assert seen[0]["opts"]["temperature"] == seen[1]["opts"]["temperature"] == copilot.STEP_TEMPERATURE == 0.0
@@ -879,7 +879,7 @@ def test_a_fix_up_lists_only_the_headings_missing_or_out_of_order(turn, monkeypa
     assert FIXUP + "Missing:\n1. ## D (your outline puts it after ## B)\n\nSections now:\n" in \
         seen[3]["messages"][-1]["content"]
     run = got["edit_run"]
-    assert seen[2]["tools"] == STEP_TOOLS and run["changes"][0]["step"] == 2
+    assert seen[2]["tools"] == ["plan", *STEP_TOOLS] and run["changes"][0]["step"] == 2
     assert run["outline_met"] is True and run["fixups"] == 2 and run["steps_done"] == 1 and len(seen) == 4
 
 
@@ -1205,3 +1205,27 @@ def test_list_items_in_any_marker_make_the_steps_and_the_first_sentence_the_intr
     assert copilot._listed_plan("Plan: do it. Now.\n- a\n* b\n3. c\n4) d") == ("Plan: do it.", ["a", "b", "c", "d"])
     assert copilot._listed_plan("Only one:\n- a") is None and copilot._listed_plan("no list") is None
     assert copilot._listed_plan("\n".join(f"- s{i}" for i in range(12)))[1] == [f"s{i}" for i in range(8)]
+
+
+
+# --- one tool list for the whole run, so the prompt's start stays cached ------------------------
+
+def test_every_call_in_a_run_is_offered_the_same_tools_in_the_same_order(turn, monkeypatch):
+    plan = {"intro": "x", "outline": ["# Title", "## B", "## A"], "steps": ["Rename A", "Move B up"]}
+    seen = scripted(monkeypatch, ("Text first.", []),                                   # nudged
+                    ("", [("plan", plan)]),
+                    ("", [("replace", {"target": "b99", "markdown": "x"})]),               # refused: retried
+                    ("", [("plan", plan), ("replace", {"target": "b3", "markdown": "## A"})]),  # plan restated
+                    ("", []),                                                             # step 2 does nothing
+                    ("", [("move", {"target": "s7", "before": "s3"})]))                  # fix-up
+    got, _ = turn("reorder")
+    assert len(seen) == 6 and [c["tools"] for c in seen] == [["plan", *STEP_TOOLS]] * 6
+    assert any(m.get("content", "").startswith("ok: the plan is already set") for m in seen[4]["messages"])
+    assert got["edit_run"]["fixups"] == 1 and got["edit_run"]["outline_met"] is True
+
+
+def test_a_skill_keeps_its_own_list_for_its_whole_run(turn, monkeypatch):
+    seen = scripted(monkeypatch, ("", [("replace", {"target": "b99", "markdown": "x"})]),
+                    ("", [("replace", {"target": "b5", "markdown": "- **one**"})]))
+    turn("/tidy", selection="- one")
+    assert [c["tools"] for c in seen] == [["plan", "replace", "edit_text"]] * 2
