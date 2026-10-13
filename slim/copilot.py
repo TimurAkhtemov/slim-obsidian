@@ -1359,9 +1359,14 @@ def run_turn(con, source_id: str, question: str, history: list[dict], mode: str,
                 con, vault, source, question, history, mode, skill=skill, args=args, images=images,
                 selection=selection, doc=doc, on_stage=on_stage, on_delta=on_delta, on_edit=on_edit,
                 should_stop=should_stop, entry=entry)
-    except (CopilotError, llm.LLMError) as exc:
-        trace.record("copilot", {**entry, "status": "failed", "error": str(exc),
-                                 "duration_ms": round((time.time() - started) * 1000)})
+    except Exception as exc:
+        # Any failure leaves its record, a closed chat's BrokenPipe included; the message only
+        # for refusals and model errors, whose words are SLIM's own.
+        failure = {**entry, "status": "failed", "error_type": type(exc).__name__,
+                   "duration_ms": round((time.time() - started) * 1000)}
+        if isinstance(exc, (CopilotError, llm.LLMError)):
+            failure["error"] = str(exc)
+        trace.record("copilot", failure)
         raise
     result.update({"source": source, "retrieval_levels": levels, "skill": entry["skill"]})
     record = {

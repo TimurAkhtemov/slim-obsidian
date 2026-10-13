@@ -1400,3 +1400,22 @@ def test_a_note_too_long_for_the_window_is_refused_before_its_edit_call(turn, mo
     with pytest.raises(copilot.CopilotError, match="too long for one request"):
         turn("rename A")
     assert seen == []
+
+
+# --- M4: any failure leaves a trace record ---------------------------------------------------------
+
+def test_a_turn_that_fails_in_a_callback_is_traced_with_the_error_type(con, vault, monkeypatch):
+    write(vault, "Notes/school/lesson.md", "gradient descent")
+    source = copilot.sync_note(con, vault, "Notes/school/lesson.md", embed=False)
+    monkeypatch.setattr(copilot.search_mod, "hybrid", lambda *a, **k: [])
+    answering(monkeypatch)
+    records = []
+    monkeypatch.setattr(copilot.trace, "record", lambda kind, payload: records.append((kind, payload)))
+
+    def gone(_stage):
+        raise BrokenPipeError(32, "Broken pipe")
+    with pytest.raises(BrokenPipeError):
+        copilot.run_turn(con, source["id"], "What is this?", [], "quick", vault=vault, on_stage=gone)
+    (kind, payload), = records
+    assert kind == "copilot" and payload["status"] == "failed" and payload["error_type"] == "BrokenPipeError"
+    assert "duration_ms" in payload and payload["intent"] is False
