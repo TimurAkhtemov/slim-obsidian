@@ -969,7 +969,8 @@ def test_outline_entries_are_cleaned_of_what_the_model_wrote_around_them():
 def test_an_annotation_on_either_side_does_not_make_a_miss():
     assert copilot._misses(["# T", "## Toolkit (New Section)"], ["# T", "## Toolkit"]) == ([], [])
     assert copilot._misses(["# T", "## Toolkit"], ["# T", "## toolkit (added)"]) == ([], [])
-    assert copilot._misses(["# T", "## Pipeline (Classical vs. Neural)"], ["# T", "## Pipeline"]) == ([1], [])
+    assert copilot._misses(["# T", "## Pipeline (Classical vs. Neural)"], ["# T", "## Pipeline"]) == ([], [])  # words' prefix
+    assert copilot._misses(["# T", "## Classical vs. Neural"], ["# T", "## Pipeline"]) == ([1], [])
 
 
 def test_a_missing_heading_the_note_has_at_another_level_is_named(turn, monkeypatch):
@@ -1229,3 +1230,30 @@ def test_a_skill_keeps_its_own_list_for_its_whole_run(turn, monkeypatch):
                     ("", [("replace", {"target": "b5", "markdown": "- **one**"})]))
     turn("/tidy", selection="- one")
     assert [c["tools"] for c in seen] == [["plan", "replace", "edit_text"]] * 2
+
+
+# --- an outline heading matches the note's when it names the same heading, roughly -------------
+
+@pytest.mark.parametrize("outline, note", [
+    ("## Historical Evolution", "## Historical Evolution & Drivers"),          # a prefix, in words
+    ("# US Healthcare System Overview", "# US Healthcare System Overview 2026-01-13"),
+    ("## Costs & Payment", "## costs  &  payment (new)"),                       # equal once cleaned
+    ("## Key Takeaways and Conclusions", "## Conclusions and Key Takeaways"),  # the same words
+])
+def test_an_outline_heading_matches_the_same_heading_written_a_little_differently(outline, note):
+    assert copilot._misses(["# T", note], ["# T", outline]) == ([], [])
+
+
+@pytest.mark.parametrize("outline, note", [
+    ("## History", "## Costs"),
+    ("## A", "## Applications"),                     # a prefix in letters is not one in words
+    ("## Historical Evolution", "### Historical Evolution"),                    # another level
+    ("## Payment Models", "## Treatment Patterns"),
+])
+def test_unrelated_headings_still_do_not_match(outline, note):
+    assert copilot._misses(["# T", note], ["# T", outline]) == ([1], [])
+
+
+def test_matching_stays_an_ordered_subsequence():
+    now = ["# T", "## Historical Evolution & Drivers", "## Costs"]
+    assert copilot._misses(now, ["# T", "## Costs", "## Historical Evolution"]) == ([], [1])

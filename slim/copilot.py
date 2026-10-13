@@ -733,18 +733,36 @@ def _against(note: edits_mod.Note, outline: list[str]) -> tuple[list[str], list[
     return now, [h for h in outline if edits_mod.heading_key(h) not in locked]
 
 
+# An outline heading and a note heading this alike, by their sets of words, are the same heading.
+SAME_HEADING_WORDS = 0.6
+
+
+def _same(a: tuple[int, str], b: tuple[int, str]) -> bool:
+    """Two headings (as `heading_key`s) are the same at one level when their words are equal, one
+    starts with the other's words ("## Historical Evolution" and "… & Drivers"), or the words
+    overlap by SAME_HEADING_WORDS: the model shortens and reorders its own outline's headings."""
+    (level, x), (other, y) = a, b
+    x, y = x.split(), y.split()
+    if level != other or not x or not y:
+        return False
+    shorter, longer = sorted((x, y), key=len)
+    return longer[:len(shorter)] == shorter or len(set(x) & set(y)) / len(set(x) | set(y)) >= SAME_HEADING_WORDS
+
+
 def _misses(now: list[str], want: list[str]) -> tuple[list[int], list[int]]:
-    """The outline is met when its headings appear among the note's in the same order; others
-    between them are fine. Returns the outline's misses as indexes: those the note lacks, and
-    those it has out of order (outside the longest run of outline headings the note has in order)."""
+    """The outline is met when its headings appear among the note's in the same order (`_same`);
+    others between them are fine. Returns the outline's misses as indexes: those the note lacks,
+    and those it has out of order (outside the longest run of outline headings the note has in
+    order)."""
     a, b = [edits_mod.heading_key(h) for h in want], [edits_mod.heading_key(h) for h in now]
     longest = [[0] * (len(b) + 1) for _ in range(len(a) + 1)]
     for i in range(len(a) - 1, -1, -1):
         for j in range(len(b) - 1, -1, -1):
-            longest[i][j] = longest[i + 1][j + 1] + 1 if a[i] == b[j] else max(longest[i + 1][j], longest[i][j + 1])
+            longest[i][j] = (longest[i + 1][j + 1] + 1 if _same(a[i], b[j])
+                             else max(longest[i + 1][j], longest[i][j + 1]))
     kept, i, j = set(), 0, 0
     while i < len(a) and j < len(b):
-        if a[i] == b[j]:
+        if _same(a[i], b[j]):
             kept.add(i)
             i, j = i + 1, j + 1
         elif longest[i + 1][j] >= longest[i][j + 1]:
@@ -752,7 +770,8 @@ def _misses(now: list[str], want: list[str]) -> tuple[list[int], list[int]]:
         else:
             j += 1
     missed = [k for k in range(len(a)) if k not in kept]
-    return [k for k in missed if a[k] not in b], [k for k in missed if a[k] in b]
+    lacks = [k for k in missed if not any(_same(a[k], key) for key in b)]
+    return lacks, [k for k in missed if k not in lacks]
 
 
 def _met(now: list[str], want: list[str]) -> bool:
