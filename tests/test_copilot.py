@@ -1274,3 +1274,25 @@ def test_unrelated_headings_still_do_not_match(outline, note):
 def test_matching_stays_an_ordered_subsequence():
     now = ["# T", "## Historical Evolution & Drivers", "## Costs"]
     assert copilot._misses(now, ["# T", "## Costs", "## Historical Evolution"]) == ([], [1])
+
+
+# --- C1: a tool call's text keeps its real tabs; only LaTeX the JSON decode mangled is repaired --
+
+TABBED = "## List\n\n- item with $x$\n\t- nested under it\n\n## After\n\nend\n"
+
+
+def test_a_tab_indented_list_beside_math_keeps_its_real_tabs(turn, monkeypatch):
+    scripted(monkeypatch, ("", [("replace", {"target": "b2", "markdown": "- item with $x^2$\n\t- nested, renamed"})]))
+    got, _ = turn("square x", text=TABBED)
+    assert "- item with $x^2$\n\t- nested, renamed\n" in got["final"] and "\\t" not in got["final"]
+    scripted(monkeypatch, ("", [("edit_text", {"target": "b2", "old": "$x$\n\t- nested", "new": "$y$\n\t- nested"})]))
+    got, _ = turn("rename x", text=TABBED)
+    assert got["final"] == TABBED.replace("$x$", "$y$")
+
+
+def test_latex_the_decode_mangled_is_still_repaired_and_only_inside_math():
+    assert copilot._unmangle("$\x0crac{a}{b}$ and $$\x08eta + \text{x} \rho$$") == \
+        "$\\frac{a}{b}$ and $$\\beta + \\text{x} \\rho$$"
+    assert copilot._unmangle("\tcol\tumn $x$ \tafter") == "\tcol\tumn $x$ \tafter"     # outside math: real
+    assert copilot._unmangle("$a\t1$") == "$a\t1$"                                    # not before a letter
+    assert copilot._repair_args({"markdown": ["$\x0crac{1}{2}$"], "n": 3}) == {"markdown": ["$\\frac{1}{2}$"], "n": 3}

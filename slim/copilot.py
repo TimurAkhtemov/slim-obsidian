@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 
 from . import config as config_mod, edits as edits_mod, embed as embed_mod, ingest as ingest_mod
-from . import copilot_images, llm, search as search_mod, skills as skills_mod, summarize, trace
+from . import copilot_images, llm, search as search_mod, skills as skills_mod, trace
 from .chunk import (HEADING, body_after_frontmatter, parse_frontmatter, strip_derived_blocks,
                     strip_meeting_wrapper)
 
@@ -669,13 +669,36 @@ class _Reply:
     stats: dict
 
 
+# A JSON decode turns `\frac \beta \text \rho` into a control character and the command's
+# rest. In a tool call's text that is repaired only inside math, and only before a letter: a
+# real tab indents a nested list beside a formula, and `summarize._repair` (every tab, once a
+# `$` is anywhere) would write it out as `\t`.
+_MATH = re.compile(r"\$\$[\s\S]+?\$\$|\$[^$\n]+?\$")
+_MANGLED = re.compile(r"[\t\f\b\r](?=[A-Za-z])")
+_COMMAND = {"\t": "\\t", "\f": "\\f", "\b": "\\b", "\r": "\\r"}
+
+
+def _unmangle(text: str) -> str:
+    return _MATH.sub(lambda math: _MANGLED.sub(lambda c: _COMMAND[c.group()], math.group()), text)
+
+
+def _repair_args(value):
+    """_unmangle over a tool call's arguments, whatever their shape."""
+    if isinstance(value, str):
+        return _unmangle(value)
+    if isinstance(value, list):
+        return [_repair_args(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _repair_args(v) for k, v in value.items()}
+    return value
+
+
 def _call(messages: list[dict], offered: list[str], *, think: bool, temperature: float,
           num_predict: int) -> _Reply:
-    """One model call with the `offered` tools. String arguments are repaired for the LaTeX a
-    JSON decode turns into control characters (`summarize._repair`, as for summaries)."""
+    """One model call with the `offered` tools; its arguments repaired by `_repair_args`."""
     msg, stats = llm.chat_tools(messages, edits_mod.ollama_tools(offered), think=think,
                                 temperature=temperature, num_predict=num_predict)
-    calls = [{"name": c["name"], "arguments": summarize._repair(c.get("arguments") or {})}
+    calls = [{"name": c["name"], "arguments": _repair_args(c.get("arguments") or {})}
              for c in msg["tool_calls"]]
     # Ollama's own parser can leave a tool call in the text: unreadable, and never an answer.
     malformed = ["a tool call came back as text"] if "<tool_call>" in msg["content"] else []
