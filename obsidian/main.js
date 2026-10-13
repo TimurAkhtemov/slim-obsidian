@@ -2766,11 +2766,11 @@ function groupCitations(citations) {
   return [...groups.values()];
 }
 
-/* ---- copilot skills and edit proposals ----------------------------------------------------
- * The server never writes a note from the copilot. An Edit-mode turn (or a skill whose output
- * is a change) returns a proposal: per file, the text it WOULD have and the sha256 of the text
- * it was computed from. A new note is accepted or rejected here and written through the Vault
- * API; an edit is reviewed in the note itself, one change at a time (`makeReviewEditor`).
+/* ---- copilot skills and editing runs -------------------------------------------------------
+ * The server never writes a note from the copilot. One chat answers or edits: a question gets an
+ * answer; a request to change the note gets a plan, then changes that land in the note's editor
+ * as they stream (`makeLiveEditor`). A new note from a skill is created here, through the Vault
+ * API. The note as it was before a run is kept with the chat, outside the vault.
  */
 function sha256Hex(text) {
   return require("crypto").createHash("sha256").update(String(text), "utf8").digest("hex");
@@ -3095,11 +3095,15 @@ class CopilotView extends ItemView {
     this.liveRenderTimer = null;    // the throttled Markdown render of the streaming answer
     this.liveRenderVersion = 0;
     this.liveRenderedAt = 0;
-    this.editMode = false;          // Ask (answers only) or Edit (proposes changes to accept)
     this.skills = [];               // /commands, from GET /api/copilot/skills
-    this.applying = new Set();      // proposal files being written right now
-    this.deletedThreads = new Set(); // a late decision must not save — and so resurrect — these
-    this.savingDecisions = null;        // decisions save one after another
+    this.deletedThreads = new Set(); // a late save must not resurrect these
+    this.editRun = null;            // the editing run streaming now: its plan, steps and changes
+    this.editClock = null;          // its seconds, in the chat while it runs
+    this.runTurns = new Map();      // before_ref -> the thread and turns its turn lives in
+    this.savingRuns = null;         // a run's turn saves one save after another
+    this.beforeTexts = new Map();   // before_ref -> the note as it was before that run
+    this.restoreArmed = null;       // the before_ref whose Restore waits for "Restore anyway"
+    this.restoredFrom = new Map();  // before_ref -> the note as it was just before Restore
   }
 
   // Re-read whenever they start a command: a skill saved in `Skills/` a moment ago is there.
@@ -3281,7 +3285,6 @@ class CopilotView extends ItemView {
     }
     this.activeThread = data;
     this.turns = data.turns || [];
-    this.offerReviews(data, this.turns);
     this.pendingImages = [];
     this.retryImages = [];
     // A legacy "auto" on disk must not reach the mode selector; `saveRecord` normalizes the
@@ -3329,9 +3332,7 @@ class CopilotView extends ItemView {
   async send(text = this.draft) {
     const outgoingImages = this.pendingImages;
     const question = String(text || "").trim() || (outgoingImages.length ? "Explain this image." : "");
-    // A decision still writing saves the thread when it lands; a question sent meanwhile would
-    // be saved with it as an unanswered turn.
-    if (!question || !this.context || this.sending || this.applying.size) return;
+    if (!question || !this.context || this.sending) return;
     if (!this.activeThread) this.newThread();
     // A failed question waits under its error for Try again. Asking something else instead
     // takes it off the thread: it would be saved with the next answer and sent as history, and
@@ -3345,6 +3346,7 @@ class CopilotView extends ItemView {
     // lands — otherwise B was saved with A's answer and A's question was never saved.
     const thread = this.activeThread;
     const turns = this.turns;
+    const path = this.context.source.path;
     if (!turns.length) thread.title = titleFromQuestion(question);
     const asked = { role: "you", text: question,
       ...(outgoingImages.length ? { attachments: outgoingImages } : {}) };
@@ -3360,12 +3362,24 @@ class CopilotView extends ItemView {
     this.streamingThread = thread;
     this.streamingTurns = turns;
     let completed = null;
+    let run = null;                       // an editing run, from its `edit` event on
+    const started = Date.now();
     const abort = new AbortController();
     this.abort = abort;
+    // An editing run's events land in the note. One that throws must not end the stream (the
+    // changes before it are in the note already), and one that arrives after Stop is dropped.
+    const on = (handle) => (data) => {
+      if (abort.signal.aborted) return;
+      try { handle(data); } catch (error) { console.error("[slim] edit event", error); }
+    };
     this.render();
     try {
       await this.refreshNote();
       if (abort.signal.aborted) throw cancelledError();
+      // The editor's text, not the file: Obsidian saves a moment after typing, and an editing
+      // run works on exactly what the owner sees.
+      const view = this.plugin.liveViewFor?.(path) || null;
+      const doc = view ? view.state.doc.toString() : null;
       await this.plugin.streamCopilot({
         thread_id: thread.id, source_id: this.context.source.id, question,
         // Role, text and small image refs only, every turn whole: the server fits the
@@ -3382,11 +3396,10 @@ class CopilotView extends ItemView {
         images: outgoingImages.map(({ id, name, mime, data, bytes }) =>
           data ? { name, mime, data } : { id, name, mime, bytes }),
         reasoning_mode: this.mode,
-        edit: this.editMode,
-        // Only where it is visibly the input: Edit mode, or a /command. In Ask mode a selection
-        // left in the note rode along with every question, unseen (review, 2026-09-23).
-        selection: this.editMode || question.startsWith("/")
-          ? editorSelection(this.app, this.context.source.path) : "",
+        ...(doc === null ? {} : { doc, doc_hash: sha256Hex(doc) }),
+        // Only where it is visibly the input: a /command. A selection left in the note rode
+        // along with every question, unseen (review, 2026-09-23).
+        selection: question.startsWith("/") ? editorSelection(this.app, path) : "",
       }, {
         stage: (data) => { this.stage = data.stage || "Working"; this.renderStage(); },
         delta: (data) => {
@@ -3394,20 +3407,50 @@ class CopilotView extends ItemView {
           this.streamingText = streamed;
           this.renderDelta();
         },
+        edit: on((data) => {
+          run = { ref: String(data.before_ref || ""), hash_before: data.hash_before, plan: null, steps: [],
+                  changes: [], pending: [], view, path, started, thread, turns };
+          this.editRun = run;
+          if (view && this.plugin.live) this.plugin.live.startRun(view, { id: run.ref, base: doc });
+          Promise.resolve(this.plugin.showEditing?.(path)).catch((e) => console.warn("[slim] editing view", e));
+          this.startEditClock();
+          this.renderEdit();
+        }),
+        plan: on((data) => {
+          if (!run) return;
+          run.plan = { intro: String(data.intro || ""), steps: (data.steps || []).map(String) };
+          this.renderEdit();
+        }),
+        step: on((data) => {
+          if (!run || !(data.index >= 1)) return;
+          run.steps[data.index - 1] = data.state;
+          this.renderEdit();
+        }),
+        change: on((data) => run && this.landChange(run, data)),
         turn: (data) => { completed = data; },
         error: (data) => { throw new Error(data.error || "Copilot failed"); },
       }, abort.signal);
       if (!completed) throw new Error("The server ended without a completed turn.");
       asked.attachments = completed.attachments || [];
       delete completed.attachments;          // refs belong to the user turn, not the answer
+      if (run) completed.edit_run = await this.settleRun(run, completed.edit_run || {});
       turns.push({ role: "slim", text: completed.answer || streamed, turn: completed });
       this.retryQuestion = "";
       this.retryImages = [];
       thread.reasoning_mode = this.mode;
       await this.saveRecord(thread, turns);
-      this.offerReviews(thread, turns);
     } catch (error) {
-      if (error.name === "AbortError") {
+      const stopped = error.name === "AbortError";
+      if (run && turns.at(-1) === asked) {
+        // What landed is in the note: it stays, and the turn keeps how far the run got and the
+        // copy from before, so See before and Restore work after a reload too.
+        turns.push(await this.partialTurn(run, stopped ? "stopped" : `error: ${error.message || error}`));
+        if (!stopped) this.error = error.message || String(error);
+        thread.reasoning_mode = this.mode;
+        if (!this.deletedThreads.has(thread.id)) {
+          await this.saveRecord(thread, turns).catch((e) => { this.error = e.message || String(e); });
+        }
+      } else if (stopped) {
         // Stopped before an answer: the question is theirs — hand it back rather than leave a
         // dangling "you" turn to ride along as history and be persisted with the next answer.
         if (turns.at(-1) === asked) {
@@ -3424,6 +3467,7 @@ class CopilotView extends ItemView {
         this.error = error.message || String(error);
       }
     } finally {
+      if (run) this.finishRun(run);
       this.abort = null;
       this.sending = false;
       this.stopLiveRender();
@@ -3433,6 +3477,119 @@ class CopilotView extends ItemView {
       this.stage = "";
       this.render();
     }
+  }
+
+  // ---- an editing run, as it lands ------------------------------------------------------------
+
+  // A change to the note goes in through its editor; a new note is created at once. Either way
+  // the chat keeps its id, label and what became of it, never its text.
+  landChange(run, change) {
+    const entry = { id: String(change.id), step: change.step, op: change.op, label: change.label || "",
+                    needs: change.needs || [] };
+    run.changes.push(entry);
+    if (change.op === "create") {
+      entry.path = change.path;
+      entry.state = "creating";
+      run.pending.push(this.createNote(change).then((state) => { entry.state = state; this.renderEdit(); }));
+    } else if (this.inView(run)) {
+      entry.state = "skipped";            // if the editor throws, the change did not land
+      entry.state = this.plugin.live.applyChange(run.view, run.ref, change);
+    } else {
+      // The note's editor is gone or shows another note: only the note in view is edited.
+      entry.state = "skipped";
+      this.cancel();
+    }
+    this.renderEdit();
+  }
+
+  // The run's editor is still open and still shows its note.
+  inView(run) {
+    const live = this.plugin.live;
+    if (!run.view || !live || (this.plugin.liveViews && !this.plugin.liveViews.has(run.view))) return false;
+    const shows = live.pathOf(run.view);
+    return shows === null || shows === run.path;
+  }
+
+  async createNote(change) {
+    const vault = this.app.vault;
+    try {
+      // The adapter's check is the filesystem's, case-insensitive on macOS: `summary.md` must
+      // not be written over an existing `Summary.md` that the path index spells differently.
+      if (vault.getAbstractFileByPath(change.path) || await vault.adapter?.exists?.(change.path)) return "failed";
+      await vault.create(change.path, change.text);
+    } catch (error) {
+      console.error("[slim] create note", change.path, error);
+      return "failed";
+    }
+    // A note is not findable until it is indexed.
+    this.plugin.postJSON("/api/copilot/context", { path: change.path, related: false })
+      .catch((e) => console.warn("[slim] index new note", change.path, e.message));
+    return "created";
+  }
+
+  async trashCreated(turn, entry) {
+    const file = this.app.vault.getAbstractFileByPath(entry.path);
+    try {
+      if (file) await this.app.vault.trash(file, false);
+      entry.state = "trashed";
+    } catch (error) {
+      this.error = error.message || String(error);
+    }
+    const found = this.findRunTurn(turn.turn.edit_run.before_ref);
+    if (found) this.saveRun(found.thread, found.turns);
+    this.render();
+  }
+
+  // What the turn keeps of a run: the plan, how each step and change went, and the hashes and
+  // copy that See before and Restore need. `hash_after` is the editor's own: a change skipped
+  // because the owner typed there never reached the server's draft.
+  async settleRun(run, server) {
+    await Promise.all(run.pending);
+    const live = run.view && this.plugin.live?.state(run.view, run.ref);
+    const states = new Map((live?.changes || []).map((change) => [change.id, change.state]));
+    const doc = run.view?.state?.doc?.toString();
+    return {
+      plan: run.plan || server.plan || { intro: "", steps: [] },
+      steps_done: server.steps_done ?? run.steps.filter((state) => state && state !== "doing").length,
+      step_states: run.steps.map((state) => state || null),
+      changes: run.changes.map(({ id, step, op, label, needs, path, state }) => ({
+        id, step, op, label, needs, ...(path ? { path } : {}), state: states.get(id) || state })),
+      stopped: server.stopped ?? null,
+      outline_met: server.outline_met ?? null,
+      fixups: server.fixups ?? 0,
+      summary: server.summary || "",
+      before_ref: run.ref,
+      hash_before: run.hash_before,
+      hash_after: doc === undefined ? server.hash_after || null : sha256Hex(doc),
+      typed: Boolean(live?.touched),
+    };
+  }
+
+  async partialTurn(run, stopped) {
+    const edit_run = await this.settleRun(run, { stopped });
+    const text = run.plan?.intro || "";
+    return { role: "slim", text, turn: { answer: text, mode: this.mode, citations: [],
+                                         timing: { total_ms: Date.now() - run.started }, edit_run } };
+  }
+
+  // The run is over: ↺ appears in the note, and the note is saved and re-indexed once.
+  finishRun(run) {
+    clearInterval(this.editClock);
+    this.editClock = null;
+    if (this.editRun === run) this.editRun = null;
+    if (run.view) this.plugin.live?.endRun(run.view, run.ref);
+    this.runTurns.set(run.ref, { thread: run.thread, turns: run.turns });
+    if (run.changes.some((change) => change.state === "applied")) {
+      this.saveOpenCopies(run.path)
+        .then(() => this.plugin.postJSON("/api/copilot/context", { path: run.path, related: false }))
+        .catch((e) => console.warn("[slim] index after edit", run.path, e.message));
+    }
+  }
+
+  startEditClock() {
+    clearInterval(this.editClock);
+    this.editClock = setInterval(() => { if (this.el?.liveEdit) this.renderEdit(); }, 1000);
+    this.editClock.unref?.();
   }
 
   cancel() {
@@ -3451,9 +3608,8 @@ class CopilotView extends ItemView {
     const answer = this.turns.at(-1);
     const asked = this.turns.at(-2);
     if (answer?.role !== "slim" || asked?.role !== "you") return;
-    // Asking again after an accepted change would drop the record of it and could propose the
-    // same append a second time.
-    if (hasAccepted(answer)) return;
+    // Asking again after an edit would apply its changes a second time.
+    if (answer.turn?.edit_run) return;
     this.turns.splice(-2, 2);
     this.pendingImages = (asked.attachments || []).map((ref) => ({ ...ref }));
     await this.send(asked.text);
@@ -3477,11 +3633,6 @@ class CopilotView extends ItemView {
       return;
     }
     this.deletedThreads.add(id);
-    // Its proposals are no one's to decide any more: their marks leave the notes.
-    for (const [path, entry] of this.plugin.reviews || []) {
-      if (entry.thread?.id === id) this.plugin.reviews.delete(path);
-    }
-    this.plugin.syncReviews?.();
     // A late answer would save into — and so resurrect — the thread being deleted.
     if (this.sending && this.streamingThread?.id === id) this.cancel();
     await this.plugin.postJSON("/api/copilot/thread/delete", { id });
@@ -3532,7 +3683,7 @@ class CopilotView extends ItemView {
     if (!this.el.liveText) return;          // the chat list is showing; the next render catches up
     const transcript = this.el.transcript;
     const follow = atBottom(transcript);      // decided BEFORE the text grows the pane
-    this.el.liveText.textContent = visibleStream(this.streamingText);
+    this.el.liveText.textContent = this.streamingText;
     if (follow) transcript.scrollTop = transcript.scrollHeight;
     this.scheduleLiveRender();
   }
@@ -3577,7 +3728,7 @@ class CopilotView extends ItemView {
     const buffer = create(el.live, "div", "slim-message-text slim-rendered-markdown");
     buffer.hidden = true;
     const host = this.liveHost(buffer);
-    return this.renderMarkdown(buffer, visibleStream(this.streamingText), host).then(() => {
+    return this.renderMarkdown(buffer, this.streamingText, host).then(() => {
       if (version !== this.liveRenderVersion || this.el !== el || !this.sending) { this.dropLive(buffer, host); return; }
       const follow = atBottom(el.transcript);
       this.dropLive(el.liveRendered, el.liveHost);
@@ -3678,11 +3829,6 @@ class CopilotView extends ItemView {
     }
     const slash = create(composer, "div", "slim-slash-menu");
     this.el.slash = slash;
-    const editToggle = iconButton(composer, "pencil",
-      this.editMode ? "Edit mode: SLIM proposes changes, you accept each one — click for Ask"
-        : "Ask mode: SLIM only answers — click for Edit",
-      `clickable-icon slim-edit-toggle${this.editMode ? " is-active" : ""}`);
-    editToggle.onclick = () => { this.editMode = !this.editMode; this.render(); };
     const modes = create(composer, "select", "slim-mode-select");
     for (const value of ["quick", "deep"]) {
       const option = create(modes, "option", "", value[0].toUpperCase() + value.slice(1));
@@ -3691,7 +3837,7 @@ class CopilotView extends ItemView {
     }
     modes.onchange = () => { this.mode = modes.value; };
     const input = create(composer, "textarea", "slim-copilot-input");
-    input.placeholder = this.editMode ? "Ask SLIM to change notes" : "Ask SLIM, or / for skills";
+    input.placeholder = "Ask SLIM, or / for skills";
     input.value = this.draft;
     input.rows = 1;
     autoGrow(input);
@@ -3821,7 +3967,10 @@ class CopilotView extends ItemView {
     const pending = [];
     for (const turn of this.turns) {
       const message = create(transcript, "article", `slim-message is-${turn.role}`);
-      if (turn.role === "slim") {
+      const run = turn.role === "slim" ? turn.turn?.edit_run : null;
+      if (run) {
+        this.renderEditRun(message, run, pending);
+      } else if (turn.role === "slim") {
         const body = create(message, "div", "slim-message-text slim-rendered-markdown");
         pending.push(this.renderMarkdown(body, turn.text)
           .catch((e) => console.error("[slim] render answer", e)));
@@ -3842,23 +3991,23 @@ class CopilotView extends ItemView {
       }
       const read = inputsText(turn.turn?.inputs);
       if (read) create(message, "small", "slim-inputs", read);
-      if (turn.turn?.proposal?.files?.length || turn.turn?.proposal?.dropped?.length) {
-        this.renderProposal(message, turn.turn.proposal);
-      }
-      if (turn.turn?.edit && !turn.turn?.proposal?.files?.some((file) => file.after != null || file.status)) {
-        create(message, "small", "slim-proposal-none", "No change was proposed — nothing will be written.");
-      }
-      if (turn.turn?.verification?.truncated) {
+      if (turn.turn?.verification?.truncated && !run) {
         create(message, "small", "slim-verification", "Cut off at the length limit — ask for the rest.");
       }
-      if (turn.role === "slim" && turn.turn) this.renderActions(message, turn);
+      if (run) this.renderEditMeta(message, run, turn);
+      else if (turn.role === "slim" && turn.turn) this.renderActions(message, turn);
     }
     const streamingHere = this.sending && this.turns === this.streamingTurns;
     if (streamingHere) {
       const live = create(transcript, "article", "slim-message is-slim is-streaming");
       this.el.live = live;
-      this.el.liveText = create(live, "div", "slim-message-text", visibleStream(this.streamingText));
-      this.el.stage = create(transcript, "div", "slim-copilot-stage", this.stage || "Working");
+      if (this.editRun) {
+        this.el.liveEdit = live;
+        this.drawLiveEdit(live);
+      } else {
+        this.el.liveText = create(live, "div", "slim-message-text", this.streamingText);
+      }
+      if (!this.editRun?.plan) this.el.stage = create(transcript, "div", "slim-copilot-stage", this.stage || "Working");
     }
     if (this.error) {
       const error = create(transcript, "div", "slim-copilot-error", this.error);
@@ -3911,41 +4060,11 @@ class CopilotView extends ItemView {
     copy.onclick = () => {
       if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) navigator.clipboard.writeText(turn.text);
     };
-    if (turn === this.turns.at(-1) && !this.sending && !hasAccepted(turn)) {
+    if (turn === this.turns.at(-1) && !this.sending) {
       const again = iconButton(actions, "refresh-cw", "Regenerate");
       again.onclick = () => this.regenerate();
     }
     create(actions, "small", "slim-message-meta", metaText(turn.turn));
-  }
-
-  // One box per file: its path, the diff, and Accept / Reject. The decision is saved on the
-  // turn, so a reopened chat shows what was applied and never offers it twice.
-  // One entry per proposal, kept by the plugin across chat reloads, which bring fresh objects
-  // from the server: the review drawn in the note, and what was decided there since the last
-  // save, carry over to the newest copy.
-  reviewEntry(thread, turns, file) {
-    const entries = this.plugin.reviewEntries || (this.plugin.reviewEntries = new Map());
-    const turn = turns.findIndex((item) => item?.turn?.proposal?.files?.includes(file));
-    const key = `${thread?.id}:${turn}:${file.path}`;
-    let entry = entries.get(key);
-    if (!entry) {
-      entry = { key, path: file.path, file, thread, turns, copilot: this, lost: new Set(), stale: false };
-      entries.set(key, entry);
-      return entry;
-    }
-    if (entry.file !== file) {
-      (entry.file.changes || []).forEach((change, k) => {
-        const into = file.changes?.[k];
-        if (!into) return;
-        if (change.status) into.status = change.status;
-        else delete into.status;
-      });
-      if (entry.file.drawn) file.drawn = true;
-      if (entry.file.status) file.status = entry.file.status;
-      else delete file.status;
-    }
-    Object.assign(entry, { file, thread, turns, copilot: this });
-    return entry;
   }
 
   renderSoon() {
@@ -3954,188 +4073,239 @@ class CopilotView extends ItemView {
     queueMicrotask(() => { this.renderQueued = false; this.render(); });
   }
 
-  // Each note's newest undecided proposal in this chat goes to the note.
-  offerReviews(thread, turns) {
-    if (typeof this.plugin.offerReview !== "function") return;
-    const seen = new Set();
-    for (const turn of [...turns].reverse()) {
-      for (const file of turn?.turn?.proposal?.files || []) {
-        if (file.kind !== "edit" || !file.changes?.length || file.status || seen.has(file.path)) continue;
-        seen.add(file.path);
-        this.plugin.offerReview(this.reviewEntry(thread, turns, file));
+  // ---- an edit turn in the chat: the intro, a line per step, what came of it ---------------
+
+  // The run streaming now, redrawn in place on each event: the transcript is not rebuilt.
+  renderEdit() {
+    if (!this.el?.liveEdit) { this.renderSoon(); return; }
+    const follow = atBottom(this.el.transcript);
+    clear(this.el.liveEdit);
+    this.drawLiveEdit(this.el.liveEdit);
+    if (this.editRun?.plan && this.el.stage) { this.el.stage.remove?.(); this.el.stage = null; }
+    if (follow) this.el.transcript.scrollTop = this.el.transcript.scrollHeight;
+  }
+
+  drawLiveEdit(parent) {
+    const run = this.editRun;
+    if (!run) return;
+    this.renderEditRun(parent, { plan: run.plan, step_states: run.steps, changes: run.changes }, null);
+    const meta = create(parent, "div", "slim-edit-meta");
+    create(meta, "span", "", `${this.mode === "deep" ? "Deep" : "Quick"} · ${Math.max(0, Math.round((Date.now() - run.started) / 1000))} s`);
+  }
+
+  renderEditRun(message, run, pending) {
+    const box = create(message, "div", "slim-edit");
+    const intro = run.plan?.intro || "";
+    if (intro) {
+      const el = create(box, "div", "slim-edit-intro slim-rendered-markdown");
+      if (pending) pending.push(this.renderMarkdown(el, intro).catch((e) => console.error("[slim] render intro", e)));
+      else el.textContent = intro;
+    }
+    const steps = run.plan?.steps || [];
+    const states = run.step_states || [];
+    const shown = steps.map((text, i) => [text, states[i] || (i < (run.steps_done || 0) ? "done" : null)])
+      .filter(([, state]) => state);
+    if (shown.length) {
+      const list = create(box, "ul", "slim-steps");
+      for (const [text, state] of shown) {
+        const item = create(list, "li", `slim-step is-${state}`);
+        create(item, "span", "slim-step-icon", { doing: "", done: "✓", partial: "◐", skipped: "–" }[state] ?? "");
+        create(item, "span", state === "doing" ? "slim-step-text slim-shimmer" : "slim-step-text", text);
+      }
+    }
+    if (pending && "stopped" in run) create(box, "p", "slim-edit-outcome", editOutcome(run));
+    for (const change of run.changes || []) {
+      if (change.state === "skipped") {
+        create(box, "small", "slim-edit-note", `Skipped “${change.label || change.id}”: you edited this here.`);
+      }
+      if (change.op !== "create") continue;
+      const row = create(box, "div", "slim-edit-note slim-edit-created");
+      const what = { creating: "Creating", created: "Created", trashed: "Moved to trash:", failed: "Not created, a note is already there:" }[change.state] || "";
+      create(row, "span", "", `${what} `);
+      const name = create(row, "button", "slim-link", change.path);
+      name.onclick = () => this.openNote(change.path);
+      if (change.state === "created" && pending) {
+        create(row, "span", "", " · ");
+        const undo = create(row, "button", "slim-link", "Undo");
+        const turn = this.turns.find((t) => t.turn?.edit_run === run);
+        undo.onclick = () => turn && this.trashCreated(turn, change);
       }
     }
   }
 
-  // A change decided in the note (or undone there). The last decision closes the file and
-  // re-indexes the note, as Accept did; an undo after that opens it again.
-  reviewChanged(entry) {
-    const { file } = entry;
-    const { open, applied } = changeCounts(file);
-    if (open === 0) {
-      file.status = applied ? "accepted" : "rejected";
-      delete file.after;
-      if (this.plugin.reviews?.get(entry.path) === entry) this.plugin.reviews.delete(entry.path);
-      if (applied) {
-        this.saveOpenCopies(file.path)
-          .then(() => this.plugin.postJSON("/api/copilot/context", { path: file.path, related: false }))
-          .catch((e) => console.warn("[slim] index after review", file.path, e.message));
+  // N changes · Undo all · Redo · See before · Hide marks · Quick · T s, while the note's editor
+  // holds the run; once it has closed, or after a reload: N changes · See before · Restore.
+  renderEditMeta(message, run, turn) {
+    const meta = create(message, "div", "slim-edit-meta");
+    const ref = run.before_ref;
+    const parts = [];
+    const text = (value) => parts.push(["span", value]);
+    const link = (label, act, disabled = false) => parts.push(["button", label, act, disabled]);
+    const landed = (run.changes || []).filter((change) => !["skipped", "failed", "creating"].includes(change.state));
+    const undone = run.restored ? landed.length
+      : landed.filter((change) => change.state === "undone" || change.state === "trashed").length;
+    const inNote = landed.some((change) => change.op !== "create");
+    const view = ref && this.plugin.liveRunView?.(ref);
+    const live = view && this.plugin.live?.state(view, ref);
+    if (this.restoreArmed === ref) {
+      const warning = create(meta, "div", "slim-edit-warning",
+        "You've edited this note since this change; restoring would discard those edits.");
+      warning.setAttribute("role", "alert");
+      link("Restore anyway", () => this.restore(turn, true));
+      link("Cancel", () => { this.restoreArmed = null; this.render(); });
+    } else if (run.restored) {
+      text("Restored the version from before this edit");
+      if (this.restoredFrom.has(ref)) link("Undo", () => this.unrestore(turn));
+    } else {
+      if (landed.length) text(`${landed.length} change${landed.length === 1 ? "" : "s"}${undone ? `, ${undone} undone` : ""}`);
+      const shownIn = view || this.plugin.liveViewFor?.(this.context?.source?.path);
+      const showing = Boolean(ref && shownIn && this.plugin.live?.showing(shownIn) === ref);
+      if (live) {
+        link("Undo all", () => this.undoAllRun(ref), !live.changes.some((change) => change.state === "applied"));
+        if (live.redoable) link("Redo", () => this.redoRun(ref));
+        link(showing ? "Back to now" : "See before", () => this.toggleBefore(turn, !showing));
+        link(live.marks ? "Hide marks" : "Show marks", () => this.plugin.live.setMarks(view, ref, !live.marks));
+      } else if (inNote && ref) {
+        link(showing ? "Back to now" : "See before", () => this.toggleBefore(turn, !showing));
+        link("Restore", () => this.restore(turn));
       }
-    } else if (file.status) {
-      delete file.status;
-      this.plugin.reviews?.set(entry.path, entry);
     }
-    this.saveDecisions(entry.thread, entry.turns);
+    if (turn?.turn) text(metaText(turn.turn));
+    parts.forEach(([tag, label, act, disabled], i) => {
+      if (i) create(meta, "span", "slim-edit-sep", "·");
+      const el = create(meta, tag, tag === "button" ? "slim-link" : "", label);
+      if (tag !== "button") return;
+      el.disabled = Boolean(disabled);
+      el.onclick = async () => {
+        try { await act(); } catch (error) { this.error = error.message || String(error); }
+        this.render();
+      };
+    });
+  }
+
+  // The note's editor moved a run's changes (↺, Cmd-Z, Undo all): the turn follows and is saved,
+  // with the hash Restore compares against.
+  runChanged(view, runId) {
+    const live = this.plugin.live?.state(view, runId);
+    if (this.editRun?.ref === runId) {
+      for (const change of this.editRun.changes) {
+        const now = live?.changes.find((item) => item.id === change.id);
+        if (now && change.op !== "create") change.state = now.state;
+      }
+      this.renderEdit();
+      return;
+    }
+    const found = this.findRunTurn(runId);
+    if (found && live) {
+      const run = found.turn.turn.edit_run;
+      for (const change of run.changes || []) {
+        const now = live.changes.find((item) => item.id === change.id);
+        if (now && change.op !== "create") change.state = now.state;
+      }
+      run.hash_after = sha256Hex(view.state.doc.toString());
+      if (live.touched) run.typed = true;
+      this.saveRun(found.thread, found.turns);
+    }
     this.renderSoon();
   }
 
-  saveDecisions(thread, turns) {
-    const live = this.activeThread?.id === thread?.id ? this.turns : turns;
-    if (live !== turns) copyDecisions(turns, live);
-    if (!thread || this.deletedThreads.has(thread.id)) return this.savingDecisions;
-    this.savingDecisions = (this.savingDecisions || Promise.resolve())
-      .then(() => this.saveRecord(thread, live))
-      .catch((error) => { this.error = error.message || String(error); this.render(); });
-    return this.savingDecisions;
+  // The turn a run belongs to, in the chat on screen or in the one it was asked in.
+  findRunTurn(ref) {
+    const at = (turns) => turns?.find((turn) => turn.role === "slim" && turn.turn?.edit_run?.before_ref === ref);
+    if (at(this.turns)) return { thread: this.activeThread, turns: this.turns, turn: at(this.turns) };
+    const kept = this.runTurns.get(ref);
+    const turn = at(kept?.turns);
+    if (!turn) return null;
+    // The same chat reopened is a fresh copy of it: save that one.
+    if (this.activeThread?.id === kept.thread.id) return null;
+    return { ...kept, turn };
   }
 
-  renderReview(box, file) {
-    const entry = this.reviewEntry(this.activeThread, this.turns, file);
-    const counts = changeCounts(file);
-    const parts = [`${counts.total} change${counts.total === 1 ? "" : "s"}`, `${counts.open} to review`];
-    if (counts.applied) parts.push(`${counts.applied} applied`);
-    if (counts.rejected) parts.push(`${counts.rejected} rejected`);
-    create(box, "div", "slim-review-count", counts.open ? parts.join(" · ") : proposalStatus(file));
-    if (entry.stale) {
-      create(box, "div", "slim-proposal-problem",
-        "This note has changed since the proposal. Ask again for a fresh one.");
+  // A question still waiting for its answer is not saved with it: the answer's save brings it.
+  saveRun(thread, turns) {
+    if (!thread || this.deletedThreads.has(thread.id)) return this.savingRuns;
+    const settled = this.sending && turns === this.streamingTurns && turns.at(-1)?.role === "you"
+      ? turns.slice(0, -1) : turns;
+    this.savingRuns = (this.savingRuns || Promise.resolve())
+      .then(() => this.saveRecord(thread, settled))
+      .catch((error) => { this.error = error.message || String(error); this.render(); });
+    return this.savingRuns;
+  }
+
+  async beforeText(ref) {
+    if (!this.beforeTexts.has(ref)) {
+      const data = await this.plugin.getJSON(`/api/copilot/before?thread=${encodeURIComponent(this.activeThread.id)}`
+        + `&ref=${encodeURIComponent(ref)}`);
+      this.beforeTexts.set(ref, String(data.text ?? ""));
+    }
+    return this.beforeTexts.get(ref);
+  }
+
+  async undoAllRun(ref) {
+    const view = this.plugin.liveRunView?.(ref);
+    if (!view) return;
+    const { kept } = this.plugin.live.undoAll(view, ref);
+    if (kept) new Notice(`SLIM: ${kept} change${kept === 1 ? "" : "s"} you've edited since stay as they are.`);
+  }
+
+  redoRun(ref) {
+    const view = this.plugin.liveRunView?.(ref);
+    if (view && this.plugin.live.redo(view, ref) === "refused") {
+      new Notice("SLIM: you've edited that part of the note since, so it stays as it is.");
+    }
+  }
+
+  // The note as it was before the run, over the note, read-only; the file is not touched.
+  async toggleBefore(turn, on) {
+    const run = turn.turn.edit_run;
+    const view = this.plugin.liveRunView?.(run.before_ref) || await this.plugin.noteView?.(this.context.source.path);
+    if (!view) throw new Error("Open the note in an editor to see it as it was.");
+    this.plugin.live.showBefore(view, run.before_ref, on ? await this.beforeText(run.before_ref) : "", on);
+  }
+
+  // The note as it was before the run, as one editor change (Cmd-Z takes it back). If the note
+  // has been edited since, it says so first and waits for a second click.
+  async restore(turn, force = false) {
+    const run = turn.turn.edit_run;
+    const ref = run.before_ref;
+    const view = await this.plugin.noteView?.(this.context.source.path);
+    if (!view || !this.plugin.live) throw new Error("Open the note in an editor to restore it.");
+    const before = await this.beforeText(ref);
+    const doc = view.state.doc.toString();
+    if (!force && (run.typed || sha256Hex(doc) !== run.hash_after)) {
+      this.restoreArmed = ref;
+      this.render();
       return;
     }
-    const list = create(box, "ul", "slim-review-list");
-    file.changes.forEach((change, index) => {
-      const item = create(list, "li", "");
-      const row = create(item, "button", "slim-review-item");
-      const lost = !change.status && entry.lost?.has(index);
-      create(row, "span", `slim-review-dot is-${change.status || (lost ? "lost" : "open")}`);
-      create(row, "span", "slim-review-label", changeLabel(change));
-      create(row, "span", "slim-review-state", change.status === "applied" ? "applied"
-        : change.status === "rejected" ? "rejected" : lost ? "changed since" : "");
-      row.onclick = () => this.plugin.showReview?.(entry, index);
-      if (lost) {
-        const dismiss = create(item, "button", "slim-review-dismiss", "Dismiss");
-        dismiss.onclick = () => this.plugin.reviewChanged?.(entry, index, "rejected");
-      }
-    });
-    if (!counts.open) return;
-    const actions = create(box, "div", "slim-proposal-actions");
-    const show = create(actions, "button", "", "Show in note");
-    show.onclick = () => this.plugin.showReview?.(entry);
-    const reject = create(actions, "button", "", "Reject the rest");
-    reject.onclick = () => this.plugin.decideRest?.(entry, "rejected");
-    const accept = create(actions, "button", "mod-cta", "Accept the rest");
-    let armed = false;
-    accept.onclick = async () => {
-      if (!armed) {
-        const warning = removalWarning(file.changes, await this.plugin.reviewDoc?.(file.path));
-        if (warning) { armed = true; accept.textContent = `Confirm: ${warning}`; return; }
-      }
-      await this.plugin.decideRest?.(entry, "applied");
-    };
+    this.restoreArmed = null;
+    this.restoredFrom.set(ref, doc);
+    this.plugin.live.restore(view, before);
+    Object.assign(run, { restored: true, typed: false, hash_after: sha256Hex(view.state.doc.toString()) });
+    this.saveRun(this.activeThread, this.turns);
+    this.reindex(this.context.source.path);
+    this.render();
   }
 
-  renderProposal(message, proposal) {
-    const card = create(message, "div", "slim-proposal");
-    const busy = this.sending || this.applying.size > 0;
-    const open = (proposal.files || []).filter((file) => file.kind === "create" && file.after != null && !file.status);
-    let all = null;
-    if (open.length > 1) {
-      all = create(card, "button", "mod-cta slim-accept-all", `Accept all ${open.length}`);
-      all.disabled = busy;
-      all.onclick = () => this.decide(proposal, open, "accept");
+  // Undo of a Restore, while the note is still exactly the restored copy.
+  async unrestore(turn) {
+    const run = turn.turn.edit_run;
+    const was = this.restoredFrom.get(run.before_ref);
+    const view = this.plugin.liveViewFor?.(this.context.source.path);
+    if (was === undefined || !view) return;
+    if (sha256Hex(view.state.doc.toString()) !== run.hash_after) {
+      throw new Error("The note has changed since it was restored; use Cmd-Z in the note.");
     }
-    for (const file of proposal.files || []) {
-      const box = create(card, "div", "slim-proposal-file");
-      const head = create(box, "div", "slim-proposal-head");
-      const name = create(head, "button", "slim-proposal-path", file.path);
-      name.setAttribute("title", file.path);
-      name.onclick = () => this.openNote(file.path);
-      create(head, "small", "slim-proposal-kind", file.kind === "create" ? "new note" : "edit");
-      if (file.status) {
-        const actions = create(box, "div", "slim-proposal-actions");
-        create(actions, "small", `slim-proposal-status is-${file.status}`, proposalStatus(file));
-        continue;
-      }
-      for (const block of (file.blocks || []).filter((item) => !item.ok)) {
-        create(box, "div", "slim-proposal-problem", `Not proposed: ${block.reason}`);
-      }
-      if (file.after == null && !file.changes) continue;
-      if (file.kind === "edit") {
-        if (file.changes) this.renderReview(box, file);
-        else create(box, "div", "slim-proposal-problem",
-          "Proposed before in-note review. Ask again to review it in the note.");
-        continue;
-      }
-      create(box, "pre", "slim-proposal-preview", file.after);
-      const actions = create(box, "div", "slim-proposal-actions");
-      if (this.applying.has(file)) {
-        create(actions, "small", "slim-proposal-status", "Applying…");
-        continue;
-      }
-      const accept = create(actions, "button", "mod-cta", "Accept");
-      const reject = create(actions, "button", "", "Reject");
-      accept.disabled = reject.disabled = busy;
-      accept.onclick = () => this.decide(proposal, [file], "accept");
-      reject.onclick = () => this.decide(proposal, [file], "reject");
-    }
-    for (const item of proposal.dropped || []) {
-      create(card, "div", "slim-proposal-problem",
-        `Not proposed: ${item.path || "a change with no file"} — ${item.reason}`);
-    }
+    this.plugin.live.restore(view, was);
+    this.restoredFrom.delete(run.before_ref);
+    Object.assign(run, { restored: false, hash_after: sha256Hex(view.state.doc.toString()) });
+    this.saveRun(this.activeThread, this.turns);
+    this.reindex(this.context.source.path);
   }
 
-  async decide(proposal, files, action) {
-    if (this.sending || !this.activeThread) return;
-    const thread = this.activeThread;
-    const turns = this.turns;
-    // A second click, or Accept all over a file already in flight, must not apply it twice or
-    // overwrite an "accepted" with the "stale" its own write caused.
-    const todo = files.filter((file) => !file.status && !this.applying.has(file));
-    if (!todo.length) return;
-    for (const file of todo) this.applying.add(file);
-    this.render();
-    try {
-      for (const file of todo) {
-        if (action === "reject") file.status = "rejected";
-        else {
-          try {
-            file.status = await this.applyFile(file);
-          } catch (error) {
-            file.status = "failed";
-            file.error = error.message || String(error);
-          }
-        }
-        // A note is not findable until it is indexed: sync and embed what was just written.
-        if (file.status === "accepted") {
-          this.plugin.postJSON("/api/copilot/context", { path: file.path, related: false })
-            .catch((e) => console.warn("[slim] index after accept", file.path, e.message));
-        }
-        delete file.after;   // decided: never offered again, and a large note stops weighing on the thread
-      }
-    } finally {
-      for (const file of todo) this.applying.delete(file);
-    }
-    // Reopening the chat mid-write loads fresh turn objects: carry the decisions onto them, or
-    // the next save (theirs or a new answer's) would forget what is already on disk.
-    const live = this.activeThread?.id === thread.id ? this.turns : turns;
-    if (live !== turns) copyDecisions(turns, live);
-    if (!this.deletedThreads.has(thread.id)) {
-      try {
-        await this.saveRecord(thread, live);
-      } catch (error) {
-        this.error = error.message || String(error);
-      }
-    }
-    this.render();
+  reindex(path) {
+    this.saveOpenCopies(path)
+      .then(() => this.plugin.postJSON("/api/copilot/context", { path, related: false }))
+      .catch((e) => console.warn("[slim] index after restore", path, e.message));
   }
 
   // Every pane showing the note writes its buffer first, so what reads the file next (a sync,
@@ -4145,76 +4315,52 @@ class CopilotView extends ItemView {
       if (leaf.view?.file?.path === path && typeof leaf.view.save === "function") await leaf.view.save();
     }
   }
-
-  // A new note is the one thing the sidebar writes; an edit goes in through the editor, one
-  // change per Accept (makeReviewEditor).
-  async applyFile(file) {
-    const vault = this.app.vault;
-    if (file.kind !== "create") throw new Error("an edit is reviewed in the note");
-    // The adapter's check is the filesystem's, case-insensitive on macOS: `summary.md` must
-    // not be written over an existing `Summary.md` that the path index spells differently.
-    if (vault.getAbstractFileByPath(file.path) || await vault.adapter?.exists?.(file.path)) {
-      throw new Error("a note already exists at that path");
-    }
-    await vault.create(file.path, file.after);
-    return "accepted";
-  }
 }
 
-function visibleStream(text) {
-  const cut = String(text || "").search(/^\s*(?:FILE\s*:|<{5,}\s*(?:SEARCH|NOTE))/im);
-  return cut < 0 ? text : `${text.slice(0, cut).trimEnd()}\n\n*Writing the proposed changes…*`;
-}
-
-function copyDecisions(from, to) {
-  from.forEach((turn, index) => {
-    const decided = turn?.turn?.proposal?.files || [];
-    const target = to[index]?.turn?.proposal?.files || [];
-    decided.forEach((file, j) => {
-      const into = target[j];
-      if (!into || into.path !== file.path) return;
-      (file.changes || []).forEach((change, k) => {
-        if (!into.changes?.[k]) return;
-        if (change.status) into.changes[k].status = change.status;
-        else delete into.changes[k].status;
-      });
-      if (!file.status) return;
-      into.status = file.status;
-      if (file.error) into.error = file.error;
-      delete into.after;
-    });
-  });
-}
-
-function hasAccepted(turn) {
-  return (turn?.turn?.proposal?.files || []).some((file) => file.status === "accepted"
-    || (file.changes || []).some((change) => change.status === "applied"));
-}
-
-// What the model sees of an earlier answer: its prose, plus what it proposed and what became of
-// it — the blocks themselves are not in the prose, so "make it shorter" had nothing to go on.
+// What the model sees of an earlier turn: an answer's prose; an edit turn as its plan and what
+// became of its changes, never the text it wrote (that is in the note, which the model reads).
 function historyText(turn) {
-  const files = turn?.turn?.proposal?.files || [];
-  if (turn?.role !== "slim" || !files.length) return turn?.text;
-  const done = files.map((file) => {
-    const { total, applied } = changeCounts(file);
-    const outcome = file.status === "accepted" && total ? `applied ${applied} of ${total} changes`
-      : file.status || "not yet accepted";
-    return `${file.path} (${file.kind}, ${outcome})`;
-  });
-  return `${turn.text}\n\n[Proposed changes: ${done.join("; ")}]`;
+  const run = turn?.turn?.edit_run;
+  if (turn?.role !== "slim" || !run) return turn?.text;
+  const landed = (run.changes || []).filter((change) => !["skipped", "failed", "creating"].includes(change.state));
+  const undone = run.restored ? landed.length
+    : landed.filter((change) => change.state === "undone" || change.state === "trashed").length;
+  const steps = run.plan?.steps || [];
+  return `[Changed the note: ${run.plan?.intro || run.summary || "no plan"}`
+    + `${steps.length ? `; steps: ${steps.join("; ")}` : ""}`
+    + `; ${landed.length} change${landed.length === 1 ? "" : "s"}, ${undone} undone`
+    + `${run.stopped && steps.length ? `; stopped after ${run.steps_done || 0} of ${steps.length} steps` : ""}]`;
 }
 
+const STOPPED_BECAUSE = {
+  refusals: "its changes kept being refused",
+  "call limit": "it reached its limit of calls",
+  "token budget": "it reached its output budget",
+  "empty plan": "the plan had no steps",
+};
 
-function proposalStatus(file) {
-  if (file.status === "accepted") {
-    if (file.kind === "create") return "Created";
-    const { total, applied } = changeCounts(file);
-    return total ? `Applied ${applied} of ${total} changes` : "Applied";
+// "Done: …", or how far a run got, why it stopped, and what it left undone.
+function editOutcome(run) {
+  const steps = run.plan?.steps || [];
+  const landed = (run.changes || []).filter((change) => !["skipped", "failed", "creating"].includes(change.state));
+  if (!run.stopped) {
+    const said = run.summary && run.summary !== run.plan?.intro ? run.summary : "";
+    if (!said) return landed.length ? "Done." : "Done. Nothing needed changing.";
+    return /^done\b/i.test(said) ? said : `Done: ${said}`;
   }
-  if (file.status === "rejected") return "Rejected";
-  if (file.status === "stale") return "Not applied: the note changed since this was proposed";
-  return `Not applied: ${file.error || "unknown error"}`;
+  const why = run.stopped === "stopped" ? ""
+    : STOPPED_BECAUSE[run.stopped] || String(run.stopped).replace(/^error: /, "");
+  if (!landed.length) return `Stopped before changing anything${why ? `: ${why}` : ""}.`;
+  if (!steps.length) return `Stopped${why ? `: ${why}` : ""}.`;
+  const done = Math.min(run.steps_done || 0, steps.length);
+  const states = run.step_states || [];
+  const left = [
+    ...steps.slice(0, done).filter((_step, i) => states[i] === "partial").map((step) => `the rest of ${step}`),
+    ...steps.slice(done),
+  ];
+  const list = left.length < 2 ? left.join("") : `${left.slice(0, -1).join(", ")} and ${left.at(-1)}`;
+  return `Stopped after ${done} of ${steps.length} step${steps.length === 1 ? "" : "s"}${why ? `: ${why}` : ""}.`
+    + `${left.length ? ` Not done: ${list}.` : ""}`;
 }
 
 /* ---- live editing: SLIM's changes land in the note as they arrive ----------------------------
@@ -5158,37 +5304,6 @@ function makeLiveEditor(cm, host) {
   return api;
 }
 
-function changeCounts(file) {
-  const all = file?.changes || [];
-  const applied = all.filter((change) => change.status === "applied").length;
-  const rejected = all.filter((change) => change.status === "rejected").length;
-  return { total: all.length, applied, rejected, open: all.length - applied - rejected };
-}
-
-function changeLabel(change) {
-  const words = (text) => String(text || "").replace(/^[\s#>*+\-\d.)|]+/gm, " ").replace(/\*\*|__|`/g, "")
-    .split(/\s+/).filter(Boolean);
-  const first = (text) => { const w = words(text); return w.slice(0, 6).join(" ") + (w.length > 6 ? "…" : ""); };
-  if (!change.old) return `Added: ${first(change.new)}`;
-  if (!change.new) return `Removed: ${first(change.old)}`;
-  const format = formatChange(change.old, change.new);
-  return format ? `${format}: ${first(change.new)}` : first(change.new);
-}
-
-// Accept the rest decides what the owner may not have looked at: a big removal, or a lost
-// frontmatter, takes a second click (the model's prose cannot be trusted to mention it).
-function removalWarning(changes, doc) {
-  const open = (changes || []).filter((change) => !change.status);
-  const removed = open.reduce((n, change) => n + (change.old ? change.old.replace(/\n$/, "").split("\n").length : 0), 0);
-  const lines = String(doc || "").split("\n").length;
-  const warnings = [];
-  if (removed > 20 || (lines >= 4 && removed / lines > 0.3)) warnings.push(`removes ${removed} of ${lines} lines`);
-  if (open.some((change) => change.from === 0 && /^---\r?\n/.test(change.old) && !/^---\r?\n/.test(change.new || ""))) {
-    warnings.push("removes the frontmatter");
-  }
-  return warnings.join(" · ");
-}
-
 /* One durable meeting object per recording/note, with one reserved capture slot.
  *
  * RecorderView deliberately remains the session controller: it already owns the draft, staged
@@ -5760,6 +5875,26 @@ module.exports = class SlimRecorderPlugin extends Plugin {
     return null;
   }
 
+  // Changes land in Live Preview or source; reading view would hide them as they land.
+  async showEditing(path) {
+    for (const leaf of this.app.workspace?.getLeavesOfType?.("markdown") || []) {
+      if (leaf.view?.file?.path !== path || leaf.view?.getMode?.() !== "preview") continue;
+      const state = leaf.getViewState();
+      await leaf.setViewState({ ...state, state: { ...state.state, mode: "source" } });
+    }
+  }
+
+  // The note's editor, opening the note if no editor shows it (See before and Restore after the
+  // note was closed).
+  async noteView(path) {
+    await this.showEditing(path);
+    if (this.liveViewFor(path) || !this.live) return this.liveViewFor(path);
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!file) return null;
+    await this.app.workspace.getLeaf(false).openFile(file);
+    return this.liveViewFor(path);
+  }
+
   liveChanged(view, runId) {
     for (const leaf of this.app.workspace?.getLeavesOfType?.(VIEW_TYPE_COPILOT) || []) leaf.view?.runChanged?.(view, runId);
   }
@@ -5986,19 +6121,14 @@ module.exports.slashQuery = slashQuery;
 module.exports.matchSkills = matchSkills;
 module.exports.inputsText = inputsText;
 module.exports.editorSelection = editorSelection;
-module.exports.visibleStream = visibleStream;
 module.exports.historyText = historyText;
+module.exports.editOutcome = editOutcome;
 module.exports.wordTokens = wordTokens;
 module.exports.wordOps = wordOps;
 module.exports.markable = markable;
-module.exports.changeCounts = changeCounts;
-module.exports.changeLabel = changeLabel;
 module.exports.formatChange = formatChange;
-module.exports.removalWarning = removalWarning;
 module.exports.makeLiveEditor = makeLiveEditor;
 module.exports.changeMarks = changeMarks;
 module.exports.beforeBlocks = beforeBlocks;
 module.exports.textDiff = textDiff;
 module.exports.excerpt = excerpt;
-module.exports.proposalStatus = proposalStatus;
-module.exports.copyDecisions = copyDecisions;

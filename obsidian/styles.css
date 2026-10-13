@@ -620,12 +620,10 @@
 .slim-rename-input { width: 100%; margin: 8px 0 12px; }
 .slim-copilot-composer {
   position: relative;
-  flex: 0 0 auto; display: grid; grid-template-columns: 32px minmax(80px, auto) 32px 32px;
-  grid-template-areas: "previews previews previews previews" "input input input input" "edit mode attach send";
+  flex: 0 0 auto; display: grid; grid-template-columns: minmax(80px, auto) 1fr 32px 32px;
+  grid-template-areas: "previews previews previews previews" "input input input input" "mode . attach send";
   gap: 6px; border-top: 1px solid var(--background-modifier-border); padding-top: 8px;
 }
-.slim-edit-toggle { grid-area: edit; width: 32px; height: 32px; padding: 0; }
-.slim-edit-toggle.is-active { color: var(--text-on-accent); background-color: var(--interactive-accent); border-radius: 50%; }
 .slim-slash-menu {
   position: absolute; left: 0; right: 0; bottom: 100%; z-index: 10; margin-bottom: 4px;
   display: flex; flex-direction: column; max-height: 260px; overflow-y: auto; padding: 4px;
@@ -642,24 +640,36 @@
 .slim-slash-about { color: var(--text-muted); font-size: var(--font-ui-smaller); white-space: normal; }
 .slim-slash-item.is-broken .slim-slash-about { color: var(--text-error); }
 .slim-inputs { display: block; margin-top: 6px; color: var(--text-faint); font-size: var(--font-ui-smaller); }
-.slim-proposal { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
-.slim-accept-all { align-self: flex-start; }
-.slim-proposal-file { border: 1px solid var(--background-modifier-border); border-radius: 8px; overflow: hidden; }
-.slim-proposal-head {
-  display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 6px 8px;
-  background: var(--background-secondary);
+/* An edit turn: its intro, one muted line per step as it happens, then what came of it. */
+.slim-edit { display: grid; gap: 7px; }
+.slim-edit-intro > :first-child { margin-top: 0; }
+.slim-edit-intro > :last-child { margin-bottom: 0; }
+.slim-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; color: var(--text-muted); font-size: var(--font-ui-small); }
+.slim-step { display: flex; gap: 7px; align-items: baseline; }
+.slim-step-icon { flex: none; width: 14px; text-align: center; color: var(--text-faint); }
+.slim-step.is-partial .slim-step-icon { color: var(--color-orange); }
+.slim-step.is-doing .slim-step-icon::before {
+  content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--color-orange);
+  animation: slim-pulse 0.8s ease-in-out infinite alternate;
 }
-.slim-proposal-path {
-  height: auto; padding: 0; background: none; box-shadow: none; font-family: var(--font-monospace);
-  font-size: var(--font-ui-smaller); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+@keyframes slim-pulse { from { opacity: 0.2; } to { opacity: 1; } }
+.slim-shimmer {
+  background: linear-gradient(90deg, var(--text-muted) 20%, var(--text-normal) 50%, var(--text-muted) 80%);
+  background-size: 220% 100%; -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: slim-shimmer 1.6s linear infinite;
 }
-.slim-proposal-kind { color: var(--text-muted); font-size: var(--font-ui-smaller); flex: 0 0 auto; }
-.slim-proposal-problem { padding: 4px 8px; color: var(--text-warning); font-size: var(--font-ui-smaller); }
-.slim-proposal-actions { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-top: 1px solid var(--background-modifier-border); }
-.slim-proposal-status { color: var(--text-muted); font-size: var(--font-ui-smaller); }
-.slim-proposal-status.is-accepted { color: var(--text-success); }
-.slim-proposal-status.is-stale, .slim-proposal-status.is-failed { color: var(--text-warning); }
-
+@keyframes slim-shimmer { from { background-position: 110% 0; } to { background-position: -110% 0; } }
+.slim-edit-outcome { margin: 0; }
+.slim-edit-note { display: block; color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.slim-edit-meta {
+  margin-top: 6px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px;
+  color: var(--text-faint); font-size: var(--font-ui-smaller);
+}
+.slim-edit-warning { flex-basis: 100%; color: var(--text-warning); }
+@media (prefers-reduced-motion: reduce) {
+  .slim-step.is-doing .slim-step-icon::before, .slim-shimmer { animation: none; }
+  .slim-shimmer { background: none; color: var(--text-muted); }
+}
 /* SLIM's changes in the note: one orange rail on what it touched, added words green, removed
    words struck where they were, removed blocks folded into one struck line, ↺ on hover. */
 .slim-change { box-shadow: inset 3px 0 0 var(--color-orange); }
@@ -722,20 +732,6 @@
   .slim-arrive { animation: none; }
   .slim-undo, .slim-undo-tip { transition: none; }
 }
-.slim-review-count { padding: 4px 8px; color: var(--text-muted); font-size: var(--font-ui-smaller); }
-.slim-review-list { list-style: none; margin: 0; padding: 0 4px 4px; }
-.slim-review-list li { display: flex; align-items: center; gap: 4px; }
-.slim-review-item { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; background: none; box-shadow: none;
-  padding: 2px 4px; height: auto; text-align: left; font-size: var(--font-ui-smaller); }
-.slim-review-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.slim-review-state { margin-left: auto; color: var(--text-faint); }
-.slim-review-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--color-orange); }
-.slim-review-dot.is-applied { background: var(--color-green); }
-.slim-review-dot.is-rejected { background: var(--text-faint); }
-.slim-review-dot.is-lost { background: var(--text-warning); }
-.slim-review-dismiss { font-size: var(--font-ui-smaller); height: auto; padding: 1px 8px; }
-.slim-proposal-preview { max-height: 240px; overflow: auto; margin: 0; padding: 6px 8px; white-space: pre-wrap;
-  font-size: var(--font-ui-smaller); }
 .slim-mode-select {
   grid-area: mode; justify-self: start; height: 28px; min-width: 0; padding: 0 24px 0 10px;
   border-radius: 999px; box-shadow: none; font-size: var(--font-ui-smaller); color: var(--text-muted);
@@ -776,4 +772,3 @@
 
 .slim-processing-current .slim-cancel { margin-left: auto; align-self: flex-start; }
 .slim-resume-row { padding: 0 20px 14px; }
-.slim-proposal-none { display: block; margin-top: 6px; color: var(--text-muted); font-size: var(--font-ui-smaller); }

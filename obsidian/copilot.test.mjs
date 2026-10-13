@@ -35,8 +35,7 @@ Module._load = function (request) {
 const { CopilotView, RenameModal, SSEParser, groupThreads, streamRequest,
         groupCitations, noteTitle, normalizeMath, SUGGESTED_PROMPTS, metaText,
         sha256Hex, slashQuery, matchSkills, inputsText, editorSelection,
-        visibleStream, historyText, wordTokens, wordOps, markable, changeCounts,
-        changeLabel, formatChange, removalWarning, proposalStatus, copyDecisions,
+        historyText, editOutcome, wordTokens, wordOps, markable, formatChange,
         changeMarks, beforeBlocks, textDiff, excerpt } =
   createRequire(import.meta.url)(path.join(HERE, "main.js"));
 
@@ -1162,7 +1161,7 @@ test("a click that is not on a wikilink is left alone", () => {
 });
 
 
-// ---- skills and edit proposals ---------------------------------------------------------------
+// ---- skills ----------------------------------------------------------------------------------
 
 test("a slash command completes only while its first word is being typed", () => {
   const skills = [{ name: "actions" }, { name: "consolidate-my-notes" }, { name: "quiz" }];
@@ -1190,209 +1189,379 @@ test("the selection comes from the pane showing the open note, not the focused o
   assert.equal(editorSelection(app, "Notes/none.md"), "");
 });
 
-function proposalVault(files, { slow = 0 } = {}) {
-  const writes = [];
-  const wait = () => new Promise((done) => setTimeout(done, slow));
-  return {
-    writes,
-    adapter: { exists: async (p) => Object.keys(files).some((k) => k.toLowerCase() === p.toLowerCase()) },
-    getAbstractFileByPath: (p) => (p in files ? { path: p } : null),
-    read: async (file) => files[file.path],
-    async process(file, fn) { await wait(); const next = fn(files[file.path]); if (next !== files[file.path]) writes.push(["modify", file.path]); files[file.path] = next; return next; },
-    async create(p, text) { writes.push(["create", p]); files[p] = text; return { path: p }; },
+// ---- one chat that answers or edits: the run lands in the note, the chat shows its steps -------
+
+// A stand-in for makeLiveEditor: it records what the chat asks of the note's editor.
+function fakeLive(text = "# A\n\nold\n") {
+  const calls = [];
+  const runs = new Map();
+  const editor = { path: "Notes/one.md", text, state: { doc: { toString: () => editor.text } } };
+  const live = {
+    calls,
+    pathOf: (view) => view.path,
+    startRun(view, { id, base }) { calls.push(["start", id, base]); runs.set(id, { changes: [], active: true, marks: true, redoable: false, touched: false }); },
+    applyChange(view, id, change) {
+      calls.push(["apply", change.id]);
+      const state = change.blocked ? "skipped" : "applied";
+      if (state === "applied") view.text += `[${change.id}]`;
+      runs.get(id).changes.push({ id: change.id, label: change.label, state });
+      return state;
+    },
+    endRun(_view, id) { calls.push(["end", id]); runs.get(id).active = false; },
+    state(_view, id) {
+      const run = runs.get(id);
+      if (!run) return null;
+      return { changes: run.changes, undone: run.changes.filter((c) => c.state === "undone").length,
+               redoable: run.redoable, active: run.active, marks: run.marks, before: false, touched: run.touched };
+    },
+    undoAll(_view, id) { calls.push(["undoAll", id]); for (const c of runs.get(id).changes) c.state = "undone"; return { undone: 1, kept: 0 }; },
+    redo(_view, id) { calls.push(["redo", id]); return "redone"; },
+    setMarks(_view, id, on) { calls.push(["marks", id, on]); runs.get(id).marks = on; },
+    showBefore(_view, id, text, on) { calls.push(["before", id, text, on]); },
+    showing: () => null,
+    restore(view, text) { calls.push(["restore", text]); view.text = text; runs.clear(); },
   };
+  return { live, editor, runs };
 }
 
-function proposalView(vault, saved = [], indexed = []) {
+function editView({ events, live, editor, saved = [], indexed = [], before = "# A\n\nold\n", vault } = {}) {
   const view = makeView({
+    live,
+    liveViewFor: () => editor,
+    liveRunView: (id) => (live.state(editor, id) ? editor : null),
+    noteView: async () => editor,
+    showEditing: async () => {},
     postJSON: async (route, body) => {
-      if (route.endsWith("save")) saved.push(body);
-      if (route.endsWith("context")) indexed.push(body.path);
+      if (route.endsWith("save")) saved.push(structuredClone(body));
+      if (route.endsWith("context")) { indexed.push(body.path); return { source: { id: "s1", path: "Notes/one.md" } }; }
       return {};
     },
+    getJSON: async (route) => (route.startsWith("/api/copilot/before") ? { text: before } : { threads: [] }),
+    streamCopilot: events,
   });
-  view.app = { vault, workspace: { openLinkText() {}, getLeavesOfType: () => [] } };
+  view.app = { vault: vault || {}, workspace: { openLinkText() {}, getLeavesOfType: () => [] } };
   view.render = () => {};
-  view.activeThread = { id: "chat-1", source_id: "s1", source_path: "Notes/a.md" };
+  view.saveOpenCopies = async () => {};
+  view.context = { source: { id: "s1", path: "Notes/one.md" }, related: [] };
+  view.activeThread = { id: "chat-1", title: "t", source_id: "s1", source_path: "Notes/one.md" };
   return view;
 }
 
-test("accept creates a new note and indexes it, and never writes over one that appeared meanwhile", async () => {
-  const files = { "Notes/b.md": "theirs\n" };
-  const vault = proposalVault(files);
-  const saved = [], indexed = [];
-  const view = proposalView(vault, saved, indexed);
-  const proposal = { files: [
-    { path: "Notes/c.md", kind: "create", base_hash: null, after: "# C\n", blocks: [] },
-    { path: "Notes/b.md", kind: "create", base_hash: null, after: "mine\n", blocks: [] },
-  ], dropped: [] };
-  view.turns = [{ role: "you", text: "q" }, { role: "slim", text: "a", turn: { proposal } }];
-  await view.decide(proposal, proposal.files, "accept");
-  assert.deepEqual(proposal.files.map((f) => f.status), ["accepted", "failed"]);
-  assert.equal(files["Notes/c.md"], "# C\n");
-  assert.equal(files["Notes/b.md"], "theirs\n");               // never written over
-  assert.deepEqual(indexed, ["Notes/c.md"]);
-  assert.equal(saved.at(-1).turns[1].turn.proposal.files[0].status, "accepted");
+const PLAN = { intro: "I'll rename the heading and tighten the intro.", steps: ["Rename the heading", "Tighten the intro"], outline: null };
+const change = (id, step, extra = {}) => ({ id, step, op: "replace", label: `Replaced ${id}`, needs: [],
+                                            splices: [{ from: 0, to: 1, insert: "x" }], ...extra });
+
+test("a question sends the open note's text and its hash; there is no toggle and no edit flag", async () => {
+  const { live, editor } = fakeLive();
+  let body;
+  const view = editView({ live, editor, events: async (sent, handlers) => {
+    body = sent;
+    handlers.delta({ text: "An answer." });
+    handlers.turn({ answer: "An answer.", mode: "quick", citations: [] });
+  } });
+  await view.send("What is this?");
+  assert.equal(body.doc, "# A\n\nold\n");
+  assert.equal(body.doc_hash, sha256Hex("# A\n\nold\n"));
+  assert.equal("edit" in body, false);
+  assert.equal(body.selection, "");
+  assert.deepEqual(live.calls, []);                            // an answer touches no editor
+  assert.equal(view.turns.at(-1).text, "An answer.");
+  assert.equal(view.turns.at(-1).turn.edit_run, undefined);
+  const { view: shown, root } = renderedView();
+  shown.render();
+  assert.equal(find(root, (node) => String(node.cls).includes("slim-edit-toggle")), null);
+  assert.equal(find(root, (node) => node.tag === "textarea").placeholder, "Ask SLIM, or / for skills");
 });
 
-test("reject writes nothing and a create never overwrites an existing note", async () => {
-  const files = { "Notes/a.md": "mine\n" };
-  const vault = proposalVault(files);
-  const view = proposalView(vault);
-  const proposal = { files: [
-    { path: "Notes/a.md", kind: "create", base_hash: null, after: "theirs\n", blocks: [] },
-    { path: "Notes/z.md", kind: "create", base_hash: null, after: "z\n", blocks: [] },
-  ] };
-  view.turns = [{ role: "slim", text: "a", turn: { proposal } }];
-  await view.decide(proposal, [proposal.files[1]], "reject");
-  await view.decide(proposal, [proposal.files[0]], "accept");
-  assert.deepEqual(vault.writes, []);
-  assert.equal(proposal.files[0].status, "failed");
-  assert.match(proposal.files[0].error, /already exists/);
-  // The filesystem's check is case-insensitive: `a.MD`/`notes/A.md` spellings never overwrite.
-  const clash = { path: "notes/A.md", kind: "create", base_hash: null, after: "x\n", blocks: [] };
-  view.turns[0].turn.proposal.files.push(clash);
-  await view.decide(proposal, [clash], "accept");
-  assert.equal(clash.status, "failed");
-  assert.equal(files["Notes/a.md"], "mine\n");
-  assert.equal(proposal.files[1].status, "rejected");
-});
-
-test("a decided file shows its outcome instead of the buttons", () => {
-  const view = proposalView(proposalVault({}));
-  const message = fakeEl("article");
-  view.renderProposal(message, { files: [
-    { path: "Notes/a.md", kind: "edit", after: "x", status: "accepted", blocks: [] },
-    { path: "Notes/b.md", kind: "edit", after: null, blocks: [{ ok: false, reason: "text not found in the note" }] },
-  ], dropped: [{ path: "Notes/o.md", reason: "not in view" }] });
-  const texts = [];
-  (function walk(el) { texts.push(el.textContent); el.children.forEach(walk); })(message);
-  assert.ok(texts.includes("Applied"));
-  assert.ok(texts.includes("Not proposed: text not found in the note"));
-  assert.ok(texts.includes("Not proposed: Notes/o.md — not in view"));
-  assert.ok(!texts.includes("Accept"));
-});
-
-test("an edit-mode question carries the toggle and the open note's selection", async () => {
-  let body = null;
-  const view = makeView({
-    postJSON: async (route) => route.endsWith("context")
-      ? { source: { id: "s1", path: "Notes/a.md" } } : {},
-    streamCopilot: async (sent, handlers) => { body = sent; handlers.turn({ answer: "ok", citations: [] }); },
-  });
-  view.app = { workspace: { getLeavesOfType: () => [
-    { view: { file: { path: "Notes/a.md" }, editor: { getSelection: () => "picked" } } }] } };
-  view.render = () => {};
-  view.context = { source: { id: "s1", path: "Notes/a.md" }, related: [] };
-  view.editMode = true;
-  await view.send("/tidy");
-  assert.equal(body.edit, true);
-  assert.equal(body.selection, "picked");
-  assert.equal(body.question, "/tidy");
-});
-
-
-test("a double click or Accept all over an in-flight file writes once and records it applied", async () => {
-  const files = {};
-  const vault = proposalVault(files, { slow: 5 });
-  const saved = [];
-  const view = proposalView(vault, saved);
-  const a = { path: "Notes/a.md", kind: "create", base_hash: null, after: "new\n", blocks: [] };
-  const b = { path: "Notes/b.md", kind: "create", base_hash: null, after: "B\n", blocks: [] };
-  const proposal = { files: [a, b] };
-  view.turns = [{ role: "you", text: "q" }, { role: "slim", text: "x", turn: { proposal } }];
-  await Promise.all([view.decide(proposal, [a], "accept"), view.decide(proposal, [a], "accept"),
-                     view.decide(proposal, [a, b], "accept")]);
-  assert.deepEqual([a.status, b.status], ["accepted", "accepted"]);
-  assert.deepEqual(vault.writes, [["create", "Notes/a.md"], ["create", "Notes/b.md"]]);
-  assert.equal(a.after, undefined);                      // decided files stop carrying the text
-  assert.equal(saved.at(-1).turns[1].turn.proposal.files[0].status, "accepted");
-});
-
-test("reopening the chat mid-write keeps the decision; deleting it keeps it deleted", async () => {
-  const files = {};
-  const saved = [];
-  const view = proposalView(proposalVault(files, { slow: 5 }), saved);
-  const file = () => ({ path: "Notes/a.md", kind: "create", base_hash: null, after: "new\n", blocks: [] });
-  const proposal = { files: [file()] };
-  view.turns = [{ role: "you", text: "q" }, { role: "slim", text: "x", turn: { proposal } }];
-  const pending = view.decide(proposal, proposal.files, "accept");
-  // openThread lands meanwhile with fresh objects from the server.
-  view.turns = [{ role: "you", text: "q" }, { role: "slim", text: "x", turn: { proposal: { files: [file()] } } }];
-  await pending;
-  assert.equal(view.turns[1].turn.proposal.files[0].status, "accepted");
-  assert.equal(saved.at(-1).turns[1].turn.proposal.files[0].status, "accepted");
-
-  const gone = proposalView(proposalVault({}, { slow: 5 }), []);
-  const p2 = { files: [file()] };
-  gone.turns = [{ role: "slim", text: "x", turn: { proposal: p2 } }];
-  gone.plugin.postJSON = async (route, body) => { if (route.endsWith("save")) gone.savedAfterDelete = body; return {}; };
-  const late = gone.decide(p2, p2.files, "accept");
-  gone.deleteArmed = "chat-1";
-  await gone.deleteThread("chat-1");
-  gone.savedAfterDelete = null;
-  await late;
-  assert.equal(gone.savedAfterDelete, null);
-});
-
-test("no regenerate after an accepted change, and no question while a write is in flight", async () => {
-  const view = proposalView(proposalVault({}));
-  const answer = { role: "slim", text: "x", turn: { proposal: { files: [{ path: "a", status: "accepted" }] } } };
-  view.turns = [{ role: "you", text: "q" }, answer];
-  let streamed = false;
-  view.plugin.streamCopilot = async () => { streamed = true; };
-  await view.regenerate();
-  assert.equal(view.turns.length, 2);
-  view.context = { source: { id: "s1", path: "Notes/a.md" } };
-  view.applying.add({});
-  await view.send("next");
-  assert.equal(streamed, false);
-});
-
-test("an Ask question never carries a leftover selection; Edit and /commands do", async () => {
+test("only a /command carries the note's selection", async () => {
+  const { live, editor } = fakeLive();
   const bodies = [];
-  const view = makeView({
-    postJSON: async (route) => route.endsWith("context") ? { source: { id: "s1", path: "Notes/a.md" } } : {},
-    streamCopilot: async (sent, handlers) => { bodies.push(sent); handlers.turn({ answer: "ok", citations: [] }); },
-  });
-  const leaf = { view: { file: { path: "Notes/a.md" }, getMode: () => "source", editor: { getSelection: () => "picked" } } };
-  view.app = { workspace: { getLeavesOfType: () => [leaf], getMostRecentLeaf: () => leaf } };
-  view.render = () => {};
-  view.context = { source: { id: "s1", path: "Notes/a.md" }, related: [] };
-  await view.send("what is this?");
-  await view.send("/explain");
-  view.editMode = true;
+  const view = editView({ live, editor, events: async (sent, handlers) => { bodies.push(sent); handlers.turn({ answer: "ok", citations: [] }); } });
+  const leaf = { view: { file: { path: "Notes/one.md" }, getMode: () => "source", editor: { getSelection: () => "picked" } } };
+  view.app.workspace = { getLeavesOfType: () => [leaf], getMostRecentLeaf: () => leaf };
   await view.send("tidy it");
-  assert.deepEqual(bodies.map((b) => b.selection), ["", "picked", "picked"]);
-  leaf.view.getMode = () => "preview";                  // reading mode: the selection is invisible
-  assert.equal(editorSelection(view.app, "Notes/a.md"), "");
+  await view.send("/tidy");
+  assert.deepEqual(bodies.map((b) => b.selection), ["", "picked"]);
 });
 
-test("the streaming view hides the change blocks, and history names what was proposed", () => {
-  assert.equal(visibleStream("I will fix it.\nFILE: Notes/a.md\n<<<<<<< SEARCH\nx"),
-               "I will fix it.\n\n*Writing the proposed changes…*");
-  assert.equal(visibleStream("Shorter.\n<<<<<<< NOTE\n# Whole new note"),
-               "Shorter.\n\n*Writing the proposed changes…*");
-  assert.equal(visibleStream("plain answer"), "plain answer");
-  assert.equal(historyText({ role: "slim", text: "Done.", turn: { proposal: { files: [
-    { path: "Notes/a.md", kind: "edit", status: "accepted" }, { path: "Notes/b.md", kind: "create" }] } } }),
-    "Done.\n\n[Proposed changes: Notes/a.md (edit, accepted); Notes/b.md (create, not yet accepted)]");
+test("an editing run's events land in the note in order and the turn keeps what happened", async () => {
+  const { live, editor } = fakeLive();
+  const saved = [], indexed = [];
+  let midway = null;
+  const view = editView({ live, editor, saved, indexed, events: async (_body, handlers) => {
+    handlers.stage({ stage: "Thinking" });
+    handlers.edit({ before_ref: "a".repeat(32), hash_before: sha256Hex("# A\n\nold\n") });
+    handlers.plan(PLAN);
+    handlers.step({ index: 1, state: "doing" });
+    handlers.change(change("c1", 1));
+    handlers.step({ index: 1, state: "done" });
+    handlers.step({ index: 2, state: "doing" });
+    midway = { steps: [...view.editRun.steps], changes: view.editRun.changes.map((c) => c.state) };
+    handlers.change(change("c2", 2, { blocked: true }));
+    handlers.step({ index: 2, state: "partial" });
+    handlers.turn({ answer: PLAN.intro, mode: "quick", citations: [], timing: { total_ms: 41000 }, edit_run: {
+      plan: PLAN, steps_done: 2, changes: [change("c1", 1), change("c2", 2)], stopped: null, outline_met: true,
+      fixups: 0, hash_before: "h0", hash_after: "server-draft", summary: PLAN.intro, before_ref: "a".repeat(32) } });
+  } });
+  await view.send("Ok make the revisions");
+  assert.deepEqual(live.calls.map((c) => c.slice(0, 2)), [["start", "a".repeat(32)], ["apply", "c1"], ["apply", "c2"], ["end", "a".repeat(32)]]);
+  assert.equal(live.calls[0][2], "# A\n\nold\n");                     // the run starts on the text that was sent
+  assert.deepEqual(midway, { steps: ["done", "doing"], changes: ["applied"] });
+  const run = view.turns.at(-1).turn.edit_run;
+  assert.deepEqual(run.changes.map(({ id, state }) => [id, state]), [["c1", "applied"], ["c2", "skipped"]]);
+  assert.equal(run.changes.some((c) => "splices" in c), false);      // the thread keeps no note text
+  assert.deepEqual(run.step_states, ["done", "partial"]);
+  assert.equal(run.hash_after, sha256Hex(editor.text));                // the editor's own hash: c2 never landed
+  assert.equal(run.before_ref, "a".repeat(32));
+  assert.equal(view.editRun, null);
+  assert.equal(saved.at(-1).turns.at(-1).turn.edit_run.changes.length, 2);
+  assert.deepEqual(indexed.slice(-1), ["Notes/one.md"]);              // saved and re-indexed once, at the end
+});
+
+test("the chat shows the intro, a line per step, the outcome and the meta line", () => {
+  const { live, editor, runs } = fakeLive();
+  const { view, root } = renderedView({ live, liveRunView: (id) => (live.state(editor, id) ? editor : null) });
+  const run = { plan: PLAN, steps_done: 2, step_states: ["done", "partial"], stopped: null, summary: PLAN.intro,
+                before_ref: "b".repeat(32), hash_before: "h0", hash_after: "h1",
+                changes: [{ id: "c1", label: "Replaced s1", state: "applied" }, { id: "c2", label: "Replaced b4", state: "undone" },
+                          { id: "c3", label: "Inserted after b9", state: "skipped" }] };
+  view.turns = [{ role: "you", text: "Ok make the revisions" },
+                { role: "slim", text: PLAN.intro, turn: { mode: "quick", timing: { total_ms: 41000 }, edit_run: run } }];
+  runs.set("b".repeat(32), { changes: run.changes, active: false, marks: true, redoable: true, touched: false });
+  view.render();
+  const texts = [];
+  (function walk(el) { if (el.textContent) texts.push(el.textContent); el.children.forEach(walk); })(root);
+  for (const want of [PLAN.intro, "Rename the heading", "Tighten the intro", "Done.", "2 changes, 1 undone",
+                      "Undo all", "Redo", "See before", "Hide marks", "Quick · 41 s"]) {
+    assert.ok(texts.includes(want), `${want} in ${JSON.stringify(texts)}`);
+  }
+  assert.ok(texts.some((t) => /Inserted after b9/.test(t) && /you edited this here/.test(t)), texts.join(" | "));
+  assert.equal(find(root, (node) => node.cls === "slim-step is-partial") !== null, true);
+  // Once the note's editor has closed (or after a reload), the line offers See before and Restore.
+  runs.clear();
+  view.render();
+  const later = [];
+  (function walk(el) { if (el.textContent) later.push(el.textContent); el.children.forEach(walk); })(root);
+  assert.ok(later.includes("See before") && later.includes("Restore") && !later.includes("Undo all"), later.join(" | "));
+});
+
+test("the meta line's actions reach the note's editor", async () => {
+  const { live, editor, runs } = fakeLive();
+  const { view, root } = renderedView({ live, liveRunView: (id) => (live.state(editor, id) ? editor : null),
+    getJSON: async () => ({ text: "# A\n\nold\n" }), postJSON: async () => ({}) });
+  view.activeThread = { id: "chat-1", source_id: "s1", source_path: "Notes/one.md" };
+  const ref = "c".repeat(32);
+  const run = { plan: PLAN, step_states: ["done", "done"], steps_done: 2, stopped: null, before_ref: ref, hash_after: "h",
+                changes: [{ id: "c1", label: "x", state: "applied" }] };
+  view.turns = [{ role: "you", text: "q" }, { role: "slim", text: "a", turn: { mode: "quick", edit_run: run } }];
+  runs.set(ref, { changes: [{ id: "c1", state: "applied" }], active: false, marks: true, redoable: true, touched: false });
+  view.render();
+  const click = async (label) => { await find(root, (node) => node.tag === "button" && node.textContent === label).onclick(); };
+  await click("Hide marks");
+  await click("Undo all");
+  await click("Redo");
+  await click("See before");
+  assert.deepEqual(live.calls.map((c) => c[0] === "before" ? [c[0], c[2], c[3]] : c.slice(0, 1)),
+                   [["marks"], ["undoAll"], ["redo"], ["before", "# A\n\nold\n", true]]);
+});
+
+test("stop keeps a partial turn: what landed stays, with its copy from before", async () => {
+  const { live, editor } = fakeLive();
+  const saved = [], indexed = [];
+  const view = editView({ live, editor, saved, indexed, events: (_body, handlers, signal) => new Promise((_resolve, reject) => {
+    handlers.edit({ before_ref: "d".repeat(32), hash_before: "h0" });
+    handlers.plan(PLAN);
+    handlers.step({ index: 1, state: "doing" });
+    handlers.change(change("c1", 1));
+    signal.addEventListener("abort", () => {
+      handlers.change(change("late", 1));                 // same chunk, after Stop: dropped
+      const error = new Error("Cancelled");
+      error.name = "AbortError";
+      reject(error);
+    });
+  }) });
+  const sending = view.send("Ok make the revisions");
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  view.cancel();
+  await sending;
+  assert.deepEqual(view.turns.map((t) => t.role), ["you", "slim"]);  // the question is not handed back
+  assert.equal(view.draft, "");
+  const run = view.turns.at(-1).turn.edit_run;
+  assert.equal(run.stopped, "stopped");
+  assert.equal(run.before_ref, "d".repeat(32));
+  assert.equal(run.hash_before, "h0");
+  assert.equal(run.hash_after, sha256Hex(editor.text));
+  assert.deepEqual(run.changes.map((c) => c.id), ["c1"]);
+  assert.equal(live.calls.some((c) => c[1] === "late"), false);
+  assert.equal(saved.at(-1).turns.at(-1).turn.edit_run.stopped, "stopped");
+  assert.deepEqual(indexed.slice(-1), ["Notes/one.md"]);
+  assert.match(editOutcome(run), /^Stopped after 0 of 2 steps\. Not done: Rename the heading and Tighten the intro\.$/);
+});
+
+test("when the note's editor closes or shows another note, the run stops and what landed stays", async () => {
+  const { live, editor } = fakeLive();
+  const view = editView({ live, editor, events: (_body, handlers, signal) => new Promise((_resolve, reject) => {
+    signal.addEventListener("abort", () => { const error = new Error("Cancelled"); error.name = "AbortError"; reject(error); });
+    handlers.edit({ before_ref: "5".repeat(32), hash_before: "h0" });
+    handlers.plan(PLAN);
+    handlers.change(change("c1", 1));
+    editor.path = "Notes/other.md";                                   // the leaf now shows another note
+    handlers.change(change("c2", 2));
+  }) });
+  view.plugin.liveViews = new Set([editor]);
+  await view.send("Ok make the revisions");
+  const run = view.turns.at(-1).turn.edit_run;
+  assert.deepEqual(run.changes.map(({ id, state }) => [id, state]), [["c1", "applied"], ["c2", "skipped"]]);
+  assert.equal(run.stopped, "stopped");
+  assert.deepEqual(live.calls.filter((c) => c[0] === "apply").map((c) => c[1]), ["c1"]);
+});
+
+test("an error after changes landed keeps them and says why it stopped", async () => {
+  const { live, editor } = fakeLive();
+  const view = editView({ live, editor, events: async (_body, handlers) => {
+    handlers.edit({ before_ref: "e".repeat(32), hash_before: "h0" });
+    handlers.plan(PLAN);
+    handlers.change(change("c1", 1));
+    handlers.error({ error: "the model failed" });
+  } });
+  await view.send("Ok make the revisions");
+  assert.equal(view.turns.at(-1).turn.edit_run.stopped, "error: the model failed");
+  assert.match(view.error, /the model failed/);
+  assert.equal(view.retryQuestion, "");                                // no retry: it would apply them again
+});
+
+test("a handler that throws does not end the run", async () => {
+  const { live, editor } = fakeLive();
+  live.applyChange = () => { throw new Error("boom"); };
+  const view = editView({ live, editor, events: async (_body, handlers) => {
+    handlers.edit({ before_ref: "f".repeat(32), hash_before: "h0" });
+    handlers.change(change("c1", 1));
+    handlers.turn({ answer: "Done", mode: "quick", citations: [], edit_run: { plan: { intro: "", steps: [] }, steps_done: 0,
+      changes: [], stopped: null, summary: "Done: 1 change", before_ref: "f".repeat(32) } });
+  } });
+  await view.send("rename it");
+  assert.equal(view.turns.at(-1).role, "slim");
+  assert.equal(view.error, "");
+});
+
+test("restore warns when the note was edited since, and needs a second click", async () => {
+  const { live, editor } = fakeLive("# A\n\nnew\n");
+  const saved = [];
+  const view = editView({ live, editor, saved, before: "# A\n\nold\n" });
+  const run = { plan: PLAN, step_states: [], steps_done: 2, stopped: null, before_ref: "9".repeat(32),
+                hash_after: sha256Hex("# A\n\nnew\n"), changes: [{ id: "c1", label: "x", state: "applied" }] };
+  view.turns = [{ role: "you", text: "q" }, { role: "slim", text: "a", turn: { edit_run: run } }];
+  editor.text = "# A\n\nnew, and mine\n";                              // edited since
+  await view.restore(view.turns[1]);
+  assert.equal(view.restoreArmed, "9".repeat(32));
+  assert.deepEqual(live.calls, []);
+  const { view: shown, root } = renderedView({ live });
+  shown.turns = view.turns;
+  shown.restoreArmed = view.restoreArmed;
+  shown.render();
+  const texts = [];
+  (function walk(el) { if (el.textContent) texts.push(el.textContent); el.children.forEach(walk); })(root);
+  assert.ok(texts.includes("You've edited this note since this change; restoring would discard those edits."));
+  assert.ok(texts.includes("Restore anyway") && texts.includes("Cancel"));
+  await view.restore(view.turns[1], true);
+  assert.deepEqual(live.calls, [["restore", "# A\n\nold\n"]]);
+  assert.equal(editor.text, "# A\n\nold\n");
+  assert.equal(run.restored, true);
+  assert.equal(saved.at(-1).turns[1].turn.edit_run.restored, true);
+  // Unedited since: one click. A run that was typed into while it ran warns as well.
+  editor.text = "# A\n\nnew\n";
+  run.restored = false;
+  run.hash_after = sha256Hex(editor.text);
+  run.typed = true;
+  await view.restore(view.turns[1]);
+  assert.equal(live.calls.length, 1);
+  run.typed = false;
+  await view.restore(view.turns[1]);
+  assert.equal(live.calls.length, 2);
+});
+
+test("the note's editor moving a change (↺, Cmd-Z) updates and saves the turn", async () => {
+  const { live, editor, runs } = fakeLive();
+  const saved = [];
+  const view = editView({ live, editor, saved });
+  const ref = "7".repeat(32);
+  const run = { plan: PLAN, step_states: [], steps_done: 1, stopped: null, before_ref: ref, hash_after: "old",
+                changes: [{ id: "c1", label: "x", state: "applied" }, { id: "c2", label: "y", state: "applied" }] };
+  view.turns = [{ role: "you", text: "q" }, { role: "slim", text: "a", turn: { edit_run: run } }];
+  runs.set(ref, { changes: [{ id: "c1", state: "applied" }, { id: "c2", state: "undone" }], active: false, marks: true, redoable: true, touched: false });
+  editor.text = "after the undo";
+  view.runChanged(editor, ref);
+  await view.savingRuns;
+  assert.deepEqual(run.changes.map((c) => c.state), ["applied", "undone"]);
+  assert.equal(run.hash_after, sha256Hex("after the undo"));
+  assert.deepEqual(saved.at(-1).turns[1].turn.edit_run.changes.map((c) => c.state), ["applied", "undone"]);
+  assert.equal(historyText(view.turns[1]), "[Changed the note: I'll rename the heading and tighten the intro.; steps: Rename the heading; Tighten the intro; 2 changes, 1 undone]");
+});
+
+test("a new note from a skill is created at once, and its ↺ moves it to Obsidian's trash", async () => {
+  const { live, editor } = fakeLive();
+  const files = {};
+  const trashed = [];
+  const vault = {
+    adapter: { exists: async (p) => p in files },
+    getAbstractFileByPath: (p) => (p in files ? { path: p } : null),
+    create: async (p, text) => { files[p] = text; return { path: p }; },
+    trash: async (file, system) => { trashed.push([file.path, system]); delete files[file.path]; },
+  };
+  files["Notes/taken.md"] = "theirs";
+  const view = editView({ live, editor, vault, events: async (_body, handlers) => {
+    handlers.edit({ before_ref: "8".repeat(32), hash_before: "h0" });
+    handlers.plan({ intro: "", steps: [] });
+    handlers.change({ id: "c1", step: 1, op: "create", label: "Created Notes/brief.md", needs: [], path: "Notes/brief.md", text: "# Brief\n" });
+    handlers.change({ id: "c2", step: 1, op: "create", label: "Created Notes/taken.md", needs: [], path: "Notes/taken.md", text: "mine" });
+    handlers.turn({ answer: "Done", mode: "quick", citations: [], edit_run: { plan: { intro: "", steps: [] }, steps_done: 0,
+      changes: [], stopped: null, summary: "Done: 2 changes", before_ref: "8".repeat(32) } });
+  } });
+  await view.send("/brief");
+  assert.equal(files["Notes/brief.md"], "# Brief\n");
+  assert.equal(files["Notes/taken.md"], "theirs");                        // never written over
+  assert.equal(live.calls.some((c) => c[0] === "apply"), false);          // a new note is not an editor change
+  const run = view.turns.at(-1).turn.edit_run;
+  assert.deepEqual(run.changes.map(({ path, state }) => [path, state]), [["Notes/brief.md", "created"], ["Notes/taken.md", "failed"]]);
+  await view.trashCreated(view.turns.at(-1), run.changes[0]);
+  assert.deepEqual(trashed, [["Notes/brief.md", false]]);
+  assert.equal(run.changes[0].state, "trashed");
+});
+
+test("history names an edit turn's plan and what became of its changes", () => {
+  const turn = (run) => ({ role: "slim", text: "x", turn: { edit_run: run } });
+  assert.equal(historyText(turn({ plan: { intro: "Rename it.", steps: [] }, changes: [{ state: "applied" }] })),
+               "[Changed the note: Rename it.; 1 change, 0 undone]");
+  assert.equal(historyText(turn({ plan: PLAN, steps_done: 1, stopped: "stopped",
+                                  changes: [{ state: "applied" }, { state: "skipped" }] })),
+               "[Changed the note: I'll rename the heading and tighten the intro.; steps: Rename the heading; Tighten the intro; 1 change, 0 undone; stopped after 1 of 2 steps]");
+  assert.equal(historyText(turn({ plan: PLAN, restored: true, changes: [{ state: "applied" }, { state: "applied" }] })),
+               "[Changed the note: I'll rename the heading and tighten the intro.; steps: Rename the heading; Tighten the intro; 2 changes, 2 undone]");
+  assert.equal(historyText({ role: "slim", text: "An answer." }), "An answer.");
   assert.equal(historyText({ role: "you", text: "q" }), "q");
 });
 
-test("an edit turn that proposes nothing says nothing will be written", () => {
+test("the outcome says done, or how far it got and why", () => {
+  const run = (extra) => ({ plan: PLAN, changes: [{ state: "applied" }], ...extra });
+  assert.equal(editOutcome(run({ stopped: null, summary: PLAN.intro })), "Done.");
+  assert.equal(editOutcome(run({ stopped: null, summary: "The note now follows the five parts." })), "Done: The note now follows the five parts.");
+  assert.equal(editOutcome(run({ stopped: null, summary: "Done: 3 changes" })), "Done: 3 changes");
+  assert.equal(editOutcome(run({ stopped: "call limit", steps_done: 1, step_states: ["partial"] })),
+               "Stopped after 1 of 2 steps: it reached its limit of calls. Not done: the rest of Rename the heading and Tighten the intro.");
+  assert.equal(editOutcome({ plan: PLAN, changes: [], stopped: "stopped" }), "Stopped before changing anything.");
+});
+
+test("no regenerate after an edit turn: asking again would apply its changes twice", async () => {
   const view = makeView();
-  view.render = CopilotView.prototype.render;
-  const transcript = fakeEl("section");
-  view.el = {};
-  view.turns = [{ role: "slim", text: "I am moving the file.", turn: { edit: true, proposal: { files: [], dropped: [
-    { path: "Notes/archive/a.md", reason: "folder does not exist" }] } } }];
-  view.renderMarkdown = async () => {};
-  view.renderTranscript(transcript);
-  const texts = [];
-  (function walk(el) { texts.push(el.textContent); el.children.forEach(walk); })(transcript);
-  assert.ok(texts.includes("No change was proposed — nothing will be written."));
-  assert.ok(texts.includes("Not proposed: Notes/archive/a.md — folder does not exist"));
+  view.render = () => {};
+  view.turns = [{ role: "you", text: "q" }, { role: "slim", text: "x", turn: { edit_run: { changes: [{ state: "applied" }] } } }];
+  let streamed = false;
+  view.plugin.streamCopilot = async () => { streamed = true; };
+  view.activeThread = { id: "t" };
+  await view.regenerate();
+  assert.equal(streamed, false);
+  assert.equal(view.turns.length, 2);
 });
 
 test("words keep math, bold, code and links whole, so a mark never splits their syntax", () => {
@@ -1428,18 +1597,6 @@ test("a change that keeps every word is named for the formatting it moves", () =
   assert.equal(formatChange("$w_1$\n", "$w1$\n"), "");
   assert.equal(formatChange("", "new\n"), "");
   assert.equal(formatChange("old\n", ""), "");
-});
-
-test("the sidebar names a change by its first words and counts what is left", () => {
-  assert.equal(changeLabel({ old: "## Properties\n", new: "## Key Properties\n" }), "Key Properties");
-  assert.equal(changeLabel({ old: "- Lexical ambiguity: x\n", new: "- **Lexical ambiguity**: x\n" }), "Bold added: Lexical ambiguity: x");
-  assert.equal(changeLabel({ old: "Where:\n* a\n", new: "" }), "Removed: Where: a");
-  assert.equal(changeLabel({ old: "", new: "one two three four five six seven\n" }), "Added: one two three four five six…");
-  assert.deepEqual(changeCounts({ changes: [{ status: "applied" }, { status: "rejected" }, {}] }),
-    { total: 3, applied: 1, rejected: 1, open: 1 });
-  assert.equal(removalWarning([{ from: 0, old: "---\nt: 1\n---\n", new: "" }], "---\nt: 1\n---\nbody\n"),
-    "removes 3 of 5 lines · removes the frontmatter");
-  assert.equal(removalWarning([{ from: 9, old: "x\n", new: "y\n", status: "applied" }], "a\n".repeat(30)), "");
 });
 
 // ---- the live editor's pure parts (the editor itself runs in the real-CodeMirror harness) ----
@@ -1494,114 +1651,5 @@ test("a run lands in the editor focused last that shows the note, and is found a
   assert.equal(plugin.liveViewFor("Notes/none.md"), null);
   assert.equal(plugin.liveRunView("run-1"), newer);
   assert.equal(plugin.liveRunView("run-2"), null);
-});
-
-test("an edit is reviewed in the note: the card counts its changes and lists them, with no line diff", () => {
-  const view = proposalView(proposalVault({}));
-  view.plugin.offerReview = () => {};
-  const message = fakeEl("article");
-  const file = { path: "Notes/a.md", kind: "edit", after: "x", blocks: [], changes: [
-    { old: "## Properties\n", new: "## Key Properties\n", status: "applied" },
-    { old: "Where:\n", new: "", status: "rejected" },
-    { old: "", new: "A new line\n" }] };
-  view.turns = [{ role: "slim", text: "x", turn: { proposal: { files: [file] } } }];
-  view.renderProposal(message, view.turns[0].turn.proposal);
-  const texts = [];
-  (function walk(el) { texts.push(el.textContent); el.children.forEach(walk); })(message);
-  for (const want of ["3 changes · 1 to review · 1 applied · 1 rejected", "Key Properties", "Removed: Where:",
-                      "Added: A new line", "Show in note", "Reject the rest", "Accept the rest"]) {
-    assert.ok(texts.includes(want), want);
-  }
-  assert.ok(!texts.some((t) => /^[+−-]\d+ /.test(t)));
-});
-
-test("Accept the rest takes a second click when it would remove much of the note", async () => {
-  const decided = [];
-  const view = proposalView(proposalVault({}));
-  Object.assign(view.plugin, { offerReview() {}, decideRest: async (_entry, status) => decided.push(status),
-                               reviewDoc: async () => "x\n".repeat(10) });
-  const file = { path: "Notes/a.md", kind: "edit", blocks: [], changes: [{ from: 0, to: 10, old: "x\n".repeat(5), new: "" }] };
-  view.turns = [{ role: "slim", text: "x", turn: { proposal: { files: [file] } } }];
-  const message = fakeEl("article");
-  view.renderProposal(message, view.turns[0].turn.proposal);
-  const accept = find(message, (el) => el.textContent === "Accept the rest");
-  await accept.onclick();
-  assert.deepEqual(decided, []);
-  assert.equal(accept.textContent, "Confirm: removes 5 of 11 lines");
-  await accept.onclick();
-  assert.deepEqual(decided, ["applied"]);
-});
-
-test("the last decision closes the file, saves it and re-indexes the note; Cmd-Z reopens it", async () => {
-  const saved = [], indexed = [];
-  const view = proposalView(proposalVault({}), saved, indexed);
-  view.saveOpenCopies = async () => {};
-  view.plugin.reviews = new Map();
-  const file = { path: "Notes/a.md", kind: "edit", base_hash: "h", after: "x", blocks: [],
-                 changes: [{ old: "a", new: "A" }, { old: "b", new: "" }] };
-  view.turns = [{ role: "you", text: "q" }, { role: "slim", text: "x", turn: { proposal: { files: [file] } } }];
-  const entry = view.reviewEntry(view.activeThread, view.turns, file);
-  view.plugin.reviews.set(file.path, entry);
-  file.changes[0].status = "applied"; view.reviewChanged(entry);
-  assert.equal(file.status, undefined);
-  file.changes[1].status = "rejected"; view.reviewChanged(entry);
-  await view.savingDecisions;
-  await new Promise((done) => setTimeout(done, 0));
-  assert.equal(file.status, "accepted");
-  assert.equal(file.after, undefined);
-  assert.equal(view.plugin.reviews.has(file.path), false);
-  assert.deepEqual(indexed, ["Notes/a.md"]);
-  assert.equal(saved.at(-1).turns[1].turn.proposal.files[0].changes[1].status, "rejected");
-  delete file.changes[0].status; view.reviewChanged(entry);
-  assert.equal(file.status, undefined);
-  assert.equal(view.plugin.reviews.get(file.path), entry);
-});
-
-test("a chat offers each note's newest undecided proposal for review", () => {
-  const offered = [];
-  const view = makeView({ offerReview: (entry) => offered.push(entry) });
-  const edit = (path, extra = {}) => ({ path, kind: "edit", changes: [{ old: "a", new: "b" }], ...extra });
-  const older = edit("Notes/a.md"), newer = edit("Notes/a.md"), done = edit("Notes/b.md", { status: "accepted" }), other = edit("Notes/c.md");
-  view.offerReviews({ id: "t" }, [{ role: "slim", turn: { proposal: { files: [older, other] } } },
-                                   { role: "slim", turn: { proposal: { files: [newer, done] } } }]);
-  assert.deepEqual(offered.map((entry) => entry.file), [newer, other]);
-});
-
-test("history and status count what was applied", () => {
-  const file = { path: "Notes/a.md", kind: "edit", status: "accepted",
-                 changes: [{ status: "applied" }, { status: "rejected" }, { status: "applied" }] };
-  assert.equal(proposalStatus(file), "Applied 2 of 3 changes");
-  assert.equal(historyText({ role: "slim", text: "Done.", turn: { proposal: { files: [file] } } }),
-    "Done.\n\n[Proposed changes: Notes/a.md (edit, applied 2 of 3 changes)]");
-  const partial = { files: [{ path: "a", changes: [{ status: "applied" }, {}] }] };
-  const turns = [{ role: "slim", turn: { proposal: partial } }];
-  const fresh = [{ role: "slim", turn: { proposal: { files: [{ path: "a", changes: [{}, {}] }] } } }];
-  copyDecisions(turns, fresh);
-  assert.equal(fresh[0].turn.proposal.files[0].changes[0].status, "applied");
-});
-
-test("a chat reloaded with fresh objects keeps its review entry and what was decided since the last save", () => {
-  const view = makeView({});
-  const old = { path: "Notes/a.md", kind: "edit", drawn: true, changes: [{ old: "a", new: "A", status: "applied" }, { old: "b", new: "B" }] };
-  const entry = view.reviewEntry({ id: "t" }, [{ role: "slim", turn: { proposal: { files: [old] } } }], old);
-  const fresh = { path: "Notes/a.md", kind: "edit", changes: [{ old: "a", new: "A" }, { old: "b", new: "B", status: "rejected" }] };
-  const turns = [{ role: "slim", turn: { proposal: { files: [fresh] } } }];
-  assert.equal(view.reviewEntry({ id: "t" }, turns, fresh), entry);
-  assert.equal(entry.file, fresh);
-  assert.equal(entry.turns, turns);
-  assert.deepEqual(fresh.changes.map((change) => change.status), ["applied", undefined]);
-  assert.equal(fresh.drawn, true);
-});
-
-test("deleting a chat takes its reviews out of the notes", async () => {
-  const view = makeView({ postJSON: async () => ({}) });
-  view.render = () => {};
-  const ended = [];
-  view.plugin.reviews = new Map([["Notes/a.md", { thread: { id: "gone" } }], ["Notes/b.md", { thread: { id: "kept" } }]]);
-  view.plugin.syncReviews = () => ended.push([...view.plugin.reviews.keys()]);
-  view.deleteArmed = "gone";
-  await view.deleteThread("gone");
-  assert.deepEqual([...view.plugin.reviews.keys()], ["Notes/b.md"]);
-  assert.deepEqual(ended, [["Notes/b.md"]]);
 });
 
