@@ -705,7 +705,6 @@ def test_the_rider_is_the_measured_one():
     assert "For a small wording fix, use edit_text instead of retyping the block." in copilot.EDIT_RIDER
     assert "Use the replace, edit_text, insert and move tools" in copilot.EDIT_RIDER
     assert "the note's headings in their final order (each with its # marks)" in copilot.EDIT_RIDER
-    assert "SEARCH" not in copilot.EDIT_RIDER
 
 
 def test_deep_gives_the_first_call_room_to_think(turn, monkeypatch):

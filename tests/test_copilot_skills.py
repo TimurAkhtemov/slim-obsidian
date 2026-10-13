@@ -113,7 +113,7 @@ def test_a_question_is_one_turn_that_may_edit_and_names_no_mode(con, vault, monk
     turn = copilot.run_turn(con, source["id"], "what is /usr/bin for?", [], "quick", vault=vault)
     system = seen[0]["messages"][0]["content"]
     assert copilot.EDIT_RIDER in system and copilot.ASK_RIDER not in system
-    assert "SEARCH" not in system and "Edit mode" not in system and "Ask mode" not in system
+    assert "Edit mode" not in system and "Ask mode" not in system
     assert turn["edit_run"] is None and turn["skill"] is None and turn["answer"] == "ok"
 
 

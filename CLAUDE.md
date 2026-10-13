@@ -110,22 +110,25 @@ note loses its id. Embedding is part of ingest; `slim status` reports `unembedde
      (`copilot.gather`: the open note, the selection, the folder filtered by frontmatter and
      cut to one section, `[[links]]`), inside a fixed budget, and names what it left out.
      Code knows what it read, so a skill turn makes no sources call.
-   - **Ask / Edit.** Edit mode (or a skill whose `output` is a change) PROPOSES; nothing is
-     written by the server. The model writes SEARCH/REPLACE blocks as plain text, or a NOTE
-     block with a note's whole new text; `edits.py` applies them to the file on disk and cuts
-     the result into per-block changes (`edits.changes`; a recording's own parts are never in
-     one). ⚠ To rewrite a note the model copies it whole into a SEARCH, whatever the rider
-     says, and a mistyped character in the copy refused the change: a SEARCH that copies a
-     note from its top is cut off mid-stream and the model continues it as a NOTE (an
-     assistant prefill), and a long SEARCH matches despite a few wrong lines.
-     A NOTE never rewrites a recording's own parts, whatever it says for them. The plugin
-     draws the changes on the note itself (`makeReviewEditor`, a CodeMirror extension) and
-     nothing is written until the owner accepts one: Accept puts that change in through the
-     editor if the text it replaces is untouched, Cmd-Z takes it back, and when every change is
-     decided the note is synced and embedded. A new note is accepted in the sidebar and written
-     through the Vault API.
-     Editable: notes in view and new notes in existing folders; a recording's frontmatter,
-     `slim-meeting` block and transcript never. One pass, one proposal — not a tool loop.
+   - **Answer or edit** — one chat, no mode. A question first meets the intent gate: one small
+     JSON call on the same messages asks whether the owner wants the note changed. No: no tools,
+     and the answer streams, with sources. Yes, or it can't tell: the model edits the open note
+     through tools (`edits.TOOLS`: `replace`, `edit_text`, `insert`, `move`, `plan`) that point
+     at block handles — [b12] a block, s7 the section under heading b7, b11-b15 a range — at
+     temperature 0.0. A small change is one call; a larger one is a plan carried out one call
+     per step, then up to two fix-ups if the headings miss its outline. Code holds the plan and
+     the limits (`copilot.py`: 8 steps, 30 calls, 3 refusals in a row, 12k output tokens) and
+     refuses what a call must not do, with a reason the model reads back; `llm.hold()` keeps the
+     model lock for the run. An `edit` skill runs the same loop (tidy: the selection's blocks
+     only); a `new-note` skill only `create_note`s, in existing folders, never `Journal/`.
+     **The server never writes the note.** It works on the editor's text (`doc` + its hash) and
+     streams each change as UTF-16 splices; the plugin applies them through the editor as they
+     land (`makeLiveEditor`), skips one whose text the owner typed into meanwhile, draws the
+     marks, then syncs and embeds the note. ↺ undoes a change and those built on it; Undo all and
+     Redo; Cmd-Z is the editor's own. The note as it was before the run is kept beside the chat,
+     outside the vault (`threads.save_before`), so See before and Restore work after the note
+     is closed; Restore warns when the note has changed since. A recording's frontmatter,
+     `slim-meeting` block and transcript are [locked] blocks no call may touch.
 
 ## Where things live
 
@@ -156,8 +159,9 @@ a misfile costs one drag, and ingest tracks it by hash.
 
 Four cuts (2026-07-31, 08-27, 09-01, 09-03) removed roughly 60k lines: curated memory,
 context packs, an evidence rail, MCP tools and server, policy tiers, a vault-wide ask stack,
-the desktop app and its chat lane, a tool loop, re-filing and re-labelling passes, an eval
-harness, and the schema columns and prose that described them. **If a change would restore
+the desktop app and its chat lane, a tool loop for search (it stays cut; the editing loop in
+Talk is the owner's call of 2026-10-12), re-filing and re-labelling passes, an eval harness,
+and the schema columns and prose that described them. **If a change would restore
 any of these, stop and ask.** The maintainer's archive holds them. What was wanted from
 memory is `Profile/me.md`, and today nothing reads it.
 

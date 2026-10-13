@@ -193,8 +193,9 @@ vault-wide question answering engine. "When did I first…" is a SQL question ab
 `authored_at`, and answering it with a similarity score would be wrong.
 
 Quick mode disables model thinking; Deep enables it with a larger budget. The copilot has no
-profile in its prompt, cannot edit files yet, and its chat history lives outside the vault and
-is never treated as evidence.
+profile in its prompt, edits only the open note (a skill may also create a new one), with every
+change applied in the editor and undoable, and its chat history lives outside the vault and is
+never treated as evidence.
 
 Separately, `slim reflect` runs nightly and writes **one** synthesis note into `_Reflections/`
 from your recent journals. It is the part of the system that is actually read for pleasure,

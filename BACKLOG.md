@@ -3,7 +3,7 @@
 **Open items only, one line each.** A finished item is DELETED. Git and the decision log (in the vault)
 are the history. Past ~20 items is a signal about scope, not a reason for headings.
 
-- [ ] Live-test copilot skills and Edit mode: `/consolidate-my-notes` in a meetings folder, `/brief` and `/actions folder`, a stale Accept, a transcript edit refused.
+- [ ] Live-test copilot skills and editing in Obsidian: `/consolidate-my-notes` in a meetings folder, `/brief`, `/actions folder`, `/tidy` on a selection, typing during a run, ↺ and Restore, a transcript edit refused.
 - [ ] Verify the recorder in Obsidian on the cut code: live capture (mic + Core Audio tap), the card UI, Resume, the silent-capture alarm (both sides zeros for 5 s). The server half passed through the API on 2026-09-22 (stereo Me/Them, summary, apply-move, append, retry, silent refusal, journal, copilot).
 - [ ] Cloud providers — ratified 2026-09-01 as DEFERRED guidance; `Journal/` stays local.
 - [ ] Tell remote speakers apart (Speaker 1, Speaker 2): a voice-clustering model on the system channel, replacing `speakers.label_tokens`. Test with a panel podcast played as system audio.
