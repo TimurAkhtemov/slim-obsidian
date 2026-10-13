@@ -8,12 +8,17 @@ evidence** — chat transcripts never enter ingestion or retrieval. The store li
 Deterministic bounds, enforced here: whitelisted thread ids (no traversal), a per-thread turn
 cap and byte cap that REFUSE rather than truncate, and per-thread delete as the only
 destructive operation.
+
+Beside each thread lives the note as it was before each editing run (`save_before`), so See
+before and Restore work after the note is closed. Only the copy's ref rides in the thread: a
+note is up to 400k characters, and the thread's byte cap refuses rather than truncates.
 """
 from __future__ import annotations
 
 import json
 import re
 import shutil
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import PurePosixPath
@@ -25,6 +30,7 @@ THREADS_DIR = DATA_DIR / "threads"
 MAX_TURNS = 500
 MAX_THREAD_BYTES = 4_000_000     # a resumable conversation, not an archive
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,63}$")
+_REF_RE = re.compile(r"^[0-9a-f]{32}$")
 
 
 class ThreadError(RuntimeError):
@@ -164,6 +170,36 @@ def list_copilot_threads() -> list[ThreadSummary]:
     return summaries
 
 
+def _before_dir(thread_id: str):
+    return THREADS_DIR / f"{_validate_id(thread_id)}.before"
+
+
+def save_before(thread_id: str, text: str) -> str:
+    """Keep the note as it was before an editing run, byte for byte; returns the copy's ref."""
+    directory = _before_dir(thread_id)
+    if not isinstance(text, str):
+        raise ThreadError("the copy from before must be text")
+    ref = uuid.uuid4().hex
+    directory.mkdir(parents=True, exist_ok=True)
+    partial = directory / f".{ref}.part"
+    partial.write_bytes(text.encode("utf-8"))
+    partial.replace(directory / f"{ref}.md")
+    return ref
+
+
+def load_before(thread_id: str, ref: str) -> str | None:
+    """The note as it was before a run, or None when this thread has no such copy."""
+    directory = _before_dir(thread_id)
+    if not isinstance(ref, str) or not _REF_RE.fullmatch(ref):
+        raise ThreadError("a copy's ref is 32 hex digits")
+    try:
+        return (directory / f"{ref}.md").read_bytes().decode("utf-8")
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ThreadError(f"copy {ref} could not be read ({type(exc).__name__})") from None
+
+
 def delete_thread(thread_id: str) -> bool:
     """Delete ONE thread by id (the copilot sidebar's delete). Traced: deleting conversational
     history is exactly the kind of action a trace log exists to record. A bad id
@@ -175,10 +211,10 @@ def delete_thread(thread_id: str) -> bool:
         removed = True
     except FileNotFoundError:
         removed = False
-    image_dir = THREADS_DIR / f"{tid}.images"
-    if image_dir.is_dir():
-        shutil.rmtree(image_dir)
-        removed = True
+    for kept in (f"{tid}.images", f"{tid}.before"):
+        if (THREADS_DIR / kept).is_dir():
+            shutil.rmtree(THREADS_DIR / kept)
+            removed = True
     trace.record("thread_delete",
                  {"status": "deleted" if removed else "absent", "id": tid})
     return removed

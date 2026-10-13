@@ -290,3 +290,173 @@ def test_folders_endpoint_gives_a_reopened_card_its_tree_and_tags(server_url, mo
     paths = {f["path"]: f["count"] for f in body["folders"]}
     assert paths["Capture/job-search"] == 1 and paths["Notes/empty"] == 0
     assert body["tag_counts"].get("job-search") == 1
+
+
+# --- an editing turn over the stream ---------------------------------------------------------
+
+from slim import config, edits, llm, threads  # noqa: E402
+
+NOTE = "# Title\n\nIntro para.\n\n## A\n\nText a.\n"
+
+
+def events_of(body: str) -> list[tuple[str, dict]]:
+    out = []
+    for block in body.split("\n\n"):
+        lines = dict(line.split(": ", 1) for line in block.split("\n") if ": " in line and not line.startswith(":"))
+        if "event" in lines:
+            out.append((lines["event"], json.loads(lines["data"])))
+    return out
+
+
+@pytest.fixture
+def a_note(tmp_path, monkeypatch):
+    """A vault holding one indexed note, and a scripted model for turns that may edit."""
+    vault = tmp_path / "vault"
+    (vault / "Notes").mkdir(parents=True)
+    (vault / "Notes/n.md").write_text(NOTE, encoding="utf-8")
+    monkeypatch.setattr(config, "VAULT", vault)
+    monkeypatch.setattr(copilot.search_mod, "hybrid", lambda *a, **k: [])
+    monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
+    con = db.connect()
+    source = copilot.sync_note(con, vault, "Notes/n.md", embed=False)
+    con.close()
+
+    def script(*replies):
+        def chat_tools(messages, tools=None, **opts):
+            content, calls = replies[script.calls]
+            script.calls += 1
+            return ({"content": content, "tool_calls": [{"name": n, "arguments": a} for n, a in calls],
+                     "raw_tool_calls": []}, {"duration_s": 1, "output_tokens": 5})
+        script.calls = 0
+        monkeypatch.setattr(copilot.llm, "chat_tools", chat_tools)
+    return source, script
+
+
+def stream(url, source, question, **extra):
+    return post(url, "/api/copilot/stream", {
+        "thread_id": "chat-1", "source_id": source["id"], "question": question, "history": [],
+        "reasoning_mode": "quick", "doc": NOTE, "doc_hash": edits.digest(NOTE), **extra})
+
+
+def test_the_stream_emits_the_edit_events_in_order(server_url, a_note):
+    source, script = a_note
+    script(("", [("plan", {"intro": "Rename A and add a line.", "steps": ["Rename A", "Add a line"]})]),
+           ("", [("replace", {"target": "b3", "markdown": "## A renamed"})]),
+           ("", [("insert", {"after": "b4", "markdown": "More."})]))
+    status, _headers, body = stream(server_url, source, "rename A and add a line")
+    assert status == 200
+    events = events_of(body)
+    assert [e for e, _ in events] == ["stage", "edit", "plan", "step", "change", "step", "step", "change",
+                                      "step", "turn"]
+    edit = events[1][1]
+    assert set(edit) == {"before_ref", "hash_before"} and edit["hash_before"] == edits.digest(NOTE)
+    assert threads.load_before("chat-1", edit["before_ref"]) == NOTE
+    assert events[2][1] == {"intro": "Rename A and add a line.", "steps": ["Rename A", "Add a line"],
+                            "outline": None}
+    assert events[4][1]["id"] == "c1" and events[7][1]["id"] == "c2"
+    run = events[-1][1]["edit_run"]
+    assert run["before_ref"] == edit["before_ref"] and run["hash_before"] == edit["hash_before"]
+    text = NOTE
+    for change in run["changes"]:
+        text = edits.apply_splices(text, change["splices"])
+    assert run["hash_after"] == edits.digest(text) == edits.digest(
+        "# Title\n\nIntro para.\n\n## A renamed\n\nText a.\n\nMore.\n")
+    assert ": alive" in body                       # the run asked whether the client was still there
+    assert (config.VAULT / "Notes/n.md").read_text() == NOTE         # the server never writes the note
+
+
+def test_a_text_answer_streams_as_today_with_no_edit_events(server_url, a_note):
+    source, script = a_note
+    script(("It is a note.", []))
+    _status, _headers, body = stream(server_url, source, "what is this?")
+    events = events_of(body)
+    assert [e for e, _ in events] == ["stage", "delta", "stage", "turn"]
+    assert events[1][1] == {"text": "It is a note."} and events[2][1] == {"stage": "Noting sources"}
+    assert events[-1][1]["edit_run"] is None
+
+
+def test_a_doc_hash_that_does_not_match_reaches_the_plugin_as_an_error(server_url, a_note):
+    source, script = a_note
+    script(("never", []))
+    _status, _headers, body = stream(server_url, source, "q", doc_hash=edits.digest("other"))
+    assert events_of(body) == [("error", {"error": "the note changed while sending; try again"})]
+    assert script.calls == 0
+
+
+def test_a_doc_too_large_or_not_text_is_refused(server_url, a_note, monkeypatch):
+    source, script = a_note
+    monkeypatch.setattr(edits, "MAX_EDIT_CHARS", 10)
+    status, _headers, body = stream(server_url, source, "q")
+    assert status == 400 and "too large" in json.loads(body)["error"]
+    monkeypatch.setattr(edits, "MAX_EDIT_CHARS", 400_000)
+    status, _headers, body = stream(server_url, source, "q", doc=5)
+    assert status == 400 and "doc" in json.loads(body)["error"]
+
+
+def test_before_returns_the_saved_text_and_refuses_a_bad_ref(server_url):
+    ref = threads.save_before("chat-1", NOTE)
+    with urllib.request.urlopen(f"{server_url}/api/copilot/before?thread=chat-1&ref={ref}") as response:
+        assert response.status == 200 and json.load(response) == {"text": NOTE}
+    for query, code in ((f"thread=chat-1&ref={'0' * 32}", 404), ("thread=chat-1&ref=../x", 400),
+                        (f"thread=..%2Fx&ref={ref}", 400), ("thread=chat-1", 400)):
+        with pytest.raises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(f"{server_url}/api/copilot/before?{query}")
+        assert caught.value.code == code, query
+
+
+def test_a_client_that_hangs_up_stops_the_run_after_the_current_call(server_url, a_note, monkeypatch):
+    """Stop is a closed socket. The run ends before its next model call, what landed stays in
+    the trace, and the lock is free. The client here ends its side while its kernel still takes
+    the server's writes: a write alone succeeds then, so the server must also see the end."""
+    import socket
+    from urllib.parse import urlparse
+
+    source, script = a_note
+    inside, hung_up = threading.Event(), threading.Event()
+    real = []
+    script(("", [("plan", {"intro": "x", "steps": ["Rename A", "Add a line", "Add another"]})]),
+           ("", [("replace", {"target": "b3", "markdown": "## A renamed"})]),
+           ("", [("insert", {"after": "b4", "markdown": "More."})]),
+           ("", [("insert", {"after": "b4", "markdown": "Even more."})]))
+    scripted = copilot.llm.chat_tools
+
+    def chat_tools(messages, tools=None, **opts):
+        if len(real) == 2:                     # the third call waits until the client has gone
+            inside.set()
+            hung_up.wait(5)
+        real.append(1)
+        return scripted(messages, tools, **opts)
+    monkeypatch.setattr(copilot.llm, "chat_tools", chat_tools)
+    records = []
+    monkeypatch.setattr(copilot.trace, "record", lambda kind, payload: records.append(payload))
+
+    png = base64.b64encode(base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")).decode()
+    body = json.dumps({"thread_id": "chat-1", "source_id": source["id"], "question": "go", "history": [],
+                       "reasoning_mode": "quick", "doc": NOTE, "doc_hash": edits.digest(NOTE),
+                       "images": [{"name": "eq.png", "mime": "image/png", "data": png}]}).encode()
+    host, port = urlparse(server_url).hostname, urlparse(server_url).port
+    client = socket.create_connection((host, port))
+    client.sendall(b"POST /api/copilot/stream HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                   b"Content-Type: application/json\r\nContent-Length: " + str(len(body)).encode()
+                   + b"\r\n\r\n" + body)
+    seen = b""
+    while b"event: change" not in seen:
+        seen += client.recv(65536)
+    assert inside.wait(5)                      # the server is in its third call: Stop
+    client.shutdown(socket.SHUT_WR)
+    hung_up.set()
+    for _ in range(100):
+        if records:
+            break
+        threading.Event().wait(0.05)
+    (record,) = records
+    assert record["status"] == "edited" and record["edit_run"]["stopped"] == "stopped"
+    assert record["edit_run"]["model_calls"] == 3 and record["edit_run"]["changes"] == 2
+    assert not llm._CALL_LOCK.locked()
+    handler = copilot_images.request_lock("chat-1")    # held by the handler until it finishes
+    assert handler.acquire(timeout=5)
+    handler.release()
+    # The changes stay in the editor and the plugin keeps the turn, so its image stays too.
+    assert len(list((threads.THREADS_DIR / "chat-1.images").glob("*.png"))) == 1
+    client.close()

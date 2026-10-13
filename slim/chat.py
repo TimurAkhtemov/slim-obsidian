@@ -1,9 +1,9 @@
 """The Obsidian plugin's local API server — `slim chat`, 127.0.0.1:7546.
 
-Twenty routes, called by `obsidian/main.js` (and `GET /api/health` also by the stale-server
-hook): the health guard, eleven `/api/record*` routes for the recorder and eight `/api/copilot*`
-routes for the open-note sidebar. The copilot never writes a note: an edit comes back as a
-proposal, and the plugin writes what the owner accepts.
+Twenty-one routes, called by `obsidian/main.js` (and `GET /api/health` also by the stale-server
+hook): the health guard, eleven `/api/record*` routes for the recorder and nine `/api/copilot*`
+routes for the open-note sidebar. The copilot never writes a note: an edit streams back as
+changes, and the plugin applies each one through the editor.
 
 Loopback-only and Host/Origin-gated because this server moves and overwrites vault files. Two
 properties are load-bearing — do not "simplify" either away. `make_server` refuses any bind
@@ -24,6 +24,8 @@ import ipaddress
 import json
 import os
 import re
+import select
+import socket
 import threading
 import time
 from collections import deque
@@ -33,7 +35,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import (config, copilot as copilot_mod, copilot_images, db,
+from . import (config, copilot as copilot_mod, copilot_images, db, edits as edits_mod,
                llm, skills as skills_mod, threads as threads_mod,
                trace)
 
@@ -1150,6 +1152,15 @@ def _live_source_paths(source_ids: list[str]) -> dict[str, str]:
         con.close()
 
 
+def _ended(connection: socket.socket) -> bool:
+    """The client has closed its side of the connection: it reads as ended, or as reset."""
+    try:
+        readable, _, _ = select.select([connection], [], [], 0)
+        return bool(readable) and connection.recv(1, socket.MSG_PEEK) == b""
+    except OSError:
+        return True
+
+
 class _Handler(BaseHTTPRequestHandler):
     server_version = "slim-chat"
 
@@ -1229,6 +1240,20 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if url.path == "/api/copilot/image":
             self._handle_copilot_image(parse_qs(url.query))
+            return
+        if url.path == "/api/copilot/before":
+            # The note as it was before an editing run, for See before and Restore.
+            query = parse_qs(url.query)
+            try:
+                text = threads_mod.load_before((query.get("thread") or [""])[0],
+                                               (query.get("ref") or [""])[0])
+            except threads_mod.ThreadError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            if text is None:
+                self._send_json(404, {"error": "no such copy"})
+            else:
+                self._send_json(200, {"text": text})
             return
         if url.path == "/api/copilot/thread":
             thread_id = (parse_qs(url.query).get("id") or [""])[0]
@@ -1385,6 +1410,14 @@ class _Handler(BaseHTTPRequestHandler):
         # The selection is the input of a selection skill; it writes nothing here.
         selection = data.get("selection")
         selection = selection[:copilot_mod.MAX_SELECTION_CHARS] if isinstance(selection, str) else ""
+        # The editor's text and its hash: an editing run works on exactly what the owner sees.
+        doc, doc_hash = data.get("doc"), data.get("doc_hash")
+        if doc is not None and not (isinstance(doc, str) and isinstance(doc_hash, str)):
+            self._send_json(400, {"error": "doc and doc_hash must be text"})
+            return
+        if doc is not None and len(doc) > edits_mod.MAX_EDIT_CHARS:
+            self._send_json(400, {"error": "this note is too large for the sidebar; edit it in Obsidian"})
+            return
         thread_id = data.get("thread_id")
         image_lock = None
         try:
@@ -1416,16 +1449,51 @@ class _Handler(BaseHTTPRequestHandler):
             self.wfile.write(f"event: {event}\ndata: {body}\n\n".encode("utf-8"))
             self.wfile.flush()
 
+        # Stop is the plugin closing the socket. During an editing run a failed write marks the
+        # client gone, and so does its socket reading as ended — a write into a closed socket can
+        # still succeed for a moment, and the plugin sends nothing after its request. The run
+        # then ends before its next model call, its trace written and the lock freed; what
+        # landed stays.
+        gone, before = [], {}
+
+        def quietly(write):
+            if gone:
+                return
+            try:
+                write()
+            except (BrokenPipeError, ConnectionResetError):
+                gone.append(True)
+
+        def on_edit(event, payload):
+            if event == "start":
+                text = payload["before_text"]
+                before.update(before_ref=threads_mod.save_before(thread_id, text),
+                              hash_before=edits_mod.digest(text))
+                event, payload = "edit", dict(before)
+            quietly(lambda: emit(event, payload))
+
+        def should_stop():
+            quietly(lambda: (self.wfile.write(b": alive\n\n"), self.wfile.flush()))
+            if not gone and _ended(self.connection):
+                gone.append(True)
+            return bool(gone)
+
         con = None
         completed = False
         try:
             con = db.connect()
             turn = copilot_mod.run_turn(
                 con, source_id, question, history, mode, vault=config.VAULT, images=images,
-                selection=selection,
+                selection=selection, doc=doc, doc_hash=doc_hash,
                 on_stage=lambda stage: emit("stage", {"stage": stage}),
-                on_delta=lambda text: emit("delta", {"text": text}))
+                on_delta=lambda text: emit("delta", {"text": text}),
+                on_edit=on_edit, should_stop=should_stop)
             turn["attachments"] = attachments
+            if turn.get("edit_run"):
+                turn["edit_run"]["before_ref"] = before.get("before_ref")
+                # Its changes are in the editor whether or not this last write arrives, and the
+                # plugin keeps a stopped run's turn: its images stay.
+                completed = True
             emit("turn", turn)
             completed = True
         except (BrokenPipeError, ConnectionResetError):
