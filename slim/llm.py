@@ -11,6 +11,7 @@ import json
 import threading
 import urllib.error
 import urllib.request
+from contextlib import contextmanager, nullcontext
 
 OLLAMA_CHAT = "http://localhost:11434/api/chat"
 
@@ -18,9 +19,31 @@ OLLAMA_CHAT = "http://localhost:11434/api/chat"
 # per-runner: concurrent calls evict each other's prefix, which is the whole reason a
 # growing conversation is affordable. Serializing costs a queued caller some latency; not
 # serializing costs every caller its cached prefill. Held across the ENTIRE stream in
-# chat_stream. Nothing inside a call may re-enter this module (on_delta must not call the
-# model) — the non-reentrant Lock is deliberate, so that mistake fails loudly.
+# chat_stream, and across a whole editing run through `hold()`: a request slipping in between
+# two steps would evict the prefix every later step reads. Nothing inside a call may re-enter
+# this module (on_delta must not call the model) — the non-reentrant Lock is deliberate, so
+# that mistake fails loudly.
 _CALL_LOCK = threading.Lock()
+_HELD = threading.local()
+
+
+@contextmanager
+def hold():
+    """Hold the call lock across several calls. Calls this thread makes inside it go straight
+    through; every other thread's call waits until it exits."""
+    if getattr(_HELD, "on", False):
+        yield
+        return
+    with _CALL_LOCK:
+        _HELD.on = True
+        try:
+            yield
+        finally:
+            _HELD.on = False
+
+
+def _lock():
+    return nullcontext() if getattr(_HELD, "on", False) else _CALL_LOCK
 
 # Resident model. MoE only — dense 31–32B models are disqualified for interactive use on this
 # machine (~95 tok/s prefill measured). Switched to qwen3.6:35b on 2026-07-14 — THE OWNER'S CALL,
@@ -96,7 +119,7 @@ def chat(messages: list[dict], schema: dict | None = None, model: str | None = N
          num_ctx: int = RESIDENT_CTX, temperature: float = 0.0,
          num_predict: int = 1024, timeout: int = 600,
          think: bool = False) -> tuple[str, dict]:
-    """One bounded chat turn. Returns (content, stats). No streaming, no tools.
+    """One bounded chat turn. Returns (content, stats). No streaming; tools are chat_tools'.
 
     `num_predict` is a HARD output cap and a correctness control, not a performance
     knob. Greedy decoding into a JSON grammar with an unbounded string field is a
@@ -123,31 +146,69 @@ def chat(messages: list[dict], schema: dict | None = None, model: str | None = N
     if schema is not None:
         body["format"] = schema
 
-    req = urllib.request.Request(
-        OLLAMA_CHAT, data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"})
-    try:
-        with _CALL_LOCK:
-            resp = json.load(urllib.request.urlopen(req, timeout=timeout))
-    except urllib.error.HTTPError as e:
-        # Ollama puts the real reason in the body; the status line alone is useless.
-        detail = e.read().decode("utf-8", "replace")[:300]
-        raise LLMError(f"ollama rejected the call ({model or MODEL}): "
-                       f"HTTP {e.code} — {detail}") from e
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
-        raise LLMError(f"ollama call failed ({model or MODEL}): {e}") from e
-
+    resp = _post(body, model or MODEL, timeout)
     msg = resp.get("message", {})
     content = msg.get("content", "")
     # If a reasoning trace came back, the tokens it cost came out of num_predict. Record
     # it, so "the model returned no JSON" is never mistaken for a model defect.
-    thinking_chars = len(msg.get("thinking") or "")
+    return content, _stats(resp, model or MODEL, num_ctx, content, len(msg.get("thinking") or ""))
+
+
+def chat_tools(messages: list[dict], tools: list[dict] | None = None, *, think: bool,
+               temperature: float, num_predict: int, fmt: dict | None = None,
+               timeout: int = 600) -> tuple[dict, dict]:
+    """One bounded turn with Ollama's native tool calls. Returns ({content, tool_calls,
+    raw_tool_calls}, stats): tool_calls as [{name, arguments}], raw_tool_calls as Ollama sent
+    them, for the assistant message that goes back into the conversation. The resident's one
+    window, an explicit `think` and a capped `num_predict`, as every call here. `fmt` is a JSON
+    schema for the reply, as chat()'s `schema`. Not streamed."""
+    body = {
+        "model": MODEL,
+        "messages": messages,
+        "stream": False,
+        "keep_alive": KEEP_ALIVE,
+        "think": think,
+        "options": {"num_ctx": RESIDENT_CTX, "temperature": temperature,
+                    "num_predict": num_predict},
+    }
+    if tools:
+        body["tools"] = tools
+    if fmt is not None:
+        body["format"] = fmt
+    resp = _post(body, MODEL, timeout)
+    msg = resp.get("message", {})
+    content = msg.get("content", "")
+    raw = msg.get("tool_calls") or []
+    calls = [{"name": c["function"]["name"], "arguments": c["function"].get("arguments") or {}}
+             for c in raw]
+    # A reply that is only tool calls is not one whose thinking ate the budget.
+    stats = _stats(resp, MODEL, RESIDENT_CTX, content or bool(raw), len(msg.get("thinking") or ""))
+    return {"content": content, "tool_calls": calls, "raw_tool_calls": raw}, stats
+
+
+def _post(body: dict, model: str, timeout: int) -> dict:
+    req = urllib.request.Request(
+        OLLAMA_CHAT, data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"})
+    try:
+        with _lock():
+            return json.load(urllib.request.urlopen(req, timeout=timeout))
+    except urllib.error.HTTPError as e:
+        # Ollama puts the real reason in the body; the status line alone is useless.
+        detail = e.read().decode("utf-8", "replace")[:300]
+        raise LLMError(f"ollama rejected the call ({model}): HTTP {e.code} — {detail}") from e
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise LLMError(f"ollama call failed ({model}): {e}") from e
+
+
+def _stats(resp: dict, model: str, num_ctx: int, content, thinking_chars: int) -> dict:
+    """What the trace records of one call, the same for every call path."""
     prompt_tokens = resp.get("prompt_eval_count", 0)
     out_tokens = resp.get("eval_count", 0)
     prefill_s = resp.get("prompt_eval_duration", 0) / 1e9
     decode_s = resp.get("eval_duration", 0) / 1e9
-    stats = {
-        "model": model or MODEL,
+    return {
+        "model": model,
         "num_ctx": num_ctx,
         "prompt_tokens": prompt_tokens,
         "output_tokens": out_tokens,
@@ -168,7 +229,6 @@ def chat(messages: list[dict], schema: dict | None = None, model: str | None = N
         "thinking_chars": thinking_chars,
         "thinking_ate_the_budget": bool(thinking_chars and not content),
     }
-    return content, stats
 
 
 def chat_stream(messages: list[dict], model: str | None = None,
@@ -203,7 +263,7 @@ def chat_stream(messages: list[dict], model: str | None = None,
     try:
         # The lock spans the whole iteration — see _CALL_LOCK. Releasing at first byte
         # would let another call interleave with this stream's own decode.
-        with _CALL_LOCK, urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _lock(), urllib.request.urlopen(req, timeout=timeout) as resp:
             for line in resp:
                 if not line.strip():
                     continue
@@ -228,24 +288,7 @@ def chat_stream(messages: list[dict], model: str | None = None,
         raise LLMError(f"ollama stream failed ({model or MODEL}): {e}") from e
 
     content = "".join(parts)
-    prompt_tokens = final.get("prompt_eval_count", 0)
-    out_tokens = final.get("eval_count", 0)
-    prefill_s = final.get("prompt_eval_duration", 0) / 1e9
-    decode_s = final.get("eval_duration", 0) / 1e9
-    stats = {
-        "model": model or MODEL,
-        "num_ctx": num_ctx,
-        "prompt_tokens": prompt_tokens,
-        "output_tokens": out_tokens,
-        "prefill_tok_s": round(prompt_tokens / prefill_s) if prefill_s else None,
-        "decode_tok_s": round(out_tokens / decode_s) if decode_s else None,
-        "duration_s": round(final.get("total_duration", 0) / 1e9, 2),
-        "ctx_saturated": prompt_tokens >= num_ctx,
-        "done_reason": final.get("done_reason"),
-        "output_truncated": final.get("done_reason") == "length",
-        "thinking_chars": thinking_chars,
-        "thinking_ate_the_budget": bool(thinking_chars and not content),
-    }
+    stats = _stats(final, model or MODEL, num_ctx, content, thinking_chars)
     return content, stats
 
 
