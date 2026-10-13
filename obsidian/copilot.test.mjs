@@ -1356,6 +1356,21 @@ test("the chat shows the intro, a line per step, the outcome and the meta line",
   assert.ok(later.includes("See before") && later.includes("Restore") && !later.includes("Undo all"), later.join(" | "));
 });
 
+test("a skipped change made inside another is not named: it was SLIM's own rework", () => {
+  const { live } = fakeLive();
+  const { view, root } = renderedView({ live });
+  const run = { plan: { intro: "Adding a section.", steps: [] }, stopped: null, summary: "", before_ref: "2".repeat(32),
+                changes: [{ id: "c1", label: "Added “Condensed”", state: "applied" },
+                          { id: "c2", label: "Rewrote “SLIM's draft”", state: "skipped", part_of: "c1" },
+                          { id: "c3", label: "Changed “a” to “b”", state: "skipped" }] };
+  view.turns = [{ role: "you", text: "q" }, { role: "slim", text: "a", turn: { mode: "quick", edit_run: run } }];
+  view.render();
+  const texts = [];
+  (function walk(el) { if (el.textContent) texts.push(el.textContent); el.children.forEach(walk); })(root);
+  assert.ok(texts.includes("Skipped “Changed “a” to “b””: you edited this here."), texts.join(" | "));
+  assert.equal(texts.some((t) => t.includes("Rewrote")), false, texts.join(" | "));
+});
+
 test("the meta line's actions reach the note's editor", async () => {
   const { live, editor, runs } = fakeLive();
   const { view, root } = renderedView({ live, liveRunView: (id) => (live.state(editor, id) ? editor : null),

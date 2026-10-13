@@ -4133,7 +4133,8 @@ class CopilotView extends ItemView {
     }
     if (pending && "stopped" in run) create(box, "p", "slim-edit-outcome", editOutcome(run));
     for (const change of run.changes || []) {
-      if (change.state === "skipped") {
+      // A change made inside another was SLIM's own rework: it is never named on its own.
+      if (change.state === "skipped" && !change.part_of) {
         create(box, "small", "slim-edit-note", `Skipped “${change.label || change.id}”: you edited this here.`);
       }
       if (change.op !== "create") continue;
@@ -5229,8 +5230,9 @@ function makeLiveEditor(cm, host) {
     },
 
     // One change as the server made it: splices on its copy, in order. It lands where those
-    // splices sit now, unless the owner has edited there (or undone what it changes): then it
-    // is skipped, and later changes still land where they belong.
+    // splices sit now, unless the owner has edited there (or undone what it changes), or a change
+    // it needs is not in the note: then it is skipped, and later changes still land where they
+    // belong.
     applyChange(view, runId, change) {
       const run = runOf(view.state, runId);
       if (!run || !run.active) return "skipped";
@@ -5273,7 +5275,8 @@ function makeLiveEditor(cm, host) {
         const a = run.toDoc.mapPos(from, 1);
         return [a, from === to ? a : Math.max(a, run.toDoc.mapPos(to, -1))];
       });
-      const touched = splices.some(({ from, to }) => run.toDoc.touchesRange(from, to))
+      const touched = run.steps.some((earlier) => needs.has(earlier.id) && !run.kept.has(earlier.id))
+        || splices.some(({ from, to }) => run.toDoc.touchesRange(from, to))
         || at.some(([from, to]) => run.owner.touchesRange(from, to));
       const agent = changes.apply(run.agent);
       const steps = run.steps.map(remap);
@@ -5342,7 +5345,14 @@ function makeLiveEditor(cm, host) {
       const rootOf = new Map(run.steps.map((step) => [step.id, step.partOf || step.id]));
       const edited = new Set([...run.kept]
         .filter((id) => (run.marks.get(id)?.rails || []).some(([f, t]) => inside(run.owner, f, t))).map((id) => rootOf.get(id)));
-      const kept = holdable(run, [...run.kept].filter((id) => edited.has(rootOf.get(id))));
+      // What stays: the changes the owner edited, what they need, and every part of a root that
+      // stays, until nothing more comes in.
+      let kept = new Set([...run.kept].filter((id) => edited.has(rootOf.get(id))));
+      for (let size = -1; size !== kept.size;) {
+        size = kept.size;
+        kept = holdable(run, kept);
+        for (const id of run.kept) if (kept.has(rootOf.get(id))) kept.add(id);
+      }
       const gone = [...run.kept].filter((id) => !kept.has(id));
       const roots = (ids) => [...ids].filter((id) => rootOf.get(id) === id).length;
       const next = gone.length ? moved(run, kept, gone) : null;
