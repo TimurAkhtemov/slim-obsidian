@@ -156,20 +156,17 @@ def chat(messages: list[dict], schema: dict | None = None, model: str | None = N
 
 def chat_tools(messages: list[dict], tools: list[dict] | None = None, *, think: bool,
                temperature: float, num_predict: int, fmt: dict | None = None,
-               timeout: int = 600, on_delta=None, on_thinking=None) -> tuple[dict, dict]:
+               timeout: int = 600) -> tuple[dict, dict]:
     """One bounded turn with Ollama's native tool calls. Returns ({content, tool_calls,
     raw_tool_calls}, stats): tool_calls as [{name, arguments}], raw_tool_calls as Ollama sent
     them, for the assistant message that goes back into the conversation. The resident's one
     window, an explicit `think` and a capped `num_predict`, as every call here. `fmt` is a JSON
-    schema for the reply, as chat()'s `schema`.
-
-    With `on_delta` the reply streams, as chat_stream's does: content chunks reach `on_delta`
-    as they decode (`on_thinking` gets the reasoning's), tool calls are gathered from the
-    chunks that carry them, and the stats come from the final chunk."""
+    schema for the reply, as chat()'s `schema`. Not streamed: a reply that streams is an answer,
+    and answers go through chat_stream."""
     body = {
         "model": MODEL,
         "messages": messages,
-        "stream": on_delta is not None,
+        "stream": False,
         "keep_alive": KEEP_ALIVE,
         "think": think,
         "options": {"num_ctx": RESIDENT_CTX, "temperature": temperature,
@@ -179,13 +176,10 @@ def chat_tools(messages: list[dict], tools: list[dict] | None = None, *, think: 
         body["tools"] = tools
     if fmt is not None:
         body["format"] = fmt
-    if on_delta is not None:
-        content, raw, thinking_chars, resp = _stream(body, MODEL, timeout, on_delta, on_thinking)
-    else:
-        resp = _post(body, MODEL, timeout)
-        msg = resp.get("message", {})
-        content, raw = msg.get("content", ""), msg.get("tool_calls") or []
-        thinking_chars = len(msg.get("thinking") or "")
+    resp = _post(body, MODEL, timeout)
+    msg = resp.get("message", {})
+    content, raw = msg.get("content", ""), msg.get("tool_calls") or []
+    thinking_chars = len(msg.get("thinking") or "")
     calls = [{"name": c["function"]["name"], "arguments": c["function"].get("arguments") or {}}
              for c in raw]
     # A reply that is only tool calls is not one whose thinking ate the budget.
@@ -208,15 +202,12 @@ def _post(body: dict, model: str, timeout: int) -> dict:
         raise LLMError(f"ollama call failed ({model}): {e}") from e
 
 
-def _stream(body: dict, model: str, timeout: int, on_delta,
-            on_thinking) -> tuple[str, list[dict], int, dict]:
-    """A streamed call: (content, tool calls as Ollama sent them, thinking characters, the final
-    chunk, which carries the stats)."""
+def _stream(body: dict, model: str, timeout: int, on_delta, on_thinking) -> tuple[str, int, dict]:
+    """A streamed call: (content, thinking characters, the final chunk, which carries the stats)."""
     req = urllib.request.Request(
         OLLAMA_CHAT, data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json"})
     parts: list[str] = []
-    raw: list[dict] = []
     thinking_chars = 0
     final: dict = {}
     try:
@@ -237,7 +228,6 @@ def _stream(body: dict, model: str, timeout: int, on_delta,
                     parts.append(chunk)
                     if on_delta is not None:
                         on_delta(chunk)
-                raw += msg.get("tool_calls") or []
                 if data.get("done"):
                     final = data
     except urllib.error.HTTPError as e:
@@ -245,7 +235,7 @@ def _stream(body: dict, model: str, timeout: int, on_delta,
         raise LLMError(f"ollama rejected the call ({model}): HTTP {e.code} — {detail}") from e
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         raise LLMError(f"ollama stream failed ({model}): {e}") from e
-    return "".join(parts), raw, thinking_chars, final
+    return "".join(parts), thinking_chars, final
 
 
 def _stats(resp: dict, model: str, num_ctx: int, content, thinking_chars: int) -> dict:
@@ -301,7 +291,7 @@ def chat_stream(messages: list[dict], model: str | None = None,
     }
     if schema is not None:
         body["format"] = schema
-    content, _calls, thinking_chars, final = _stream(body, model or MODEL, timeout, on_delta, on_thinking)
+    content, thinking_chars, final = _stream(body, model or MODEL, timeout, on_delta, on_thinking)
     return content, _stats(final, model or MODEL, num_ctx, content, thinking_chars)
 
 
