@@ -104,3 +104,72 @@ def test_another_threads_call_waits_until_hold_exits(monkeypatch):
         order.append("run")
     worker.join(2)
     assert order == ["run", "other"]
+
+
+class _Chunks:
+    """A streamed Ollama reply: one JSON object per line."""
+
+    def __init__(self, chunks):
+        self._lines = [json.dumps(c).encode() + b"\n" for c in chunks]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def __iter__(self):
+        yield from self._lines
+
+
+def _streamed(monkeypatch, chunks):
+    sent = []
+
+    def fake_urlopen(req, timeout=None):
+        sent.append(json.loads(req.data))
+        return _Chunks(chunks)
+
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+    return sent
+
+
+def test_a_streamed_reply_reaches_on_delta_in_order_and_whole(monkeypatch):
+    sent = _streamed(monkeypatch, [
+        {"message": {"thinking": "hm"}}, {"message": {"content": "Lexical "}},
+        {"message": {"content": "ambiguity is…"}},
+        {"message": {"content": ""}, "done": True, "done_reason": "stop", "eval_count": 7,
+         "prompt_eval_count": 30, "total_duration": 1_000_000_000}])
+    deltas, pings = [], []
+    msg, stats = llm.chat_tools([{"role": "user", "content": "q"}], [], think=True, temperature=0.7,
+                                num_predict=2400, on_delta=deltas.append, on_thinking=pings.append)
+    assert sent[0]["stream"] is True and sent[0]["think"] is True and "tools" not in sent[0]
+    assert deltas == ["Lexical ", "ambiguity is…"] and pings == ["hm"]
+    assert msg == {"content": "Lexical ambiguity is…", "tool_calls": [], "raw_tool_calls": []}
+    assert stats["output_tokens"] == 7 and stats["done_reason"] == "stop" and stats["thinking_chars"] == 2
+    assert stats["num_ctx"] == llm.RESIDENT_CTX
+
+
+def test_tool_calls_inside_a_streamed_reply_are_captured(monkeypatch):
+    first = {"function": {"name": "plan", "arguments": {"intro": "x", "steps": ["a"]}}}
+    second = {"function": {"name": "replace", "arguments": {"target": "b3", "markdown": "## A"}}}
+    _streamed(monkeypatch, [
+        {"message": {"content": "On it."}}, {"message": {"content": "", "tool_calls": [first]}},
+        {"message": {"content": "", "tool_calls": [second]}},
+        {"message": {"content": ""}, "done": True, "eval_count": 3}])
+    deltas = []
+    msg, stats = llm.chat_tools([], [{"type": "function", "function": {"name": "plan"}}], think=False,
+                                temperature=0.0, num_predict=10, on_delta=deltas.append)
+    assert deltas == ["On it."] and msg["content"] == "On it."
+    assert msg["tool_calls"] == [{"name": "plan", "arguments": {"intro": "x", "steps": ["a"]}},
+                                 {"name": "replace", "arguments": {"target": "b3", "markdown": "## A"}}]
+    assert msg["raw_tool_calls"] == [first, second] and stats["thinking_ate_the_budget"] is False
+
+
+def test_a_streamed_call_that_is_refused_raises_and_frees_the_lock(monkeypatch):
+    def refuse(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, 500, "boom", {}, io.BytesIO(b"bad"))
+
+    monkeypatch.setattr(llm.urllib.request, "urlopen", refuse)
+    with pytest.raises(llm.LLMError, match="HTTP 500"):
+        llm.chat_tools([], think=False, temperature=0.0, num_predict=10, on_delta=lambda _t: None)
+    assert not llm._CALL_LOCK.locked()
