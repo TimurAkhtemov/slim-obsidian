@@ -1311,7 +1311,7 @@ test("an editing run's events land in the note in order and the turn keeps what 
     handlers.step({ index: 2, state: "partial" });
     handlers.turn({ answer: PLAN.intro, mode: "quick", citations: [], timing: { total_ms: 41000 }, edit_run: {
       plan: PLAN, steps_done: 2, changes: [change("c1", 1), change("c2", 2)], stopped: null, outline_met: true,
-      fixups: 0, hash_before: "h0", hash_after: "server-draft", summary: PLAN.intro, before_ref: "a".repeat(32) } });
+      hash_before: "h0", hash_after: "server-draft", summary: PLAN.intro, before_ref: "a".repeat(32) } });
   } });
   await view.send("Ok make the revisions");
   const local = live.calls[0][1];
@@ -1619,6 +1619,43 @@ test("history names an edit turn's plan and what became of its changes", () => {
                "[Changed the note: I'll rename the heading and tighten the intro.; steps: Rename the heading; Tighten the intro; 2 changes, 2 undone]");
   assert.equal(historyText({ role: "slim", text: "An answer." }), "An answer.");
   assert.equal(historyText({ role: "you", text: "q" }), "q");
+});
+
+test("a change made inside another counts as part of it, in the chat and in history", async () => {
+  // The owner's run: c1 added a section; c2, c3 and c4 only rewrote what c1 and c2 wrote.
+  const inside = (id, partOf, needs) => change(id, 1, { op: "replace", label: `Rewrote ${id}`, part_of: partOf, needs });
+  const { live, editor, runs } = fakeLive();
+  const saved = [];
+  const view = editView({ live, editor, saved, events: async (_body, handlers) => {
+    handlers.edit({ before_ref: "1".repeat(32), hash_before: "h0" });
+    handlers.plan({ intro: "Adding an explanation.", steps: [] });
+    handlers.change(change("c1", 1, { op: "insert", label: "Added “Condensed”" }));
+    handlers.change(inside("c2", "c1", ["c1"]));
+    handlers.change(inside("c3", "c1", ["c1"]));
+    handlers.change(inside("c4", "c1", ["c2"]));
+    handlers.change(change("c5", 1, { label: "Rewrote “Intro”" }));
+    handlers.turn({ answer: "Adding an explanation.", mode: "quick", citations: [], edit_run: {
+      plan: { intro: "Adding an explanation.", steps: [] }, steps_done: 0, changes: [], stopped: null,
+      summary: "Adding an explanation.", before_ref: "1".repeat(32) } });
+  } });
+  await view.send("add a condensed explanation under the screenshot");
+  const turn = view.turns.at(-1);
+  const kept = saved.at(-1).turns.at(-1).turn.edit_run;
+  assert.deepEqual(kept.changes.map((c) => [c.id, c.part_of ?? null]),
+                   [["c1", null], ["c2", "c1"], ["c3", "c1"], ["c4", "c1"], ["c5", null]]);
+  assert.equal("fixups" in kept, false);
+  assert.equal(historyText(turn), "[Changed the note: Adding an explanation.; 2 changes, 0 undone]");
+  // ↺ on the section takes what was made inside it with it: one change undone, not four.
+  for (const c of runs.get("1".repeat(32)).changes) if (c.id !== "c5") c.state = "undone";
+  view.runChanged(editor, "1".repeat(32));
+  await view.savingRuns;
+  assert.equal(historyText(turn), "[Changed the note: Adding an explanation.; 2 changes, 1 undone]");
+  const { view: shown, root } = renderedView({ live, liveRunView: (id) => (live.state(editor, id) ? editor : null) });
+  shown.turns = view.turns;
+  shown.render();
+  const texts = [];
+  (function walk(el) { if (el.textContent) texts.push(el.textContent); el.children.forEach(walk); })(root);
+  assert.ok(texts.includes("2 changes, 1 undone"), texts.join(" | "));
 });
 
 test("the outcome says done, or how far it got and why", () => {

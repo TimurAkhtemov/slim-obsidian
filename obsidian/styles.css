@@ -701,7 +701,7 @@
 }
 .slim-undo svg { width: 14px; height: 14px; }
 .slim-undo:hover { color: var(--text-normal); border-color: var(--text-faint); }
-.slim-undo-holder.is-shown .slim-undo, .slim-undo:focus-visible { opacity: 1; }
+.slim-undo-holder.is-shown .slim-undo, .slim-undo:hover, .slim-undo:focus-visible { opacity: 1; }
 .slim-undo-tip {
   position: absolute; left: 31px; top: 50%; transform: translateY(-50%); white-space: nowrap; pointer-events: none;
   padding: 4px 8px; border-radius: 6px; background: var(--text-normal); color: var(--background-primary);

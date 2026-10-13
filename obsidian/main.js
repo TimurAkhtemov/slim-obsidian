@@ -3500,7 +3500,7 @@ class CopilotView extends ItemView {
   // the chat keeps its id, label and what became of it, never its text.
   landChange(run, change) {
     const entry = { id: String(change.id), step: change.step, op: change.op, label: change.label || "",
-                    needs: change.needs || [] };
+                    needs: change.needs || [], ...(change.part_of != null ? { part_of: String(change.part_of) } : {}) };
     run.changes.push(entry);
     if (change.op === "create") {
       entry.path = change.path;
@@ -3570,12 +3570,11 @@ class CopilotView extends ItemView {
       plan: run.plan || server.plan || { intro: "", steps: [] },
       steps_done: server.steps_done ?? run.steps.filter((state) => state && state !== "doing").length,
       step_states: run.steps.map((state) => state || null),
-      changes: run.changes.map(({ id, step, op, label, needs, path, state, reason }) => ({
-        id, step, op, label, needs, ...(path ? { path } : {}), state: states.get(id) || state,
-        ...(reason ? { reason } : {}) })),
+      changes: run.changes.map(({ id, step, op, label, needs, part_of, path, state, reason }) => ({
+        id, step, op, label, needs, ...(part_of ? { part_of } : {}), ...(path ? { path } : {}),
+        state: states.get(id) || state, ...(reason ? { reason } : {}) })),
       stopped: server.stopped ?? null,
       outline_met: server.outline_met ?? null,
-      fixups: server.fixups ?? 0,
       summary: server.summary || "",
       before_ref: run.ref,
       hash_before: run.hash_before,
@@ -4161,9 +4160,7 @@ class CopilotView extends ItemView {
     const parts = [];
     const text = (value) => parts.push(["span", value]);
     const link = (label, act, disabled = false) => parts.push(["button", label, act, disabled]);
-    const landed = (run.changes || []).filter((change) => !["skipped", "failed", "creating"].includes(change.state));
-    const undone = run.restored ? landed.length
-      : landed.filter((change) => change.state === "undone" || change.state === "trashed").length;
+    const { landed, undone } = runCounts(run);
     const inNote = landed.some((change) => change.op !== "create");
     const view = ref && this.plugin.liveRunView?.(ref);
     const live = view && this.plugin.live?.state(view, ref);
@@ -4348,14 +4345,22 @@ class CopilotView extends ItemView {
   }
 }
 
+// The changes a run made that the owner decides on, and how many of those are undone. A change
+// `part_of` another only rewrote SLIM's own text from earlier in the run: it is that one's.
+function runCounts(run) {
+  const landed = (run.changes || [])
+    .filter((change) => !change.part_of && !["skipped", "failed", "creating"].includes(change.state));
+  const undone = run.restored ? landed.length
+    : landed.filter((change) => change.state === "undone" || change.state === "trashed").length;
+  return { landed, undone };
+}
+
 // What the model sees of an earlier turn: an answer's prose; an edit turn as its plan and what
 // became of its changes, never the text it wrote (that is in the note, which the model reads).
 function historyText(turn) {
   const run = turn?.turn?.edit_run;
   if (turn?.role !== "slim" || !run) return turn?.text;
-  const landed = (run.changes || []).filter((change) => !["skipped", "failed", "creating"].includes(change.state));
-  const undone = run.restored ? landed.length
-    : landed.filter((change) => change.state === "undone" || change.state === "trashed").length;
+  const { landed, undone } = runCounts(run);
   const steps = run.plan?.steps || [];
   return `[Changed the note: ${run.plan?.intro || run.summary || "no plan"}`
     + `${steps.length ? `; steps: ${steps.join("; ")}` : ""}`
@@ -4373,7 +4378,7 @@ const STOPPED_BECAUSE = {
 // "Done: …", or how far a run got, why it stopped, and what it left undone.
 function editOutcome(run) {
   const steps = run.plan?.steps || [];
-  const landed = (run.changes || []).filter((change) => !["skipped", "failed", "creating"].includes(change.state));
+  const { landed } = runCounts(run);
   if (!run.stopped) {
     const said = run.summary && run.summary !== run.plan?.intro ? run.summary : "";
     if (!said) return landed.length ? "Done." : "Done. Nothing needed changing.";
@@ -4683,7 +4688,8 @@ function beforeBlocks(before, now) {
  *   toDoc   agent → doc; owner  doc → the editor's text (everything else that changed the note).
  * Undo and redo change `kept` and replay the changes from base, so a change and the changes made
  * inside it come and go together, exactly: an inverse mapped through a later change made inside
- * its text leaves that change's words behind.
+ * its text leaves that change's words behind. A change the server says is `part_of` another
+ * reworked only SLIM's own text from this run: it is drawn, counted and undone as that one.
  */
 function makeLiveEditor(cm, host) {
   const { StateField, StateEffect, ChangeSet, Text, Compartment, EditorState } = cm.state;
@@ -4695,6 +4701,8 @@ function makeLiveEditor(cm, host) {
   const showBefore = StateEffect.define();  // {runId, text} or null
   const lock = new Compartment();
   const focused = new WeakMap();
+  const leaving = new WeakMap();            // view → the timer that lets go of its hovered change
+  const LEAVE_MS = 500;
 
   const pathOf = (state) => (host.infoField && state.field(host.infoField, false)?.file?.path) || null;
   const livePreview = (state) => !host.livePreviewField || state.field(host.livePreviewField, false) !== false;
@@ -4914,6 +4922,9 @@ function makeLiveEditor(cm, host) {
     label.className = "slim-undo-tip";
     label.textContent = `Undo · ${tip}`;
     button.onmousedown = (event) => event.preventDefault();         // keep the caret where it is
+    // The editor ignores events inside a widget: the button holds its change's hover itself.
+    button.onmouseenter = () => showHover(view, runId, id);
+    button.onmouseleave = () => leaveHover(view);
     button.onclick = (event) => {
       event.preventDefault();
       const done = api.undo(view, runId, [id]);
@@ -4946,14 +4957,16 @@ function makeLiveEditor(cm, host) {
   // so and a click goes to where it went.
   class Folded extends WidgetType {
     constructor(opts) { super(); Object.assign(this, opts); }
-    eq(other) {
-      return ["runId", "id", "text", "moved", "open", "undo", "hovered", "path"].every((k) => other[k] === this[k]);
-    }
+    eq(other) { return other.key === this.key && other.hovered === this.hovered; }
+    get key() { return JSON.stringify(["runId", "id", "text", "moved", "open", "undo", "path"].map((k) => this[k])); }
     toDOM(view) {
       const box = document.createElement("div");
       box.className = `slim-removed slim-change${this.hovered ? " is-hovered" : ""}`;
       box.dataset.slimRun = this.runId;
       box.dataset.slimChange = this.id;
+      box.dataset.key = this.key;
+      box.onmouseenter = () => showHover(view, this.runId, this.id);
+      box.onmouseleave = () => leaveHover(view);
       const line = box.appendChild(document.createElement("button"));
       line.className = "slim-removed-line";
       line.setAttribute("aria-expanded", String(Boolean(this.open)));
@@ -4979,11 +4992,22 @@ function makeLiveEditor(cm, host) {
       }
       return box;
     }
+    // Hovering only marks it: the box under the pointer stays the same element.
+    updateDOM(dom) {
+      if (dom.dataset.key !== this.key) return false;
+      dom.classList.toggle("is-hovered", Boolean(this.hovered));
+      dom.querySelector(".slim-undo-holder")?.classList.toggle("is-shown", Boolean(this.hovered));
+      return true;
+    }
     ignoreEvent() { return true; }
   }
 
+  // ↺'s words: the change, and how many other changes made inside it go with it. Its own
+  // rewrites (`part_of` it) are the change itself and are not counted.
   const tipFor = (run, step) => {
-    const inside = [...dependents(run, [step.id])].filter((id) => id !== step.id && run.kept.has(id)).length;
+    const parts = new Set(run.steps.filter((other) => other.partOf).map((other) => other.id));
+    const inside = [...dependents(run, [step.id])]
+      .filter((id) => id !== step.id && run.kept.has(id) && !parts.has(id)).length;
     return `${step.label || step.id}${inside ? ` · also undoes ${inside} inside it` : ""}`;
   };
 
@@ -4998,44 +5022,53 @@ function makeLiveEditor(cm, host) {
     for (const run of runs.values()) {
       if (!run.marks || !run.display.marks || run.owner.newLength !== doc.length) continue;
       const settled = !run.active;
+      // A change and the changes `part_of` it are drawn as one, under its id: one rail, one
+      // hover, one ↺ on the first line any of them covers.
+      const drawn = [], lines = new Map();
       for (const step of run.steps) {
-        if (!run.kept.has(step.id) || !run.marks.has(step.id)) continue;
+        const root = step.partOf || step.id;
+        if (!run.kept.has(step.id) || !run.kept.has(root) || !run.marks.has(step.id)) continue;
         const at = mapMarks(run.marks.get(step.id), run.owner);
-        const hovered = run.display.hover === step.id;
-        const cls = `slim-change${hovered ? " is-hovered" : ""}${run.latest === step.id ? " slim-arrive" : ""}`;
-        const attributes = { "data-slim-run": run.id, "data-slim-change": step.id };
-        const tip = settled ? tipFor(run, step) : null;
-        const lines = new Set();
-        let first = null;
+        drawn.push({ step, root, at });
+        if (!lines.has(root)) lines.set(root, new Set());
         for (const [f, t] of at.rails) {
           if (t <= f) continue;
           let end = t;
           while (end > f + 1 && doc.sliceString(end - 1, end) === "\n") end -= 1;
           for (let pos = clamp(f); pos <= clamp(end - 1) && pos < doc.length + 1;) {
             const line = doc.lineAt(pos);
-            if (!lines.has(line.from)) {
-              lines.add(line.from);
-              ranges.push(Decoration.line({ class: cls, attributes }).range(line.from));
-            }
-            if (first === null) first = line.from;
+            lines.get(root).add(line.from);
             if (line.to >= doc.length) break;
             pos = line.to + 1;
           }
         }
+      }
+      const byId = new Map(run.steps.map((step) => [step.id, step]));
+      for (const [root, starts] of lines) {
+        const hovered = run.display.hover === root;
+        const cls = `slim-change${hovered ? " is-hovered" : ""}${run.latest === root ? " slim-arrive" : ""}`;
+        const attributes = { "data-slim-run": run.id, "data-slim-change": root };
+        for (const from of starts) ranges.push(Decoration.line({ class: cls, attributes }).range(from));
+        if (settled && starts.size) {
+          const widget = new Undo(run.id, root, tipFor(run, byId.get(root)), hovered);
+          ranges.push(Decoration.widget({ widget, side: -1 }).range(Math.min(...starts)));
+        }
+      }
+      for (const { step, root, at } of drawn) {
+        // A change made inside another is measured against SLIM's own draft, not the owner's
+        // text: it draws its rails and nothing else.
+        if (step.id !== root) continue;
         for (const [f, t] of at.ins) if (t > f) ranges.push(Decoration.mark({ class: "slim-ins" }).range(clamp(f), clamp(t)));
         for (const [f, t] of at.formats) if (t > f) ranges.push(Decoration.mark({ class: "slim-format" }).range(clamp(f), clamp(t)));
         for (const [p, text] of at.dels) {
           ranges.push(Decoration.widget({ widget: new Gone(text, raw, path), side: -1 }).range(clamp(p)));
         }
         at.folds.forEach(([p, text, isMove], k) => {
-          const widget = new Folded({ runId: run.id, id: step.id, text, moved: isMove, path,
-            open: run.display.open.has(step.id), hovered,
-            undo: settled && first === null && k === 0 ? tip : null });
+          const widget = new Folded({ runId: run.id, id: root, text, moved: isMove, path,
+            open: run.display.open.has(root), hovered: run.display.hover === root,
+            undo: settled && !lines.get(root).size && k === 0 ? tipFor(run, step) : null });
           ranges.push(Decoration.widget({ widget, block: true, side: -1 }).range(doc.lineAt(clamp(p)).from));
         });
-        if (settled && first !== null) {
-          ranges.push(Decoration.widget({ widget: new Undo(run.id, step.id, tip, hovered), side: -1 }).range(first));
-        }
       }
     }
     return Decoration.set(ranges, true);
@@ -5122,14 +5155,20 @@ function makeLiveEditor(cm, host) {
       if (before !== after) for (const shown of [before, after]) if (shown) told.add(shown.runId);
       if (told.size) queueMicrotask(() => { for (const id of told) host.changed?.(update.view, id); });
     }
-    destroy() { host.views.delete(this.view); }
+    destroy() {
+      host.views.delete(this.view);
+      clearTimeout(leaving.get(this.view));          // never let go of a hover in a closed editor
+      leaving.delete(this.view);
+    }
   });
 
-  const hover = (view, target) => {
-    const el = target?.closest?.("[data-slim-change]");
-    const runId = el?.dataset?.slimRun || null, id = el?.dataset?.slimChange || null;
+  // A change under the pointer is marked and shows its ↺ at once. Leaving waits a moment before
+  // letting go, so the pointer can cross the margin to ↺.
+  const showHover = (view, runId, id) => {
+    clearTimeout(leaving.get(view));
+    leaving.delete(view);
     const runs = view.state.field(runsField, false);
-    if (!runs) return false;
+    if (!runs) return;
     const effects = [];
     for (const run of runs.values()) {
       const want = run.id === runId ? id : null;
@@ -5138,6 +5177,16 @@ function makeLiveEditor(cm, host) {
       }
     }
     if (effects.length) view.dispatch({ effects });
+  };
+  const leaveHover = (view) => {
+    const runs = view.state.field(runsField, false);
+    if (leaving.has(view) || ![...(runs?.values() || [])].some((run) => run.display.hover)) return;
+    leaving.set(view, setTimeout(() => { leaving.delete(view); showHover(view, null, null); }, LEAVE_MS));
+  };
+  const hover = (view, target) => {
+    const el = target?.closest?.("[data-slim-change]");
+    if (el) showHover(view, el.dataset.slimRun, el.dataset.slimChange);
+    else leaveHover(view);
     return false;
   };
 
@@ -5203,6 +5252,11 @@ function makeLiveEditor(cm, host) {
           from < to ? from < b && to > a : a < from && from < b));
         if (cut) needs.add(earlier.id);
       }
+      // A change `part_of` an earlier one reworked only SLIM's own text from this run: it is
+      // drawn and undone as part of that change (its root), and never stands without it.
+      const named = change.part_of == null ? null : run.steps.find((earlier) => earlier.id === String(change.part_of));
+      const partOf = named ? named.partOf || named.id : null;
+      if (partOf) needs.add(partOf);
       let shift = 0;
       const regions = [];
       for (const { from, to, insert } of splices) {
@@ -5213,7 +5267,7 @@ function makeLiveEditor(cm, host) {
         const f = changes.mapPos(a, 1);
         return [f, Math.max(f, changes.mapPos(b, -1))];
       }) });
-      const step = { id: String(change.id), label: change.label || "", op: change.op || "", step: change.step,
+      const step = { id: String(change.id), label: change.label || "", op: change.op || "", step: change.step, partOf,
                      needs: [...needs], splices, changes, regions, rel: changeMarks(change.op, pieces) };
       const at = splices.map(({ from, to }) => {
         const a = run.toDoc.mapPos(from, 1);
@@ -5234,7 +5288,7 @@ function makeLiveEditor(cm, host) {
       marks.set(step.id, place(step.rel, starts(splices, run.toDoc)));
       const next = { ...run, steps: [...steps, step], agent, kept: new Set([...run.kept, step.id]),
                      doc: onDoc.apply(run.doc), toDoc: run.toDoc.map(changes, true),
-                     owner: run.owner.map(onDoc, true), marks, latest: step.id, version: run.version + 1 };
+                     owner: run.owner.map(onDoc, true), marks, latest: partOf || step.id, version: run.version + 1 };
       const landing = onDoc.map(run.owner);
       const effects = [setRun.of({ id: runId, run: next })];
       // Where it landed comes into view, unless the owner is typing in this editor.
@@ -5281,16 +5335,20 @@ function makeLiveEditor(cm, host) {
     },
 
     // Every change the owner has not edited since, and what those need, comes out as one step.
+    // A change and those `part_of` it go or stay together, and are counted once.
     undoAll(view, runId) {
       const run = runOf(view.state, runId);
       if (!run || !run.kept.size) return { undone: 0, kept: 0 };
-      const edited = [...run.kept].filter((id) => (run.marks.get(id)?.rails || []).some(([f, t]) => inside(run.owner, f, t)));
-      const kept = holdable(run, edited);
+      const rootOf = new Map(run.steps.map((step) => [step.id, step.partOf || step.id]));
+      const edited = new Set([...run.kept]
+        .filter((id) => (run.marks.get(id)?.rails || []).some(([f, t]) => inside(run.owner, f, t))).map((id) => rootOf.get(id)));
+      const kept = holdable(run, [...run.kept].filter((id) => edited.has(rootOf.get(id))));
       const gone = [...run.kept].filter((id) => !kept.has(id));
+      const roots = (ids) => [...ids].filter((id) => rootOf.get(id) === id).length;
       const next = gone.length ? moved(run, kept, gone) : null;
-      if (!next) return { undone: 0, kept: run.kept.size };
+      if (!next) return { undone: 0, kept: roots(run.kept) };
       view.dispatch(own({ changes: next.changes, effects: setRun.of({ id: runId, run: next.run }), userEvent: UNDO }));
-      return { undone: gone.length, kept: kept.size };
+      return { undone: roots(gone), kept: roots(kept) };
     },
 
     setMarks(view, runId, on) {
