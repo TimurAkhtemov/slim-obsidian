@@ -1207,6 +1207,14 @@ function fakeLive(text = "# A\n\nold\n") {
       runs.get(id).changes.push({ id: change.id, label: change.label, state });
       return state;
     },
+    claimRun(_view, from, to) {
+      calls.push(["claim", from, to]);
+      if (!runs.has(from)) return false;
+      runs.set(to, runs.get(from));
+      runs.delete(from);
+      return true;
+    },
+    dropRun(_view, id) { calls.push(["drop", id]); runs.delete(id); },
     endRun(_view, id) { calls.push(["end", id]); runs.get(id).active = false; },
     state(_view, id) {
       const run = runs.get(id);
@@ -1266,7 +1274,7 @@ test("a question sends the open note's text and its hash; there is no toggle and
   assert.equal(body.doc_hash, sha256Hex("# A\n\nold\n"));
   assert.equal("edit" in body, false);
   assert.equal(body.selection, "");
-  assert.deepEqual(live.calls, []);                            // an answer touches no editor
+  assert.deepEqual(live.calls.map((c) => c[0]), ["start", "drop"]);  // an answer leaves nothing in the editor
   assert.equal(view.turns.at(-1).text, "An answer.");
   assert.equal(view.turns.at(-1).turn.edit_run, undefined);
   const { view: shown, root } = renderedView();
@@ -1306,8 +1314,9 @@ test("an editing run's events land in the note in order and the turn keeps what 
       fixups: 0, hash_before: "h0", hash_after: "server-draft", summary: PLAN.intro, before_ref: "a".repeat(32) } });
   } });
   await view.send("Ok make the revisions");
-  assert.deepEqual(live.calls.map((c) => c.slice(0, 2)), [["start", "a".repeat(32)], ["apply", "c1"], ["apply", "c2"], ["end", "a".repeat(32)]]);
-  assert.equal(live.calls[0][2], "# A\n\nold\n");                     // the run starts on the text that was sent
+  const local = live.calls[0][1];
+  assert.deepEqual(live.calls.map((c) => c.slice(0, 3)), [["start", local, "# A\n\nold\n"], ["claim", local, "a".repeat(32)],
+    ["apply", "c1"], ["apply", "c2"], ["end", "a".repeat(32)]]);      // the run starts at Send, on the text sent
   assert.deepEqual(midway, { steps: ["done", "doing"], changes: ["applied"] });
   const run = view.turns.at(-1).turn.edit_run;
   assert.deepEqual(run.changes.map(({ id, state }) => [id, state]), [["c1", "applied"], ["c2", "skipped"]]);
@@ -1507,6 +1516,32 @@ test("Restore applies what the server returns, and shows its refusal instead whe
   assert.deepEqual(live.calls, [["restore", "# A\n\nold, with the transcript as it is now\n"]]);
   assert.equal(run.restored, true);
   assert.equal(view.restoreRefused, null);
+});
+
+test("a note over the edit size is still asked about: its text is not sent", async () => {
+  const { live, editor } = fakeLive("x".repeat(400_001));
+  let body;
+  const view = editView({ live, editor, events: async (sent, handlers) => {
+    body = sent;
+    handlers.turn({ answer: "It is long.", mode: "quick", citations: [] });
+  } });
+  await view.send("What is this?");
+  assert.equal("doc" in body, false);
+  assert.equal("doc_hash" in body, false);
+  assert.deepEqual(live.calls, []);                                    // nothing to track: no run can land
+  assert.equal(view.turns.at(-1).text, "It is long.");
+});
+
+test("a run whose text was not sent lands nothing in the editor", async () => {
+  const { live, editor } = fakeLive("x".repeat(400_001));
+  const view = editView({ live, editor, events: (_body, handlers, signal) => new Promise((_resolve, reject) => {
+    signal.addEventListener("abort", () => { const error = new Error("Cancelled"); error.name = "AbortError"; reject(error); });
+    handlers.edit({ before_ref: "3".repeat(32), hash_before: "h0" });
+    handlers.change(change("c1", 1));
+  }) });
+  await view.send("rename it");
+  assert.equal(live.calls.some((c) => c[0] === "apply"), false);
+  assert.deepEqual(view.turns.at(-1).turn.edit_run.changes.map((c) => c.state), ["skipped"]);
 });
 
 test("the note's editor moving a change (↺, Cmd-Z) updates and saves the turn", async () => {

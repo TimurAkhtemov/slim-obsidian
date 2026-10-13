@@ -2819,6 +2819,8 @@ function editorSelection(app, path) {
 
 // Mirrors copilot.py MAX_SELECTION_CHARS.
 const MAX_SELECTION_CHARS = 20_000;
+// Mirrors edits.MAX_EDIT_CHARS: a longer note is still asked about, from the file, but not edited.
+const MAX_EDIT_CHARS = 400_000;
 
 // qwen writes \( \) and \[ \] as often as $ $; Obsidian's renderer only knows the dollar
 // forms, and Markdown eats the escaped brackets, so an equation rendered as nothing. Display
@@ -3364,6 +3366,7 @@ class CopilotView extends ItemView {
     this.streamingTurns = turns;
     let completed = null;
     let run = null;                       // an editing run, from its `edit` event on
+    let local = null, tracked = null;     // the editor tracking it from Send, and its name there
     const started = Date.now();
     const abort = new AbortController();
     this.abort = abort;
@@ -3378,9 +3381,17 @@ class CopilotView extends ItemView {
       await this.refreshNote();
       if (abort.signal.aborted) throw cancelledError();
       // The editor's text, not the file: Obsidian saves a moment after typing, and an editing
-      // run works on exactly what the owner sees.
-      const view = this.plugin.liveViewFor?.(path) || null;
-      const doc = view ? view.state.doc.toString() : null;
+      // run works on exactly what the owner sees. The editor tracks the owner's typing from
+      // here, under a name of the chat's own until the server names the run.
+      const shown = this.plugin.liveViewFor?.(path) || null;
+      const text = shown ? shown.state.doc.toString() : null;
+      const doc = text !== null && text.length <= MAX_EDIT_CHARS ? text : null;
+      const view = doc === null ? null : shown;
+      if (view && this.plugin.live) {
+        local = `send-${threadId()}`;
+        tracked = view;
+        this.plugin.live.startRun(view, { id: local, base: doc, pending: true });
+      }
       await this.plugin.streamCopilot({
         thread_id: thread.id, source_id: this.context.source.id, question,
         // Role, text and small image refs only, every turn whole: the server fits the
@@ -3409,10 +3420,12 @@ class CopilotView extends ItemView {
           this.renderDelta();
         },
         edit: on((data) => {
-          run = { ref: String(data.before_ref || ""), hash_before: data.hash_before, plan: null, steps: [],
-                  changes: [], pending: [], view, path, started, thread, turns };
+          const ref = String(data.before_ref || "");
+          const claimed = Boolean(local && this.plugin.live?.claimRun(tracked, local, ref));
+          local = null;
+          run = { ref, hash_before: data.hash_before, plan: null, steps: [], changes: [], pending: [],
+                  view: claimed ? tracked : null, path, started, thread, turns };
           this.editRun = run;
-          if (view && this.plugin.live) this.plugin.live.startRun(view, { id: run.ref, base: doc });
           Promise.resolve(this.plugin.showEditing?.(path)).catch((e) => console.warn("[slim] editing view", e));
           this.startEditClock();
           this.renderEdit();
@@ -3468,6 +3481,7 @@ class CopilotView extends ItemView {
         this.error = error.message || String(error);
       }
     } finally {
+      if (local) this.plugin.live?.dropRun(tracked, local);
       if (run) this.finishRun(run);
       this.abort = null;
       this.sending = false;
@@ -5096,8 +5110,8 @@ function makeLiveEditor(cm, host) {
       const was = update.startState.field(runsField, false), now = update.state.field(runsField, false);
       const told = new Set();
       if (was !== now) {
-        for (const [id, run] of was) if (now.get(id)?.version !== run.version) told.add(id);
-        for (const id of now.keys()) if (!was.has(id)) told.add(id);
+        for (const [id, run] of was) if (!run.pending && now.get(id)?.version !== run.version) told.add(id);
+        for (const [id, run] of now) if (!run.pending && !was.has(id)) told.add(id);
       }
       const before = update.startState.field(beforeField, false), after = update.state.field(beforeField, false);
       if (before !== after) for (const shown of [before, after]) if (shown) told.add(shown.runId);
@@ -5131,17 +5145,33 @@ function makeLiveEditor(cm, host) {
     pathOf: (view) => pathOf(view.state),
     focusedAt: (view) => focused.get(view) || 0,
 
-    // A run starts on the text that was sent; anything typed since is the owner's already.
-    startRun(view, { id, base }) {
+    // A run starts on the text that was sent, at Send: every keystroke from then on is the
+    // owner's, mapped exactly (anything already typed counts as one replace). Until the server
+    // names the run it is `pending`, under the chat's own name, and the chat is not told of it.
+    startRun(view, { id, base, pending = false }) {
       const sent = Text.of(String(base).split("\n"));
       const now = view.state.doc.toString();
       const run = {
         id, path: pathOf(view.state), base: sent, agent: sent, doc: sent, steps: [], kept: new Set(),
         toDoc: ChangeSet.empty(sent.length), owner: ChangeSet.of(textDiff(String(base), now), sent.length),
-        marks: new Map(), redo: [], active: true, latest: null, version: 1,
+        marks: new Map(), redo: [], active: true, latest: null, version: 1, pending,
         display: { marks: true, hover: null, open: new Set() },
       };
       view.dispatch({ effects: setRun.of({ id, run }) });
+    },
+
+    // The server's name for a run started at Send; false when the editor no longer has it.
+    claimRun(view, from, to) {
+      const run = runOf(view.state, from);
+      if (!run) return false;
+      view.dispatch({ effects: [setRun.of({ id: from, run: null }),
+        setRun.of({ id: to, run: { ...run, id: to, pending: false, version: run.version + 1 } })] });
+      return true;
+    },
+
+    // A question answered, or a request that never became a run: nothing to keep.
+    dropRun(view, id) {
+      if (runOf(view.state, id)) view.dispatch({ effects: setRun.of({ id, run: null }) });
     },
 
     // One change as the server made it: splices on its copy, in order. It lands where those
