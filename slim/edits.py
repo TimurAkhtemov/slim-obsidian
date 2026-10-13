@@ -203,18 +203,22 @@ _EMBED = re.compile(r"!\[\[([^\]|]+)(?:\|[^\]]*)?\]\]")
 _IMAGE = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".avif")
 _MARKUP = re.compile(r"^(?:\s*>)*\s*(?:\[![^\]]*\][-+]?\s*)?(?:#{1,6}\s+|(?:[-*+]|\d+[.)])\s+(?:\[.\]\s+)?)?")
 QUOTE_WORDS = 8
+QUOTE_CHARS = 60
 
 
 def quote(text: str) -> str:
     """Some text as the owner would point at it: its first line, without Markdown's markers,
-    cut to QUOTE_WORDS words. An image is "the image"."""
+    cut at a word to QUOTE_WORDS words and QUOTE_CHARS characters. An image is "the image"."""
     line = next((line for line in text.splitlines() if line.strip()), "")
     embed = _EMBED.fullmatch(line.strip())
     if embed:
         return "the image" if embed.group(1).strip().lower().endswith(_IMAGE) else "the embed"
     words = _MARKUP.sub("", line).replace("**", "").replace("__", "").split()
-    cut = " ".join(words[:QUOTE_WORDS]) + ("…" if len(words) > QUOTE_WORDS else "")
-    return f"“{cut}”"
+    kept = words[:QUOTE_WORDS]
+    while len(kept) > 1 and len(" ".join(kept)) > QUOTE_CHARS:
+        kept.pop()
+    cut = " ".join(kept)
+    return f"“{cut.rstrip(',;:') + '…' if len(kept) < len(words) else cut}”"
 
 
 @dataclass

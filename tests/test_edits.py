@@ -649,3 +649,9 @@ def test_new_html_blocks_are_refused_with_obsidians_own_ways_to_fold():
     apply(kept, "replace", {"target": "b1", "markdown": "<div>A</div>"}, change_id="c1", step=1)
     assert kept.text() == "<div>A</div>\n\nb\n"
     apply(Note(NOTE), "insert", {"after": "b1", "markdown": "Line one<br>line two <kbd>x</kbd>."}, change_id="c1", step=1)
+
+
+def test_a_quote_of_long_words_is_cut_at_a_word_by_characters_too():
+    said = edits.quote("Use cases: sentiment/hate-speech detection, knowledge discovery, dialogue/chatbots, documents")
+    assert said == "“Use cases: sentiment/hate-speech detection, knowledge…”"
+    assert len(said) <= edits.QUOTE_CHARS + 3
