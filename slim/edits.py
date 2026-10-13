@@ -672,7 +672,7 @@ def _move(note: Note, args: dict, ctx: dict):
             raise ToolError(f"{target} is already right after {cut[0]}", "place")
         note.check_insert(pos)
     needs = note.owners(i, j) | note.owners(k, l)
-    moved = note.move(i, j, pos)
+    moved = ctx["moved"] = note.move(i, j, pos)
     then = note.then(next(n for n, b in enumerate(note.blocks) if b is moved[-1]) + 1)
     where = "after" if after else "before"
     done = f" ({trimmed})" if trimmed else ""
@@ -731,23 +731,77 @@ TOOLS: dict[str, dict] = {
 }
 
 
+def _move_splices(before: str, old: list[tuple[Block, str]], blocks: list[Block], moved: list[Block]) -> list[dict]:
+    """A move as what it is: the moved blocks taken out, and put in at their new place with the
+    blank lines either side gained. Never a line diff of the whole note, which keeps the longest
+    run in place and can "move" a short neighbour round it — a recording's meeting block."""
+    chunk, spans, at = {id(b) for b in moved}, {}, 0
+    for b, text in old:
+        spans[id(b)] = (at, at + len(text))
+        at += len(text)
+    was = {id(b): text for b, text in old}
+    edits_at: dict[int, tuple[int, str]] = {}
+
+    def put(start: int, stop: int, text: str) -> None:
+        to, said = edits_at.get(start, (start, ""))
+        edits_at[start] = (max(to, stop), said + text)
+
+    put(spans[id(moved[0])][0], spans[id(moved[-1])][1], "")
+    if id(blocks[0]) in chunk:
+        put(0, 0, "".join(b.text for b in moved))
+    for k, b in enumerate(blocks):
+        if id(b) in chunk:
+            continue
+        end = spans[id(b)][1]
+        put(end, end, b.text[len(was[id(b)]):])         # a blank line it gained
+        if k + 1 < len(blocks) and id(blocks[k + 1]) in chunk:
+            put(end, end, "".join(m.text for m in moved))
+    return [{"from": u16(before[:start]), "to": u16(before[:stop]), "insert": text}
+            for start, (stop, text) in sorted(edits_at.items()) if text or stop > start]
+
+
+def _touches(made: list[dict], before: str) -> bool:
+    """Does a splice reach into a recording's own parts? A fail-safe behind every tool's checks."""
+    for start, stop in protected_ranges(before):
+        lo, hi = u16(before[:start]), u16(before[:stop])
+        for splice in made:
+            f, t = splice["from"], splice["to"]
+            if (f < t and f < hi and lo < t) or (f == t and (lo < f < hi or f == lo == 0)):
+                return True
+    return False
+
+
 def apply(note: Note, name: str, args: dict, *, change_id: str, step: int,
           only: set[str] | None = None) -> tuple[Change, str]:
     """One tool call applied to the draft: the change it made, and the result the model reads.
-    Raises ToolError, with the note unchanged, for a call code refuses."""
+    Raises ToolError, with the note as it was, for a call code refuses — and for any change whose
+    splices would reach into a recording's own parts, whatever the tools' own checks said."""
     tool = TOOLS.get(name)
     if not tool or not tool["apply"]:
         raise ToolError(f"{name} is not an editing tool", "tool")
     if not isinstance(args, dict):
         raise ToolError("the arguments must be an object", "args")
-    before = note.text()
-    needs, label, result = tool["apply"](note, args, {"id": change_id, "only": only})
+    old, before = [(b, b.text) for b in note.blocks], note.text()
+
+    def undo() -> None:
+        note.blocks = [b for b, _ in old]
+        for b, text in old:
+            b.text = text
+
+    ctx = {"id": change_id, "only": only}
+    needs, label, result = tool["apply"](note, args, ctx)
     after = note.text()
     if after == before:
+        undo()
         raise ToolError("that changes nothing", "noop")
+    made = _move_splices(before, old, note.blocks, ctx["moved"]) if "moved" in ctx else []
+    if apply_splices(before, made) != after:
+        made = splices(before, after)
+    if _touches(made, before):
+        undo()
+        raise ToolError(f"that change would reach text that is {PROTECTED}", "locked")
     needs.discard(change_id)
-    return Change(change_id, step, name, label, splices(before, after),
-                  sorted(needs, key=lambda c: int(c[1:]))), result
+    return Change(change_id, step, name, label, made, sorted(needs, key=lambda c: int(c[1:]))), result
 
 
 def ollama_tools(names: list[str]) -> list[dict]:

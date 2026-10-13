@@ -520,3 +520,42 @@ def test_a_new_note_needs_text_and_a_size_the_sidebar_can_carry(vault):
         edits.create_note(vault, "Notes/school/new.md", " \n", folder="Notes/school")
     with pytest.raises(ToolError, match="too large"):
         edits.create_note(vault, "Notes/school/new.md", "x" * (edits.MAX_EDIT_CHARS + 1), folder="Notes/school")
+
+
+# --- I2: a change never touches a recording's own parts, whatever a diff would make of it -------
+
+LONG = "---\ntitle: x\n---\n\n## Top\n\ntop\n\n```slim-meeting\nid: 1\nkind: x\n```\n\n## Mine\n\n" + "".join(
+    f"line {i}\n" for i in range(30))
+
+
+def _u16_ranges(text):
+    return [(edits.u16(text[:s]), edits.u16(text[:e])) for s, e in edits.protected_ranges(text)]
+
+
+def test_a_move_is_its_chunk_taken_out_and_put_back_never_a_neighbour_moved_round_it():
+    note = Note(LONG)
+    assert [b.handle for b in note.blocks if b.locked] == ["b1", "b4"]
+    before = note.text()
+    change, _ = apply(note, "move", {"target": "s5", "before": "b2"}, change_id="c1", step=1)
+    assert note.text().startswith("---\ntitle: x\n---\n\n## Mine\n\nline 0\n")
+    assert apply_splices(before, change.splices) == note.text()
+    (meeting_from, meeting_to) = _u16_ranges(before)[1]
+    for splice in change.splices:            # a line diff kept the 30 lines and moved the meeting block
+        assert splice["to"] <= meeting_from or splice["from"] >= meeting_to, splice
+
+
+def test_any_change_whose_splices_touch_a_recordings_parts_is_refused_and_the_note_left_as_it_was(monkeypatch):
+    note = Note(LONG)
+    (meeting_from, meeting_to) = _u16_ranges(LONG)[1]
+    monkeypatch.setattr(edits, "splices", lambda before, after: [
+        {"from": meeting_from, "to": meeting_to + 6, "insert": "```slim-meeting\nid: 1\nkind: x\n```\n\ntop!\n"}])
+    with pytest.raises(ToolError, match="part of the recording") as refused:
+        apply(note, "replace", {"target": "b3", "markdown": "top!"}, change_id="c1", step=1)
+    assert refused.value.code == "locked" and note.text() == LONG and [b.handle for b in note.blocks][:3] == ["b1", "b2", "b3"]
+
+
+def test_a_change_that_changes_nothing_leaves_the_note_and_its_handles_as_they_were():
+    note = Note(NOTE)
+    with pytest.raises(ToolError, match="changes nothing"):
+        apply(note, "replace", {"target": "b4-b6", "markdown": "Text a.\n- one\n- two"}, change_id="c1", step=1)
+    assert [b.handle for b in note.blocks] == [f"b{n}" for n in range(1, 9)]
