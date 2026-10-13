@@ -1419,3 +1419,15 @@ def test_a_turn_that_fails_in_a_callback_is_traced_with_the_error_type(con, vaul
     (kind, payload), = records
     assert kind == "copilot" and payload["status"] == "failed" and payload["error_type"] == "BrokenPipeError"
     assert "duration_ms" in payload and payload["intent"] is False
+
+
+# --- M5: a note too big to edit here can still be asked about -----------------------------------
+
+def test_a_question_about_a_note_too_big_to_edit_is_answered(turn, monkeypatch):
+    monkeypatch.setattr(edits, "MAX_EDIT_CHARS", 40)
+    scripted(monkeypatch, ("A is the first section.", []), intent=False)
+    got, _ = turn("what is A?")
+    assert got["answer"] == "A is the first section."
+    scripted(monkeypatch, ("never", []))
+    with pytest.raises(copilot.CopilotError, match=r"this note is too long to edit here \(over 40 characters\)"):
+        turn("rename A")

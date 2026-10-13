@@ -391,12 +391,15 @@ def test_a_doc_hash_that_does_not_match_reaches_the_plugin_as_an_error(server_ur
     assert script.calls == 0
 
 
-def test_a_doc_too_large_or_not_text_is_refused(server_url, a_note, monkeypatch):
+def test_a_doc_too_large_to_edit_is_still_asked_about_and_one_not_text_is_refused(server_url, a_note, monkeypatch):
     source, script = a_note
     monkeypatch.setattr(edits, "MAX_EDIT_CHARS", 10)
+    script(("It is a note.", []), intent=False)
     status, _headers, body = stream(server_url, source, "q")
-    assert status == 400 and "too large" in json.loads(body)["error"]
-    monkeypatch.setattr(edits, "MAX_EDIT_CHARS", 400_000)
+    assert status == 200 and events_of(body)[-1][0] == "turn"
+    script(("never", []))
+    _status, _headers, body = stream(server_url, source, "rename A")
+    assert events_of(body) == [("error", {"error": "this note is too long to edit here (over 10 characters)"})]
     status, _headers, body = stream(server_url, source, "q", doc=5)
     assert status == 400 and "doc" in json.loads(body)["error"]
 

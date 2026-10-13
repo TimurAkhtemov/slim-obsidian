@@ -1439,13 +1439,11 @@ class _Handler(BaseHTTPRequestHandler):
         # The selection is the input of a selection skill; it writes nothing here.
         selection = data.get("selection")
         selection = selection[:copilot_mod.MAX_SELECTION_CHARS] if isinstance(selection, str) else ""
-        # The editor's text and its hash: an editing run works on exactly what the owner sees.
+        # The editor's text and its hash: an editing run works on exactly what the owner sees. A
+        # note too big to edit is still asked about; run_turn refuses only an edit of it.
         doc, doc_hash = data.get("doc"), data.get("doc_hash")
         if doc is not None and not (isinstance(doc, str) and isinstance(doc_hash, str)):
             self._send_json(400, {"error": "doc and doc_hash must be text"})
-            return
-        if doc is not None and len(doc) > edits_mod.MAX_EDIT_CHARS:
-            self._send_json(400, {"error": "this note is too large for the sidebar; edit it in Obsidian"})
             return
         thread_id = data.get("thread_id")
         image_lock = None

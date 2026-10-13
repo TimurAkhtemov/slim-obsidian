@@ -1212,6 +1212,10 @@ def _answer_or_edit(con, vault: Path, source: dict, question: str, history: list
             return result, levels, evidence
 
         text = doc if doc is not None else _note_text(vault, source["path"])
+        # A note too big to edit here is still asked about (the Ask path above never reads it).
+        if len(text) > edits_mod.MAX_EDIT_CHARS and not (skill and skill.output == "new-note"):
+            raise CopilotError(f"this note is too long to edit here "
+                               f"(over {edits_mod.MAX_EDIT_CHARS:,} characters)")
         prompt = skills_mod.render_prompt(skill, args) if skill else question
         note, only, create, inputs, cited = edits_mod.Note(text), None, None, None, None
         tools, step_tools = ["plan", *STEP_TOOLS], STEP_TOOLS
@@ -1340,8 +1344,6 @@ def run_turn(con, source_id: str, question: str, history: list[dict], mode: str,
             raise CopilotError(f"there is no /{unknown.group(1)} skill; type / to see them")
         if doc is not None and edits_mod.digest(doc) != doc_hash:
             raise CopilotError("the note changed while sending; try again")
-        if doc is not None and len(doc) > edits_mod.MAX_EDIT_CHARS:
-            raise CopilotError("this note is too large for the sidebar; edit it in Obsidian")
         if skill and skill.output == "chat":
             pack = gather(con, vault, source, skill=skill, links_from=args, selection=selection)
             cited = [{"n": i + 1, "path": doc["path"], "title": doc["title"]}
