@@ -899,6 +899,8 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
            "outline_details": None,
            "first_temperature": temperature}
     spent, failed = 0, []
+    # Deep's thinking has its own allowance: it would otherwise eat the steps' budget.
+    budget = RUN_OUTPUT_TOKENS + (THINK_BUDGET if think else 0)
     current = {"k": None, "count": 1, "landed": 0, "refused": False}      # the step(s) being worked
     steps: list[str] = []
 
@@ -922,7 +924,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
                 out["stopped"] = f"error: {(str(exc) or type(exc).__name__).splitlines()[0][:200]}"
                 raise _Stopped from exc
         spent += reply.stats.get("output_tokens") or 0
-        if spent > RUN_OUTPUT_TOKENS:
+        if spent > budget:
             out["stopped"] = "token budget"
         out["timing"].append(reply.stats)
         out["malformed"] += reply.malformed

@@ -1358,3 +1358,19 @@ def test_a_gate_that_could_not_tell_lets_a_text_reply_stand_as_the_answer(turn, 
     assert len(seen) == 1 and seen[0]["tools"] == ["plan", *STEP_TOOLS]
     assert got["answer"] == "A is the first section." and got["deltas"] == ["A is the first section."]
     assert got["edit_run"] is None and events == []
+
+
+# --- M2: Deep's thinking has its own allowance, beside the run's budget ---------------------------
+
+def test_deeps_thinking_does_not_eat_the_steps_budget(turn, monkeypatch):
+    def run(mode):
+        seen = scripted(monkeypatch, ("", [("plan", {"intro": "x", "steps": ["Rename A", "Rename B"]})], 9000),
+                        ("", [("replace", {"target": "b3", "markdown": "## A2"})], 4000),
+                        ("", [("replace", {"target": "b7", "markdown": "## B2"})], 500))
+        got, _ = turn("rename both", mode=mode)
+        return got["edit_run"], len(seen)
+    quick, calls = run("quick")
+    assert quick["stopped"] == "token budget" and calls == 2
+    deep, calls = run("deep")
+    assert deep["stopped"] is None and calls == 3 and len(deep["changes"]) == 2
+    assert copilot.RUN_OUTPUT_TOKENS + copilot.THINK_BUDGET == 20192
