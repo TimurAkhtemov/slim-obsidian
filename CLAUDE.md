@@ -116,8 +116,8 @@ note loses its id. Embedding is part of ingest; `slim status` reports `unembedde
      it can't tell: the model edits the open note through tools (`edits.TOOLS`: `replace`,
      `edit_text`, `insert`, `move`, `plan`) that point at block handles — [b12] a block, s7 the
      section under heading b7, b11-b15 a range — at temperature 0.0. A small change is one
-     call; a larger one is a plan carried out one call per step, then up to two fix-ups if the
-     headings miss its outline. Code holds the plan and
+     call; a larger one is a plan carried out one call per step, then up to two fix-ups for
+     headings its outline names and the note lacks. Code holds the plan and
      the limits (`copilot.py`: 8 steps, 30 calls, 3 refusals in a row, 12k output tokens) and
      refuses what a call must not do, with a reason the model reads back; `llm.hold()` keeps the
      model lock for the run. An `edit` skill runs the same loop (tidy: the selection's blocks

@@ -738,57 +738,66 @@ SAME_HEADING_WORDS = 0.6
 
 
 def _same(a: tuple[int, str], b: tuple[int, str]) -> bool:
-    """Two headings (as `heading_key`s) are the same at one level when their words are equal, one
-    starts with the other's words ("## Historical Evolution" and "… & Drivers"), or the words
-    overlap by SAME_HEADING_WORDS: the model shortens and reorders its own outline's headings."""
-    (level, x), (other, y) = a, b
-    x, y = x.split(), y.split()
-    if level != other or not x or not y:
+    """Two headings (as `heading_key`s) are the same when their words are equal, one starts with
+    the other's words ("## Historical Evolution" and "… & Drivers"), or the words overlap by
+    SAME_HEADING_WORDS: the model shortens and reorders its own outline's headings, and writes
+    them at its own levels. Level is never compared."""
+    x, y = a[1].split(), b[1].split()
+    if not x or not y:
         return False
     shorter, longer = sorted((x, y), key=len)
     return longer[:len(shorter)] == shorter or len(set(x) & set(y)) / len(set(x) | set(y)) >= SAME_HEADING_WORDS
 
 
 def _misses(now: list[str], want: list[str]) -> tuple[list[int], list[int]]:
+    """The outline's misses as indexes: those the note lacks, and those it has out of order."""
+    _pairs, missing, misplaced = _match(now, want)
+    return missing, misplaced
+
+
+def _match(now: list[str], want: list[str]) -> tuple[list[tuple[int, int]], list[int], list[int]]:
     """The outline is met when its headings appear among the note's in the same order (`_same`);
-    others between them are fine. Returns the outline's misses as indexes: those the note lacks,
-    and those it has out of order (outside the longest run of outline headings the note has in
-    order)."""
+    others between them are fine. Returns the matched (outline, note) index pairs, then the
+    outline's misses: those the note lacks, and those it has out of order (outside the longest
+    run of outline headings the note has in order)."""
     a, b = [edits_mod.heading_key(h) for h in want], [edits_mod.heading_key(h) for h in now]
     longest = [[0] * (len(b) + 1) for _ in range(len(a) + 1)]
     for i in range(len(a) - 1, -1, -1):
         for j in range(len(b) - 1, -1, -1):
             longest[i][j] = (longest[i + 1][j + 1] + 1 if _same(a[i], b[j])
                              else max(longest[i + 1][j], longest[i][j + 1]))
-    kept, i, j = set(), 0, 0
+    pairs, i, j = [], 0, 0
     while i < len(a) and j < len(b):
         if _same(a[i], b[j]):
-            kept.add(i)
+            pairs.append((i, j))
             i, j = i + 1, j + 1
         elif longest[i + 1][j] >= longest[i][j + 1]:
             i += 1
         else:
             j += 1
+    kept = {k for k, _ in pairs}
     missed = [k for k in range(len(a)) if k not in kept]
     lacks = [k for k in missed if not any(_same(a[k], key) for key in b)]
-    return lacks, [k for k in missed if k not in lacks]
+    return pairs, lacks, [k for k in missed if k not in lacks]
 
 
-def _met(now: list[str], want: list[str]) -> bool:
-    return not any(_misses(now, want))
+def _outline_details(now: list[str], want: list[str]) -> dict:
+    """How the note's headings stand against the outline, for the trace: outline headings it
+    lacks, has out of order, and has at another level."""
+    pairs, missing, misplaced = _match(now, want)
+    level = lambda h: edits_mod.heading_key(h)[0]
+    return {"missing": len(missing), "out_of_order": len(misplaced),
+            "other_level": sum(level(want[i]) != level(now[j]) for i, j in pairs)}
 
 
-def _fixup(now: list[str], want: list[str], missing: list[int], misplaced: list[int]) -> str:
+def _fixup(want: list[str], missing: list[int]) -> str:
+    """A fix-up names only the headings the note lacks: reordering or re-levelling on its word
+    promoted an unrelated heading (live, 2026-10-13)."""
     def where(k: int) -> str:
-        said = f"your outline puts it {f'after {want[k - 1]}' if k else 'first'}"
-        other = next((h for h in now if edits_mod.heading_key(h)[1] == edits_mod.heading_key(want[k])[1]), None)
-        return f"{said}; the note has it as {other}" if other and k in missing else said
-
-    def listed(title: str, found: list[int]) -> list[str]:
-        return [f"{title}:"] + [f"{n}. {want[k]} ({where(k)})" for n, k in enumerate(found, 1)] if found else []
-    return "\n".join(["Fix-up: make the note's headings match your outline.",
-                      "Change only what is needed to match; don't delete sections to re-add them.",
-                      *listed("Missing", missing), *listed("Out of order", misplaced)])
+        return f"your outline puts it {f'after {want[k - 1]}' if k else 'first'}"
+    return "\n".join(["Fix-up: your outline has headings the note does not have yet:",
+                      *[f"{n}. {want[k]} ({where(k)})" for n, k in enumerate(missing, 1)],
+                      "Add only these; don't move, rename or delete other sections."])
 
 
 _ITEM = re.compile(r"^(?:[-*]|\d+[.)])\s+(.+)$")
@@ -852,6 +861,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
            "refusals": [], "malformed": [], "empty_steps": 0, "stopped": None, "summary": "",
            "finished_early": False, "replanned": False, "outline": None, "outline_met": None,
            "fixups": 0, "retries": 0, "first_call_edits": 0, "timing": [], "nudged": False,
+           "outline_details": None,
            "first_temperature": temperature}
     spent, failed = 0, []
     current = {"k": None, "landed": 0, "refused": False}      # the step being worked
@@ -901,7 +911,8 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
     def finish() -> dict:
         close_step()
         if out["outline"]:
-            out["outline_met"] = _met(*_against(note, out["outline"]))
+            out["outline_details"] = _outline_details(*_against(note, out["outline"]))
+            out["outline_met"] = not out["outline_details"]["missing"] and not out["outline_details"]["out_of_order"]
         return out
 
     def split(reply: _Reply):
@@ -1047,14 +1058,15 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
             retried = False
         close_step()
 
-        # Fix-ups: they count against the call limit, never against the steps.
+        # Fix-ups, only for outline headings the note lacks altogether: order and level are left
+        # as the steps wrote them. They count against the call limit, never against the steps.
         while out["outline"] and not out["stopped"] and out["fixups"] < MAX_FIXUPS:
             now, want = _against(note, out["outline"])
-            missing, misplaced = _misses(now, want)
-            if not missing and not misplaced:
+            missing, _misplaced = _misses(now, want)
+            if not missing:
                 break
             out["fixups"] += 1
-            reply, _ = step(_fixup(now, want, missing, misplaced), len(steps) + out["fixups"])
+            reply, _ = step(_fixup(want, missing), len(steps) + out["fixups"])
             if any(c["name"] == "done" for c in reply.calls):
                 break
 
@@ -1104,7 +1116,8 @@ def _facts(out: dict, run: dict) -> dict:
             "empty_steps": out["empty_steps"], "changes": len(out["changes"]),
             "first_call_edits": out["first_call_edits"], "replanned": out["replanned"],
             "retries": out["retries"], "stopped": out["stopped"], "finished_early": out["finished_early"],
-            "outline_met": out["outline_met"], "fixups": out["fixups"], "nudged": out["nudged"],
+            "outline_met": out["outline_met"], "outline_details": out["outline_details"],
+            "fixups": out["fixups"], "nudged": out["nudged"],
             "first_temperature": out["first_temperature"], "timing": out["timing"]}
 
 

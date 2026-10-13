@@ -862,25 +862,43 @@ def test_a_first_call_that_could_not_be_read_is_asked_for_a_plan_once_more(turn,
     assert "## A renamed" in got["final"]
 
 
-FIXUP = ("Fix-up: make the note's headings match your outline.\n"
-         "Change only what is needed to match; don't delete sections to re-add them.\n")
-
-
-def test_a_fix_up_lists_only_the_headings_missing_or_out_of_order(turn, monkeypatch):
+def test_a_truly_missing_heading_triggers_exactly_one_fix_up_naming_it(turn, monkeypatch):
     plan = {"intro": "x", "outline": ["# Title", "## C", "## A", "## B", "## D"], "steps": ["Reorder"]}
     seen = scripted(monkeypatch, ("", [("plan", plan)]),
                     ("", []),                                               # the step does nothing
-                    ("", [("move", {"target": "s6", "before": "s2"})]),     # fix-up 1: C first
-                    ("", [("insert", {"after": "s4", "markdown": "## D\n\nd."})]))   # fix-up 2: add D
+                    ("", [("insert", {"after": "s6", "markdown": "## D\n\nd."})]))   # the fix-up adds D
     got, _ = turn("reorder", text=NOTE3)
-    assert seen[2]["messages"][-1]["content"].startswith(FIXUP + (
-        "Missing:\n1. ## D (your outline puts it after ## B)\n"
-        "Out of order:\n1. ## C (your outline puts it after # Title)\n\nSections now:\n"))
-    assert FIXUP + "Missing:\n1. ## D (your outline puts it after ## B)\n\nSections now:\n" in \
-        seen[3]["messages"][-1]["content"]
+    assert seen[2]["messages"][-1]["content"].startswith(
+        "Fix-up: your outline has headings the note does not have yet:\n"
+        "1. ## D (your outline puts it after ## B)\n"
+        "Add only these; don't move, rename or delete other sections.\n\nSections now:\n")
+    assert "## C" not in seen[2]["messages"][-1]["content"].split("Sections now:")[0]   # out of order: not named
     run = got["edit_run"]
     assert seen[2]["tools"] == ["plan", *STEP_TOOLS] and run["changes"][0]["step"] == 2
-    assert run["outline_met"] is True and run["fixups"] == 2 and run["steps_done"] == 1 and len(seen) == 4
+    assert run["fixups"] == 1 and run["steps_done"] == 1 and len(seen) == 3
+    assert run["outline_met"] is False                            # ## C is still out of order: recorded only
+
+
+def test_an_out_of_order_heading_triggers_no_fix_up(turn, monkeypatch):
+    records = []
+    monkeypatch.setattr(copilot.trace, "record", lambda kind, payload: records.append(payload))
+    plan = {"intro": "x", "outline": ["# Title", "## B", "## A"], "steps": ["Move B"]}
+    seen = scripted(monkeypatch, ("", [("plan", plan)]), ("", []))
+    got, _ = turn("go")
+    assert len(seen) == 2 and got["edit_run"]["fixups"] == 0 and got["edit_run"]["outline_met"] is False
+    assert records[-1]["edit_run"]["outline_details"] == {"missing": 0, "out_of_order": 1, "other_level": 0}
+
+
+def test_deeper_sections_against_a_shallower_outline_count_as_met(turn, monkeypatch):
+    records = []
+    monkeypatch.setattr(copilot.trace, "record", lambda kind, payload: records.append(payload))
+    text = "# Overview 2026-01-13\n\n#### Context & Demographics\n\nx\n\n#### Historical Evolution & Drivers\n\ny\n"
+    plan = {"intro": "x", "outline": ["# Overview", "## Context & Demographics", "## Historical Evolution"],
+            "steps": ["Tidy"]}
+    seen = scripted(monkeypatch, ("", [("plan", plan)]), ("", []))
+    got, _ = turn("tidy", text=text)
+    assert len(seen) == 2 and got["edit_run"]["fixups"] == 0 and got["edit_run"]["outline_met"] is True
+    assert records[-1]["edit_run"]["outline_details"] == {"missing": 0, "out_of_order": 0, "other_level": 2}
 
 
 def test_the_outline_is_met_by_its_headings_in_order_with_others_between(turn, monkeypatch):
@@ -891,7 +909,7 @@ def test_the_outline_is_met_by_its_headings_in_order_with_others_between(turn, m
 
 
 def test_fix_ups_stop_after_two_and_the_miss_is_recorded(turn, monkeypatch):
-    plan = {"intro": "x", "outline": ["# Title", "## B", "## A"], "steps": ["Move B"]}
+    plan = {"intro": "x", "outline": ["# Title", "## A", "## B", "## Z"], "steps": ["Add Z"]}
     seen = scripted(monkeypatch, ("", [("plan", plan)]), ("", []), ("", []), ("", []))
     got, _ = turn("go")
     assert got["edit_run"]["fixups"] == 2 == copilot.MAX_FIXUPS and got["edit_run"]["outline_met"] is False
@@ -900,10 +918,10 @@ def test_fix_ups_stop_after_two_and_the_miss_is_recorded(turn, monkeypatch):
 
 def test_fix_ups_count_against_the_call_limit_not_the_steps(turn, monkeypatch):
     monkeypatch.setattr(copilot, "MAX_CALLS", 2)
-    plan = {"intro": "x", "outline": ["# Title", "## B", "## A"], "steps": ["Add a paragraph"]}
+    plan = {"intro": "x", "outline": ["# Title", "## A", "## B", "## Z"], "steps": ["Add a paragraph"]}
     scripted(monkeypatch, ("", [("plan", plan)]),
              ("", [("insert", {"after": "b2", "markdown": "p0"})]),
-             ("", [("insert", {"after": "b2", "markdown": "p1"}), ("move", {"target": "s7", "before": "s3"})]))
+             ("", [("insert", {"after": "b2", "markdown": "p1"}), ("insert", {"after": "s7", "markdown": "## Z"})]))
     got, _ = turn("go")
     assert got["edit_run"]["stopped"] == "call limit" and got["edit_run"]["fixups"] == 1
     assert len(got["edit_run"]["changes"]) == 2
@@ -973,12 +991,11 @@ def test_an_annotation_on_either_side_does_not_make_a_miss():
     assert copilot._misses(["# T", "## Classical vs. Neural"], ["# T", "## Pipeline"]) == ([1], [])
 
 
-def test_a_missing_heading_the_note_has_at_another_level_is_named(turn, monkeypatch):
+def test_a_heading_at_another_level_is_not_missing(turn, monkeypatch):
     seen = scripted(monkeypatch, ("", [("plan", {"intro": "x", "outline": ["# Title", "# A", "## B"], "steps": ["Promote A"]})]),
-                    ("", []), ("", []), ("", []))
-    turn("promote A")
-    assert "Missing:\n1. # A (your outline puts it after # Title; the note has it as ## A)\n\nSections now:" in \
-        seen[2]["messages"][-1]["content"]
+                    ("", []))
+    got, _ = turn("promote A")
+    assert len(seen) == 2 and got["edit_run"]["fixups"] == 0 and got["edit_run"]["outline_met"] is True
 
 
 def test_the_token_budget_stops_the_run_after_the_reply_that_crosses_it(turn, monkeypatch):
@@ -1212,13 +1229,13 @@ def test_list_items_in_any_marker_make_the_steps_and_the_first_sentence_the_intr
 # --- one tool list for the whole run, so the prompt's start stays cached ------------------------
 
 def test_every_call_in_a_run_is_offered_the_same_tools_in_the_same_order(turn, monkeypatch):
-    plan = {"intro": "x", "outline": ["# Title", "## B", "## A"], "steps": ["Rename A", "Move B up"]}
+    plan = {"intro": "x", "outline": ["# Title", "## A", "## B", "## C"], "steps": ["Rename A", "Add C"]}
     seen = scripted(monkeypatch, ("Text first.", []),                                   # nudged
                     ("", [("plan", plan)]),
                     ("", [("replace", {"target": "b99", "markdown": "x"})]),               # refused: retried
                     ("", [("plan", plan), ("replace", {"target": "b3", "markdown": "## A"})]),  # plan restated
                     ("", []),                                                             # step 2 does nothing
-                    ("", [("move", {"target": "s7", "before": "s3"})]))                  # fix-up
+                    ("", [("insert", {"after": "s7", "markdown": "## C"})]))               # fix-up
     got, _ = turn("reorder")
     assert len(seen) == 6 and [c["tools"] for c in seen] == [["plan", *STEP_TOOLS]] * 6
     assert any(m.get("content", "").startswith("ok: the plan is already set") for m in seen[4]["messages"])
@@ -1239,6 +1256,7 @@ def test_a_skill_keeps_its_own_list_for_its_whole_run(turn, monkeypatch):
     ("# US Healthcare System Overview", "# US Healthcare System Overview 2026-01-13"),
     ("## Costs & Payment", "## costs  &  payment (new)"),                       # equal once cleaned
     ("## Key Takeaways and Conclusions", "## Conclusions and Key Takeaways"),  # the same words
+    ("## Historical Evolution", "#### Historical Evolution"),                   # level is ignored
 ])
 def test_an_outline_heading_matches_the_same_heading_written_a_little_differently(outline, note):
     assert copilot._misses(["# T", note], ["# T", outline]) == ([], [])
@@ -1247,7 +1265,6 @@ def test_an_outline_heading_matches_the_same_heading_written_a_little_differentl
 @pytest.mark.parametrize("outline, note", [
     ("## History", "## Costs"),
     ("## A", "## Applications"),                     # a prefix in letters is not one in words
-    ("## Historical Evolution", "### Historical Evolution"),                    # another level
     ("## Payment Models", "## Treatment Patterns"),
 ])
 def test_unrelated_headings_still_do_not_match(outline, note):
