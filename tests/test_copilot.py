@@ -1437,7 +1437,7 @@ def test_the_plan_and_the_summary_the_owner_reads_name_text_not_handles(turn, mo
 
 
 def test_a_text_answer_on_the_edit_path_names_text_not_handles(turn, monkeypatch):
-    scripted(monkeypatch, ("See b3 for that.", []), ("See b3 for that.", []))
+    scripted(monkeypatch, ("See [b3] for that.", []), ("See [b3] for that.", []))
     got, _ = turn("where is A?")
     assert got["answer"] == "See “A” for that."
 
@@ -1454,3 +1454,9 @@ def test_a_later_step_that_would_rewrite_the_first_steps_text_is_refused_and_the
     assert seen[3]["messages"][-1]["content"].startswith(
         "refused: b10 is what you wrote in step 1; it stays as written.")
     assert run["changes"][0]["part_of"] is None and len(seen) == 4
+
+
+def test_a_text_answer_on_the_edit_path_keeps_bare_words_that_look_like_handles(turn, monkeypatch):
+    scripted(monkeypatch, ("Use an s3 bucket; see block b3.", []), ("Use an s3 bucket; see block b3.", []))
+    got, _ = turn("how do I store files?")
+    assert got["answer"] == "Use an s3 bucket; see “A”."

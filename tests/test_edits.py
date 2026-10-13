@@ -596,7 +596,7 @@ def test_owner_text_in_the_target_makes_a_change_of_its_own():
     _added(note)
     mixed = next(b.handle for b in note.blocks if b.text.startswith("Text b."))
     last = next(b.handle for b in note.blocks if b.text.startswith("Text c."))
-    change, _ = apply(note, "replace", {"target": f"{mixed}-{last}", "markdown": "B and C."}, change_id="c2", step=2)
+    change, _ = apply(note, "replace", {"target": f"{mixed}-{last}", "markdown": "B and C."}, change_id="c2", step=1)
     assert change.part_of is None
     change, _ = apply(Note(NOTE), "insert", {"after": "s7", "markdown": "More."}, change_id="c1", step=1)
     assert change.part_of is None
@@ -732,3 +732,37 @@ def test_html_after_an_unmatched_backtick_is_not_code():
 
 def test_a_quote_of_one_long_word_is_cut_too():
     assert len(edits.quote("x" * 100)) <= edits.QUOTE_CHARS + 3 and edits.quote("x" * 100).endswith("…”")
+
+
+# --- second review (2026-10-13) ---
+
+def test_a_change_to_owner_text_and_an_earlier_steps_draft_together_is_refused_naming_the_draft():
+    note = Note("Owner.\n")
+    apply(note, "insert", {"after": "b1", "markdown": "Draft."}, change_id="c1", step=1)
+    draft = next(b.handle for b in note.blocks if b.text.startswith("Draft."))
+    with pytest.raises(ToolError) as refused:
+        apply(note, "replace", {"target": f"b1-{draft}", "markdown": "Owner changed.\n\nDraft changed."},
+              change_id="c2", step=2)
+    assert refused.value.code == "own" and str(refused.value).startswith(f"{draft} is what you wrote in step 1;")
+    change, _ = apply(note, "replace", {"target": f"b1-{draft}", "markdown": "Owner changed.\n\nDraft."},
+                      change_id="c2", step=2)                       # the draft kept as written: fine
+    assert "Owner changed.\n\nDraft.\n" in note.text()
+
+
+def test_a_new_html_line_needs_an_old_line_with_the_same_tags():
+    with pytest.raises(ToolError, match="HTML tags"):
+        apply(Note("<div>x</div>\n\nKeep.\n"), "replace", {"target": "b1-b2", "markdown": "Keep.\n\n<div>**new**"},
+              change_id="c1", step=1)
+
+
+def test_a_backtick_in_a_fences_info_string_makes_it_no_fence_and_a_span_may_run_over_a_line():
+    with pytest.raises(ToolError, match="HTML tags"):
+        apply(Note(NOTE), "insert", {"after": "b1", "markdown": "```bad`info\n\n<div>raw</div>"}, change_id="c1", step=1)
+    apply(Note(NOTE), "insert", {"after": "b1", "markdown": "Use `<div>\nexample` here."}, change_id="c1", step=1)
+
+
+def test_an_answer_keeps_bare_words_that_look_like_handles():
+    note = Note("".join(f"Paragraph {n}.\n\n" for n in range(1, 13)))
+    assert note.plain("Use an s3 bucket.", bare=False) == "Use an s3 bucket."
+    assert note.plain("See block b3 and [b4].", bare=False) == "See “Paragraph 3.” and “Paragraph 4.”."
+    assert note.plain("Move s3.") == "Move “Paragraph 3.”."

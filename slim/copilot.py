@@ -977,8 +977,8 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
                 first = ask(tools, think, temperature, first_predict)
                 plans, edits = split(first)
         if not plans and not edits:
-            out["answer"] = plain(first.content.strip() or next(
-                (_summary(c) for c in first.calls if c["name"] == "done"), ""))
+            answer = first.content.strip() or next((_summary(c) for c in first.calls if c["name"] == "done"), "")
+            out["answer"] = note.plain(answer, bare=False) if note is not None else answer
             return out
         args = plans[0]["arguments"] if plans and isinstance(plans[0]["arguments"], dict) else {}
         steps += _steps(args.get("steps"))[:MAX_STEPS]

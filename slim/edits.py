@@ -33,11 +33,13 @@ _MEETING_OPEN = re.compile(r"^\s*(`{3,})slim-meeting")
 _ELISION = re.compile(r"^[ \t]*(?:\.\.\.|…)[ \t]*$", re.MULTILINE)
 # Obsidian renders no Markdown or math inside these, in Live Preview, and an unclosed one leaves
 # everything after it raw (live, 2026-10-13: a `<details>` whose `</details>` a later step dropped).
-_HTML_BLOCK = re.compile(r"<(details|summary|div)\b", re.IGNORECASE)
-# Code is shown, not rendered: a fence (closed by a run as long or longer, or the end of the text)
-# and a code span (closed by a backtick run of the same length).
-_CODE = re.compile(r"^ {0,3}(?P<fence>(?P<mark>[`~])(?P=mark){2,})[^\n]*\n[\s\S]*?(?:^ {0,3}(?P=fence)(?P=mark)*[ \t]*$|\Z)"
-                   r"|(?<!`)(?P<run>`+)(?!`)[^\n]*?(?<!`)(?P=run)(?!`)", re.MULTILINE)
+_HTML_BLOCK = re.compile(r"<(/?(?:details|summary|div))\b", re.IGNORECASE)
+# Code is shown, not rendered: a fence (closed by a run as long or longer, or the end of the text;
+# a backtick fence's info string has no backtick) and a code span (closed by a backtick run of
+# the same length, before a blank line).
+_CODE = re.compile(r"^ {0,3}(?P<ticks>`{3,})[^`\n]*\n[\s\S]*?(?:^ {0,3}(?P=ticks)`*[ \t]*$|\Z)"
+                   r"|^ {0,3}(?P<tildes>~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}(?P=tildes)~*[ \t]*$|\Z)"
+                   r"|(?<!`)(?P<run>`+)(?!`)(?:[^\n]|\n(?![ \t]*\n))*?(?<!`)(?P=run)(?!`)", re.MULTILINE)
 # Binaries, SLIM's own derived output and Obsidian's config are never a copilot edit target.
 _NEVER_TOP = {"attachments", "_reflections"}
 _EXCLUDED_CF = {name.casefold() for name in EXCLUDED_DIRS}
@@ -414,12 +416,15 @@ class Note:
             return i, i + 1
         return i, _end(self.blocks, i)
 
-    def plain(self, words: str) -> str:
+    def plain(self, words: str, bare: bool = True) -> str:
         """Words for the owner with every handle turned into the text it points at ("after block
         b6" → "after the image"). A handle the note does not have goes, with its words, when it is
-        plainly one ("block b99", "[b9]", "b2-b4"); a bare "s3" or "b12" it does not have is a word."""
+        plainly one ("block b99", "[b9]", "b2-b4"); a bare "s3" or "b12" it does not have is a word.
+        With `bare` off (an answer, about anything) only a plain handle is one, never a bare word."""
         def put(match: re.Match) -> str:
             block = next((b for b in self.blocks if b.handle == "b" + match["n"]), None)
+            if not bare and not (match["word"] or match["open"] or match["range"]):
+                return match[0]
             if block is None:
                 return "" if match["word"] or match["open"] or match["range"] else match[0]
             return f"{match['prep'] + ' ' if match['prep'] else ''}{quote(block.text)}"
@@ -635,21 +640,31 @@ def _written(markdown: str, old: str = "") -> None:
     if len(_ELISION.findall(markdown)) > len(_ELISION.findall(old)):
         raise ToolError("the new text skips lines with `...`; write out what stays, or change only what "
                         "changes", "elision")
-    tags = lambda text: Counter(tag.lower() for tag in _HTML_BLOCK.findall(_CODE.sub("", text)))
-    if tags(markdown) - tags(old):          # a tag the old text had, kept, is no allowance for another
+    if _html_lines(markdown) - _html_lines(old):    # each line's tags, kept from the old text or none
         raise ToolError("Obsidian renders no Markdown or math inside HTML tags; write Markdown. A heading already "
                         "folds in Obsidian; for a section that starts folded, write a callout: "
                         "> [!note]- Title, with each line under it starting with > .", "html")
+
+
+def _html_lines(text: str) -> Counter:
+    """The HTML block tags of each line outside code, in order: a line keeps its tags only where
+    the old text had a line with the same ones, never a tag counted elsewhere."""
+    lines = (tuple(tag.lower() for tag in _HTML_BLOCK.findall(line)) for line in _CODE.sub("", text).splitlines())
+    return Counter(tags for tags in lines if tags)
 
 
 def _own(note: Note, changed: list[Block], target: str, ctx: dict) -> None:
     """A later step may not rewrite or delete what an earlier step of the run wrote: steps that
     reworked their own text left a short section where a long one had landed (live, 2026-10-13).
     Only the blocks a call really changes count, and only those the run wrote whole: a block of the
-    owner's that a step edited stays open to the next (two typos in one paragraph)."""
-    made = [note.made.get(b.owner) if b.fresh else None for b in changed]
-    if made and all(step is not None and step < ctx["step"] for step in made):
-        raise ToolError(f"{target} is what you wrote in step {min(made)}; it stays as written. Make only what "
+    owner's that a step edited stays open to the next (two typos in one paragraph). One such block
+    among others is enough, and is named, so the model can leave it as it is."""
+    earlier = [(b, note.made[b.owner]) for b in changed
+               if b.fresh and note.made.get(b.owner) is not None and note.made[b.owner] < ctx["step"]]
+    if earlier:
+        block, step = earlier[0]
+        name = target if len(changed) == 1 else block.handle
+        raise ToolError(f"{name} is what you wrote in step {step}; it stays as written. Make only what "
                         "this step still needs, or call done if the note already has it.", "own")
 
 
