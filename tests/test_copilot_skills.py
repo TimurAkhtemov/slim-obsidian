@@ -92,9 +92,13 @@ def tooled(monkeypatch, *replies):
     seen = []
 
     def chat_tools(messages, tools=None, **opts):
+        if opts.get("fmt") is not None:        # the intent gate: these turns are questions
+            return {"content": '{"change_note": false}', "tool_calls": [], "raw_tool_calls": []}, {}
         seen.append({"messages": list(messages), "tools": [t["function"]["name"] for t in tools or []],
                      "opts": opts})
         content, calls = replies[len(seen) - 1]
+        if opts.get("on_delta") and content:
+            opts["on_delta"](content)
         return ({"content": content, "tool_calls": [{"name": n, "arguments": a} for n, a in calls],
                  "raw_tool_calls": []}, {"duration_s": 1})
     monkeypatch.setattr(copilot.llm, "chat_tools", chat_tools)
@@ -228,6 +232,7 @@ def test_consolidation_makes_a_new_note_as_a_change_and_writes_nothing(con, vaul
                             vault=vault, on_edit=lambda event, payload: events.append((event, payload)))
     system, user = seen[0]["messages"][0]["content"], seen[0]["messages"][-1]["content"]
     assert seen[0]["tools"] == ["create_note", "done"] and len(seen) == 1
+    assert seen[0]["opts"]["temperature"] == copilot.FIRST_TEMPERATURE     # a new note is prose they read
     assert copilot.NEW_NOTE_RIDER.format(folder="Capture/work") in system and copilot.EDIT_RIDER not in system
     assert "=== Capture/work/Kickoff.md · 2026-09-01 ===\nship friday" in system
     assert "words from" not in system                                 # the section, not the transcript
@@ -255,7 +260,7 @@ def test_a_selection_skill_changes_only_the_selected_blocks_and_only_with_replac
                                      ("replace", {"target": "b3", "markdown": "- **Pragmatics**: salt"})]))
     turn = copilot.run_turn(con, source["id"], "/tidy", [], "quick", vault=vault, selection=selected,
                             doc=LIST_NOTE, doc_hash=edits.digest(LIST_NOTE))
-    assert seen[0]["tools"] == ["plan", "replace"]
+    assert seen[0]["tools"] == ["plan", "replace", "edit_text"] and seen[0]["opts"]["temperature"] == 0.0
     assert seen[0]["messages"][-1]["content"].endswith("Selected text:\n" + selected)
     run = turn["edit_run"]
     text = LIST_NOTE

@@ -321,10 +321,14 @@ def a_note(tmp_path, monkeypatch):
     source = copilot.sync_note(con, vault, "Notes/n.md", embed=False)
     con.close()
 
-    def script(*replies):
+    def script(*replies, intent=True):
         def chat_tools(messages, tools=None, **opts):
+            if opts.get("fmt") is not None:    # the intent gate
+                return {"content": json.dumps({"change_note": intent}), "tool_calls": [], "raw_tool_calls": []}, {}
             content, calls = replies[script.calls]
             script.calls += 1
+            if opts.get("on_delta") and content:
+                opts["on_delta"](content)
             return ({"content": content, "tool_calls": [{"name": n, "arguments": a} for n, a in calls],
                      "raw_tool_calls": []}, {"duration_s": 1, "output_tokens": 5})
         script.calls = 0
@@ -367,7 +371,7 @@ def test_the_stream_emits_the_edit_events_in_order(server_url, a_note):
 
 def test_a_text_answer_streams_as_today_with_no_edit_events(server_url, a_note):
     source, script = a_note
-    script(("It is a note.", []))
+    script(("It is a note.", []), intent=False)
     _status, _headers, body = stream(server_url, source, "what is this?")
     events = events_of(body)
     assert [e for e, _ in events] == ["stage", "delta", "stage", "turn"]
@@ -421,6 +425,8 @@ def test_a_client_that_hangs_up_stops_the_run_after_the_current_call(server_url,
     scripted = copilot.llm.chat_tools
 
     def chat_tools(messages, tools=None, **opts):
+        if opts.get("fmt") is not None:        # the intent gate
+            return scripted(messages, tools, **opts)
         if len(real) == 2:                     # the third call waits until the client has gone
             inside.set()
             hung_up.wait(5)
