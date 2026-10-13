@@ -224,7 +224,7 @@ def test_a_later_change_inside_new_text_needs_the_change_that_made_it():
     note = Note(NOTE)
     apply(note, "insert", {"after": "s7", "markdown": "## C\n\nText c."}, change_id="c1", step=1)
     heading = next(b.handle for b in note.blocks if b.text.startswith("## C"))
-    change, _ = apply(note, "replace", {"target": heading, "markdown": "## C, renamed"}, change_id="c2", step=2)
+    change, _ = apply(note, "replace", {"target": heading, "markdown": "## C, renamed"}, change_id="c2", step=1)
     assert change.needs == ["c1"]
 
 
@@ -278,7 +278,7 @@ def test_a_range_is_replaced_whole_and_a_pasted_label_still_finds_its_block():
     change, result = apply(note, "replace", {"target": "b4-b6", "markdown": "Text a, one and two."},
                            change_id="c1", step=1)
     assert note.text() == NOTE.replace("Text a.\n- one\n- two\n", "Text a, one and two.\n")
-    assert change.label == "Replaced b4-b6" and "b4-b6" not in [b.handle for b in note.blocks]
+    assert change.label == "Rewrote “Text a.”" and "b4-b6" not in [b.handle for b in note.blocks]
     apply(note, "replace", {"target": "b2]\nIntro para.", "markdown": "Intro, shorter."}, change_id="c2", step=1)
     assert "Intro, shorter.\n" in note.text() and any(b.handle == "b2" for b in note.blocks)
 
@@ -306,7 +306,7 @@ def test_what_follows_is_cut_to_one_line_of_100_characters():
 def test_s_on_a_paragraph_is_named_back_as_the_block():
     note = Note(NOTE)
     change, said = apply(note, "replace", {"target": "s4", "markdown": "Text a, edited."}, change_id="c1", step=1)
-    assert change.label == "Replaced b4" and said.startswith("replaced b4;") and "Text a, edited.\n" in note.text()
+    assert change.label == "Rewrote “Text a.”" and said.startswith("replaced b4;") and "Text a, edited.\n" in note.text()
 
 
 CUT = "that would cut s3: its text from b4 on would end up under your new heading. Put it after s3 (after that whole section) or before s3."
@@ -322,7 +322,7 @@ def test_a_new_heading_before_a_sections_body_is_refused():
 def test_a_new_heading_after_a_sections_heading_goes_after_the_whole_section():
     note = Note(NOTE)
     change, said = apply(note, "insert", {"after": "b3", "markdown": "## X\n\nx."}, change_id="c1", step=1)
-    assert "- two\n\n## X\n\nx.\n\n## B" in note.text() and change.label == "Inserted after s3"
+    assert "- two\n\n## X\n\nx.\n\n## B" in note.text() and change.label == "Added “X”"
     assert said.startswith("inserted b9 b10 after b3; placed after s3 (the end of that section) so it doesn't cut it:\n")
 
 
@@ -400,7 +400,7 @@ def test_a_range_ending_on_the_next_sections_heading_leaves_it_out():
     note = Note(NOTE)
     change, said = apply(note, "replace", {"target": "b4-b7", "markdown": ""}, change_id="c1", step=1)
     assert note.text() == "# Title\n\nIntro para.\n\n## A\n\n## B\n\nText b.\n"
-    assert change.label == "Deleted b4-b6"
+    assert change.label == "Removed “Text a.”"
     assert said == "deleted b4-b6 (b7 is the heading of the next section; left it out)\nthen: [b7] ## B"
     empty = Note("## A\n\nx\n\n## B\n\n## C\n\ny\n")         # ## B's section ends where the range does
     _, said = apply(empty, "replace", {"target": "b2-b3", "markdown": ""}, change_id="c1", step=1)
@@ -432,7 +432,7 @@ ITEM = ("## Hard\n\n- **Lexical ambiguity**: multiple meanings (bank/rivier vs b
 def test_edit_text_fixes_a_word_and_keeps_the_rest_of_the_block_byte_for_byte():
     note = Note(ITEM)
     change, said = apply(note, "edit_text", {"target": "b2", "old": "rivier", "new": "river"}, change_id="c1", step=1)
-    assert note.text() == ITEM.replace("rivier", "river") and change.label == "Edited b2"
+    assert note.text() == ITEM.replace("rivier", "river") and change.label == "Changed “rivier” to “river”"
     assert said.startswith("edited b2; it now reads:\n[b2] - **Lexical ambiguity**: multiple meanings (bank/river")
     assert said.endswith("\nthen: [b3] - **Open vocabulary**: doomscrolling.")
 
@@ -468,7 +468,7 @@ def test_a_section_replaced_by_only_a_heading_is_a_rename_and_keeps_its_text():
     for target in ("s3", "b3-b6"):
         note = Note(NOTE)
         change, said = apply(note, "replace", {"target": target, "markdown": "## New name"}, change_id="c1", step=1)
-        assert note.text() == NOTE.replace("## A\n", "## New name\n") and change.label == "Renamed b3", target
+        assert note.text() == NOTE.replace("## A\n", "## New name\n") and change.label == "Renamed “A” to “New name”", target
         assert said == "renamed the heading; the section's text is kept:\n[b3] ## New name\nthen: [b4] Text a."
     note = Note(NOTE)
     _, said = apply(note, "replace", {"target": "b3", "markdown": "## A2"}, change_id="c1", step=1)
@@ -559,3 +559,93 @@ def test_a_change_that_changes_nothing_leaves_the_note_and_its_handles_as_they_w
     with pytest.raises(ToolError, match="changes nothing"):
         apply(note, "replace", {"target": "b4-b6", "markdown": "Text a.\n- one\n- two"}, change_id="c1", step=1)
     assert [b.handle for b in note.blocks] == [f"b{n}" for n in range(1, 9)]
+
+
+# --- a run never rewrites its own earlier steps; a rewrite of its own text is part of that change ---
+
+def _added(note, change_id="c1", step=1):
+    apply(note, "insert", {"after": "s7", "markdown": "## C\n\nText c."}, change_id=change_id, step=step)
+    return next(b.handle for b in note.blocks if b.text.startswith("Text c."))
+
+
+def test_a_later_step_may_not_rewrite_or_delete_what_an_earlier_step_wrote():
+    for tool, args in (("replace", {"markdown": "Text c, longer."}), ("replace", {"markdown": ""}),
+                       ("edit_text", {"old": "Text c", "new": "Text C"})):
+        note = Note(NOTE)
+        para = _added(note)
+        before = note.text()
+        with pytest.raises(ToolError) as refused:
+            apply(note, tool, {"target": para, **args}, change_id="c2", step=2)
+        assert refused.value.code == "own" and note.text() == before
+        assert str(refused.value) == (f"{para} is what you wrote in step 1; it stays as written. Make only what "
+                                      "this step still needs, or call done if the note already has it.")
+
+
+def test_the_same_step_may_rework_its_own_text_and_that_change_is_part_of_the_first():
+    note = Note(NOTE)
+    para = _added(note)
+    change, _ = apply(note, "replace", {"target": para, "markdown": "Text c, longer."}, change_id="c2", step=1)
+    assert change.part_of == "c1" and change.needs == ["c1"]
+    again = next(b.handle for b in note.blocks if b.text.startswith("Text c, longer."))
+    change, _ = apply(note, "edit_text", {"target": again, "old": "longer", "new": "long"}, change_id="c3", step=1)
+    assert change.part_of == "c1"           # the first change it grew from, never the one between
+
+
+def test_owner_text_in_the_target_makes_a_change_of_its_own():
+    note = Note(NOTE)
+    _added(note)
+    mixed = next(b.handle for b in note.blocks if b.text.startswith("Text b."))
+    last = next(b.handle for b in note.blocks if b.text.startswith("Text c."))
+    change, _ = apply(note, "replace", {"target": f"{mixed}-{last}", "markdown": "B and C."}, change_id="c2", step=2)
+    assert change.part_of is None
+    change, _ = apply(Note(NOTE), "insert", {"after": "s7", "markdown": "More."}, change_id="c1", step=1)
+    assert change.part_of is None
+
+
+def test_moving_what_an_earlier_step_wrote_is_allowed_and_part_of_it():
+    note = Note(NOTE)
+    _added(note)
+    heading = next(b.handle for b in note.blocks if b.text.startswith("## C"))
+    change, _ = apply(note, "move", {"target": "s" + heading[1:], "before": "s3"}, change_id="c2", step=2)
+    assert change.part_of == "c1" and note.text().index("## C") < note.text().index("## A")
+
+
+HANDLE = __import__("re").compile(r"\b[bs]\d+\b")
+
+
+def test_labels_name_the_text_never_a_handle():
+    note = Note(NOTE)
+    made = [apply(note, "insert", {"after": "s7", "markdown": "> [!note]- TVM explanation\n> Short."},
+                  change_id="c1", step=1)[0],
+            apply(note, "replace", {"target": "b4", "markdown": "Text a, simpler."}, change_id="c2", step=1)[0],
+            apply(note, "replace", {"target": "b3", "markdown": "## A renamed"}, change_id="c3", step=1)[0],
+            apply(note, "edit_text", {"target": "b2", "old": "Intro", "new": "Opening"}, change_id="c4", step=1)[0],
+            apply(note, "move", {"target": "s7", "before": "s3"}, change_id="c5", step=1)[0],
+            apply(note, "replace", {"target": "b5-b6", "markdown": ""}, change_id="c6", step=1)[0]]
+    assert [c.label for c in made] == ["Added “TVM explanation”", "Rewrote “Text a.”", "Renamed “A” to “A renamed”",
+                                       "Changed “Intro” to “Opening”", "Moved “B”", "Removed “one”"]
+    assert not any(HANDLE.search(c.label) for c in made)
+    long = apply(Note("![[Screenshot 1.png|597]]\n\n" + "word " * 30 + "\n"), "replace",
+                 {"target": "b2", "markdown": "x"}, change_id="c1", step=1)[0]
+    assert long.label == "Rewrote “word word word word word word word word…”"
+
+
+def test_handles_in_words_for_the_owner_become_the_text_they_point_at():
+    note = Note("![[Screenshot 1.png|597]]\n\n## Quick Checks\n\nText.\n")
+    assert note.plain("Insert the header and opening tag after block b1") == "Insert the header and opening tag after the image"
+    assert note.plain("Move s2 before [b1], then fix b3-b3") == "Move “Quick Checks” before the image, then fix “Text.”"
+    assert note.plain("Tidy b99 and the rest") == "Tidy and the rest"
+    assert note.plain("Use web3 and s2 buckets") == "Use web3 and “Quick Checks” buckets"
+
+
+def test_new_html_blocks_are_refused_with_obsidians_own_ways_to_fold():
+    note = Note(NOTE)
+    with pytest.raises(ToolError) as refused:
+        apply(note, "insert", {"after": "b1", "markdown": "### <details><summary>Why</summary>\n\nText\n</details>"},
+              change_id="c1", step=1)
+    assert refused.value.code == "html" and note.text() == NOTE
+    assert "> [!note]- Title" in str(refused.value) and "heading already folds" in str(refused.value)
+    kept = Note("<div>a</div>\n\nb\n")                # HTML the note already has may stay
+    apply(kept, "replace", {"target": "b1", "markdown": "<div>A</div>"}, change_id="c1", step=1)
+    assert kept.text() == "<div>A</div>\n\nb\n"
+    apply(Note(NOTE), "insert", {"after": "b1", "markdown": "Line one<br>line two <kbd>x</kbd>."}, change_id="c1", step=1)

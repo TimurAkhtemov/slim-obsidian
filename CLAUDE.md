@@ -116,11 +116,15 @@ note loses its id. Embedding is part of ingest; `slim status` reports `unembedde
      it can't tell: the model edits the open note through tools (`edits.TOOLS`: `replace`,
      `edit_text`, `insert`, `move`, `plan`) that point at block handles — [b12] a block, s7 the
      section under heading b7, b11-b15 a range — at temperature 0.0. A small change is one
-     call; a larger one is a plan carried out one call per step, then up to two fix-ups for
-     headings its outline names and the note lacks. Code holds the plan and
-     the limits (`copilot.py`: 8 steps, 30 calls, 3 refusals in a row, 12k output tokens) and
-     refuses what a call must not do, with a reason the model reads back; `llm.hold()` keeps the
-     model lock for the run. An `edit` skill runs the same loop (tidy: the selection's blocks
+     call; a larger one is a plan carried out one call per step, and nothing after the steps
+     (fix-ups for the plan's outline were cut: they only ever wasted calls or undid work). Code
+     holds the plan and the limits (`copilot.py`: 8 steps, 30 calls, 3 refusals in a row, 12k
+     output tokens) and refuses what a call must not do, with a reason the model reads back:
+     among them, a later step rewriting what an earlier step wrote, and new HTML blocks, which
+     Obsidian renders no Markdown inside. A change that reworks only the run's own text is
+     `part_of` the change it grew from, so the owner never sees SLIM's drafts as removals. What
+     the owner reads (steps, labels, summary) names text, never a handle (`Note.plain`,
+     `edits.quote`). `llm.hold()` keeps the model lock for the run. An `edit` skill runs the same loop (tidy: the selection's blocks
      only); a `new-note` skill only `create_note`s, in existing folders, never `Journal/`.
      **The server never writes the note.** It works on the editor's text (`doc` + its hash) and
      streams each change as UTF-16 splices; the plugin applies them through the editor as they

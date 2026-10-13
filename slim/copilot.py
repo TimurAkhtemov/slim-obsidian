@@ -73,9 +73,8 @@ QUICK_NUM_PREDICT = 2400
 # THE EDITING RUN (`_turn`). Measured on the prototype (2026-10-12, 13 cases, 5 runs each):
 # prompt instructions hold this model to no limit, so every limit is code.
 MAX_STEPS = 8
-MAX_CALLS = 30                   # tool calls in one run, fix-ups included
+MAX_CALLS = 30                   # tool calls in one run
 MAX_REFUSALS = 3                 # refused calls in a row end the run
-MAX_FIXUPS = 2                   # calls after the steps while the headings miss the plan's outline
 STEP_NUM_PREDICT = 2048          # a step's reply: room for one section's new text
 THINK_BUDGET = 8192              # on top of the first call's cap in Deep; thinking counts against it
 RUN_OUTPUT_TOKENS = 12_000       # the reply that crosses it is used, then the run stops (one ran to 25k)
@@ -746,7 +745,7 @@ def _outline(args: dict) -> list[str] | None:
         for line in _LITERAL_NEWLINE.sub("\n", str(item)).split("\n"):
             heading = edits_mod.ANNOTATION.sub(
                 "", edits_mod.strip_labels(line.strip().strip("\"'").strip()).strip())
-            if heading and not _PLACEHOLDER.fullmatch(heading):
+            if heading.startswith("#") and not _PLACEHOLDER.fullmatch(heading):
                 found.append(heading)
     return found or None
 
@@ -786,10 +785,6 @@ def _same(a: tuple[int, str], b: tuple[int, str]) -> bool:
     return longer[:len(shorter)] == shorter or len(set(x) & set(y)) / len(set(x) | set(y)) >= SAME_HEADING_WORDS
 
 
-def _misses(now: list[str], want: list[str]) -> tuple[list[int], list[int]]:
-    """The outline's misses as indexes: those the note lacks, and those it has out of order."""
-    _pairs, missing, misplaced = _match(now, want)
-    return missing, misplaced
 
 
 def _match(now: list[str], want: list[str]) -> tuple[list[tuple[int, int]], list[int], list[int]]:
@@ -825,16 +820,6 @@ def _outline_details(now: list[str], want: list[str]) -> dict:
     level = lambda h: edits_mod.heading_key(h)[0]
     return {"missing": len(missing), "out_of_order": len(misplaced),
             "other_level": sum(level(want[i]) != level(now[j]) for i, j in pairs)}
-
-
-def _fixup(want: list[str], missing: list[int]) -> str:
-    """A fix-up names only the headings the note lacks: reordering or re-levelling on its word
-    promoted an unrelated heading (live, 2026-10-13)."""
-    def where(k: int) -> str:
-        return f"your outline puts it {f'after {want[k - 1]}' if k else 'first'}"
-    return "\n".join(["Fix-up: your outline has headings the note does not have yet:",
-                      *[f"{n}. {want[k]} ({where(k)})" for n, k in enumerate(missing, 1)],
-                      "Add only these; don't move, rename or delete other sections."])
 
 
 _ITEM = re.compile(r"^(?:[-*]|\d+[.)])\s+(.+)$")
@@ -889,15 +874,15 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
     top of the prompt, and a different list re-reads the whole note. `step_tools` are those that
     change something. The first call answers in text, makes a small change at once, or plans a
     larger one, at `temperature`; with `nudge` (the gate wanted a change) a text-only reply is
-    asked once to use the tools. A plan is carried out one call per step, then up to MAX_FIXUPS
-    calls if the headings miss its outline. Code holds the plan, applies every call to the draft
+    asked once to use the tools. A plan is carried out one call per step; its outline is only
+    measured against the note, for the trace. Code holds the plan, applies every call to the draft
     `note` (or makes a new note through `create`), enforces every limit, and hands each part to
     `on_edit` as it lands: "start", "plan", "step" and "change". `should_stop()` is asked before
     every call."""
     out = {"kind": "answer", "answer": "", "plan": None, "changes": [], "steps_done": 0, "calls": 0,
            "refusals": [], "malformed": [], "empty_steps": 0, "stopped": None, "summary": "",
            "finished_early": False, "replanned": False, "outline": None, "outline_met": None,
-           "fixups": 0, "retries": 0, "first_call_edits": 0, "timing": [], "nudged": False,
+           "retries": 0, "first_call_edits": 0, "timing": [], "nudged": False,
            "outline_details": None,
            "first_temperature": temperature}
     spent, failed = 0, []
@@ -905,6 +890,8 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
     budget = RUN_OUTPUT_TOKENS + (THINK_BUDGET if think else 0)
     current = {"k": None, "count": 1, "landed": 0, "refused": False}      # the step(s) being worked
     steps: list[str] = []
+    # What the owner reads names text, never a handle; the model keeps its own words.
+    plain = note.plain if note is not None else (lambda words: words)
 
     def attempt(offered, think, temperature, num_predict):
         if not out["stopped"] and should_stop():
@@ -990,8 +977,8 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
                 first = ask(tools, think, temperature, first_predict)
                 plans, edits = split(first)
         if not plans and not edits:
-            out["answer"] = first.content.strip() or next(
-                (_summary(c) for c in first.calls if c["name"] == "done"), "")
+            out["answer"] = plain(first.content.strip() or next(
+                (_summary(c) for c in first.calls if c["name"] == "done"), ""))
             return out
         args = plans[0]["arguments"] if plans and isinstance(plans[0]["arguments"], dict) else {}
         steps += _steps(args.get("steps"))[:MAX_STEPS]
@@ -1007,7 +994,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
             covered = len(made)
         elif edits and not steps:       # edits with no plan, or with an empty one: a one-step run
             steps.append(ONE_REPLY)
-        shown = [] if steps == [ONE_REPLY] else list(steps)
+        intro, shown = plain(intro), [] if steps == [ONE_REPLY] else [plain(step) for step in steps]
         out.update(kind="edit", plan={"intro": intro, "steps": shown},
                    outline=_outline(args) if note is not None else None)
         on_edit("start", {"before_text": before_text})
@@ -1019,7 +1006,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
         results, in_row = ["ok: plan accepted"], 0
 
         def step(instruction: str, number: int):
-            """One model call for one step or fix-up, its tool calls applied in order, with the
+            """One model call for one step, its tool calls applied in order, with the
             note's map as it is now."""
             sections = note.sections() if note is not None else ""
             now = f"\n\nSections now:\n{sections}" if sections else ""
@@ -1047,7 +1034,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
                 name = call["name"]
                 at = number[index] if isinstance(number, list) else number
                 if name == "done":          # the work is finished: this step's calls stand, no more steps
-                    out.update(summary=_summary(call), finished_early=True)
+                    out.update(summary=plain(_summary(call)), finished_early=True)
                     break
                 if name == "plan":          # the plan restated: answered, and neither a refusal nor a change
                     results.append("ok: the plan is already set; make this step's changes")
@@ -1116,18 +1103,6 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
             retried = False
         close_step()
 
-        # Fix-ups, only for outline headings the note lacks altogether: order and level are left
-        # as the steps wrote them. They count against the call limit, never against the steps.
-        while out["outline"] and not out["stopped"] and out["fixups"] < MAX_FIXUPS:
-            now, want = _against(note, out["outline"])
-            missing, _misplaced = _misses(now, want)
-            if not missing:
-                break
-            out["fixups"] += 1
-            reply, _ = step(_fixup(want, missing), len(steps) + out["fixups"])
-            if any(c["name"] == "done" for c in reply.calls):
-                break
-
         if not out["stopped"] and not out["finished_early"]:
             n = len(out["changes"])
             out["summary"] = intro or f"Done: {n} change{'' if n == 1 else 's'}"
@@ -1175,7 +1150,7 @@ def _facts(out: dict, run: dict) -> dict:
             "first_call_edits": out["first_call_edits"], "replanned": out["replanned"],
             "retries": out["retries"], "stopped": out["stopped"], "finished_early": out["finished_early"],
             "outline_met": out["outline_met"], "outline_details": out["outline_details"],
-            "fixups": out["fixups"], "nudged": out["nudged"],
+            "nudged": out["nudged"],
             "first_temperature": out["first_temperature"], "timing": out["timing"]}
 
 
@@ -1277,7 +1252,7 @@ def _answer_or_edit(con, vault: Path, source: dict, question: str, history: list
     else:
         run = {"plan": out["plan"], "steps_done": min(out["steps_done"], len(out["plan"]["steps"])),
                "changes": out["changes"], "stopped": out["stopped"], "outline_met": out["outline_met"],
-               "fixups": out["fixups"], "hash_before": edits_mod.digest(text),
+               "hash_before": edits_mod.digest(text),
                "hash_after": edits_mod.digest(note.text() if note is not None else text),
                "summary": out["summary"]}
         answer = out["summary"] or out["plan"]["intro"]

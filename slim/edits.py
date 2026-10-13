@@ -30,6 +30,9 @@ from .config import EXCLUDED_DIRS
 _MEETING_OPEN = re.compile(r"^\s*(`{3,})slim-meeting")
 # A lone `...` in new text is the model's "the rest as before", and it would delete the rest.
 _ELISION = re.compile(r"^[ \t]*(?:\.\.\.|…)[ \t]*$", re.MULTILINE)
+# Obsidian renders no Markdown or math inside these, in Live Preview, and an unclosed one leaves
+# everything after it raw (live, 2026-10-13: a `<details>` whose `</details>` a later step dropped).
+_HTML_BLOCK = re.compile(r"<(?:details|summary|div)\b", re.IGNORECASE)
 # Binaries, SLIM's own derived output and Obsidian's config are never a copilot edit target.
 _NEVER_TOP = {"attachments", "_reflections"}
 _EXCLUDED_CF = {name.casefold() for name in EXCLUDED_DIRS}
@@ -191,6 +194,27 @@ class ToolError(ValueError):
 
 _LABEL = re.compile(r"^\[(?:b\d+(?: s\d+)?|locked)\] ?", re.MULTILINE)
 _HANDLE = re.compile(r"\b[bs]\d+\b")
+# A handle in words meant for the owner (a plan's steps, its summary), with the words around it
+# that only make sense with a handle: "after block b6", "[b11-b15]", "the section s4".
+_REFERENCE = re.compile(r"(?:\b(?P<prep>(?i:after|before|below|above|under|into|in|at|of|from|to|with|on))\s+)?"
+                        r"(?:(?i:the)\s+)?(?:(?i:blocks?|sections?|range|heading|paragraph)\s+)?"
+                        r"\[?\b(?P<kind>[bs])(?P<n>\d+)(?:\s*[-–]\s*[bs]?\d+)?\b\]?")
+_EMBED = re.compile(r"!\[\[([^\]|]+)(?:\|[^\]]*)?\]\]")
+_IMAGE = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".avif")
+_MARKUP = re.compile(r"^(?:\s*>)*\s*(?:\[![^\]]*\][-+]?\s*)?(?:#{1,6}\s+|(?:[-*+]|\d+[.)])\s+(?:\[.\]\s+)?)?")
+QUOTE_WORDS = 8
+
+
+def quote(text: str) -> str:
+    """Some text as the owner would point at it: its first line, without Markdown's markers,
+    cut to QUOTE_WORDS words. An image is "the image"."""
+    line = next((line for line in text.splitlines() if line.strip()), "")
+    embed = _EMBED.fullmatch(line.strip())
+    if embed:
+        return "the image" if embed.group(1).strip().lower().endswith(_IMAGE) else "the embed"
+    words = _MARKUP.sub("", line).replace("**", "").replace("__", "").split()
+    cut = " ".join(words[:QUOTE_WORDS]) + ("…" if len(words) > QUOTE_WORDS else "")
+    return f"“{cut}”"
 
 
 @dataclass
@@ -299,6 +323,8 @@ class Note:
     def __init__(self, text: str):
         self._next = 1
         self.blocks = self._fresh(text, owner=None)
+        self.made: dict[str, int] = {}      # each change of the run: the step that made it
+        self.roots: dict[str, str] = {}     # each change: the change it is part of, or itself
         ranges = protected_ranges(text)
         pos = 0
         for block in self.blocks:
@@ -375,6 +401,17 @@ class Note:
         if handle[0] == "b" or not self.blocks[i].level:
             return i, i + 1
         return i, _end(self.blocks, i)
+
+    def plain(self, words: str) -> str:
+        """Words for the owner with every handle turned into the text it points at ("after block
+        b6" → "after the image"); a handle the note does not have goes, with its words."""
+        def put(match: re.Match) -> str:
+            block = next((b for b in self.blocks if b.handle == "b" + match["n"]), None)
+            if block is None:
+                return ""
+            return f"{match['prep'] + ' ' if match['prep'] else ''}{quote(block.text)}"
+        said = _REFERENCE.sub(put, words)
+        return re.sub(r" +([,.;:)])", r"\1", re.sub(r" {2,}", " ", said)).strip()
 
     def target(self, handle, only: set[str] | None = None) -> tuple[int, int]:
         """A span a tool may change: nothing in it is part of a recording or outside `only`."""
@@ -529,6 +566,9 @@ class Change:
     label: str
     splices: list[dict]
     needs: list[str] = field(default_factory=list)
+    # The earlier change this one belongs to, when it only reworks text this run wrote: to the
+    # owner it is that change, never a removal of their text.
+    part_of: str | None = None
 
 
 def _text(args: dict, name: str, required: bool = True) -> str | None:
@@ -562,6 +602,19 @@ def _written(markdown: str, old: str = "") -> None:
     if len(_ELISION.findall(markdown)) > len(_ELISION.findall(old)):
         raise ToolError("the new text skips lines with `...`; write out what stays, or change only what "
                         "changes", "elision")
+    if len(_HTML_BLOCK.findall(markdown)) > len(_HTML_BLOCK.findall(old)):
+        raise ToolError("Obsidian renders no Markdown or math inside HTML tags; write Markdown. A heading already "
+                        "folds in Obsidian; for a section that starts folded, write a callout: "
+                        "> [!note]- Title, with each line under it starting with > .", "html")
+
+
+def _own(note: Note, i: int, j: int, target: str, ctx: dict) -> None:
+    """A later step may not rewrite or delete what an earlier step of the run wrote: steps that
+    reworked their own text left a short section where a long one had landed (live, 2026-10-13)."""
+    made = [note.made.get(b.owner) for b in note.blocks[i:j] if b.kind != "blank"]
+    if made and all(step is not None and step < ctx["step"] for step in made):
+        raise ToolError(f"{target} is what you wrote in step {min(made)}; it stays as written. Make only what "
+                        "this step still needs, or call done if the note already has it.", "own")
 
 
 def _lines(text: str) -> list[str]:
@@ -596,21 +649,29 @@ def _renames(note: Note, i: int, j: int, markdown: str) -> bool:
 def _replace(note: Note, args: dict, ctx: dict):
     markdown = strip_labels(_text(args, "markdown", False) or "")
     i, j, target, trimmed = note.pick(_handle(note, args, "target"), ctx["only"])
-    _written(markdown, "".join(b.text for b in note.blocks[i:j]))
+    old = "".join(b.text for b in note.blocks[i:j])
+    _own(note, i, j, target, ctx)
+    _written(markdown, old)
+    renamed = f"Renamed {quote(note.blocks[i].text)} to {quote(markdown)}"
     if _renames(note, i, j, markdown):
         _copied(note, markdown, range(i, i + 1), "to where you want it")
+        ctx["targets"] = note.blocks[i:i + 1]
         heading = note.blocks[i].handle
         needs = note.owners(i, i + 1)
         new = note.replace(i, i + 1, markdown, ctx["id"], keep=heading)
-        return needs, f"Renamed {heading}", (f"renamed the heading; the section's text is kept:\n"
-                                             f"{note.render(new).rstrip()}\n{note.then(i + 1)}")
+        return needs, renamed, (f"renamed the heading; the section's text is kept:\n"
+                                f"{note.render(new).rstrip()}\n{note.then(i + 1)}")
     _copied(note, markdown, range(i, j), "to where you want it")
+    ctx["targets"] = note.blocks[i:j]
+    one = _spans(markdown.splitlines(keepends=True))
+    label = (renamed if j - i == 1 and note.blocks[i].level and len(one) == 1 and one[0][0] == "heading"
+             else f"Rewrote {quote(old)}" if markdown else f"Removed {quote(old)}")
     needs = note.owners(i, j)
     new = note.replace(i, j, markdown, ctx["id"], keep=note.blocks[i].handle if j - i == 1 else None)
     then, done = note.then(i + len(new)), f"{target} ({trimmed})" if trimmed else target
     if not markdown:
-        return needs, f"Deleted {target}", f"deleted {done}\n{then}"
-    return needs, f"Replaced {target}", f"replaced {done}; it now reads:\n{note.render(new).rstrip()}\n{then}"
+        return needs, label, f"deleted {done}\n{then}"
+    return needs, label, f"replaced {done}; it now reads:\n{note.render(new).rstrip()}\n{then}"
 
 
 def _edit_text(note: Note, args: dict, ctx: dict):
@@ -628,12 +689,15 @@ def _edit_text(note: Note, args: dict, ctx: dict):
     if found > 1:
         raise ToolError(f"'{old}' appears {found} times in {target}; quote a little more around it", "quote")
     changed = text.replace(old, new, 1)
+    _own(note, i, j, target, ctx)
     _written(changed, text)
     _copied(note, changed, range(i, j), "to where you want it")
+    ctx["targets"] = note.blocks[i:j]
     needs = note.owners(i, j)
     made = note.replace(i, j, changed.rstrip("\n"), ctx["id"], keep=note.blocks[i].handle if j - i == 1 else None)
     then = note.then(i + len(made))
-    return needs, f"Edited {target}", f"edited {target}; it now reads:\n{note.render(made).rstrip()}\n{then}"
+    label = f"Changed {quote(old)} to {quote(new)}" if new.strip() else f"Removed {quote(old)}"
+    return needs, label, f"edited {target}; it now reads:\n{note.render(made).rstrip()}\n{then}"
 
 
 def _insert(note: Note, args: dict, ctx: dict):
@@ -649,15 +713,14 @@ def _insert(note: Note, args: dict, ctx: dict):
     cut, said, where = note.cut(pos, heading_level(markdown)), "", "after" if after else "before"
     if cut and not after:
         raise cut_refused(cut)
-    label = f"Inserted {where} {anchor}"
     if cut:                             # after a heading or inside a section: after that whole section instead
-        pos, said, label = cut[1], placed(cut), f"Inserted after {cut[0]}"
+        pos, said = cut[1], placed(cut)
         note.check_insert(pos)
     needs = note.owners(i, j)
     new = note.insert(pos, markdown, ctx["id"])
     made = " ".join(b.handle for b in new if b.kind != "blank")
     then = note.then(pos + len(new))
-    return needs, label, f"inserted {made} {where} {anchor}{said}:\n{note.render(new).rstrip()}\n{then}"
+    return needs, f"Added {quote(markdown)}", f"inserted {made} {where} {anchor}{said}:\n{note.render(new).rstrip()}\n{then}"
 
 
 def _move(note: Note, args: dict, ctx: dict):
@@ -680,11 +743,12 @@ def _move(note: Note, args: dict, ctx: dict):
             raise ToolError(f"{target} is already right after {cut[0]}", "place")
         note.check_insert(pos)
     needs = note.owners(i, j) | note.owners(k, l)
+    ctx["targets"] = note.blocks[i:j]
+    label = f"Moved {quote(''.join(b.text for b in note.blocks[i:j]))}"
     moved = ctx["moved"] = note.move(i, j, pos)
     then = note.then(next(n for n, b in enumerate(note.blocks) if b is moved[-1]) + 1)
     where = "after" if after else "before"
     done = f" ({trimmed})" if trimmed else ""
-    label = f"Moved {target} after {cut[0]}" if cut else f"Moved {target} {where} {anchor}"
     return needs, label, f"moved {target} {where} {anchor}{done}{said}\n{then}"
 
 
@@ -796,7 +860,7 @@ def apply(note: Note, name: str, args: dict, *, change_id: str, step: int,
         for b, text in old:
             b.text = text
 
-    ctx = {"id": change_id, "only": only}
+    ctx = {"id": change_id, "only": only, "step": step}
     needs, label, result = tool["apply"](note, args, ctx)
     after = note.text()
     if after == before:
@@ -809,7 +873,12 @@ def apply(note: Note, name: str, args: dict, *, change_id: str, step: int,
         undo()
         raise ToolError(f"that change would reach text that is {PROTECTED}", "locked")
     needs.discard(change_id)
-    return Change(change_id, step, name, label, made, sorted(needs, key=lambda c: int(c[1:]))), result
+    # Only text this run wrote, and none of the owner's: part of the change it grew from.
+    reworked = [b for b in ctx.get("targets", []) if b.kind != "blank"]
+    part_of = min((note.roots.get(b.owner, b.owner) for b in reworked), key=lambda c: int(c[1:])) \
+        if reworked and all(b.owner for b in reworked) else None
+    note.made[change_id], note.roots[change_id] = step, part_of or change_id
+    return Change(change_id, step, name, label, made, sorted(needs, key=lambda c: int(c[1:])), part_of), result
 
 
 def ollama_tools(names: list[str]) -> list[dict]:

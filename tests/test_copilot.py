@@ -739,10 +739,10 @@ def test_a_plan_streams_its_events_in_order_and_returns_the_run(turn, monkeypatc
         {"index": 1, "state": "doing"}, {"index": 1, "state": "done"},
         {"index": 2, "state": "doing"}, {"index": 2, "state": "done"}]
     change = events[3][1]
-    assert set(change) == {"id", "step", "op", "label", "needs", "splices"}
-    assert (change["id"], change["step"], change["op"], change["label"]) == ("c1", 1, "replace", "Replaced b3")
+    assert set(change) == {"id", "step", "op", "label", "needs", "splices", "part_of"}
+    assert (change["id"], change["step"], change["op"], change["label"]) == ("c1", 1, "replace", "Renamed “A” to “A renamed”")
     run = got["edit_run"]
-    assert set(run) == {"plan", "steps_done", "changes", "stopped", "outline_met", "fixups",
+    assert set(run) == {"plan", "steps_done", "changes", "stopped", "outline_met",
                         "hash_before", "hash_after", "summary"}
     assert run["steps_done"] == 2 and run["stopped"] is None and run["outline_met"] is True
     assert run["summary"] == "Rename A and move B up." and got["answer"] == run["summary"]
@@ -862,21 +862,6 @@ def test_a_first_call_that_could_not_be_read_is_asked_for_a_plan_once_more(turn,
     assert "## A renamed" in got["final"]
 
 
-def test_a_truly_missing_heading_triggers_exactly_one_fix_up_naming_it(turn, monkeypatch):
-    plan = {"intro": "x", "outline": ["# Title", "## C", "## A", "## B", "## D"], "steps": ["Reorder"]}
-    seen = scripted(monkeypatch, ("", [("plan", plan)]),
-                    ("", []),                                               # the step does nothing
-                    ("", [("insert", {"after": "s6", "markdown": "## D\n\nd."})]))   # the fix-up adds D
-    got, _ = turn("reorder", text=NOTE3)
-    assert seen[2]["messages"][-1]["content"].startswith(
-        "Fix-up: your outline has headings the note does not have yet:\n"
-        "1. ## D (your outline puts it after ## B)\n"
-        "Add only these; don't move, rename or delete other sections.\n\nSections now:\n")
-    assert "## C" not in seen[2]["messages"][-1]["content"].split("Sections now:")[0]   # out of order: not named
-    run = got["edit_run"]
-    assert seen[2]["tools"] == ["plan", *STEP_TOOLS] and run["changes"][0]["step"] == 2
-    assert run["fixups"] == 1 and run["steps_done"] == 1 and len(seen) == 3
-    assert run["outline_met"] is False                            # ## C is still out of order: recorded only
 
 
 def test_an_out_of_order_heading_triggers_no_fix_up(turn, monkeypatch):
@@ -885,7 +870,7 @@ def test_an_out_of_order_heading_triggers_no_fix_up(turn, monkeypatch):
     plan = {"intro": "x", "outline": ["# Title", "## B", "## A"], "steps": ["Move B"]}
     seen = scripted(monkeypatch, ("", [("plan", plan)]), ("", []))
     got, _ = turn("go")
-    assert len(seen) == 2 and got["edit_run"]["fixups"] == 0 and got["edit_run"]["outline_met"] is False
+    assert len(seen) == 2 and got["edit_run"]["outline_met"] is False
     assert records[-1]["edit_run"]["outline_details"] == {"missing": 0, "out_of_order": 1, "other_level": 0}
 
 
@@ -897,7 +882,7 @@ def test_deeper_sections_against_a_shallower_outline_count_as_met(turn, monkeypa
             "steps": ["Tidy"]}
     seen = scripted(monkeypatch, ("", [("plan", plan)]), ("", []))
     got, _ = turn("tidy", text=text)
-    assert len(seen) == 2 and got["edit_run"]["fixups"] == 0 and got["edit_run"]["outline_met"] is True
+    assert len(seen) == 2 and got["edit_run"]["outline_met"] is True
     assert records[-1]["edit_run"]["outline_details"] == {"missing": 0, "out_of_order": 0, "other_level": 2}
 
 
@@ -905,26 +890,11 @@ def test_the_outline_is_met_by_its_headings_in_order_with_others_between(turn, m
     seen = scripted(monkeypatch, ("", [("plan", {"intro": "x", "outline": ["# title", "##   b"], "steps": ["Tidy"]})]),
                     ("", []))
     got, _ = turn("tidy")
-    assert got["edit_run"]["outline_met"] is True and got["edit_run"]["fixups"] == 0 and len(seen) == 2
+    assert got["edit_run"]["outline_met"] is True and len(seen) == 2
 
 
-def test_fix_ups_stop_after_two_and_the_miss_is_recorded(turn, monkeypatch):
-    plan = {"intro": "x", "outline": ["# Title", "## A", "## B", "## Z"], "steps": ["Add Z"]}
-    seen = scripted(monkeypatch, ("", [("plan", plan)]), ("", []), ("", []), ("", []))
-    got, _ = turn("go")
-    assert got["edit_run"]["fixups"] == 2 == copilot.MAX_FIXUPS and got["edit_run"]["outline_met"] is False
-    assert len(seen) == 4
 
 
-def test_fix_ups_count_against_the_call_limit_not_the_steps(turn, monkeypatch):
-    monkeypatch.setattr(copilot, "MAX_CALLS", 2)
-    plan = {"intro": "x", "outline": ["# Title", "## A", "## B", "## Z"], "steps": ["Add a paragraph"]}
-    scripted(monkeypatch, ("", [("plan", plan)]),
-             ("", [("insert", {"after": "b2", "markdown": "p0"})]),
-             ("", [("insert", {"after": "b2", "markdown": "p1"}), ("insert", {"after": "s7", "markdown": "## Z"})]))
-    got, _ = turn("go")
-    assert got["edit_run"]["stopped"] == "call limit" and got["edit_run"]["fixups"] == 1
-    assert len(got["edit_run"]["changes"]) == 2
 
 
 def test_the_outline_is_read_leniently_and_locked_headings_are_left_out(turn, monkeypatch):
@@ -933,7 +903,7 @@ def test_the_outline_is_read_leniently_and_locked_headings_are_left_out(turn, mo
         seen = scripted(monkeypatch, ("", [("plan", {"intro": "x", "outline": outline, "steps": ["Shorten"]})]),
                         ("", [("replace", {"target": "b2", "markdown": "Short."})]))
         got, _ = turn("shorten", text=memo, path="Capture/m.md")
-        assert got["edit_run"]["outline_met"] is True and got["edit_run"]["fixups"] == 0 and len(seen) == 2, outline
+        assert got["edit_run"]["outline_met"] is True and len(seen) == 2, outline
 
 
 def test_a_plan_during_a_step_is_answered_and_is_neither_a_refusal_nor_a_retry(turn, monkeypatch):
@@ -984,18 +954,23 @@ def test_outline_entries_are_cleaned_of_what_the_model_wrote_around_them():
                                          "## Formula"]}) == ["## Formula"]         # the rider's placeholder copied
 
 
+def _misses(now, want):
+    """The outline's misses as the trace counts them: those the note lacks, those out of order."""
+    return copilot._match(now, want)[1:]
+
+
 def test_an_annotation_on_either_side_does_not_make_a_miss():
-    assert copilot._misses(["# T", "## Toolkit (New Section)"], ["# T", "## Toolkit"]) == ([], [])
-    assert copilot._misses(["# T", "## Toolkit"], ["# T", "## toolkit (added)"]) == ([], [])
-    assert copilot._misses(["# T", "## Pipeline (Classical vs. Neural)"], ["# T", "## Pipeline"]) == ([], [])  # words' prefix
-    assert copilot._misses(["# T", "## Classical vs. Neural"], ["# T", "## Pipeline"]) == ([1], [])
+    assert _misses(["# T", "## Toolkit (New Section)"], ["# T", "## Toolkit"]) == ([], [])
+    assert _misses(["# T", "## Toolkit"], ["# T", "## toolkit (added)"]) == ([], [])
+    assert _misses(["# T", "## Pipeline (Classical vs. Neural)"], ["# T", "## Pipeline"]) == ([], [])  # words' prefix
+    assert _misses(["# T", "## Classical vs. Neural"], ["# T", "## Pipeline"]) == ([1], [])
 
 
 def test_a_heading_at_another_level_is_not_missing(turn, monkeypatch):
     seen = scripted(monkeypatch, ("", [("plan", {"intro": "x", "outline": ["# Title", "# A", "## B"], "steps": ["Promote A"]})]),
                     ("", []))
     got, _ = turn("promote A")
-    assert len(seen) == 2 and got["edit_run"]["fixups"] == 0 and got["edit_run"]["outline_met"] is True
+    assert len(seen) == 2 and got["edit_run"]["outline_met"] is True
 
 
 def test_the_token_budget_stops_the_run_after_the_reply_that_crosses_it(turn, monkeypatch):
@@ -1087,7 +1062,7 @@ def test_an_edit_turn_writes_machine_facts_to_the_trace(turn, monkeypatch):
     assert kind == "copilot" and payload["status"] == "edited"
     assert facts["steps_planned"] == 2 and facts["steps_done"] == 2 and facts["changes"] == 2
     assert facts["calls"] == 4 and facts["model_calls"] == 4 and facts["refusals"] == ["handle", "handle"]
-    assert facts["stopped"] is None and facts["fixups"] == 0 and facts["outline_met"] is None
+    assert facts["stopped"] is None and facts["outline_met"] is None
     assert [t["output_tokens"] for t in facts["timing"]] == [10, 10, 10, 10]
     assert payload["intent"] is True and payload["timing"]["gate"] == {"output_tokens": 5}
     assert "Text b" not in str(payload) and "A2" not in str(payload)       # facts, never the note's words
@@ -1207,7 +1182,7 @@ def test_a_plan_written_as_prose_runs_its_remaining_steps(turn, monkeypatch):
     assert "Step 2 of 3: Shorten the text under B" in seen[1]["messages"][-1]["content"]
     run = got["edit_run"]
     assert run["plan"] == {"intro": "I'll tidy this note.", "steps": steps} and run["steps_done"] == 3
-    assert run["summary"] == "I'll tidy this note." and run["fixups"] == 0 and len(seen) == 3
+    assert run["summary"] == "I'll tidy this note." and len(seen) == 3
     assert got["final"] == NOTE.replace("## A\n", "## A renamed\n").replace("Text b.", "B.")
 
 
@@ -1234,12 +1209,11 @@ def test_every_call_in_a_run_is_offered_the_same_tools_in_the_same_order(turn, m
                     ("", [("plan", plan)]),
                     ("", [("replace", {"target": "b99", "markdown": "x"})]),               # refused: retried
                     ("", [("plan", plan), ("replace", {"target": "b3", "markdown": "## A"})]),  # plan restated
-                    ("", []),                                                             # step 2 does nothing
-                    ("", [("insert", {"after": "s7", "markdown": "## C"})]))               # fix-up
+                    ("", [("insert", {"after": "s7", "markdown": "## C"})]))               # step 2
     got, _ = turn("reorder")
-    assert len(seen) == 6 and [c["tools"] for c in seen] == [["plan", *STEP_TOOLS]] * 6
+    assert len(seen) == 5 and [c["tools"] for c in seen] == [["plan", *STEP_TOOLS]] * 5
     assert any(m.get("content", "").startswith("ok: the plan is already set") for m in seen[4]["messages"])
-    assert got["edit_run"]["fixups"] == 1 and got["edit_run"]["outline_met"] is True
+    assert got["edit_run"]["outline_met"] is True
 
 
 def test_a_skill_keeps_its_own_list_for_its_whole_run(turn, monkeypatch):
@@ -1259,7 +1233,7 @@ def test_a_skill_keeps_its_own_list_for_its_whole_run(turn, monkeypatch):
     ("## Historical Evolution", "#### Historical Evolution"),                   # level is ignored
 ])
 def test_an_outline_heading_matches_the_same_heading_written_a_little_differently(outline, note):
-    assert copilot._misses(["# T", note], ["# T", outline]) == ([], [])
+    assert _misses(["# T", note], ["# T", outline]) == ([], [])
 
 
 @pytest.mark.parametrize("outline, note", [
@@ -1268,12 +1242,12 @@ def test_an_outline_heading_matches_the_same_heading_written_a_little_differentl
     ("## Payment Models", "## Treatment Patterns"),
 ])
 def test_unrelated_headings_still_do_not_match(outline, note):
-    assert copilot._misses(["# T", note], ["# T", outline]) == ([1], [])
+    assert _misses(["# T", note], ["# T", outline]) == ([1], [])
 
 
 def test_matching_stays_an_ordered_subsequence():
     now = ["# T", "## Historical Evolution & Drivers", "## Costs"]
-    assert copilot._misses(now, ["# T", "## Costs", "## Historical Evolution"]) == ([], [1])
+    assert _misses(now, ["# T", "## Costs", "## Historical Evolution"]) == ([], [1])
 
 
 # --- C1: a tool call's text keeps its real tabs; only LaTeX the JSON decode mangled is repaired --
@@ -1391,7 +1365,7 @@ def test_a_step_whose_prompt_overflowed_stops_the_run_before_its_calls_land(turn
     got, _ = turn("rename all")
     run = got["edit_run"]
     assert run["stopped"] == "error: the note no longer fits the model's window" and len(seen) == 3
-    assert [c["label"] for c in run["changes"]] == ["Replaced b3"]            # step 2's call never landed
+    assert [c["label"] for c in run["changes"]] == ["Renamed “A” to “A2”"]    # step 2's call never landed
 
 
 def test_a_note_too_long_for_the_window_is_refused_before_its_edit_call(turn, monkeypatch):
@@ -1431,3 +1405,52 @@ def test_a_question_about_a_note_too_big_to_edit_is_answered(turn, monkeypatch):
     scripted(monkeypatch, ("never", []))
     with pytest.raises(copilot.CopilotError, match=r"this note is too long to edit here \(over 40 characters\)"):
         turn("rename A")
+
+
+# --- what the owner reads never names a handle; no calls after the steps; steps keep their work ---
+
+def test_no_call_follows_the_steps_when_the_outline_misses_a_heading(turn, monkeypatch):
+    plan = {"intro": "x", "outline": ["# Title", "## A", "## B", "## Z"], "steps": ["Add Z"]}
+    seen = scripted(monkeypatch, ("", [("plan", plan)]), ("", []))
+    got, _ = turn("go")
+    assert len(seen) == 2 and "fixups" not in got["edit_run"] and got["edit_run"]["outline_met"] is False
+    assert not hasattr(copilot, "MAX_FIXUPS")
+
+
+def test_the_outline_holds_headings_only():
+    assert copilot._outline({"outline": ["## QF 6", "### <details><summary>Why</summary>",
+                                         "The core principle is that a dollar today", "Formula: $PV$"]}) == [
+        "## QF 6"]                                  # a <…> heading reads as the rider's placeholder: dropped too
+
+
+def test_the_plan_and_the_summary_the_owner_reads_name_text_not_handles(turn, monkeypatch):
+    seen = scripted(monkeypatch,
+                    ("", [("plan", {"intro": "Rename b3 and tidy s7.",
+                                    "steps": ["Rename the heading after block b2", "Tidy [b7-b8]"]})]),
+                    ("", [("replace", {"target": "b3", "markdown": "## A renamed"})]),
+                    ("", [("done", {"summary": "Renamed b3."})]))
+    got, events = turn("rename A")
+    shown = {"intro": "Rename “A” and tidy “B”.", "steps": ["Rename the heading after “Intro para.”", "Tidy “B”"]}
+    assert events[1][1] == {**shown, "outline": None} and got["edit_run"]["plan"] == shown
+    assert got["edit_run"]["summary"] == "Renamed “A renamed”." == got["answer"]
+    assert "Step 1 of 2: Rename the heading after block b2" in seen[1]["messages"][-1]["content"]   # the model's own words
+
+
+def test_a_text_answer_on_the_edit_path_names_text_not_handles(turn, monkeypatch):
+    scripted(monkeypatch, ("See b3 for that.", []), ("See b3 for that.", []))
+    got, _ = turn("where is A?")
+    assert got["answer"] == "See “A” for that."
+
+
+def test_a_later_step_that_would_rewrite_the_first_steps_text_is_refused_and_the_run_keeps_it(turn, monkeypatch):
+    seen = scripted(monkeypatch,
+                    ("", [("plan", {"intro": "Add C.", "steps": ["Add the section", "Add its text", "Close it"]})]),
+                    ("", [("insert", {"after": "s7", "markdown": "## C\n\nShort c."})]),
+                    ("", [("replace", {"target": "b10", "markdown": "A much longer text about c."})]),
+                    ("", [("done", {"summary": "Added C."})]))
+    got, _ = turn("add a short section C")
+    run = got["edit_run"]
+    assert "## C\n\nShort c.\n" in got["final"] and "longer" not in got["final"] and len(run["changes"]) == 1
+    assert seen[3]["messages"][-1]["content"].startswith(
+        "refused: b10 is what you wrote in step 1; it stays as written.")
+    assert run["changes"][0]["part_of"] is None and len(seen) == 4

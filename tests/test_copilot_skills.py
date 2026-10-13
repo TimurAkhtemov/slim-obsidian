@@ -278,7 +278,7 @@ def test_a_selection_skill_changes_only_the_selected_blocks_and_only_with_replac
     for change in run["changes"]:
         text = edits.apply_splices(text, change["splices"])
     assert text == "# Why\n\n- **Lexical**: bank\n- **Pragmatics**: salt\n\n## Next\n\nUntouched.\n"
-    assert [c["label"] for c in run["changes"]] == ["Replaced b2", "Replaced b3"]
+    assert [c["label"] for c in run["changes"]] == ["Rewrote “Lexical: bank”", "Rewrote “Pragmatics: salt”"]
     assert turn["citations"] == [{"n": 1, "path": "Notes/work/why.md", "title": "why"}]
     with pytest.raises(copilot.CopilotError, match="select some in the note first"):
         copilot.run_turn(con, source["id"], "/tidy", [], "quick", vault=vault)
