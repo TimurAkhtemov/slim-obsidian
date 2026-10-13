@@ -1296,3 +1296,20 @@ def test_latex_the_decode_mangled_is_still_repaired_and_only_inside_math():
     assert copilot._unmangle("\tcol\tumn $x$ \tafter") == "\tcol\tumn $x$ \tafter"     # outside math: real
     assert copilot._unmangle("$a\t1$") == "$a\t1$"                                    # not before a letter
     assert copilot._repair_args({"markdown": ["$\x0crac{1}{2}$"], "n": 3}) == {"markdown": ["$\\frac{1}{2}$"], "n": 3}
+
+
+# --- I1: steps sent as one string are its lines, without their list markers ----------------------
+
+def test_steps_sent_as_one_string_are_read_as_its_lines():
+    assert copilot._steps("1. Rename A\n2) Move B up\n\n- Check\n*  Done") == ["Rename A", "Move B up", "Check", "Done"]
+    assert copilot._steps(["Rename A", " ", "2. Move B"]) == ["Rename A", "Move B"]
+    assert copilot._steps(None) == [] and copilot._steps("") == []
+
+
+def test_a_plan_whose_steps_came_as_one_string_runs_each_of_them(turn, monkeypatch):
+    seen = scripted(monkeypatch, ("", [("plan", {"intro": "x", "steps": "1. Rename A\n2. Move B up"})]),
+                    ("", [("replace", {"target": "b3", "markdown": "## A renamed"})]),
+                    ("", [("move", {"target": "s7", "before": "s3"})]))
+    got, _ = turn("go")
+    assert got["edit_run"]["plan"]["steps"] == ["Rename A", "Move B up"] and len(seen) == 3
+    assert "Step 2 of 2: Move B up" in seen[2]["messages"][-1]["content"]

@@ -748,6 +748,17 @@ def _outline(args: dict) -> list[str] | None:
     return found or None
 
 
+_MARKER = re.compile(r"^\s*(?:[-*]|\d+[.)])\s+")
+
+
+def _steps(raw) -> list[str]:
+    """A plan's steps as the model sent them: a list, or one string of lines (as an outline can
+    come), each without its list marker; empty ones dropped."""
+    items = raw if isinstance(raw, list) else str(raw).split("\n") if raw else []
+    found = (_MARKER.sub("", str(item).strip(), count=1).strip() for item in items)
+    return [step for step in found if step]
+
+
 def _against(note: edits_mod.Note, outline: list[str]) -> tuple[list[str], list[str]]:
     """The note's headings and the outline, both without a recording's locked headings:
     no step can change those, so they are never asked for."""
@@ -972,7 +983,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
                 (_summary(c) for c in first.calls if c["name"] == "done"), "")
             return out
         args = plans[0]["arguments"] if plans and isinstance(plans[0]["arguments"], dict) else {}
-        steps += [str(s).strip() for s in (args.get("steps") or []) if str(s).strip()][:MAX_STEPS]
+        steps += _steps(args.get("steps"))[:MAX_STEPS]
         intro = str(args.get("intro") or "").strip() if plans else first.content.strip()
         listed = _listed_plan(first.content) if edits and not plans else None
         if listed:                      # a plan written as prose: its first change is step 1
