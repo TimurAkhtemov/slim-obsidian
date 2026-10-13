@@ -851,9 +851,9 @@ def _listed_plan(content: str) -> tuple[str, list[str]] | None:
 class _Drafts:
     """An insert's or replace's text in the note while the model writes it: a draft at the place
     the call names, from the moment that place is known, with what was written before it. Code
-    only places it, in UTF-16 units of the run's draft as a change's splices are; it is never the
-    note's text. The change that lands names the draft it replaces; a call refused or never
-    applied ends its draft."""
+    only places it, in UTF-16 units of the run's draft as a change's splices are, where the tool
+    will put the change (`_where`); it is never the note's text. The change that lands names the
+    draft it replaces; a call refused or never applied ends its draft."""
     PLACES = {"insert": ("after", "before"), "replace": ("target",)}
 
     def __init__(self, note: edits_mod.Note, only: set[str] | None, on_edit):
@@ -873,37 +873,65 @@ class _Drafts:
             self.failed += 1
 
     def _part(self, kind: str, index: int, name, value) -> None:
-        call = self.calls.setdefault(index, {"tool": None, "text": [], "id": None})
+        call = self.calls.setdefault(index, {"tool": None, "place": None, "text": [], "id": None, "at": None,
+                                             "line": True})
         if kind == "call":
             call["tool"] = name
         elif call["tool"] not in self.PLACES:
             return
-        elif kind == "value" and name in self.PLACES[call["tool"]] and call["id"] is None:
-            self._start(index, call, name, value)
+        elif kind == "value" and name in self.PLACES[call["tool"]]:
+            call["place"] = (name, value)   # given again, the last one is the call's: the draft moves
+            self._show(index, call)
+        elif kind == "parameter" and name == "markdown" and call["text"]:
+            call["text"], call["line"] = [], True   # given again, the last one is the call's: it starts over
+            self._show(index, call)
         elif kind == "text" and name == "markdown":
+            # A heading can move an insert past a section, and a lone heading is a rename: the
+            # text decides the place, so it is placed again as each line starts and ends.
+            placed = call["line"] or "\n" in value
             call["text"].append(value)
-            if call["id"]:
+            call["line"] = value.endswith("\n")
+            if call["id"] and placed and self._where(call) != call["at"]:
+                self._show(index, call)
+            elif call["id"]:
                 self.on_edit("draft_text", {"id": call["id"], "text": value})
+        elif kind == "value" and name == "markdown" and call["id"] and self._where(call) != call["at"]:
+            self._show(index, call)
 
-    def _start(self, index: int, call: dict, name: str, value) -> None:
-        note = self.note
+    def _where(self, call: dict) -> tuple[int, int] | None:
+        """Where the call's change will go, as its tool will place it with the text so far."""
+        name, value = call["place"]
+        note, text = self.note, "".join(call["text"])
         try:
             if not isinstance(value, str) or not value.strip():
-                return
+                return None
             if call["tool"] == "insert":
                 i, j = note.span(note.name(value))
-                note.check_insert(j if name == "after" else i)
-                start = end = note.offset(j if name == "after" else i)
-            else:
-                i, j, _target, _said = note.pick(note.name(value), self.only)
-                start, end = note.offset(i), note.offset(j)
+                pos = j if name == "after" else i
+                note.check_insert(pos)
+                cut = note.cut(pos, edits_mod.heading_level(text))
+                if cut and name == "after":     # (before, a cut is refused: it stays where it was asked)
+                    pos = cut[1]
+                return note.offset(pos), note.offset(pos)
+            i, j, _target, _said = note.pick(note.name(value), self.only)
+            lone = not text.strip() or ("\n" not in text.strip() and text.lstrip().startswith("#"))
+            if lone and j - i > 1 and note.blocks[i].level:     # a rename keeps the section's text
+                j = i + 1
+            return note.offset(i), note.offset(j)
         except edits_mod.ToolError:
-            return                              # no such place: the call will say so when applied
-        text = note.text()
-        call["id"] = f"d{self.reply}.{index}"
-        self.open.append(call["id"])
-        self.on_edit("draft", {"id": call["id"], "from": edits_mod.u16(text[:start]),
-                               "to": edits_mod.u16(text[:end]), "text": "".join(call["text"])})
+            return None                     # no such place: the call will say so when applied
+
+    def _show(self, index: int, call: dict) -> None:
+        at = self._where(call)
+        if at is None:
+            return
+        if call["id"] is None:
+            call["id"] = f"d{self.reply}.{index}"
+            self.open.append(call["id"])
+        call["at"] = at
+        text = self.note.text()
+        self.on_edit("draft", {"id": call["id"], "from": edits_mod.u16(text[:at[0]]),
+                               "to": edits_mod.u16(text[:at[1]]), "text": "".join(call["text"])})
 
     def of(self, index: int) -> str | None:
         return (self.calls.get(index) or {}).get("id")
@@ -913,9 +941,12 @@ class _Drafts:
             self.open.remove(draft)
 
     def end(self) -> None:
-        for draft in self.open:
-            self.on_edit("draft_end", {"id": draft})
-        self.open = []
+        drafts, self.open = self.open, []
+        for draft in drafts:
+            try:
+                self.on_edit("draft_end", {"id": draft})
+            except Exception:               # noqa: BLE001
+                self.failed += 1
 
 
 def _intent(question: str, history: list[dict]) -> tuple[bool | None, dict]:

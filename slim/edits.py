@@ -638,15 +638,17 @@ def _where(note: Note, args: dict) -> tuple[str, bool]:
     return (after, True) if after else (before, False)
 
 
-def _written(markdown: str, old: str = "") -> None:
+def _written(markdown: str, old: str = "", shown: str | None = None) -> None:
     """New text may not add a recording's block or transcript heading, which would lock the
-    owner's text below it, nor a lone `...` for "the rest as before", which would delete the rest."""
+    owner's text below it, nor a lone `...` for "the rest as before", which would delete the rest:
+    both read in the text as the model wrote it, before `fold` puts any of it inside a callout. Nor
+    an HTML block, read in the text as it goes in (`shown`)."""
     if any(new > was for was, new in zip(_markers(old), _markers(markdown))):
         raise ToolError("that adds a recording's block or transcript heading; SLIM never writes one", "marker")
     if len(_ELISION.findall(markdown)) > len(_ELISION.findall(old)):
         raise ToolError("the new text skips lines with `...`; write out what stays, or change only what "
                         "changes", "elision")
-    if _html_lines(markdown) - _html_lines(old):    # each line's tags, kept from the old text or none
+    if _html_lines(markdown if shown is None else shown) - _html_lines(old):    # each line's tags, kept from the old text or none
         raise ToolError("Obsidian renders no Markdown or math inside HTML tags; write Markdown. A heading already "
                         "folds in Obsidian; for a section that starts folded, write a callout: "
                         "> [!note]- Title, with each line under it starting with > .", "html")
@@ -712,7 +714,8 @@ def fold(markdown: str, old: str = "") -> tuple[str, list[str]]:
         indent, before = lead[:len(lead) - len(lead.lstrip(" \t"))], lead.strip()
         before = "" if re.fullmatch(r"#{1,6}", before) else before     # "### <details>": the callout is the heading
         end = _line_end(markdown, close_end)
-        after = markdown[close_end:end].strip()
+        after, more = fold(markdown[close_end:end].strip())     # another <details> may follow on the line
+        titles += more
         piece = "\n".join(indent + line for line in [f"> [!note]{sign} {name}",
                                                      *(f"> {line}" if line.strip() else ">" for line in lines)])
         done = "".join(out) + markdown[at:start]
@@ -722,7 +725,7 @@ def fold(markdown: str, old: str = "") -> tuple[str, list[str]]:
         elif done.strip() and not re.search(r"\n[ \t]*\n\Z", done):
             piece = "\n" + piece
         if after:
-            piece += f"\n\n{indent}{after}"
+            piece += "\n\n" + "\n".join(indent + line for line in after.split("\n"))
         elif markdown[end + 1:_line_end(markdown, end + 1)].strip():
             piece += "\n"
         out.append(markdown[at:start] + piece)
@@ -787,11 +790,11 @@ def _replace(note: Note, args: dict, ctx: dict):
     markdown = strip_labels(_text(args, "markdown", False) or "")
     i, j, target, trimmed = note.pick(_handle(note, args, "target"), ctx["only"])
     old = "".join(b.text for b in note.blocks[i:j])
-    markdown, folded = fold(markdown, old)
+    raw, (markdown, folded) = markdown, fold(markdown, old)
     renames = _renames(note, i, j, markdown)
     ctx["targets"] = note.changed(i, i + 1 if renames else j, markdown)
     _own(note, ctx["targets"], target, ctx)
-    _written(markdown, old)
+    _written(raw, old, markdown)
     renamed = f"Renamed {quote(note.blocks[i].text)} to {quote(markdown)}"
     if renames:
         _copied(note, markdown, range(i, i + 1), "to where you want it")
@@ -826,10 +829,11 @@ def _edit_text(note: Note, args: dict, ctx: dict):
         raise ToolError(f"'{old}' is not in {target}; it reads: {text.rstrip()[:300]}", "quote")
     if found > 1:
         raise ToolError(f"'{old}' appears {found} times in {target}; quote a little more around it", "quote")
-    changed, folded = fold(text.replace(old, new, 1), text)
+    raw = text.replace(old, new, 1)
+    changed, folded = fold(raw, text)
     ctx["targets"] = note.changed(i, j, changed.rstrip("\n"))
     _own(note, ctx["targets"], target, ctx)
-    _written(changed, text)
+    _written(raw, text, changed)
     _copied(note, changed, range(i, j), "to where you want it")
     needs = note.owners(i, j)
     made = note.replace(i, j, changed.rstrip("\n"), ctx["id"], keep=note.blocks[i].handle if j - i == 1 else None)
@@ -843,11 +847,11 @@ def _insert(note: Note, args: dict, ctx: dict):
     markdown = strip_labels(_text(args, "markdown", False) or "")
     if not markdown.strip():
         raise ToolError("markdown is empty; write the new text", "empty")
-    markdown, folded = fold(markdown)
+    raw, (markdown, folded) = markdown, fold(markdown)
     anchor, after = _where(note, args)
     i, j = note.span(anchor)
     pos = j if after else i
-    _written(markdown)
+    _written(raw, "", markdown)
     _copied(note, markdown, range(0), f"{'after' if after else 'before'} {anchor}")
     note.check_insert(pos)
     cut, said, where = note.cut(pos, heading_level(markdown)), "", "after" if after else "before"

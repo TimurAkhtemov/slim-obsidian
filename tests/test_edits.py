@@ -838,3 +838,19 @@ def test_insert_asks_for_its_place_before_its_text():
     # insert's text can be shown where it goes as it is written (measured 2026-10-13).
     [tool] = ollama_tools(["insert"])
     assert list(tool["function"]["parameters"]["properties"]) == ["after", "before", "markdown"]
+
+
+def test_a_details_cannot_hide_a_skip_or_a_recordings_heading_from_the_checks():
+    with pytest.raises(ToolError) as refused:
+        apply(Note(NOTE), "replace", {"target": "s3", "markdown": "<details><summary>A</summary>\n\n...\n\n</details>"},
+              change_id="c1", step=1)
+    assert refused.value.code == "elision"
+    with pytest.raises(ToolError) as refused:
+        apply(Note(NOTE), "insert", {"after": "b2", "markdown": "<details><summary>T</summary>\n\n## Transcript\n\nx\n</details>"},
+              change_id="c1", step=1)
+    assert refused.value.code == "marker"
+
+
+def test_two_details_on_one_line_are_both_callouts():
+    out, titles = edits.fold("<details><summary>A</summary>a</details><details><summary>B</summary>b</details>")
+    assert out == "> [!note]- A\n> a\n\n> [!note]- B\n> b" and titles == ["A", "B"]

@@ -112,9 +112,6 @@ def test_thinking_ends_at_its_close_or_at_a_tool_call():
 
 def test_text_around_calls_is_joined_as_ollama_joins_it_and_an_unclosed_call_is_text():
     call = "<tool_call>\n<function=insert>\n<parameter=markdown>\nx\n</parameter>\n</function>\n</tool_call>"
-    for size in (1, 4, 1000):
-        (content, _t, calls, _raw), _ = read(f"A\n{call}\nB\n{call}", size=size)
-        assert content == "A\nB" and len(calls) == 2
     (content, _t, calls, _raw), parts = read("Intro\n<tool_call>\n<function=insert>\n<parameter=markdown>\npartial")
     assert calls == [] and content == "Intro<tool_call>\n<function=insert>\n<parameter=markdown>\npartial"
     assert ("end", 0, None, None) not in parts
@@ -172,3 +169,52 @@ def test_an_error_in_the_stream_is_an_llm_error(monkeypatch):
     with pytest.raises(llm.LLMError, match="runner crashed"):
         llm.chat_tools(EDIT, TOOLS, think=False, temperature=0.0, num_predict=64)
     assert not llm._CALL_LOCK.locked()
+
+
+def test_no_test_reaches_a_live_model_through_the_raw_call():
+    assert llm.OLLAMA_GENERATE.startswith("http://127.0.0.1:9/")
+    with pytest.raises(llm.LLMError):
+        llm.chat_tools(EDIT, TOOLS, think=False, temperature=0.0, num_predict=8)
+
+
+# --- review (2026-10-13): what Go rejects is never a call; what Go normalizes, so is it here ---
+
+def test_a_parameter_never_closed_is_no_call_however_its_call_ends():
+    text = ("<tool_call>\n<function=replace>\n<parameter=target>\nb2\n</parameter>\n<parameter=markdown>\n"
+            "Partial\n</function></tool_call>")
+    for size in (1, 7, len(text)):
+        (content, _t, calls, _raw), parts = read(text, size=size)
+        assert calls == [] and content.startswith("<tool_call>") and ("end", 0, None, None) not in parts
+
+
+def test_a_call_whose_function_is_never_closed_is_no_call():
+    (content, _t, calls, _raw), _ = read("<tool_call>\n<function=insert>\n<parameter=after>\nb1\n</parameter>\n</tool_call>")
+    assert calls == [] and content.startswith("<tool_call>")
+
+
+def test_line_endings_are_normalized_before_a_values_framing_newlines_go():
+    text = "<tool_call>\r\n<function=insert>\r\n<parameter=markdown>\r\nx\r\ny\r\n</parameter>\r\n</function>\r\n</tool_call>"
+    for size in (1, 2, len(text)):
+        (_content, _t, calls, _raw), parts = read(text, size=size)
+        assert calls[0]["arguments"]["markdown"] == "x\ny"
+        assert "".join(p[3] for p in parts if p[:3] == ("text", 0, "markdown")) == "x\ny"
+
+
+def test_what_follows_a_call_in_the_same_piece_is_trimmed_as_ollama_trims_it():
+    call = "<tool_call>\n<function=insert>\n<parameter=markdown>\nx\n</parameter>\n</function>\n</tool_call>"
+    assert read(f"A\n{call}\nB\n{call}", size=1000)[0][0] == "AB"
+    assert read(f"A\n{call}\nB\n{call}", size=1)[0][0] == "A\nB"     # the token after </tool_call> is its own piece
+
+
+def test_a_stream_that_ends_before_done_is_an_error(monkeypatch):
+    _stream(monkeypatch, _chunks(INSERT)[:-1])
+    with pytest.raises(llm.LLMError, match="ended before"):
+        llm.chat_tools(EDIT, TOOLS, think=False, temperature=0.0, num_predict=64)
+
+
+def test_numbers_in_history_arguments_are_written_as_go_writes_them():
+    message = {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "plan", "arguments": {
+        "steps": [1.0, 1e-7, 0.00001, 2.5, 1e21, 7, True, None, {"b": 1, "a": "<"}]}}}]}
+    prompt = llm.render([{"role": "user", "content": "q"}, message, {"role": "tool", "content": "ok"}], TOOLS, False)
+    assert '["1","1e-7","1e-05"' not in prompt
+    assert '[1,1e-7,0.00001,2.5,1e+21,7,true,null,{"a":"\\u003c","b":1}]' in prompt

@@ -8,12 +8,14 @@ nonsense, so the caller validates meaning, not syntax.
 """
 
 import json
+import math
 import re
 import threading
 import time
 import urllib.error
 import urllib.request
 from contextlib import contextmanager, nullcontext
+from decimal import Decimal
 
 OLLAMA_CHAT = "http://localhost:11434/api/chat"
 OLLAMA_GENERATE = "http://localhost:11434/api/generate"
@@ -251,10 +253,32 @@ def _trim(text: str) -> str:
 
 
 def _go_json(value, sort: bool = True) -> str:
-    """Go's json.Marshal: compact, `<>&` and U+2028/9 escaped, a map's keys sorted."""
-    out = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=sort)
+    """Go's json.Marshal: compact, `<>&` and U+2028/9 escaped, a map's keys sorted, and every
+    number a float64, as Ollama holds any number it read from JSON."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return _go_number(value)
+    if isinstance(value, list):
+        return "[" + ",".join(_go_json(v, sort) for v in value) + "]"
+    if isinstance(value, dict):
+        items = sorted(value.items()) if sort else value.items()
+        return "{" + ",".join(f"{_go_json(str(k))}:{_go_json(v, sort)}" for k, v in items) + "}"
+    out = json.dumps(str(value), ensure_ascii=False)
     return (out.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
                .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
+
+
+def _go_number(value) -> str:
+    """A float64 as encoding/json writes it: its shortest digits, positional between 1e-6 and
+    1e21, otherwise with an exponent (1e-7, 1.5e+21)."""
+    number = float(value)
+    if number == 0:
+        return "-0" if math.copysign(1, number) < 0 else "0"
+    digits = Decimal(repr(number)).normalize()
+    return format(digits, "e" if not 1e-6 <= abs(number) < 1e21 else "f")
 
 
 def _spaced(compact: str) -> str:
@@ -397,7 +421,15 @@ def render(messages: list[dict], tools: list[dict] | None, think: bool) -> str:
 
 _FUNCTION = re.compile(r"<function=([^>\n]+)>")
 _PARAMETER = re.compile(r"<parameter=([^>\n]+)>")
-_CALL_OPEN, _CALL_CLOSE, _VALUE_CLOSE = "<tool_call>", "</tool_call>", "</parameter>"
+_CALL_OPEN, _CALL_CLOSE, _VALUE_CLOSE, _FUNCTION_CLOSE = "<tool_call>", "</tool_call>", "</parameter>", "</function>"
+
+
+def _lf(text: str) -> str:
+    """Line endings as XML reads them (Ollama parses a call as XML): CR LF and a lone CR are LF.
+    A CR at the end waits: its LF may come next."""
+    held = text.endswith("\r")
+    text = text[:-1] if held else text
+    return text.replace("\r\n", "\n").replace("\r", "\n") + ("\r" if held else "")
 
 
 def _held(text: str, *tags: str) -> int:
@@ -421,7 +453,7 @@ class _Reader:
         self.state, self.lead = ("think", True) if think else ("text", False)
         self.buf, self.text, self.thinking, self.calls = "", [], 0, []
         self.skip = False                     # the whitespace after </think>, however it arrives
-        self.call = None                      # {"name", "arguments", "written"}: the call being read
+        self.call = None                      # {"name", "arguments", "written", "closed"}: the call being read
         self.param = None                     # [name, text so far, its leading newline to come]
 
     def feed(self, chunk: str) -> None:
@@ -464,10 +496,11 @@ class _Reader:
             return False
         self.text.append(self.buf[:at].rstrip(_SPACE))
         self.buf = self.buf[at + len(_CALL_OPEN):]
-        self.call, self.state = {"name": None, "arguments": {}, "written": ""}, "call"
+        self.call, self.state = {"name": None, "arguments": {}, "written": "", "closed": False}, "call"
         return True
 
     def _in_call(self) -> bool:
+        self.buf = _lf(self.buf)
         index, end = len(self.calls), self.buf.find(_CALL_CLOSE)
         if self.call["name"] is None:
             found = _FUNCTION.search(self.buf)
@@ -481,34 +514,43 @@ class _Reader:
                 self.buf, self.call, self.state = self.buf[end + len(_CALL_CLOSE):], None, "text"
                 return True
             return False
-        found = _PARAMETER.search(self.buf)
-        if found and (end < 0 or found.start() < end):
+        found, closing = _PARAMETER.search(self.buf), self.buf.find(_FUNCTION_CLOSE)
+        first = min((at for at in (found.start() if found else -1, closing, end) if at >= 0), default=-1)
+        if first < 0:
+            return False
+        if found and first == found.start():
             self._eat(found.end())
             self.param, self.state = [found.group(1).strip(), "", True], "value"
             self.on_part("parameter", index, self.param[0], None)
             return True
-        if end < 0:
-            return False
+        if first == closing:
+            self._eat(closing + len(_FUNCTION_CLOSE))
+            self.call["closed"] = True
+            return True
+        if not self.call["closed"]:            # XML Ollama would refuse: text, never a call
+            self.text.append(_CALL_OPEN + self.call["written"] + self.buf[:end + len(_CALL_CLOSE)])
+            self.buf, self.call, self.state = self.buf[end + len(_CALL_CLOSE):], None, "text"
+            return True
         self._eat(end + len(_CALL_CLOSE))
         self.calls.append({"name": self.call["name"], "arguments": self.call["arguments"]})
-        # Ollama trims what follows only within the same piece, and the next token is its own piece.
-        self.call, self.state = None, "text"
+        # What follows in the same piece is trimmed, as Ollama trims it; the token after a call
+        # is a piece of its own, so in a stream it never is.
+        self.call, self.state, self.buf = None, "text", self.buf.lstrip(_SPACE)
         self.on_part("end", index, None, None)
         return True
 
     def _value(self) -> bool:
+        self.buf = _lf(self.buf)
         index, (name, said, lead) = len(self.calls), self.param
         if lead:                               # one leading newline is not the value's
-            if not self.buf:
+            if not self.buf or self.buf == "\r":
                 return False
             if self.buf[0] == "\n":
                 self._eat(1)
             self.param[2] = False
-        end, closed = self.buf.find(_VALUE_CLOSE), True
-        if end < 0 and (end := self.buf.find(_CALL_CLOSE)) >= 0:
-            closed = False                     # never closed: it ends with its call
+        end = self.buf.find(_VALUE_CLOSE)      # only its own close ends a value, as in XML
         if end < 0:
-            n = len(self.buf) - _held(self.buf, "\n" + _VALUE_CLOSE, _VALUE_CLOSE, "\n" + _CALL_CLOSE, _CALL_CLOSE)
+            n = len(self.buf) - max(_held(self.buf, "\n" + _VALUE_CLOSE, _VALUE_CLOSE), self.buf.endswith("\r"))
             if n > 0:
                 chunk = self._eat(n)
                 self.param[1] += chunk
@@ -518,8 +560,8 @@ class _Reader:
         value = value[:-1] if value.endswith("\n") else value     # nor one trailing newline
         if len(value) > len(said):
             self.on_part("text", index, name, value[len(said):])
-        self._eat(end + (len(_VALUE_CLOSE) if closed else 0))
-        typed = self._typed(self.call["name"], name, value.replace("\r\n", "\n").replace("\r", "\n"))
+        self._eat(end + len(_VALUE_CLOSE))
+        typed = self._typed(self.call["name"], name, value)
         self.call["arguments"][name] = typed
         self.param, self.state = None, "call"
         self.on_part("value", index, name, typed)
@@ -600,6 +642,8 @@ def _generate(body: dict, on_chunk, should_stop, timeout: int) -> dict:
         raise LLMError(f"ollama rejected the call ({body['model']}): HTTP {e.code} — {detail}") from e
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         raise LLMError(f"ollama stream failed ({body['model']}): {e}") from e
+    if not final:                              # a reply cut off is no reply, whatever it held
+        raise LLMError(f"ollama's stream ended before it was done ({body['model']})")
     return final
 
 

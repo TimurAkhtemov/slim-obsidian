@@ -1548,15 +1548,66 @@ def test_stop_while_a_call_streams_ends_the_run_where_it_is(turn, monkeypatch):
 
 def test_a_draft_that_fails_is_counted_and_the_change_still_lands(turn, monkeypatch, tmp_path):
     streamed(monkeypatch, ("", [("insert", {"after": "b4", "markdown": "New line."})]))
-    real_span = copilot.edits_mod.Note.span
 
-    def span(self, target):
-        if any(frame.function == "_start" for frame in __import__("inspect").stack()):
-            raise RuntimeError("a bug in the draft")
-        return real_span(self, target)
-    monkeypatch.setattr(copilot.edits_mod.Note, "span", span)
+    def where(self, call):
+        raise RuntimeError("a bug in the draft")
+    monkeypatch.setattr(copilot._Drafts, "_where", where)
     records = []
     monkeypatch.setattr(copilot.trace, "record", lambda kind, payload: records.append(payload))
     got, events = turn("add a line")
     assert [e for e, _ in events] == ["start", "plan", "change"] and "New line." in got["final"]
     assert records[-1]["edit_run"]["draft_failures"] == 1
+
+
+def test_a_parameter_given_twice_moves_or_restarts_its_draft(turn, monkeypatch):
+    seen = scripted(monkeypatch, ("", [("insert", {"after": "b8", "markdown": "B"})]))
+    script = copilot.llm.chat_tools
+
+    def chat_tools(messages, tools=None, **opts):
+        if opts.get("on_part"):
+            for part in [("call", 0, "insert", None), ("parameter", 0, "after", None), ("value", 0, "after", "b2"),
+                         ("parameter", 0, "markdown", None), ("text", 0, "markdown", "A"), ("value", 0, "markdown", "A"),
+                         ("parameter", 0, "after", None), ("value", 0, "after", "b8"),
+                         ("parameter", 0, "markdown", None), ("text", 0, "markdown", "B"), ("value", 0, "markdown", "B"),
+                         ("end", 0, None, None)]:
+                opts["on_part"](*part)
+        return script(messages, tools, **opts)
+    monkeypatch.setattr(copilot.llm, "chat_tools", chat_tools)
+    _got, events = turn("add a line")
+    drafts = [(e, p) for e, p in events if e.startswith("draft")]
+    assert drafts == [("draft", {"id": "d1.0", "from": NOTE.index("## A"), "to": NOTE.index("## A"), "text": ""}),
+                      ("draft_text", {"id": "d1.0", "text": "A"}),
+                      ("draft", {"id": "d1.0", "from": len(NOTE), "to": len(NOTE), "text": "A"}),       # moved
+                      ("draft", {"id": "d1.0", "from": len(NOTE), "to": len(NOTE), "text": ""}),        # restarted
+                      ("draft_text", {"id": "d1.0", "text": "B"})]
+
+
+def test_a_draft_goes_where_its_change_will_land_as_its_text_decides_it(turn, monkeypatch):
+    streamed(monkeypatch, ("", [("insert", {"after": "b3", "markdown": "## A2\n\nNew."}),
+                                ("replace", {"target": "s7", "markdown": "## Bee"})]))
+    _got, events = turn("add a section and rename B")
+    starts = [(p["id"], p["from"], p["to"]) for e, p in events if e == "draft"]
+    # The heading would cut s3 after its heading: the draft moves to after the whole section, as the
+    # insert does. A rename dims only the heading it renames.
+    assert ("d1.0", NOTE.index("Text a."), NOTE.index("Text a.")) in starts
+    assert starts[-2][0] == "d1.0" and starts[-2][1:] == (NOTE.index("## B"), NOTE.index("## B"))
+    assert starts[-1] == ("d1.1", NOTE.index("## B"), NOTE.index("Text b."))
+
+
+def test_a_draft_end_that_cannot_be_sent_is_counted_and_the_run_goes_on(con, vault, monkeypatch):
+    monkeypatch.setattr(copilot.search_mod, "hybrid", lambda *a, **k: [])
+    streamed(monkeypatch, ("", [("insert", {"after": "b2", "markdown": "<div>raw</div>"}),
+                                ("insert", {"after": "b4", "markdown": "Fine."})]))
+    write(vault, "Notes/school/n.md", "x")
+    (vault / "Notes/school/n.md").write_text(NOTE, encoding="utf-8")
+    source = copilot.sync_note(con, vault, "Notes/school/n.md", embed=False)
+    records, events = [], []
+    monkeypatch.setattr(copilot.trace, "record", lambda kind, payload: records.append(payload))
+
+    def on_edit(event, payload):
+        if event == "draft_end":
+            raise RuntimeError("the chat is gone")
+        events.append(event)
+    got = copilot.run_turn(con, source["id"], "add", [], "quick", vault=vault, doc=NOTE,
+                           doc_hash=edits.digest(NOTE), on_edit=on_edit)
+    assert len(got["edit_run"]["changes"]) == 1 and records[-1]["edit_run"]["draft_failures"] == 1

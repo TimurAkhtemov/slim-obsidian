@@ -5195,9 +5195,10 @@ function makeLiveEditor(cm, host) {
     create: () => new Map(),
     update(drafts, tr) {
       let next = drafts;
-      if (tr.docChanged && drafts.size) {
-        const path = pathOf(tr.state);              // the editor shows another note now: none of its drafts
+      const path = pathOf(tr.state);                // the editor shows another note now: none of its drafts
+      if (drafts.size && (tr.docChanged || path !== pathOf(tr.startState))) {
         next = new Map([...drafts].filter(([, d]) => !(d.path && path && d.path !== path)).map(([id, d]) => {
+          if (!tr.docChanged) return [id, d];
           if (d.from === d.to) { const at = tr.changes.mapPos(d.from, -1); return [id, { ...d, from: at, to: at }]; }
           const from = tr.changes.mapPos(d.from, 1);
           return [id, { ...d, from, to: Math.max(from, tr.changes.mapPos(d.to, -1)) }];
@@ -5221,23 +5222,26 @@ function makeLiveEditor(cm, host) {
   const draftsOf = (state, runId) => [...(state.field(draftsField, false)?.values() || [])].some((d) => d.runId === runId);
 
   // The draft's Markdown, drawn again at most every DRAFT_RENDER_MS with the latest text; plain
-  // text until the first drawing is in. Each drawing is dropped (and its component) with the next.
+  // text until the first drawing is in. Drawings can finish out of order: one replaces what is
+  // shown only if it began later, and each is dropped (and its component) with the next.
   const paintDraft = (view, box, text, path) => {
     box.slimText = text;
     if (box.slimTimer) return;
     box.slimTimer = setTimeout(() => {
       box.slimTimer = null;
       box.slimAt = Date.now();
+      const order = box.slimBegun = (box.slimBegun || 0) + 1;
       const shown = box.slimText, holder = document.createElement("div");
       const drawn = host.renderFor ? host.renderFor(holder, shown, path)
         : Promise.resolve(host.render(holder, shown, path)).then(() => null);
       Promise.resolve(drawn).then((drop) => {
-        if (box.slimGone) { drop?.(); return; }
+        if (box.slimGone || order < (box.slimShown || 0)) { drop?.(); return; }
+        box.slimShown = order;
         box.slimDrop?.();
         box.slimDrop = drop;
         box.replaceChildren(...holder.childNodes);
         view.requestMeasure();
-      }).catch(() => { box.textContent = shown; });
+      }).catch(() => { if (!box.slimGone && order >= (box.slimShown || 0)) box.textContent = shown; });
     }, Math.max(0, DRAFT_RENDER_MS - (Date.now() - (box.slimAt || 0))));
   };
 
@@ -5392,8 +5396,9 @@ function makeLiveEditor(cm, host) {
     // of that copy, as splices are), shown where that place is now. False when the editor has no
     // such run or the place is not in its copy.
     startDraft(view, runId, { id, from, to, text = "" }) {
-      const run = runOf(view.state, runId);
+      const run = runOf(view.state, runId), path = pathOf(view.state);
       if (!run || !Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from || to > run.agent.length) return false;
+      if (run.path && path && run.path !== path) return false;      // the editor shows another note now
       const point = (pos, side) => run.owner.mapPos(run.toDoc.mapPos(pos, side), side);
       const a = point(from, from === to ? -1 : 1), b = from === to ? a : Math.max(a, point(to, -1));
       const effects = [setDraft.of({ start: { id: String(id), runId, path: run.path, from: a, to: b, text: String(text) } })];
