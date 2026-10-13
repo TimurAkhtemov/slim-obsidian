@@ -1166,3 +1166,42 @@ def test_a_turn_stopped_before_the_gate_makes_no_call(turn, monkeypatch):
     with pytest.raises(copilot.CopilotError, match="stopped"):
         turn("What is A?", should_stop=lambda: True)
     assert seen == [] and seen.gate == []
+
+
+# --- a plan written as prose, with the first change made at once --------------------------------
+
+PROSE = ("I'll tidy this note. It is long.\n\nHere is the plan:\n\n1. Rename A\n2. Shorten B\n\n"
+         "Here are the steps I will take:\n1) Rename A to A renamed\n   (its text stays)\n"
+         "2) Shorten the text under B\n* Check the title\n\nStarting with step 1.")
+
+
+def test_a_plan_written_as_prose_runs_its_remaining_steps(turn, monkeypatch):
+    seen = scripted(monkeypatch, (PROSE, [("replace", {"target": "b3", "markdown": "## A renamed"})]),
+                    ("", [("replace", {"target": "b8", "markdown": "B."})]),
+                    ("", []))
+    got, events = turn("tidy this note")
+    steps = ["Rename A to A renamed", "Shorten the text under B", "Check the title"]     # the last list
+    assert events[1] == ("plan", {"intro": "I'll tidy this note.", "steps": steps, "outline": None})
+    assert [p for e, p in events if e == "step"] == [
+        {"index": 1, "state": "doing"}, {"index": 1, "state": "done"},
+        {"index": 2, "state": "doing"}, {"index": 2, "state": "done"},
+        {"index": 3, "state": "doing"}, {"index": 3, "state": "skipped"}]
+    assert "Step 2 of 3: Shorten the text under B" in seen[1]["messages"][-1]["content"]
+    run = got["edit_run"]
+    assert run["plan"] == {"intro": "I'll tidy this note.", "steps": steps} and run["steps_done"] == 3
+    assert run["summary"] == "I'll tidy this note." and run["fixups"] == 0 and len(seen) == 3
+    assert got["final"] == NOTE.replace("## A\n", "## A renamed\n").replace("Text b.", "B.")
+
+
+@pytest.mark.parametrize("content", ["", "Renamed it.", "Renamed it:\n\n- ## A renamed"])
+def test_an_edit_with_short_or_no_prose_stays_a_one_reply_edit(turn, monkeypatch, content):
+    seen = scripted(monkeypatch, (content, [("replace", {"target": "b3", "markdown": "## A renamed"})]))
+    got, events = turn("rename A")
+    assert len(seen) == 1 and got["edit_run"]["plan"]["steps"] == [] and [e for e, _ in events] == [
+        "start", "plan", "change"]
+
+
+def test_list_items_in_any_marker_make_the_steps_and_the_first_sentence_the_intro():
+    assert copilot._listed_plan("Plan: do it. Now.\n- a\n* b\n3. c\n4) d") == ("Plan: do it.", ["a", "b", "c", "d"])
+    assert copilot._listed_plan("Only one:\n- a") is None and copilot._listed_plan("no list") is None
+    assert copilot._listed_plan("\n".join(f"- s{i}" for i in range(12)))[1] == [f"s{i}" for i in range(8)]

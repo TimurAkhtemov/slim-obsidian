@@ -772,6 +772,30 @@ def _fixup(now: list[str], want: list[str], missing: list[int], misplaced: list[
                       *listed("Missing", missing), *listed("Out of order", misplaced)])
 
 
+_ITEM = re.compile(r"^(?:[-*]|\d+[.)])\s+(.+)$")
+
+
+def _listed_plan(content: str) -> tuple[str, list[str]] | None:
+    """A plan the model wrote as prose instead of calling `plan`, beside its first change:
+    (intro, steps), from the last run of two or more list items and the reply's first sentence
+    that is not one. A line indented under an item belongs to it; a reply may list its idea and
+    then its steps, and the steps come last. None when there is no such list."""
+    runs, run, intro = [], [], ""
+    for line in content.splitlines():
+        item = _ITEM.match(line)
+        if item:
+            run.append(item.group(1).strip())
+        elif line.strip() and not (run and line[:1] in " \t"):
+            if run:
+                runs, run = runs + [run], []
+            intro = intro or line.strip()
+    runs = [r for r in runs + [run] if len(r) >= 2]
+    if not runs:
+        return None
+    first = re.match(r"(.+?[.!?])(?:\s|$)", intro)
+    return (first.group(1) if first else intro), runs[-1][:MAX_STEPS]
+
+
 def _intent(question: str, history: list[dict]) -> tuple[bool | None, dict]:
     """Does the owner's last message ask to change the open note? (True/False, or None when the
     gate fails or cannot tell; and the call's stats.) Its prompt is its own: GATE_SYSTEM, SLIM's
@@ -894,9 +918,13 @@ def _turn(messages: list[dict], *, think: bool, first_tools: list[str], step_too
             return out
         args = plans[0]["arguments"] if plans and isinstance(plans[0]["arguments"], dict) else {}
         steps += [str(s).strip() for s in (args.get("steps") or []) if str(s).strip()][:MAX_STEPS]
-        if edits and not steps:         # edits with no plan, or with an empty one: a one-step run
-            steps.append(ONE_REPLY)
         intro = str(args.get("intro") or "").strip() if plans else first.content.strip()
+        listed = _listed_plan(first.content) if edits and not plans else None
+        if listed:                      # a plan written as prose: its first change is step 1
+            intro, written = listed
+            steps += written
+        elif edits and not steps:       # edits with no plan, or with an empty one: a one-step run
+            steps.append(ONE_REPLY)
         shown = [] if steps == [ONE_REPLY] else list(steps)
         out.update(kind="edit", plan={"intro": intro, "steps": shown},
                    outline=_outline(args) if note is not None else None)
