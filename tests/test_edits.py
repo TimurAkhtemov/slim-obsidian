@@ -634,7 +634,8 @@ def test_handles_in_words_for_the_owner_become_the_text_they_point_at():
     note = Note("![[Screenshot 1.png|597]]\n\n## Quick Checks\n\nText.\n")
     assert note.plain("Insert the header and opening tag after block b1") == "Insert the header and opening tag after the image"
     assert note.plain("Move s2 before [b1], then fix b3-b3") == "Move “Quick Checks” before the image, then fix “Text.”"
-    assert note.plain("Tidy b99 and the rest") == "Tidy and the rest"
+    assert note.plain("Tidy b99 and the rest") == "Tidy b99 and the rest"     # bare and unknown: a word, kept
+    assert note.plain("Tidy block b99 and [b98] the rest") == "Tidy and the rest"
     assert note.plain("Use web3 and s2 buckets") == "Use web3 and “Quick Checks” buckets"
 
 
@@ -662,3 +663,72 @@ def test_html_shown_as_code_is_text_not_an_html_block():
     apply(note, "insert", {"after": "b1", "markdown": "Use `<details>` to fold.\n\n```html\n<div>x</div>\n```"},
           change_id="c1", step=1)
     assert "```html\n<div>x</div>\n```" in note.text()
+
+
+
+# --- review (2026-10-13): what a change actually changes decides; the owner's text is never a draft ---
+
+def test_a_range_over_owner_text_still_may_not_rewrite_an_earlier_steps_draft():
+    note = Note("Owner.\n")
+    apply(note, "insert", {"after": "b1", "markdown": "Draft."}, change_id="c1", step=1)
+    with pytest.raises(ToolError) as refused:
+        apply(note, "replace", {"target": "b1-b2", "markdown": "Owner.\n\nDifferent draft."}, change_id="c2", step=2)
+    assert refused.value.code == "own"
+
+
+def test_renaming_a_heading_an_earlier_step_wrote_is_refused_whatever_its_body():
+    note = Note(NOTE)
+    _added(note)
+    heading = next(b.handle for b in note.blocks if b.text.startswith("## C"))
+    with pytest.raises(ToolError, match="is what you wrote in step 1"):
+        apply(note, "replace", {"target": "s" + heading[1:], "markdown": "## C2"}, change_id="c2", step=2)
+
+
+def test_a_retyped_range_keeps_the_owner_s_unchanged_blocks_theirs():
+    note = Note("## H\n\nOwner body.\n")
+    apply(note, "edit_text", {"target": "s1", "old": "## H", "new": "## Title"}, change_id="c1", step=1)
+    body = next(b.handle for b in note.blocks if b.text.startswith("Owner body."))
+    change, _ = apply(note, "replace", {"target": body, "markdown": ""}, change_id="c2", step=1)
+    assert change.part_of is None               # the owner's own text went: never hidden as SLIM's draft
+
+
+def test_two_steps_may_each_fix_a_word_in_the_same_owner_paragraph():
+    note = Note(ITEM)
+    apply(note, "edit_text", {"target": "b2", "old": "rivier", "new": "river"}, change_id="c1", step=1)
+    change, _ = apply(note, "edit_text", {"target": "b2", "old": "portmanteaus", "new": "blends"}, change_id="c2", step=2)
+    assert change.part_of is None and "river" in note.text() and "blends" in note.text()
+
+
+def test_rewording_text_slim_edited_from_the_owner_s_is_not_part_of_that_edit():
+    note = Note(NOTE)
+    apply(note, "replace", {"target": "b4", "markdown": "Text a, simpler."}, change_id="c1", step=1)
+    change, _ = apply(note, "replace", {"target": "b4", "markdown": "Text a, simplest."}, change_id="c2", step=1)
+    assert change.part_of is None and change.needs == ["c1"]
+
+
+def test_ordinary_words_that_look_like_handles_are_left_alone():
+    note = Note("One.\n\nTwo.\n")
+    assert note.plain("Use an s3 bucket and vitamin b12; web3.") == "Use an s3 bucket and vitamin b12; web3."
+
+
+def test_existing_html_is_no_allowance_for_a_different_block():
+    note = Note("<div>x</div>\n\nb\n")
+    with pytest.raises(ToolError) as refused:
+        apply(note, "replace", {"target": "b1", "markdown": "<details>\nraw markdown"}, change_id="c1", step=1)
+    assert refused.value.code == "html"
+
+
+@pytest.mark.parametrize("markdown", ["```html\n<div>x</div>\n````", "  ```\n  <div>x</div>\n  ```",
+                                      "```\n<details>never closed", "Use ``<div>`` here."])
+def test_html_inside_any_kind_of_code_is_text(markdown):
+    note = Note(NOTE)
+    apply(note, "insert", {"after": "b1", "markdown": markdown}, change_id="c1", step=1)
+
+
+def test_html_after_an_unmatched_backtick_is_not_code():
+    with pytest.raises(ToolError, match="HTML tags"):
+        apply(Note(NOTE), "insert", {"after": "b1", "markdown": "Use ``<div>` here."}, change_id="c1", step=1)
+
+
+def test_a_quote_of_one_long_word_is_cut_too():
+    assert len(edits.quote("x" * 100)) <= edits.QUOTE_CHARS + 3 and edits.quote("x" * 100).endswith("…”")

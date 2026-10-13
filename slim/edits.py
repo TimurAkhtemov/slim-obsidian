@@ -21,6 +21,7 @@ import hashlib
 import os
 import re
 import unicodedata
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -32,8 +33,11 @@ _MEETING_OPEN = re.compile(r"^\s*(`{3,})slim-meeting")
 _ELISION = re.compile(r"^[ \t]*(?:\.\.\.|…)[ \t]*$", re.MULTILINE)
 # Obsidian renders no Markdown or math inside these, in Live Preview, and an unclosed one leaves
 # everything after it raw (live, 2026-10-13: a `<details>` whose `</details>` a later step dropped).
-_HTML_BLOCK = re.compile(r"<(?:details|summary|div)\b", re.IGNORECASE)
-_CODE = re.compile(r"^(`{3,}|~{3,})[^\n]*\n[\s\S]*?^\1[ \t]*$|`[^`\n]+`", re.MULTILINE)   # shown, not rendered
+_HTML_BLOCK = re.compile(r"<(details|summary|div)\b", re.IGNORECASE)
+# Code is shown, not rendered: a fence (closed by a run as long or longer, or the end of the text)
+# and a code span (closed by a backtick run of the same length).
+_CODE = re.compile(r"^ {0,3}(?P<fence>(?P<mark>[`~])(?P=mark){2,})[^\n]*\n[\s\S]*?(?:^ {0,3}(?P=fence)(?P=mark)*[ \t]*$|\Z)"
+                   r"|(?<!`)(?P<run>`+)(?!`)[^\n]*?(?<!`)(?P=run)(?!`)", re.MULTILINE)
 # Binaries, SLIM's own derived output and Obsidian's config are never a copilot edit target.
 _NEVER_TOP = {"attachments", "_reflections"}
 _EXCLUDED_CF = {name.casefold() for name in EXCLUDED_DIRS}
@@ -198,8 +202,8 @@ _HANDLE = re.compile(r"\b[bs]\d+\b")
 # A handle in words meant for the owner (a plan's steps, its summary), with the words around it
 # that only make sense with a handle: "after block b6", "[b11-b15]", "the section s4".
 _REFERENCE = re.compile(r"(?:\b(?P<prep>(?i:after|before|below|above|under|into|in|at|of|from|to|with|on))\s+)?"
-                        r"(?:(?i:the)\s+)?(?:(?i:blocks?|sections?|range|heading|paragraph)\s+)?"
-                        r"\[?\b(?P<kind>[bs])(?P<n>\d+)(?:\s*[-–]\s*[bs]?\d+)?\b\]?")
+                        r"(?:(?i:the)\s+)?(?P<word>(?i:blocks?|sections?|range|heading|paragraph)\s+)?"
+                        r"(?P<open>\[)?\b(?P<kind>[bs])(?P<n>\d+)(?P<range>\s*[-–]\s*[bs]?\d+)?\b\]?")
 _EMBED = re.compile(r"!\[\[([^\]|]+)(?:\|[^\]]*)?\]\]")
 _IMAGE = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".avif")
 _MARKUP = re.compile(r"^(?:\s*>)*\s*(?:\[![^\]]*\][-+]?\s*)?(?:#{1,6}\s+|(?:[-*+]|\d+[.)])\s+(?:\[.\]\s+)?)?")
@@ -219,6 +223,8 @@ def quote(text: str) -> str:
     while len(kept) > 1 and len(" ".join(kept)) > QUOTE_CHARS:
         kept.pop()
     cut = " ".join(kept)
+    if len(cut) > QUOTE_CHARS:
+        return f"“{cut[:QUOTE_CHARS]}…”"
     return f"“{cut.rstrip(',;:') + '…' if len(kept) < len(words) else cut}”"
 
 
@@ -229,6 +235,7 @@ class Block:
     text: str
     locked: bool = False
     owner: str | None = None          # the change that last made or replaced this block
+    fresh: bool = False               # all of it written by this run: none of it the owner's
 
     @property
     def level(self) -> int:
@@ -409,11 +416,12 @@ class Note:
 
     def plain(self, words: str) -> str:
         """Words for the owner with every handle turned into the text it points at ("after block
-        b6" → "after the image"); a handle the note does not have goes, with its words."""
+        b6" → "after the image"). A handle the note does not have goes, with its words, when it is
+        plainly one ("block b99", "[b9]", "b2-b4"); a bare "s3" or "b12" it does not have is a word."""
         def put(match: re.Match) -> str:
             block = next((b for b in self.blocks if b.handle == "b" + match["n"]), None)
             if block is None:
-                return ""
+                return "" if match["word"] or match["open"] or match["range"] else match[0]
             return f"{match['prep'] + ' ' if match['prep'] else ''}{quote(block.text)}"
         said = _REFERENCE.sub(put, words)
         return re.sub(r" +([,.;:)])", r"\1", re.sub(r" {2,}", " ", said)).strip()
@@ -512,10 +520,28 @@ class Note:
             if not prev.text.endswith("\n\n"):
                 prev.text += "\n"
 
-    def replace(self, i: int, j: int, markdown: str, owner: str, keep: str | None = None) -> list[Block]:
+    def _repeats(self, i: int, j: int, texts: list[str]) -> dict[int, Block]:
+        """Which of blocks i..j each new block's text repeats word for word, by the new one's index."""
+        same = difflib.SequenceMatcher(None, [b.text.rstrip("\n") for b in self.blocks[i:j]],
+                                       [text.rstrip("\n") for text in texts], autojunk=False)
+        return {n + k: self.blocks[i + o + k] for o, n, size in same.get_matching_blocks() for k in range(size)}
+
+    def _new_text(self, i: int, j: int, markdown: str) -> str:
         old = "".join(b.text for b in self.blocks[i:j])
-        ending = old[len(old.rstrip("\n")):]
-        new = self._fresh(markdown + ending, owner) if markdown else []
+        return markdown + old[len(old.rstrip("\n")):] if markdown else ""
+
+    def changed(self, i: int, j: int, markdown: str) -> list[Block]:
+        """The blocks among i..j that `markdown` in their place does not repeat word for word."""
+        lines = self._new_text(i, j, markdown).splitlines(keepends=True)
+        repeated = {id(b) for b in self._repeats(i, j, ["".join(lines[a:z]) for _kind, a, z in _spans(lines)]).values()}
+        return [b for b in self.blocks[i:j] if id(b) not in repeated and b.kind != "blank"]
+
+    def replace(self, i: int, j: int, markdown: str, owner: str, keep: str | None = None) -> list[Block]:
+        gone = self.changed(i, j, markdown)
+        new = self._fresh(self._new_text(i, j, markdown), owner) if markdown else []
+        kept = self._repeats(i, j, [b.text for b in new])
+        for n, b in enumerate(new):         # a block retyped as it was is still whoever's it was
+            b.owner, b.fresh = (kept[n].owner, kept[n].fresh) if n in kept else (owner, all(g.fresh for g in gone))
         if keep and len(new) == 1:
             new[0].handle = keep
         self.blocks[i:j] = new
@@ -527,6 +553,8 @@ class Note:
         prev = self.blocks[pos - 1] if pos > 0 else None
         following = self.blocks[pos] if pos < len(self.blocks) else None
         new = self._fresh(markdown + "\n", owner)
+        for b in new:
+            b.fresh = True
         ending = "\n\n" if following else "\n"
         if prev and prev.kind == new[0].kind == "list":    # new items join prev's list, tight
             loose = prev.text.endswith("\n\n")
@@ -607,16 +635,19 @@ def _written(markdown: str, old: str = "") -> None:
     if len(_ELISION.findall(markdown)) > len(_ELISION.findall(old)):
         raise ToolError("the new text skips lines with `...`; write out what stays, or change only what "
                         "changes", "elision")
-    if len(_HTML_BLOCK.findall(_CODE.sub("", markdown))) > len(_HTML_BLOCK.findall(_CODE.sub("", old))):
+    tags = lambda text: Counter(tag.lower() for tag in _HTML_BLOCK.findall(_CODE.sub("", text)))
+    if tags(markdown) - tags(old):          # a tag the old text had, kept, is no allowance for another
         raise ToolError("Obsidian renders no Markdown or math inside HTML tags; write Markdown. A heading already "
                         "folds in Obsidian; for a section that starts folded, write a callout: "
                         "> [!note]- Title, with each line under it starting with > .", "html")
 
 
-def _own(note: Note, i: int, j: int, target: str, ctx: dict) -> None:
+def _own(note: Note, changed: list[Block], target: str, ctx: dict) -> None:
     """A later step may not rewrite or delete what an earlier step of the run wrote: steps that
-    reworked their own text left a short section where a long one had landed (live, 2026-10-13)."""
-    made = [note.made.get(b.owner) for b in note.blocks[i:j] if b.kind != "blank"]
+    reworked their own text left a short section where a long one had landed (live, 2026-10-13).
+    Only the blocks a call really changes count, and only those the run wrote whole: a block of the
+    owner's that a step edited stays open to the next (two typos in one paragraph)."""
+    made = [note.made.get(b.owner) if b.fresh else None for b in changed]
     if made and all(step is not None and step < ctx["step"] for step in made):
         raise ToolError(f"{target} is what you wrote in step {min(made)}; it stays as written. Make only what "
                         "this step still needs, or call done if the note already has it.", "own")
@@ -655,19 +686,19 @@ def _replace(note: Note, args: dict, ctx: dict):
     markdown = strip_labels(_text(args, "markdown", False) or "")
     i, j, target, trimmed = note.pick(_handle(note, args, "target"), ctx["only"])
     old = "".join(b.text for b in note.blocks[i:j])
-    _own(note, i, j, target, ctx)
+    renames = _renames(note, i, j, markdown)
+    ctx["targets"] = note.changed(i, i + 1 if renames else j, markdown)
+    _own(note, ctx["targets"], target, ctx)
     _written(markdown, old)
     renamed = f"Renamed {quote(note.blocks[i].text)} to {quote(markdown)}"
-    if _renames(note, i, j, markdown):
+    if renames:
         _copied(note, markdown, range(i, i + 1), "to where you want it")
-        ctx["targets"] = note.blocks[i:i + 1]
         heading = note.blocks[i].handle
         needs = note.owners(i, i + 1)
         new = note.replace(i, i + 1, markdown, ctx["id"], keep=heading)
         return needs, renamed, (f"renamed the heading; the section's text is kept:\n"
                                 f"{note.render(new).rstrip()}\n{note.then(i + 1)}")
     _copied(note, markdown, range(i, j), "to where you want it")
-    ctx["targets"] = note.blocks[i:j]
     one = _spans(markdown.splitlines(keepends=True))
     label = (renamed if j - i == 1 and note.blocks[i].level and len(one) == 1 and one[0][0] == "heading"
              else f"Rewrote {quote(old)}" if markdown else f"Removed {quote(old)}")
@@ -694,10 +725,10 @@ def _edit_text(note: Note, args: dict, ctx: dict):
     if found > 1:
         raise ToolError(f"'{old}' appears {found} times in {target}; quote a little more around it", "quote")
     changed = text.replace(old, new, 1)
-    _own(note, i, j, target, ctx)
+    ctx["targets"] = note.changed(i, j, changed.rstrip("\n"))
+    _own(note, ctx["targets"], target, ctx)
     _written(changed, text)
     _copied(note, changed, range(i, j), "to where you want it")
-    ctx["targets"] = note.blocks[i:j]
     needs = note.owners(i, j)
     made = note.replace(i, j, changed.rstrip("\n"), ctx["id"], keep=note.blocks[i].handle if j - i == 1 else None)
     then = note.then(i + len(made))
@@ -748,7 +779,7 @@ def _move(note: Note, args: dict, ctx: dict):
             raise ToolError(f"{target} is already right after {cut[0]}", "place")
         note.check_insert(pos)
     needs = note.owners(i, j) | note.owners(k, l)
-    ctx["targets"] = note.blocks[i:j]
+    ctx["targets"] = [b for b in note.blocks[i:j] if b.kind != "blank"]
     label = f"Moved {quote(''.join(b.text for b in note.blocks[i:j]))}"
     moved = ctx["moved"] = note.move(i, j, pos)
     then = note.then(next(n for n, b in enumerate(note.blocks) if b is moved[-1]) + 1)
@@ -878,10 +909,10 @@ def apply(note: Note, name: str, args: dict, *, change_id: str, step: int,
         undo()
         raise ToolError(f"that change would reach text that is {PROTECTED}", "locked")
     needs.discard(change_id)
-    # Only text this run wrote, and none of the owner's: part of the change it grew from.
-    reworked = [b for b in ctx.get("targets", []) if b.kind != "blank"]
+    # It changed only text this run wrote whole, none of the owner's: part of the change it grew from.
+    reworked = ctx.get("targets", [])
     part_of = min((note.roots.get(b.owner, b.owner) for b in reworked), key=lambda c: int(c[1:])) \
-        if reworked and all(b.owner for b in reworked) else None
+        if reworked and all(b.fresh and b.owner for b in reworked) else None
     note.made[change_id], note.roots[change_id] = step, part_of or change_id
     return Change(change_id, step, name, label, made, sorted(needs, key=lambda c: int(c[1:])), part_of), result
 
