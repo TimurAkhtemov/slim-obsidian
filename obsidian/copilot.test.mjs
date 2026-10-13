@@ -1224,7 +1224,8 @@ function fakeLive(text = "# A\n\nold\n") {
   return { live, editor, runs };
 }
 
-function editView({ events, live, editor, saved = [], indexed = [], before = "# A\n\nold\n", vault } = {}) {
+function editView({ events, live, editor, saved = [], indexed = [], before = "# A\n\nold\n", vault,
+                   restored = (body) => ({ text: before }), posted = [] } = {}) {
   const view = makeView({
     live,
     liveViewFor: () => editor,
@@ -1234,6 +1235,7 @@ function editView({ events, live, editor, saved = [], indexed = [], before = "# 
     postJSON: async (route, body) => {
       if (route.endsWith("save")) saved.push(structuredClone(body));
       if (route.endsWith("context")) { indexed.push(body.path); return { source: { id: "s1", path: "Notes/one.md" } }; }
+      if (route === "/api/copilot/restore") { posted.push(body); return restored(body); }
       return {};
     },
     getJSON: async (route) => (route.startsWith("/api/copilot/before") ? { text: before } : { threads: [] }),
@@ -1464,7 +1466,7 @@ test("restore warns when the note was edited since, and needs a second click", a
   (function walk(el) { if (el.textContent) texts.push(el.textContent); el.children.forEach(walk); })(root);
   assert.ok(texts.includes("You've edited this note since this change; restoring would discard those edits."));
   assert.ok(texts.includes("Restore anyway") && texts.includes("Cancel"));
-  await view.restore(view.turns[1], true);
+  await view.restore(view.turns[1], true);                             // Restore anyway still asks the server
   assert.deepEqual(live.calls, [["restore", "# A\n\nold\n"]]);
   assert.equal(editor.text, "# A\n\nold\n");
   assert.equal(run.restored, true);
@@ -1479,6 +1481,32 @@ test("restore warns when the note was edited since, and needs a second click", a
   run.typed = false;
   await view.restore(view.turns[1]);
   assert.equal(live.calls.length, 2);
+});
+
+test("Restore applies what the server returns, and shows its refusal instead when a recording changed", async () => {
+  const { live, editor } = fakeLive("# A\n\nnew\n");
+  const posted = [];
+  let reply = { refused: "The recording has new transcript since this change; restoring would drop it." };
+  const view = editView({ live, editor, posted, restored: () => reply });
+  const ref = "4".repeat(32);
+  const run = { plan: PLAN, step_states: [], steps_done: 1, stopped: null, before_ref: ref,
+                hash_after: sha256Hex("# A\n\nnew\n"), changes: [{ id: "c1", label: "x", state: "applied" }] };
+  view.turns = [{ role: "you", text: "q" }, { role: "slim", text: "a", turn: { edit_run: run } }];
+  await view.restore(view.turns[1]);
+  assert.deepEqual(posted, [{ thread_id: "chat-1", ref, doc: "# A\n\nnew\n" }]);
+  assert.deepEqual(live.calls, []);                                    // refused: the note is untouched
+  assert.equal(run.restored, undefined);
+  const { view: shown, root } = renderedView({ live });
+  Object.assign(shown, { turns: view.turns, restoreRefused: view.restoreRefused });
+  shown.render();
+  const texts = [];
+  (function walk(el) { if (el.textContent) texts.push(el.textContent); el.children.forEach(walk); })(root);
+  assert.ok(texts.includes(reply.refused), texts.join(" | "));
+  reply = { text: "# A\n\nold, with the transcript as it is now\n" };
+  await view.restore(view.turns[1]);
+  assert.deepEqual(live.calls, [["restore", "# A\n\nold, with the transcript as it is now\n"]]);
+  assert.equal(run.restored, true);
+  assert.equal(view.restoreRefused, null);
 });
 
 test("the note's editor moving a change (↺, Cmd-Z) updates and saves the turn", async () => {

@@ -3103,6 +3103,7 @@ class CopilotView extends ItemView {
     this.savingRuns = null;         // a run's turn saves one save after another
     this.beforeTexts = new Map();   // before_ref -> the note as it was before that run
     this.restoreArmed = null;       // the before_ref whose Restore waits for "Restore anyway"
+    this.restoreRefused = null;     // {ref, message}: why the server would not restore that run
     this.restoredFrom = new Map();  // before_ref -> the note as it was just before Restore
   }
 
@@ -4147,6 +4148,9 @@ class CopilotView extends ItemView {
     const inNote = landed.some((change) => change.op !== "create");
     const view = ref && this.plugin.liveRunView?.(ref);
     const live = view && this.plugin.live?.state(view, ref);
+    if (this.restoreRefused?.ref === ref) {
+      create(meta, "div", "slim-edit-warning", this.restoreRefused.message).setAttribute("role", "alert");
+    }
     if (this.restoreArmed === ref) {
       const warning = create(meta, "div", "slim-edit-warning",
         "You've edited this note since this change; restoring would discard those edits.");
@@ -4264,22 +4268,30 @@ class CopilotView extends ItemView {
   }
 
   // The note as it was before the run, as one editor change (Cmd-Z takes it back). If the note
-  // has been edited since, it says so first and waits for a second click.
+  // has been edited since, it says so first and waits for a second click. The server says what
+  // may be put back: never a recording's frontmatter, block or transcript as they were, which a
+  // Resume may have added to since; then it refuses, and the chat says why.
   async restore(turn, force = false) {
     const run = turn.turn.edit_run;
     const ref = run.before_ref;
     const view = await this.plugin.noteView?.(this.context.source.path);
     if (!view || !this.plugin.live) throw new Error("Open the note in an editor to restore it.");
-    const before = await this.beforeText(ref);
     const doc = view.state.doc.toString();
+    this.restoreRefused = null;
     if (!force && (run.typed || sha256Hex(doc) !== run.hash_after)) {
       this.restoreArmed = ref;
       this.render();
       return;
     }
     this.restoreArmed = null;
+    const answer = await this.plugin.postJSON("/api/copilot/restore", { thread_id: this.activeThread.id, ref, doc });
+    if (answer?.refused || typeof answer?.text !== "string") {
+      this.restoreRefused = { ref, message: answer?.refused || "SLIM could not restore this note." };
+      this.render();
+      return;
+    }
     this.restoredFrom.set(ref, doc);
-    this.plugin.live.restore(view, before);
+    this.plugin.live.restore(view, answer.text);
     Object.assign(run, { restored: true, typed: false, hash_after: sha256Hex(view.state.doc.toString()) });
     this.saveRun(this.activeThread, this.turns);
     this.reindex(this.context.source.path);
