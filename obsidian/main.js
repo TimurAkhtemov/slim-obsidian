@@ -4445,9 +4445,10 @@ function formatChange(before, after) {
   return [...new Set(what)].join(" · ") || "Formatting only";
 }
 
-// A change that keeps most of its words is marked word by word; one mostly rewritten shows the
-// old text folded above the new, not a scatter of marks.
-function markable(before, after) {
+// Line for line the same kind (a heading stays a heading of its level, an item an item), none
+// of them math, code or a table: what word marks can be drawn on. `half` also asks that each
+// line keeps half its words.
+function markable(before, after, half = true) {
   const lines = (text) => String(text || "").split("\n").filter((line) => line.trim());
   const a = lines(before), b = lines(after);
   if (!a.length || a.length !== b.length) return false;
@@ -4460,7 +4461,7 @@ function markable(before, after) {
     const x = line.slice(ma.length), y = other.slice(mb.length);
     const xs = wordTokens(x).length, ys = wordTokens(y).length;
     if (!(xs + ys) || xs * ys > MAX_WORD_CELLS) return false;
-    return kept || (2 * wordOps(x, y).filter((op) => op[0] === "=").length) / (xs + ys) >= 0.5;
+    return !half || kept || (2 * wordOps(x, y).filter((op) => op[0] === "=").length) / (xs + ys) >= 0.5;
   });
 }
 
@@ -4478,9 +4479,13 @@ function changeMarks(op, pieces) {
       if (line.trim()) lines.push([pos, line]);
       pos += line.length + 1;
     }
+    // A change that keeps most of its words is marked word by word, and so is a wording fix
+    // (edit_text) or a heading renamed, however few words stay; one mostly rewritten shows the
+    // old text folded above the new, not a scatter of marks.
+    const renamed = lines.length === 1 && /^\s*#{1,6}\s/.test(now);
     if (formatChange(old, now)) {
       for (const [start, line] of lines) out.formats.push([start, start + line.length]);
-    } else if (markable(old, now)) {
+    } else if (markable(old, now, op !== "edit_text" && !renamed)) {
       const olds = old.split("\n").filter((line) => line.trim());
       lines.forEach(([start, line], k) => {
         const other = olds[k];

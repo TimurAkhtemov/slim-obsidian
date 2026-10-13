@@ -1616,6 +1616,18 @@ test("a change's marks: added words, removed words where they were, formatting, 
   assert.deepEqual([gone.rail, gone.fold.moved, landed.fold, landed.rail], [null, true, null, [0, 9]]);
 });
 
+test("a word fixed with edit_text and a heading renamed are marked word by word, not folded", () => {
+  const [word] = changeMarks("edit_text", [{ old: "Fine.\n", now: "Good.\n" }]);
+  assert.deepEqual([word.fold, word.dels, word.ins], [null, [[0, "Fine."]], [[0, 5]]]);
+  const [renamed] = changeMarks("replace", [{ old: "## Middle\n", now: "## Centre\n" }]);
+  assert.deepEqual([renamed.fold, renamed.dels, renamed.ins], [null, [[3, "Middle"]], [[3, 9]]]);
+  // A paragraph rewritten whole still folds above the new one, and math stays whole.
+  assert.equal(changeMarks("replace", [{ old: "Fine.\n", now: "Good.\n" }])[0].fold.text, "Fine.\n");
+  assert.equal(changeMarks("edit_text", [{ old: "$$ a + b $$\n", now: "$$ a + c $$\n" }])[0].fold.text, "$$ a + b $$\n");
+  // A rename that also changes the level keeps its words and marks only that.
+  assert.equal(changeMarks("replace", [{ old: "## Middle\n", now: "### Centre\n" }])[0].fold.text, "## Middle\n");
+});
+
 test("the change between two texts is one replace from the common prefix to the common suffix", () => {
   assert.deepEqual(textDiff("abc\ndef\n", "abc\nXYZ\ndef\n"), [{ from: 4, to: 4, insert: "XYZ\n" }]);
   assert.deepEqual(textDiff("same", "same"), []);
