@@ -136,6 +136,13 @@ def test_per_source_cap_prevents_flooding():
     assert any(h.source_id == "s2" for h in fused)
 
 
+def test_a_run_that_must_not_load_a_model_skips_the_embedder(monkeypatch):
+    """SLIM_TEST_NO_MODELS=1 is for a run beside a job that has the model loaded: the embedder
+    tests skip instead of loading a second model. Unset, they run whenever the embedder is there."""
+    monkeypatch.setenv("SLIM_TEST_NO_MODELS", "1")
+    assert ollama_available() is False
+
+
 @pytest.mark.skipif(not ollama_available(), reason="ollama or the embedder is not available")
 def test_vector_arm_finds_paraphrase(con):
     """Semantic retrieval must find content whose wording differs from the query."""

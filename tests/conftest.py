@@ -9,6 +9,7 @@ caught in review. This autouse fixture points the trace directory at a per-test 
 test can never again write a durable operational record into production.
 """
 import json
+import os
 import threading
 import urllib.request
 
@@ -24,7 +25,12 @@ def ollama_available() -> bool:
     Ollama running for some other reason but `embeddinggemma` never pulled used to FAIL the
     two vector tests rather than skip them. The suite has to be green on a machine that has
     none of the weights.
+
+    SLIM_TEST_NO_MODELS=1 says no: for a run beside a job that has the resident loaded, where
+    an embedder loading next to it is a second model in memory.
     """
+    if os.environ.get("SLIM_TEST_NO_MODELS"):
+        return False
     try:
         with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=2) as r:
             tags = json.load(r)
