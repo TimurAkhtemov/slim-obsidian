@@ -4217,10 +4217,10 @@ function proposalStatus(file) {
   return `Not applied: ${file.error || "unknown error"}`;
 }
 
-/* ---- reviewing a proposal in the note ---------------------------------------------------------
- * The server cuts an edit into changes (`edits.changes`): a block, or a run of removed or added
- * blocks, each with its place in the note as proposed. Nothing is written while the owner reviews:
- * the changes are drawn on the note, and Accept puts one in through the editor.
+/* ---- live editing: SLIM's changes land in the note as they arrive ----------------------------
+ * The server runs the editing loop on its own copy of the note and streams each change as
+ * splices on that copy. The plugin applies them through the editor, mapped through whatever the
+ * owner typed meanwhile, and draws what each change did. Nothing here talks to the server.
  */
 
 // Words with the whitespace after them. Math, bold, code and links stay whole, so a mark never
@@ -4269,7 +4269,6 @@ function wordOps(before, after) {
 
 const MARKER = /^\s*(?:#{1,6}\s+|(?:[-*+]|\d+[.)])\s+|>\s?)?/;
 const UNMARKABLE = /^\s*(?:\$\$|```|~~~|\|)/;
-const BLOCKISH = /^\s*(?:\$\$|```|~~~|\||>|!\[\[|---\s*$)/;
 const MAX_WORD_CELLS = 250_000;
 
 // A change that keeps every word and moves only markdown (a heading level, bold, a list marker,
@@ -4301,7 +4300,7 @@ function formatChange(before, after) {
 }
 
 // A change that keeps most of its words is marked word by word; one mostly rewritten shows the
-// old text struck and the new text below it, not a scatter of marks.
+// old text folded above the new, not a scatter of marks.
 function markable(before, after) {
   const lines = (text) => String(text || "").split("\n").filter((line) => line.trim());
   const a = lines(before), b = lines(after);
@@ -4319,36 +4318,844 @@ function markable(before, after) {
   });
 }
 
-// Where each undecided change sits in `doc` now: its proposed place, moved by the changes
-// already applied above it, if its old text is there; else the one line where that text starts.
-// An addition is checked by the line above it. A change found nowhere is `lost`.
-function placeChanges(doc, changes) {
-  const text = String(doc || "");
-  const out = [];
-  let shift = 0;
-  (changes || []).forEach((change, index) => {
-    if (change.status === "applied") { shift += (change.new || "").length - (change.to - change.from); return; }
-    if (change.status) return;
-    const old = change.old || "";
-    const want = change.from + shift;
-    let at = -1;
-    if (old) {
-      if (text.slice(want, want + old.length) === old) at = want;
-      else {
-        const starts = [];
-        for (let i = text.indexOf(old); i >= 0 && starts.length < 2; i = text.indexOf(old, i + 1)) {
-          if (i === 0 || text[i - 1] === "\n") starts.push(i);
-        }
-        if (starts.length === 1) at = starts[0];
-      }
-    } else if (want === 0 ? !change.above : text[want - 1] === "\n"
-               && text.slice(text.lastIndexOf("\n", want - 2) + 1, want - 1) === (change.above || "")) {
-      at = want;
+// What one change did, as offsets into each splice's new text: the rail over the new text, the
+// words it added, the words it removed (drawn struck where they were), a formatting-only change's
+// lines, and removed text folded into one struck line. Computed once per change.
+function changeMarks(op, pieces) {
+  return pieces.map(({ old, now }) => {
+    const out = { rail: now ? [0, now.length] : null, ins: [], dels: [], formats: [], fold: null };
+    if (!old) return out;
+    if (!now) { out.fold = { text: old, moved: op === "move" }; return out; }
+    const lines = [];
+    let pos = 0;
+    for (const line of now.split("\n")) {
+      if (line.trim()) lines.push([pos, line]);
+      pos += line.length + 1;
     }
-    out.push({ index, from: at, to: at < 0 ? -1 : at + old.length, old, new: change.new || "",
-               state: at < 0 ? "lost" : "open" });
+    if (formatChange(old, now)) {
+      for (const [start, line] of lines) out.formats.push([start, start + line.length]);
+    } else if (markable(old, now)) {
+      const olds = old.split("\n").filter((line) => line.trim());
+      lines.forEach(([start, line], k) => {
+        const other = olds[k];
+        const ma = MARKER.exec(other)[0], mb = MARKER.exec(line)[0];
+        let at = start + mb.length, gone = "", goneAt = at, from = -1, to = -1;
+        const flushGone = () => { if (gone.trim()) out.dels.push([goneAt, gone.trimEnd()]); gone = ""; };
+        const flushAdded = () => { if (from >= 0) out.ins.push([from, to]); from = -1; };
+        for (const [kind, word, kept] of wordOps(other.slice(ma.length), line.slice(mb.length))) {
+          if (kind === "-") { if (!gone) goneAt = at; gone += word; continue; }
+          flushGone();
+          if (kind === "+") {
+            if (from < 0) from = at;
+            to = at + word.trimEnd().length;
+            at += word.length;
+            continue;
+          }
+          flushAdded();
+          at += kept.length;
+        }
+        flushGone();
+        flushAdded();
+      });
+    } else {
+      out.fold = { text: old, moved: false };
+    }
+    return out;
   });
+}
+
+// One replace from the common prefix to the common suffix: the change between two texts.
+function textDiff(before, after) {
+  const a = String(before), b = String(after);
+  const max = Math.min(a.length, b.length);
+  let start = 0;
+  while (start < max && a.charCodeAt(start) === b.charCodeAt(start)) start += 1;
+  let end = 0;
+  while (end < max - start && a.charCodeAt(a.length - 1 - end) === b.charCodeAt(b.length - 1 - end)) end += 1;
+  if (start === a.length && start === b.length) return [];
+  return [{ from: start, to: a.length - end, insert: b.slice(start, b.length - end) }];
+}
+
+// The first line of some markdown, without its markers: what a folded removal shows.
+function excerpt(markdown) {
+  const line = String(markdown || "").split("\n").find((text) => text.trim()) || "";
+  return line.replace(/^\s*(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s?)/, "").replace(/\*\*|__|`/g, "").trim();
+}
+
+// The note's blocks: runs of lines between blank lines, with a fenced block kept whole.
+function noteBlocks(text) {
+  const out = [];
+  let lines = [], fence = null;
+  for (const line of String(text || "").split("\n")) {
+    const trimmed = line.trim();
+    if (fence) {
+      lines.push(line);
+      if (trimmed.startsWith(fence) || (fence === "$$" && trimmed.endsWith("$$"))) fence = null;
+      continue;
+    }
+    if (!trimmed) {
+      if (lines.length) out.push(lines.join("\n"));
+      lines = [];
+      continue;
+    }
+    lines.push(line);
+    const open = /^(`{3,}|~{3,}|\$\$)/.exec(trimmed);
+    if (open && !(open[1] === "$$" && trimmed.length > 2 && trimmed.endsWith("$$"))) fence = open[1];
+  }
+  if (lines.length) out.push(lines.join("\n"));
   return out;
+}
+
+// A block as it was, with the words that are gone now struck (Markdown's ~~).
+function struckWords(before, after) {
+  const others = String(after).split("\n").filter((line) => line.trim());
+  let k = 0;
+  return String(before).split("\n").map((line) => {
+    if (!line.trim()) return line;
+    const other = others[k++] || "";
+    const ma = MARKER.exec(line)[0], mb = MARKER.exec(other)[0];
+    let out = ma, gone = "";
+    const flush = () => {
+      if (!gone) return;
+      const word = gone.trimEnd();
+      out += `~~${word}~~${gone.slice(word.length)}`;
+      gone = "";
+    };
+    for (const [kind, word] of wordOps(line.slice(ma.length), other.slice(mb.length))) {
+      if (kind === "-") gone += word;
+      else if (kind === "=") { flush(); out += word; }
+    }
+    flush();
+    return out;
+  }).join("\n");
+}
+
+// The note as it was, block by block, against the note now: what is gone, what changed, what
+// moved, and where something was added. See before draws it.
+function beforeBlocks(before, now) {
+  const a = noteBlocks(before), b = noteBlocks(now);
+  const key = (text) => text.trim();
+  const n = a.length, m = b.length;
+  const t = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i -= 1) {
+    for (let j = m - 1; j >= 0; j -= 1) {
+      t[i][j] = key(a[i]) === key(b[j]) ? t[i + 1][j + 1] + 1 : Math.max(t[i + 1][j], t[i][j + 1]);
+    }
+  }
+  const runs = [];
+  let gone = [], added = [];
+  const flush = () => { if (gone.length || added.length) runs.push({ gone, added }); gone = []; added = []; };
+  let i = 0, j = 0;
+  while (i < n || j < m) {
+    if (i < n && j < m && key(a[i]) === key(b[j])) { flush(); runs.push({ same: a[i] }); i += 1; j += 1; }
+    else if (j >= m || (i < n && t[i + 1][j] >= t[i][j + 1])) gone.push(a[i++]);
+    else added.push(b[j++]);
+  }
+  flush();
+  // A block gone from one place and added at another moved: as many times as both happened.
+  const count = (field) => {
+    const out = new Map();
+    for (const run of runs) for (const text of run[field] || []) out.set(key(text), (out.get(key(text)) || 0) + 1);
+    return out;
+  };
+  const goneCount = count("gone"), addedCount = count("added");
+  const movesOut = new Map(), movesIn = new Map();
+  for (const [k, n] of goneCount) {
+    const moves = Math.min(n, addedCount.get(k) || 0);
+    if (moves) { movesOut.set(k, moves); movesIn.set(k, moves); }
+  }
+  const take = (moves, text) => {
+    const left = moves.get(key(text)) || 0;
+    if (left) moves.set(key(text), left - 1);
+    return left > 0;
+  };
+  const out = [];
+  for (const run of runs) {
+    if (run.same !== undefined) { out.push({ kind: "same", markdown: run.same }); continue; }
+    const fresh = run.added.filter((text) => !take(movesIn, text));
+    let k = 0;
+    for (const text of run.gone) {
+      if (take(movesOut, text)) { out.push({ kind: "moved", markdown: text }); continue; }
+      const other = fresh[k];
+      if (other !== undefined && markable(text, other)) {
+        out.push({ kind: "changed", markdown: struckWords(text, other) });
+        k += 1;
+      } else out.push({ kind: "removed", markdown: text });
+    }
+    const left = fresh.slice(k);
+    if (left.length) out.push({ kind: "added", markdown: excerpt(left[0]), count: left.length });
+  }
+  return out;
+}
+
+/* The live editor: one CodeMirror extension, the same in every Markdown editor. `cm` is the
+ * CodeMirror modules (state, view and commands: Obsidian's at runtime, real ones in a browser
+ * test); `host` is the plugin's side: the live editors, Obsidian's editor fields, a Markdown
+ * renderer, an icon setter, and `changed(view, runId)`, told whenever a run's changes move.
+ *
+ * Per run, code keeps:
+ *   base    the note as it was sent: the server's first copy;
+ *   agent   the server's copy now (every change, whether it landed here or not);
+ *   kept    the changes now in the note; a skipped change is never kept;
+ *   doc     base with the kept changes: SLIM's version of the note;
+ *   toDoc   agent → doc; owner  doc → the editor's text (everything else that changed the note).
+ * Undo and redo change `kept` and replay the changes from base, so a change and the changes made
+ * inside it come and go together, exactly: an inverse mapped through a later change made inside
+ * its text leaves that change's words behind.
+ */
+function makeLiveEditor(cm, host) {
+  const { StateField, StateEffect, ChangeSet, Text, Compartment, EditorState } = cm.state;
+  const { EditorView, Decoration, WidgetType, ViewPlugin } = cm.view;
+  const isolate = cm.commands?.isolateHistory;
+  const AGENT = "slim.agent", UNDO = "slim.undo", REDO = "slim.redo", RESTORE = "slim.restore";
+  const setRun = StateEffect.define();      // {id, run}: this transaction is that run's own
+  const clearRuns = StateEffect.define();
+  const showBefore = StateEffect.define();  // {runId, text} or null
+  const lock = new Compartment();
+  const focused = new WeakMap();
+
+  const pathOf = (state) => (host.infoField && state.field(host.infoField, false)?.file?.path) || null;
+  const livePreview = (state) => !host.livePreviewField || state.field(host.livePreviewField, false) !== false;
+  const own = (spec) => ({ ...spec, annotations: isolate ? isolate.of("full") : undefined });
+
+  // The owner's edits against a range of SLIM's text: inside it, not merely beside it.
+  const inside = (changes, from, to) => {
+    let hit = false;
+    changes.iterChangedRanges((a, b) => { if (!hit) hit = a === b ? from < a && a < to : a < to && b > from; });
+    return hit;
+  };
+  // Undo or redo would replace text the owner has edited.
+  const clashes = (owner, delta) => {
+    let hit = false;
+    delta.iterChangedRanges((from, to) => { if (!hit && from < to) hit = inside(owner, from, to); });
+    return hit;
+  };
+
+  // Where each splice's new text starts once the change is in, given agent → doc.
+  const starts = (splices, toDoc) => {
+    const out = [];
+    let shift = 0;
+    for (const { from, to, insert } of splices) {
+      const a = toDoc.mapPos(from, 1), b = from === to ? a : Math.max(a, toDoc.mapPos(to, -1));
+      out.push(a + shift);
+      shift += insert.length - (b - a);
+    }
+    return out;
+  };
+  const place = (rel, at) => {
+    const out = { rails: [], ins: [], dels: [], formats: [], folds: [] };
+    rel.forEach((piece, i) => {
+      const s = at[i];
+      if (piece.rail) out.rails.push([s + piece.rail[0], s + piece.rail[1]]);
+      for (const [f, t] of piece.ins) out.ins.push([s + f, s + t]);
+      for (const [p, text] of piece.dels) out.dels.push([s + p, text]);
+      for (const [f, t] of piece.formats) out.formats.push([s + f, s + t]);
+      if (piece.fold) out.folds.push([s, piece.fold.text, piece.fold.moved]);
+    });
+    return out;
+  };
+  // A range keeps text typed at its edges outside it; a point stays before text put there.
+  const mapMarks = (at, changes) => {
+    const range = ([f, t]) => { const a = changes.mapPos(f, 1); return [a, Math.max(a, changes.mapPos(t, -1))]; };
+    const point = ([p, ...rest]) => [changes.mapPos(p, -1), ...rest];
+    return { rails: at.rails.map(range), ins: at.ins.map(range), dels: at.dels.map(point),
+             formats: at.formats.map(range), folds: at.folds.map(point) };
+  };
+
+  // The run's changes from base with `kept` in the note: agent → doc, and each change's marks.
+  function replay(run, kept) {
+    let agent = run.base, toDoc = ChangeSet.empty(run.base.length);
+    const marks = new Map();
+    for (const step of run.steps) {
+      if (kept.has(step.id)) {
+        const onDoc = step.changes.map(toDoc);
+        for (const [id, m] of marks) marks.set(id, mapMarks(m, onDoc));
+        marks.set(step.id, place(step.rel, starts(step.splices, toDoc)));
+        toDoc = toDoc.map(step.changes, true);
+      } else {
+        toDoc = step.changes.invert(agent).compose(toDoc);
+      }
+      agent = step.changes.apply(agent);
+    }
+    return { toDoc, marks };
+  }
+
+  // From one doc to another, both images of the agent's copy: back to that copy and forward
+  // again. A change neither doc keeps comes back as a replace of its text with itself; equal
+  // whole lines are trimmed from each end, so that text is never touched.
+  function between(run, toDoc) {
+    const specs = [];
+    const lines = (text) => text.match(/[^\n]*\n|[^\n]+$/g) || [];
+    run.toDoc.invert(run.agent).compose(toDoc).iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+      const a = lines(run.doc.sliceString(fromA, toA)), b = lines(inserted.toString());
+      let i = 0, j = 0;
+      while (i < a.length && i < b.length && a[i] === b[i]) i += 1;
+      while (j < a.length - i && j < b.length - i && a[a.length - 1 - j] === b[b.length - 1 - j]) j += 1;
+      if (i === a.length && i === b.length) return;
+      const size = (list) => list.reduce((n, line) => n + line.length, 0);
+      specs.push({ from: fromA + size(a.slice(0, i)), to: toA - size(a.slice(a.length - j)),
+                   insert: b.slice(i, b.length - j).join("") });
+    });
+    return ChangeSet.of(specs, run.doc.length);
+  }
+
+  // Everything that needs these changes, directly or through another.
+  const dependents = (run, ids) => {
+    const out = new Set(ids);
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const step of run.steps) {
+        if (!out.has(step.id) && step.needs.some((id) => out.has(id))) { out.add(step.id); grew = true; }
+      }
+    }
+    return out;
+  };
+  // A kept set the note can hold: every change in it has what it needs, and nothing that needs
+  // a skipped change is ever in it.
+  const holdable = (run, ids) => {
+    const byId = new Map(run.steps.map((step) => [step.id, step]));
+    const blocked = new Set(run.steps.filter((step) => step.skipped).map((step) => step.id));
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const step of run.steps) {
+        if (!blocked.has(step.id) && step.needs.some((id) => blocked.has(id))) { blocked.add(step.id); grew = true; }
+      }
+    }
+    const out = new Set();
+    const add = (id) => {
+      if (out.has(id) || blocked.has(id) || !byId.has(id)) return;
+      out.add(id);
+      for (const need of byId.get(id).needs) add(need);
+    };
+    for (const id of ids) add(id);
+    return out;
+  };
+  const same = (a, b) => a.size === b.size && [...a].every((id) => b.has(id));
+
+  // A run moved to another kept set; null when the owner's edits are in the way.
+  function moved(run, kept, push) {
+    const w = replay(run, kept);
+    const delta = between(run, w.toDoc);
+    if (clashes(run.owner, delta)) return null;
+    const redo = (push ? [...run.redo, push] : run.redo).filter((group) => group.some((id) => !kept.has(id)));
+    return {
+      changes: delta.map(run.owner),
+      run: { ...run, kept, doc: delta.apply(run.doc), toDoc: w.toDoc, owner: run.owner.map(delta, true),
+             marks: w.marks, redo, latest: null, version: run.version + 1 },
+    };
+  }
+
+  // Cmd-Z and Cmd-Shift-Z are the editor's own history: when one takes a change out or puts it
+  // back, the run follows. Recognized by its result, the note as that move would leave it.
+  function fromHistory(run, tr) {
+    const tries = [...run.redo].reverse().map((group) => ({ kept: holdable(run, [...run.kept, ...group]) }));
+    for (const step of [...run.steps].reverse()) {
+      if (step.skipped) continue;
+      if (run.kept.has(step.id)) {
+        const gone = dependents(run, [step.id]);
+        tries.push({ kept: new Set([...run.kept].filter((id) => !gone.has(id))),
+                     push: [...gone].filter((id) => run.kept.has(id)) });
+      } else {
+        tries.push({ kept: holdable(run, [...run.kept, step.id]) });
+      }
+    }
+    for (const { kept, push } of tries) {
+      if (same(kept, run.kept)) continue;
+      const next = moved(run, kept, push);
+      if (next && next.changes.apply(tr.startState.doc).eq(tr.newDoc)) return next.run;
+    }
+    return null;
+  }
+
+  const runsField = StateField.define({
+    create: () => new Map(),
+    update(runs, tr) {
+      const mine = new Map();
+      for (const effect of tr.effects) {
+        if (effect.is(clearRuns)) return new Map();
+        if (effect.is(setRun)) mine.set(effect.value.id, effect.value.run);
+      }
+      if (!mine.size && !tr.docChanged) return runs;
+      const path = pathOf(tr.state);
+      const history = tr.isUserEvent("undo") || tr.isUserEvent("redo");
+      const next = new Map();
+      for (const [id, run] of runs) {
+        if (mine.has(id)) continue;
+        if (!tr.docChanged) { next.set(id, run); continue; }
+        if (run.path && path && run.path !== path) continue;  // the editor shows another note now
+        next.set(id, (history && fromHistory(run, tr))
+          || { ...run, owner: run.owner.compose(tr.changes) });
+      }
+      for (const [id, run] of mine) if (run) next.set(id, run);
+      return next;
+    },
+  });
+
+  const beforeField = StateField.define({
+    create: () => null,
+    update(value, tr) {
+      for (const effect of tr.effects) if (effect.is(showBefore)) value = effect.value;
+      return value;
+    },
+  });
+
+  const runOf = (state, runId) => state.field(runsField, false)?.get(runId) || null;
+
+  // ---- drawing -----------------------------------------------------------------------------
+
+  // Words a change removed, struck, where they were.
+  class Gone extends WidgetType {
+    constructor(text, raw, path) { super(); this.text = text; this.raw = raw; this.path = path; }
+    eq(other) { return other.text === this.text && other.raw === this.raw; }
+    toDOM() {
+      const span = document.createElement("span");
+      span.className = "slim-del";
+      span.textContent = this.text;
+      if (!this.raw) {
+        const holder = document.createElement("div");
+        Promise.resolve(host.render(holder, this.text, this.path)).then(() => {
+          const p = holder.querySelector("p") || holder;
+          if (p.childNodes.length) span.replaceChildren(...p.childNodes);
+        }).catch(() => {});
+      }
+      return span;
+    }
+  }
+
+  const undoButton = (view, runId, id, tip) => {
+    const button = document.createElement("button");
+    button.className = "slim-undo";
+    button.setAttribute("aria-label", `Undo: ${tip}`);
+    if (host.icon) host.icon(button, "undo-2");
+    if (!button.childNodes.length) button.textContent = "↺";
+    const label = button.appendChild(document.createElement("span"));
+    label.className = "slim-undo-tip";
+    label.textContent = `Undo · ${tip}`;
+    button.onmousedown = (event) => event.preventDefault();         // keep the caret where it is
+    button.onclick = (event) => {
+      event.preventDefault();
+      const done = api.undo(view, runId, [id]);
+      if (done === "refused") host.refused?.(view, runId, id);
+    };
+    return button;
+  };
+
+  // ↺ at the left of a change's first line, shown while the change is hovered.
+  class Undo extends WidgetType {
+    constructor(runId, id, tip, shown) { super(); this.runId = runId; this.id = id; this.tip = tip; this.shown = shown; }
+    eq(other) { return other.runId === this.runId && other.id === this.id && other.tip === this.tip && other.shown === this.shown; }
+    toDOM(view) {
+      const holder = document.createElement("span");
+      holder.className = `slim-undo-holder${this.shown ? " is-shown" : ""}`;
+      holder.dataset.key = `${this.runId}\n${this.id}\n${this.tip}`;
+      holder.appendChild(undoButton(view, this.runId, this.id, this.tip));
+      return holder;
+    }
+    // Hovering only shows or hides it: the button under the pointer stays the same element.
+    updateDOM(dom) {
+      if (dom.dataset.key !== `${this.runId}\n${this.id}\n${this.tip}`) return false;
+      dom.classList.toggle("is-shown", this.shown);
+      return true;
+    }
+    ignoreEvent() { return true; }
+  }
+
+  // Removed text, folded into one struck line that opens on a click; a moved block's line says
+  // so and a click goes to where it went.
+  class Folded extends WidgetType {
+    constructor(opts) { super(); Object.assign(this, opts); }
+    eq(other) {
+      return ["runId", "id", "text", "moved", "open", "undo", "hovered", "path"].every((k) => other[k] === this[k]);
+    }
+    toDOM(view) {
+      const box = document.createElement("div");
+      box.className = `slim-removed slim-change${this.hovered ? " is-hovered" : ""}`;
+      box.dataset.slimRun = this.runId;
+      box.dataset.slimChange = this.id;
+      const line = box.appendChild(document.createElement("button"));
+      line.className = "slim-removed-line";
+      line.setAttribute("aria-expanded", String(Boolean(this.open)));
+      const struck = line.appendChild(document.createElement("s"));
+      struck.textContent = excerpt(this.text) || "(blank lines)";
+      if (this.moved) line.appendChild(document.createTextNode(" · moved"));
+      line.title = this.moved ? "Show where it went" : this.open ? "Fold" : "Show what was removed";
+      line.onmousedown = (event) => event.preventDefault();
+      line.onclick = (event) => {
+        event.preventDefault();
+        if (this.moved) api.reveal(view, this.runId, this.id);
+        else api.toggleOpen(view, this.runId, this.id);
+      };
+      if (this.open && !this.moved) {
+        const full = box.appendChild(document.createElement("div"));
+        full.className = "slim-removed-full";
+        Promise.resolve(host.render(full, this.text, this.path)).catch(() => { full.textContent = this.text; });
+      }
+      if (this.undo) {
+        const holder = box.appendChild(document.createElement("span"));
+        holder.className = `slim-undo-holder${this.hovered ? " is-shown" : ""}`;
+        holder.appendChild(undoButton(view, this.runId, this.id, this.undo));
+      }
+      return box;
+    }
+    ignoreEvent() { return true; }
+  }
+
+  const tipFor = (run, step) => {
+    const inside = [...dependents(run, [step.id])].filter((id) => id !== step.id && run.kept.has(id)).length;
+    return `${step.label || step.id}${inside ? ` · also undoes ${inside} inside it` : ""}`;
+  };
+
+  function draw(state) {
+    const runs = state.field(runsField, false);
+    if (!runs?.size) return Decoration.none;
+    const { doc } = state;
+    const raw = !livePreview(state);
+    const path = pathOf(state) || "";
+    const clamp = (pos) => Math.max(0, Math.min(doc.length, pos));
+    const ranges = [];
+    for (const run of runs.values()) {
+      if (!run.marks || !run.display.marks || run.owner.newLength !== doc.length) continue;
+      const settled = !run.active;
+      for (const step of run.steps) {
+        if (!run.kept.has(step.id) || !run.marks.has(step.id)) continue;
+        const at = mapMarks(run.marks.get(step.id), run.owner);
+        const hovered = run.display.hover === step.id;
+        const cls = `slim-change${hovered ? " is-hovered" : ""}${run.latest === step.id ? " slim-arrive" : ""}`;
+        const attributes = { "data-slim-run": run.id, "data-slim-change": step.id };
+        const tip = settled ? tipFor(run, step) : null;
+        const lines = new Set();
+        let first = null;
+        for (const [f, t] of at.rails) {
+          if (t <= f) continue;
+          let end = t;
+          while (end > f + 1 && doc.sliceString(end - 1, end) === "\n") end -= 1;
+          for (let pos = clamp(f); pos <= clamp(end - 1) && pos < doc.length + 1;) {
+            const line = doc.lineAt(pos);
+            if (!lines.has(line.from)) {
+              lines.add(line.from);
+              ranges.push(Decoration.line({ class: cls, attributes }).range(line.from));
+            }
+            if (first === null) first = line.from;
+            if (line.to >= doc.length) break;
+            pos = line.to + 1;
+          }
+        }
+        for (const [f, t] of at.ins) if (t > f) ranges.push(Decoration.mark({ class: "slim-ins" }).range(clamp(f), clamp(t)));
+        for (const [f, t] of at.formats) if (t > f) ranges.push(Decoration.mark({ class: "slim-format" }).range(clamp(f), clamp(t)));
+        for (const [p, text] of at.dels) {
+          ranges.push(Decoration.widget({ widget: new Gone(text, raw, path), side: -1 }).range(clamp(p)));
+        }
+        at.folds.forEach(([p, text, isMove], k) => {
+          const widget = new Folded({ runId: run.id, id: step.id, text, moved: isMove, path,
+            open: run.display.open.has(step.id), hovered,
+            undo: settled && first === null && k === 0 ? tip : null });
+          ranges.push(Decoration.widget({ widget, block: true, side: -1 }).range(doc.lineAt(clamp(p)).from));
+        });
+        if (settled && first !== null) {
+          ranges.push(Decoration.widget({ widget: new Undo(run.id, step.id, tip, hovered), side: -1 }).range(first));
+        }
+      }
+    }
+    return Decoration.set(ranges, true);
+  }
+
+  const marksField = StateField.define({
+    create: draw,
+    update(value, tr) {
+      const was = tr.startState, now = tr.state;
+      if (tr.docChanged || was.field(runsField, false) !== now.field(runsField, false)
+          || livePreview(was) !== livePreview(now)) return draw(now);
+      return value;
+    },
+    provide: (field) => EditorView.decorations.from(field),
+  });
+
+  // See before: the note as it was, in place, read-only, with what changed since marked on it.
+  class Before extends WidgetType {
+    constructor(runId, text, path) { super(); this.runId = runId; this.text = text; this.path = path; }
+    eq(other) { return other.runId === this.runId && other.text === this.text; }
+    toDOM(view) {
+      const root = document.createElement("div");
+      root.className = "slim-before";
+      const bar = root.appendChild(document.createElement("div"));
+      bar.className = "slim-before-bar";
+      const title = bar.appendChild(document.createElement("b"));
+      title.textContent = "Before SLIM's edits";
+      const note = bar.appendChild(document.createElement("span"));
+      note.textContent = "read-only";
+      const back = bar.appendChild(document.createElement("button"));
+      back.className = "slim-link";
+      back.textContent = "Back to now";
+      back.onmousedown = (event) => event.preventDefault();
+      back.onclick = (event) => { event.preventDefault(); api.showBefore(view, this.runId, this.text, false); };
+      for (const block of beforeBlocks(this.text, view.state.doc.toString())) {
+        const el = root.appendChild(document.createElement("div"));
+        if (block.kind === "added") {
+          el.className = "slim-before-marker is-added";
+          el.textContent = `+ added here: ${block.markdown}${block.count > 1 ? ` (and ${block.count - 1} more)` : ""}`;
+          continue;
+        }
+        el.className = `slim-before-block${block.kind === "same" ? "" : ` slim-change is-${block.kind}`}`;
+        Promise.resolve(host.render(el, block.markdown, this.path)).catch(() => { el.textContent = block.markdown; });
+        if (block.kind === "moved") {
+          const marker = root.appendChild(document.createElement("div"));
+          marker.className = "slim-before-marker is-moved";
+          marker.textContent = "moved";
+        }
+      }
+      return root;
+    }
+    ignoreEvent() { return true; }
+  }
+
+  const beforeMarks = StateField.define({
+    create: () => Decoration.none,
+    update(value, tr) {
+      const shown = tr.state.field(beforeField, false);
+      if (!shown) return Decoration.none;
+      if (!tr.docChanged && shown === tr.startState.field(beforeField, false)) return value;
+      const widget = new Before(shown.runId, shown.text, pathOf(tr.state) || "");
+      return Decoration.set([Decoration.replace({ widget, block: true }).range(0, tr.state.doc.length)]);
+    },
+    provide: (field) => EditorView.decorations.from(field),
+  });
+
+  // Every live editor, so the plugin finds the one showing a note; and each run that moved, so
+  // the chat and its saved turn follow what happened in the note (↺, Cmd-Z, See before).
+  const tracker = ViewPlugin.fromClass(class {
+    constructor(view) {
+      this.view = view;
+      host.views.add(view);
+      focused.set(view, view.hasFocus ? Date.now() : 0);
+    }
+    update(update) {
+      if (update.focusChanged && update.view.hasFocus) focused.set(update.view, Date.now());
+      const was = update.startState.field(runsField, false), now = update.state.field(runsField, false);
+      const told = new Set();
+      if (was !== now) {
+        for (const [id, run] of was) if (now.get(id)?.version !== run.version) told.add(id);
+        for (const id of now.keys()) if (!was.has(id)) told.add(id);
+      }
+      const before = update.startState.field(beforeField, false), after = update.state.field(beforeField, false);
+      if (before !== after) for (const shown of [before, after]) if (shown) told.add(shown.runId);
+      if (told.size) queueMicrotask(() => { for (const id of told) host.changed?.(update.view, id); });
+    }
+    destroy() { host.views.delete(this.view); }
+  });
+
+  const hover = (view, target) => {
+    const el = target?.closest?.("[data-slim-change]");
+    const runId = el?.dataset?.slimRun || null, id = el?.dataset?.slimChange || null;
+    const runs = view.state.field(runsField, false);
+    if (!runs) return false;
+    const effects = [];
+    for (const run of runs.values()) {
+      const want = run.id === runId ? id : null;
+      if (run.display.hover !== want) {
+        effects.push(setRun.of({ id: run.id, run: { ...run, display: { ...run.display, hover: want } } }));
+      }
+    }
+    if (effects.length) view.dispatch({ effects });
+    return false;
+  };
+
+  const api = {
+    extension: [runsField, marksField, beforeField, beforeMarks, tracker, lock.of([]),
+      EditorView.domEventHandlers({
+        mouseover: (event, view) => hover(view, event.target),
+        mouseleave: (_event, view) => hover(view, null),
+      })],
+    pathOf: (view) => pathOf(view.state),
+    focusedAt: (view) => focused.get(view) || 0,
+
+    // A run starts on the text that was sent; anything typed since is the owner's already.
+    startRun(view, { id, base }) {
+      const sent = Text.of(String(base).split("\n"));
+      const now = view.state.doc.toString();
+      const run = {
+        id, path: pathOf(view.state), base: sent, agent: sent, doc: sent, steps: [], kept: new Set(),
+        toDoc: ChangeSet.empty(sent.length), owner: ChangeSet.of(textDiff(String(base), now), sent.length),
+        marks: new Map(), redo: [], active: true, latest: null, version: 1,
+        display: { marks: true, hover: null, open: new Set() },
+      };
+      view.dispatch({ effects: setRun.of({ id, run }) });
+    },
+
+    // One change as the server made it: splices on its copy, in order. It lands where those
+    // splices sit now, unless the owner has edited there (or undone what it changes): then it
+    // is skipped, and later changes still land where they belong.
+    applyChange(view, runId, change) {
+      const run = runOf(view.state, runId);
+      if (!run || !run.active) return "skipped";
+      const splices = (change.splices || []).map(({ from, to, insert }) => ({ from, to, insert: String(insert ?? "") }));
+      let end = 0;
+      for (const s of splices) {
+        if (!Number.isInteger(s.from) || !Number.isInteger(s.to) || s.from < end || s.to < s.from || s.to > run.agent.length) {
+          return "skipped";
+        }
+        end = s.to;
+      }
+      const changes = ChangeSet.of(splices, run.agent.length);
+      const pieces = splices.map((s) => ({ old: run.agent.sliceString(s.from, s.to), now: s.insert }));
+      // What it needs: what the server says, and every earlier change whose text its splices
+      // cut into (a line diff can reach past the blocks a tool call named).
+      const needs = new Set((change.needs || []).map(String));
+      for (const earlier of run.steps) {
+        const cut = earlier.regions.some(([a, b]) => splices.some(({ from, to }) =>
+          from < to ? from < b && to > a : a < from && from < b));
+        if (cut) needs.add(earlier.id);
+      }
+      let shift = 0;
+      const regions = [];
+      for (const { from, to, insert } of splices) {
+        if (insert) regions.push([from + shift, from + shift + insert.length]);
+        shift += insert.length - (to - from);
+      }
+      const remap = (step) => ({ ...step, regions: step.regions.map(([a, b]) => {
+        const f = changes.mapPos(a, 1);
+        return [f, Math.max(f, changes.mapPos(b, -1))];
+      }) });
+      const step = { id: String(change.id), label: change.label || "", op: change.op || "", step: change.step,
+                     needs: [...needs], splices, changes, regions, rel: changeMarks(change.op, pieces) };
+      const at = splices.map(({ from, to }) => {
+        const a = run.toDoc.mapPos(from, 1);
+        return [a, from === to ? a : Math.max(a, run.toDoc.mapPos(to, -1))];
+      });
+      const touched = splices.some(({ from, to }) => run.toDoc.touchesRange(from, to))
+        || at.some(([from, to]) => run.owner.touchesRange(from, to));
+      const agent = changes.apply(run.agent);
+      const steps = run.steps.map(remap);
+      if (touched) {
+        const next = { ...run, steps: [...steps, { ...step, skipped: true }], agent,
+                       toDoc: changes.invert(run.agent).compose(run.toDoc), version: run.version + 1 };
+        view.dispatch({ effects: setRun.of({ id: runId, run: next }) });
+        return "skipped";
+      }
+      const onDoc = changes.map(run.toDoc);
+      const marks = new Map([...run.marks].map(([id, m]) => [id, mapMarks(m, onDoc)]));
+      marks.set(step.id, place(step.rel, starts(splices, run.toDoc)));
+      const next = { ...run, steps: [...steps, step], agent, kept: new Set([...run.kept, step.id]),
+                     doc: onDoc.apply(run.doc), toDoc: run.toDoc.map(changes, true),
+                     owner: run.owner.map(onDoc, true), marks, latest: step.id, version: run.version + 1 };
+      const landing = onDoc.map(run.owner);
+      const effects = [setRun.of({ id: runId, run: next })];
+      // Where it landed comes into view, unless the owner is typing in this editor.
+      if (!view.hasFocus) {
+        let first = null;
+        landing.iterChangedRanges((_fromA, _toA, fromB) => { if (first === null) first = fromB; });
+        if (first !== null) effects.push(EditorView.scrollIntoView(first, { y: "nearest", yMargin: 80 }));
+      }
+      view.dispatch(own({ changes: landing, effects, userEvent: AGENT }));
+      return "applied";
+    },
+
+    // The run is over: no more changes come, and ↺ appears.
+    endRun(view, runId) {
+      const run = runOf(view.state, runId);
+      if (run?.active) view.dispatch({ effects: setRun.of({ id: runId, run: { ...run, active: false, latest: null, version: run.version + 1 } }) });
+    },
+
+    // ↺: these changes and everything made inside them, as one step. Refused, not forced, when
+    // the owner has edited that text since.
+    undo(view, runId, ids) {
+      const run = runOf(view.state, runId);
+      if (!run) return "gone";
+      const gone = dependents(run, ids);
+      const kept = new Set([...run.kept].filter((id) => !gone.has(id)));
+      if (same(kept, run.kept)) return "nothing";
+      const next = moved(run, kept, [...run.kept].filter((id) => gone.has(id)));
+      if (!next) return "refused";
+      view.dispatch(own({ changes: next.changes, effects: setRun.of({ id: runId, run: next.run }), userEvent: UNDO }));
+      return "undone";
+    },
+
+    // Puts back what the last ↺ (or Undo all) took out.
+    redo(view, runId) {
+      const run = runOf(view.state, runId);
+      const group = run?.redo.at(-1);
+      if (!group) return "nothing";
+      const kept = holdable(run, [...run.kept, ...group]);
+      const next = moved(run, kept, null);
+      if (!next) return "refused";
+      next.run.redo = run.redo.slice(0, -1).filter((g) => g.some((id) => !kept.has(id)));
+      view.dispatch(own({ changes: next.changes, effects: setRun.of({ id: runId, run: next.run }), userEvent: REDO }));
+      return "redone";
+    },
+
+    // Every change the owner has not edited since, and what those need, comes out as one step.
+    undoAll(view, runId) {
+      const run = runOf(view.state, runId);
+      if (!run || !run.kept.size) return { undone: 0, kept: 0 };
+      const edited = [...run.kept].filter((id) => (run.marks.get(id)?.rails || []).some(([f, t]) => inside(run.owner, f, t)));
+      const kept = holdable(run, edited);
+      const gone = [...run.kept].filter((id) => !kept.has(id));
+      const next = gone.length ? moved(run, kept, gone) : null;
+      if (!next) return { undone: 0, kept: run.kept.size };
+      view.dispatch(own({ changes: next.changes, effects: setRun.of({ id: runId, run: next.run }), userEvent: UNDO }));
+      return { undone: gone.length, kept: kept.size };
+    },
+
+    setMarks(view, runId, on) {
+      const run = runOf(view.state, runId);
+      if (run && run.display.marks !== on) {
+        view.dispatch({ effects: setRun.of({ id: runId, run: { ...run, display: { ...run.display, marks: on }, version: run.version + 1 } }) });
+      }
+    },
+
+    toggleOpen(view, runId, id) {
+      const run = runOf(view.state, runId);
+      if (!run) return;
+      const open = new Set(run.display.open);
+      if (open.has(id)) open.delete(id); else open.add(id);
+      view.dispatch({ effects: setRun.of({ id: runId, run: { ...run, display: { ...run.display, open } } }) });
+    },
+
+    // A moved block: show where it went.
+    reveal(view, runId, id) {
+      const run = runOf(view.state, runId);
+      const at = run?.marks.get(id) && mapMarks(run.marks.get(id), run.owner);
+      const pos = at?.rails[0]?.[0] ?? at?.folds[0]?.[0];
+      if (pos != null && pos <= view.state.doc.length) {
+        view.dispatch({ effects: EditorView.scrollIntoView(pos, { y: "center" }) });
+      }
+    },
+
+    // The note as it was before the run, drawn over the note: read-only, the file untouched.
+    showBefore(view, runId, beforeText, on) {
+      const shown = view.state.field(beforeField, false);
+      if (!on && shown?.runId !== runId) return;
+      view.dispatch({
+        effects: [showBefore.of(on ? { runId, text: String(beforeText) } : null),
+                  lock.reconfigure(on ? [EditorView.editable.of(false), EditorState.readOnly.of(true)] : [])],
+      });
+    },
+    showing: (view) => view.state.field(beforeField, false)?.runId || null,
+
+    // The note as it was before the run, as one editor change: Cmd-Z takes it back. The runs'
+    // marks go with it.
+    restore(view, beforeText) {
+      view.dispatch(own({
+        changes: textDiff(view.state.doc.toString(), String(beforeText)),
+        effects: [clearRuns.of(null), showBefore.of(null), lock.reconfigure([])],
+        userEvent: RESTORE,
+      }));
+    },
+
+    state(view, runId) {
+      const run = runOf(view.state, runId);
+      if (!run) return null;
+      const changes = run.steps.map((step) => ({
+        id: step.id, label: step.label,
+        state: step.skipped ? "skipped" : run.kept.has(step.id) ? "applied" : "undone",
+      }));
+      return {
+        changes, undone: changes.filter((change) => change.state === "undone").length,
+        redoable: run.redo.length > 0, active: run.active, marks: run.display.marks,
+        before: api.showing(view) === runId, touched: !run.owner.empty,
+      };
+    },
+  };
+  return api;
 }
 
 function changeCounts(file) {
@@ -4380,326 +5187,6 @@ function removalWarning(changes, doc) {
     warnings.push("removes the frontmatter");
   }
   return warnings.join(" · ");
-}
-
-// The review in an editor: CodeMirror state that maps the changes through every edit, and
-// decorations drawn from it. `cm` is the two CodeMirror modules (Obsidian's, or real ones in a
-// browser test); `host` is the plugin's side: the live editors, Obsidian's editor fields, a
-// Markdown renderer, and `changed`, told whenever a change's state moves.
-function makeReviewEditor(cm, host) {
-  const { StateField, StateEffect } = cm.state;
-  const { EditorView, Decoration, WidgetType, ViewPlugin } = cm.view;
-  const ACCEPT = "slim.accept";
-  const start = StateEffect.define();
-  const decided = StateEffect.define();
-  const end = StateEffect.define();
-  const focused = new WeakMap();
-
-  const reviewField = StateField.define({
-    create: () => null,
-    update(review, tr) {
-      for (const effect of tr.effects) {
-        if (effect.is(start)) review = effect.value;
-        else if (effect.is(end)) review = null;
-      }
-      if (!review) return null;
-      const verdicts = new Map();
-      for (const effect of tr.effects) if (effect.is(decided)) verdicts.set(effect.value.index, effect.value.state);
-      if (!tr.docChanged && !verdicts.size) return review;
-      const doc = tr.newDoc;
-      const map = (pos, assoc) => tr.changes.mapPos(pos, assoc);
-      // A range maps inward, so a neighbour's change at its edge stays outside it; an empty one
-      // maps outward, so the text Cmd-Z puts back at that point is inside it.
-      const span = (from, to) => {
-        const empty = from === to;
-        const start = map(from, empty ? -1 : 1);
-        return [start, Math.max(start, map(to, empty ? 1 : -1))];
-      };
-      const items = review.items.map((item) => {
-        const verdict = verdicts.get(item.index);
-        if (verdict === "applied") {
-          if (item.state !== "open") return item;
-          const from = map(item.from, item.from === item.to ? -1 : 1);
-          return { ...item, state: "applied", from, to: from + item.new.length };
-        }
-        if (verdict) return { ...item, state: verdict };
-        if (!tr.docChanged || item.state === "rejected") return item;
-        if (item.state === "applied") {
-          // Cmd-Z restores the old text over the applied range: the change is open again.
-          const [from, to] = span(item.from, item.to);
-          return { ...item, from, to, state: doc.sliceString(from, to) === item.old ? "open" : "applied" };
-        }
-        if (tr.isUserEvent("redo")) {
-          const [from, to] = span(item.from, item.to);
-          if (doc.sliceString(from, to) === item.new) return { ...item, from, to, state: "applied" };
-        }
-        // Typing at either edge stays outside the change; typing inside it means the owner
-        // changed what Accept would replace, so it waits until that text is back — in place, or
-        // put back whole where it was (Cmd-Z after deleting it).
-        let from = map(item.from, item.from === item.to ? -1 : 1);
-        let to = Math.max(from, map(item.to, -1));
-        if (doc.sliceString(from, to) !== item.old && item.old) {
-          tr.changes.iterChangedRanges((_fromA, _toA, fromB, toB) => {
-            if (fromB > to || toB < from) return;
-            const text = doc.sliceString(fromB, toB), at = text.indexOf(item.old);
-            if (at >= 0 && text.indexOf(item.old, at + 1) < 0) { from = fromB + at; to = from + item.old.length; }
-          });
-        }
-        return { ...item, from, to, state: doc.sliceString(from, to) === item.old ? "open" : "edited" };
-      });
-      return { ...review, items };
-    },
-  });
-
-  const livePreview = (state) => !host.livePreviewField || state.field(host.livePreviewField, false) !== false;
-  const caretLine = (state) => state.doc.lineAt(state.selection.main.head).number;
-
-  class Inserted extends WidgetType {
-    constructor(text, raw, path) { super(); this.text = text; this.raw = raw; this.path = path; }
-    eq(other) { return other.text === this.text && other.raw === this.raw; }
-    toDOM() {
-      const span = document.createElement("span");
-      span.className = "slim-ins";
-      span.textContent = this.text;
-      if (!this.raw) {
-        const holder = document.createElement("div");
-        const text = this.text;
-        Promise.resolve(host.render(holder, text.trim(), this.path)).then(() => {
-          const p = holder.querySelector("p") || holder;
-          span.replaceChildren(/^\s/.test(text) ? " " : "", ...p.childNodes, /\s$/.test(text) ? " " : "");
-        }).catch(() => {});
-      }
-      return span;
-    }
-  }
-
-  class Added extends WidgetType {
-    constructor(text, raw, path) { super(); this.text = text; this.raw = raw; this.path = path; }
-    eq(other) { return other.text === this.text && other.raw === this.raw; }
-    toDOM() {
-      const div = document.createElement("div");
-      div.className = `slim-ins-block slim-change${this.raw ? " is-source" : ""}`;
-      div.textContent = this.text.replace(/\n+$/, "");
-      if (!this.raw) {
-        const text = this.text;
-        div.textContent = "";
-        Promise.resolve(host.render(div, text, this.path)).catch(() => { div.textContent = text; });
-      }
-      return div;
-    }
-    ignoreEvent() { return true; }
-  }
-
-  // A formatting change's result, drawn over the text it replaces. A click puts the caret where
-  // it starts, which shows the change's source (the editor's own click would land beside a block,
-  // and the source appearing under a held button would turn the click into a selection).
-  const reveal = (view, el) => {
-    el.onmousedown = (event) => {
-      event.preventDefault();
-      view.dispatch({ selection: { anchor: view.posAtDOM(el) }, userEvent: "select.pointer" });
-      view.focus();
-    };
-    return el;
-  };
-  class Formatted extends Inserted {
-    toDOM(view) { const span = super.toDOM(); span.className = "slim-format"; return reveal(view, span); }
-  }
-  class FormattedBlock extends Added {
-    toDOM(view) { const div = super.toDOM(); div.className = "slim-format-block slim-change"; return reveal(view, div); }
-  }
-
-  class Bar extends WidgetType {
-    constructor(index, label, state) { super(); this.index = index; this.label = label; this.state = state; }
-    eq(other) { return other.index === this.index && other.label === this.label && other.state === this.state; }
-    toDOM(view) {
-      const bar = document.createElement("div");
-      bar.className = "slim-change-bar";
-      const what = bar.appendChild(document.createElement("span"));
-      what.className = "slim-change-what";
-      what.textContent = this.state === "edited" ? `${this.label} · You edited this part` : this.label;
-      const button = (text, status, cta) => {
-        const el = bar.appendChild(document.createElement("button"));
-        el.textContent = text;
-        if (cta) el.className = "mod-cta";
-        el.onmousedown = (event) => event.preventDefault();          // keep the caret where it is
-        el.onclick = (event) => { event.preventDefault(); api.decide(view, this.index, status); };
-      };
-      if (this.state === "edited") button("Dismiss", "rejected");
-      else { button("Reject", "rejected"); button("Accept", "applied", true); }
-      return bar;
-    }
-    ignoreEvent() { return true; }
-  }
-
-  function draw(state) {
-    const review = state.field(reviewField, false);
-    if (!review) return Decoration.none;
-    const { doc } = state;
-    const live = livePreview(state);
-    const caret = caretLine(state);
-    const path = review.entry.path;
-    const ranges = [];
-    for (const item of review.items) {
-      if (item.state !== "open" && item.state !== "edited") continue;
-      const lines = [];
-      for (let pos = item.from; pos < item.to;) {
-        const line = doc.lineAt(pos);
-        lines.push(line);
-        pos = line.to + 1;
-      }
-      for (const line of lines) ranges.push(Decoration.line({ class: "slim-change" }).range(line.from));
-      // A change that only moves markdown is underlined where it changes, not struck and drawn
-      // again; the caret in it shows its source like any other change.
-      const format = formatChange(item.old, item.new);
-      const quiet = item.state === "open" && Boolean(format) && live && !lines.some((line) => line.number === caret);
-      const marked = item.state === "open" && markable(item.old, item.new);
-      if (marked) {
-        // From the change's own text: while it is open, that is exactly the note's text there.
-        const others = item.new.split("\n").filter((text) => text.trim());
-        let k = 0, next = item.from;
-        for (const text of item.old.split("\n")) {
-          const start = next;
-          next += text.length + 1;
-          if (!text.trim()) continue;
-          const other = others[k++];
-          const ma = MARKER.exec(text)[0], mb = MARKER.exec(other)[0];
-          const raw = !live || doc.lineAt(start).number === caret;
-          const hushed = Boolean(format) && !raw;
-          // `cut` is where the run of removed words being replaced starts.
-          let at = start + ma.length, cut = at, inserted = "";
-          const flush = () => {
-            if (hushed && at > cut) {
-              // The result over the old words; the space after them stays the note's own.
-              const end = cut + doc.sliceString(cut, at).trimEnd().length;
-              const widget = inserted.trim() ? new Formatted(inserted.trimEnd(), false, path) : null;
-              ranges.push(widget ? Decoration.replace({ widget }).range(cut, end) : Decoration.mark({ class: "slim-format" }).range(cut, end));
-            } else if (inserted) {
-              const widget = hushed ? new Formatted(inserted, false, path) : new Inserted(inserted, raw, path);
-              ranges.push(Decoration.widget({ widget, side: 1 }).range(at));
-            }
-            inserted = "";
-            cut = at;
-          };
-          for (const op of wordOps(text.slice(ma.length), other.slice(mb.length))) {
-            if (op[0] === "+") { inserted += op[1]; continue; }
-            if (op[0] === "=" || inserted) flush();
-            if (op[0] === "-" && !hushed) ranges.push(Decoration.mark({ class: "slim-del" }).range(at, at + op[1].length));
-            at += op[1].length;
-            if (op[0] === "=") cut = at;
-          }
-          flush();
-        }
-      } else if (quiet) {
-        // Over whole lines, unless the editor draws them as a block of its own (math, code, a
-        // table, a callout): two blocks over one range do not mix, so those keep their text.
-        const written = lines.filter((line) => line.text.trim());
-        if (written.some((line) => BLOCKISH.test(line.text))) {
-          for (const line of written) ranges.push(Decoration.mark({ class: "slim-format" }).range(line.from, line.to));
-        } else {
-          const widget = new FormattedBlock(item.new, false, path);
-          ranges.push(Decoration.replace({ widget, block: true }).range(written[0].from, written.at(-1).to));
-        }
-      } else {
-        for (const line of lines) {
-          ranges.push(Decoration.line({ class: item.state === "edited" ? "slim-edited-line" : "slim-del-line" }).range(line.from));
-          if (line.text && item.state === "open") ranges.push(Decoration.mark({ class: "slim-del" }).range(line.from, line.to));
-        }
-      }
-      // Below the change's last written line (its blank lines are the gap to the next block);
-      // an addition sits above the line it goes before.
-      const last = [...lines].reverse().find((line) => line.text.trim()) || lines.at(-1);
-      const after = lines.length ? last.to : item.from;
-      const side = lines.length ? 1 : -2;
-      if (item.state === "open" && item.new && !marked && !quiet) {
-        ranges.push(Decoration.widget({ widget: new Added(item.new, !live || Boolean(format), path), block: true, side }).range(after));
-      }
-      const kind = !item.old ? "Added" : !item.new ? "Removed" : format;
-      const label = `Change ${item.index + 1} of ${review.total}${kind ? ` · ${kind}` : ""}`;
-      ranges.push(Decoration.widget({ widget: new Bar(item.index, label, item.state), block: true, side: side + 1 }).range(after));
-    }
-    return Decoration.set(ranges, true);
-  }
-
-  const decorations = StateField.define({
-    create: draw,
-    update(value, tr) {
-      const was = tr.startState, now = tr.state;
-      const review = now.field(reviewField, false);
-      if (!review && !was.field(reviewField, false)) return Decoration.none;
-      if (tr.docChanged || review !== was.field(reviewField, false) || caretLine(was) !== caretLine(now)
-          || livePreview(was) !== livePreview(now)) return draw(now);
-      return value;
-    },
-    provide: (field) => EditorView.decorations.from(field),
-  });
-
-  // Every live editor, so the plugin finds the one showing a note; and each change's new state,
-  // so the sidebar and the saved chat follow what happened in the note (Accept, Cmd-Z, typing):
-  // `host.changed(view, entry, [[index, state], ...])`.
-  const tracker = ViewPlugin.fromClass(class {
-    constructor(view) {
-      this.view = view;
-      host.views.add(view);
-      focused.set(view, view.hasFocus ? Date.now() : 0);
-      host.opened?.(view);
-    }
-    update(update) {
-      if (update.focusChanged && update.view.hasFocus) focused.set(update.view, Date.now());
-      const was = update.startState.field(reviewField, false), now = update.state.field(reviewField, false);
-      if (!was || !now || was === now || was.entry !== now.entry) return;
-      const moved = [];
-      now.items.forEach((item, k) => {
-        if (was.items[k] && was.items[k].state !== item.state) moved.push([item.index, item.state]);
-      });
-      // One report per transaction (Accept the rest is one), after CodeMirror's update.
-      if (moved.length) queueMicrotask(() => host.changed(update.view, now.entry, moved));
-    }
-    destroy() { host.views.delete(this.view); }
-  });
-
-  const api = {
-    extension: [reviewField, decorations, tracker],
-    review: (view) => view.state.field(reviewField, false) || null,
-    pathOf: (view) => (host.infoField && view.state.field(host.infoField, false)?.file?.path) || null,
-    focusedAt: (view) => focused.get(view) || 0,
-    start(view, entry, items) {
-      view.dispatch({ effects: start.of({ entry, items, total: (entry.file.changes || []).length }) });
-    },
-    end(view) { if (api.review(view)) view.dispatch({ effects: end.of(null) }); },
-    decide(view, index, status) {
-      const item = api.review(view)?.items.find((candidate) => candidate.index === index);
-      if (!item) return false;
-      if (status === "applied") {
-        if (item.state !== "open" || view.state.doc.sliceString(item.from, item.to) !== item.old) return false;
-        view.dispatch({ changes: { from: item.from, to: item.to, insert: item.new },
-                        effects: decided.of({ index, state: "applied" }), userEvent: ACCEPT });
-        return true;
-      }
-      if (item.state !== "open" && item.state !== "edited") return false;
-      view.dispatch({ effects: decided.of({ index, state: "rejected" }) });
-      return true;
-    },
-    decideAll(view, status) {
-      const review = api.review(view);
-      if (!review) return 0;
-      const { doc } = view.state;
-      const open = review.items.filter((item) => item.state === "open"
-        && (status !== "applied" || doc.sliceString(item.from, item.to) === item.old));
-      const all = status === "rejected" ? [...open, ...review.items.filter((item) => item.state === "edited")] : open;
-      if (!all.length) return 0;
-      view.dispatch({
-        changes: status === "applied" ? open.map((item) => ({ from: item.from, to: item.to, insert: item.new })) : [],
-        effects: all.map((item) => decided.of({ index: item.index, state: status })),
-        userEvent: ACCEPT,
-      });
-      return all.length;
-    },
-    reveal(view, index) {
-      const item = api.review(view)?.items.find((candidate) => candidate.index === index);
-      if (item && item.from >= 0) view.dispatch({ effects: EditorView.scrollIntoView(item.from, { y: "center" }) });
-    },
-  };
-  return api;
 }
 
 /* One durable meeting object per recording/note, with one reserved capture slot.
@@ -4896,7 +5383,7 @@ module.exports = class SlimRecorderPlugin extends Plugin {
     this._ensuring = null;
     this.meetingBlocks = new Map();
     this.meetings = new MeetingSessionManager(this);
-    this.setupReview();
+    this.setupLive();
     this.registerMarkdownCodeBlockProcessor("slim-meeting", (_source, el, ctx) => {
       const path = ctx.sourcePath;
       el.addClass("slim-meeting-block");
@@ -4945,13 +5432,8 @@ module.exports = class SlimRecorderPlugin extends Plugin {
           }
         }
         queueMicrotask(() => this.noticeClosedPendingReviews());
-        this.syncReviews();
       }));
-      this.registerEvent(this.app.workspace.on("layout-change", () => {
-        this.noticeClosedPendingReviews();
-        this.syncReviews();
-      }));
-      this.registerEvent(this.app.workspace.on("file-open", () => queueMicrotask(() => this.syncReviews())));
+      this.registerEvent(this.app.workspace.on("layout-change", () => this.noticeClosedPendingReviews()));
       // Quitting with the caret in `My notes` fires no blur. Obsidian awaits quit tasks, and
       // the server is killed only at unload, after them.
       this.registerEvent(this.app.workspace.on("quit", (tasks) => {
@@ -5238,137 +5720,49 @@ module.exports = class SlimRecorderPlugin extends Plugin {
     }
   }
 
-  // ---- reviewing a proposal in the note ----------------------------------------------------
-  // The copilot offers each note's newest undecided proposal; the editor focused last that
-  // shows the note draws it. Without CodeMirror (node tests) there is no review to draw.
-  setupReview() {
-    this.reviews = new Map();
-    this.reviewViews = new Set();
+  // ---- SLIM's changes in the note --------------------------------------------------------------
+  // One extension in every Markdown editor: an editing run's changes land in the editor showing
+  // the note, drawn where they are. Without CodeMirror (node tests) there is no live editor.
+  setupLive() {
+    this.liveViews = new Set();
     let cm;
     try {
       cm = { state: require("@codemirror/state"), view: require("@codemirror/view") };
     } catch (e) {
       return;
     }
-    this.reviewEditor = makeReviewEditor(cm, {
-      views: this.reviewViews,
+    try { cm.commands = require("@codemirror/commands"); } catch (e) { /* no isolated history */ }
+    this.live = makeLiveEditor(cm, {
+      views: this.liveViews,
       infoField: editorInfoField,
       livePreviewField: editorLivePreviewField,
       render: (el, markdown, sourcePath) => MarkdownRenderer.render(this.app, markdown, el, sourcePath, this),
-      changed: (_view, entry, updates) => this.reviewsChanged(entry, updates),
-      opened: () => queueMicrotask(() => this.syncReviews()),
+      icon: (el, name) => setIcon?.(el, name),
+      changed: (view, runId) => this.liveChanged(view, runId),
+      refused: () => new Notice("SLIM: you've edited this change since, so it stays as it is."),
     });
-    this.registerEditorExtension(this.reviewEditor.extension);
+    this.registerEditorExtension(this.live.extension);
   }
 
-  offerReview(entry) {
-    this.reviews.set(entry.path, entry);
-    this.syncReviews();
-  }
-
-  reviewViewFor(path) {
-    const api = this.reviewEditor;
+  // The editor showing a note: the one focused last.
+  liveViewFor(path) {
+    const live = this.live;
     let best = null;
-    for (const view of (api ? this.reviewViews : [])) {
-      if (api.pathOf(view) === path && (!best || api.focusedAt(view) > api.focusedAt(best))) best = view;
+    for (const view of (live ? this.liveViews : [])) {
+      if (live.pathOf(view) === path && (!best || live.focusedAt(view) > live.focusedAt(best))) best = view;
     }
     return best;
   }
 
-  syncReviews() {
-    const api = this.reviewEditor;
-    if (!api) return;
-    for (const view of [...this.reviewViews]) {
-      const path = api.pathOf(view);
-      const entry = path ? this.reviews.get(path) : null;
-      const shown = api.review(view);
-      if (!entry || this.reviewViewFor(path) !== view) {
-        // A fully decided review stays quietly in its editor, so Cmd-Z can reopen a change.
-        if (shown?.items.some((item) => item.state === "open" || item.state === "edited")) api.end(view);
-        continue;
-      }
-      if (shown?.entry !== entry) this.startReview(view, entry);
-    }
+  // The editor holding a run, while one does: its marks, ↺ and Redo live there.
+  liveRunView(runId) {
+    for (const view of (this.live ? this.liveViews : [])) if (this.live.state(view, runId)) return view;
+    return null;
   }
 
-  // The first drawing needs the note exactly as proposed. After that the owner's edits
-  // elsewhere are theirs to make: each open change is placed by its own text (placeChanges).
-  startReview(view, entry) {
-    const doc = view.state.doc.toString();
-    if (!entry.file.drawn) {
-      if (sha256Hex(doc) !== entry.file.base_hash) {
-        entry.stale = true;
-        this.reviews.delete(entry.path);
-        this.reviewEditor.end(view);
-        entry.copilot?.render?.();
-        return;
-      }
-      entry.file.drawn = true;
-      entry.copilot?.saveDecisions?.(entry.thread, entry.turns);
-    }
-    const placed = placeChanges(doc, entry.file.changes);
-    entry.lost = new Set(placed.filter((item) => item.state === "lost").map((item) => item.index));
-    this.reviewEditor.start(view, entry, placed.filter((item) => item.state === "open"));
-    entry.copilot?.render?.();
+  liveChanged(view, runId) {
+    for (const leaf of this.app.workspace?.getLeavesOfType?.(VIEW_TYPE_COPILOT) || []) leaf.view?.runChanged?.(view, runId);
   }
-
-  // The copilot's own note opens where it is; a linked note opens beside it without focus, so
-  // the sidebar keeps the chat the proposal came from. Reading view switches to editing.
-  async showReview(entry, index = null) {
-    this.reviews.set(entry.path, entry);
-    const { workspace, vault } = this.app;
-    const leaves = (workspace.getLeavesOfType("markdown") || []).filter((leaf) => leaf.view?.file?.path === entry.path);
-    if (!leaves.length) {
-      const file = vault.getAbstractFileByPath(entry.path);
-      if (!file) return null;
-      const own = entry.copilot?.context?.source?.path === entry.path;
-      await workspace.getLeaf(own ? false : "split").openFile(file, { active: own });
-    }
-    for (const leaf of leaves) {
-      if (leaf.view?.getMode?.() === "preview") {
-        const state = leaf.getViewState();
-        await leaf.setViewState({ ...state, state: { ...state.state, mode: "source" } });
-      }
-    }
-    this.syncReviews();
-    const view = this.reviewViewFor(entry.path);
-    if (view && index != null) this.reviewEditor.reveal(view, index);
-    return view;
-  }
-
-  async decideRest(entry, status) {
-    const view = await this.showReview(entry);
-    const decided = view ? this.reviewEditor.decideAll(view, status) : 0;
-    if (status === "rejected" && entry.lost?.size) this.reviewsChanged(entry, [...entry.lost].map((index) => [index, "rejected"]));
-    return decided;
-  }
-
-  async reviewDoc(path) {
-    const view = this.reviewViewFor(path);
-    if (view) return view.state.doc.toString();
-    const file = this.app.vault.getAbstractFileByPath(path);
-    return file ? this.app.vault.read(file) : "";
-  }
-
-  // Changes' states in the note → their statuses on the chat turn, as one decision. `edited`,
-  // and `open` from edited, change nothing saved; `open` from applied is Cmd-Z.
-  reviewsChanged(entry, updates) {
-    let moved = false;
-    for (const [index, state] of updates) {
-      const change = entry.file.changes?.[index];
-      if (!change) continue;
-      const status = state === "applied" || state === "rejected" ? state : undefined;
-      if (state === "rejected") entry.lost?.delete(index);
-      if (change.status === status) continue;
-      if (status) change.status = status;
-      else delete change.status;
-      moved = true;
-    }
-    if (moved) entry.copilot?.reviewChanged(entry);
-    else entry.copilot?.render?.();
-  }
-
-  reviewChanged(entry, index, state) { this.reviewsChanged(entry, [[index, state]]); }
 
   stopServer() {
     const child = this.server;
@@ -5597,11 +5991,14 @@ module.exports.historyText = historyText;
 module.exports.wordTokens = wordTokens;
 module.exports.wordOps = wordOps;
 module.exports.markable = markable;
-module.exports.placeChanges = placeChanges;
 module.exports.changeCounts = changeCounts;
 module.exports.changeLabel = changeLabel;
 module.exports.formatChange = formatChange;
 module.exports.removalWarning = removalWarning;
-module.exports.makeReviewEditor = makeReviewEditor;
+module.exports.makeLiveEditor = makeLiveEditor;
+module.exports.changeMarks = changeMarks;
+module.exports.beforeBlocks = beforeBlocks;
+module.exports.textDiff = textDiff;
+module.exports.excerpt = excerpt;
 module.exports.proposalStatus = proposalStatus;
 module.exports.copyDecisions = copyDecisions;

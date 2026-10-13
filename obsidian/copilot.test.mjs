@@ -35,8 +35,9 @@ Module._load = function (request) {
 const { CopilotView, RenameModal, SSEParser, groupThreads, streamRequest,
         groupCitations, noteTitle, normalizeMath, SUGGESTED_PROMPTS, metaText,
         sha256Hex, slashQuery, matchSkills, inputsText, editorSelection,
-        visibleStream, historyText, wordTokens, wordOps, markable, placeChanges, changeCounts,
-        changeLabel, formatChange, removalWarning, proposalStatus, copyDecisions } =
+        visibleStream, historyText, wordTokens, wordOps, markable, changeCounts,
+        changeLabel, formatChange, removalWarning, proposalStatus, copyDecisions,
+        changeMarks, beforeBlocks, textDiff, excerpt } =
   createRequire(import.meta.url)(path.join(HERE, "main.js"));
 
 test("SSE parsing survives arbitrary chunk boundaries", () => {
@@ -1413,28 +1414,6 @@ test("a change gets word marks only when its lines keep their kind and half thei
   assert.equal(markable("", "new\n"), false);
 });
 
-test("a change is found again where it was, after the ones applied above it, or once anywhere", () => {
-  const changes = [
-    { from: 0, to: 2, old: "a\n", new: "AAA\n", status: "applied" },
-    { from: 4, to: 6, old: "c\n", new: "C\n" },
-    { from: 6, to: 6, old: "", new: "new\n", above: "c" },
-    { from: 8, to: 10, old: "e\n", new: "", status: "rejected" },
-    { from: 10, to: 12, old: "x\n", new: "y\n" },
-  ];
-  assert.deepEqual(placeChanges("AAA\nb\nc\nd\ne\n", changes).map(({ index, from, state }) => [index, from, state]),
-    [[1, 6, "open"], [2, 8, "open"], [4, -1, "lost"]]);
-  // Typed above while the note was closed: the old text is searched, and used if it occurs once.
-  assert.deepEqual(placeChanges("typed\nAAA\nb\nc\nd\n", changes.slice(0, 2)).map((p) => p.from), [12]);
-  assert.deepEqual(placeChanges("c\nc\n", [{ from: 9, to: 11, old: "c\n", new: "C\n" }]).map((p) => p.state), ["lost"]);
-});
-
-test("offsets from the server land on the right text past an emoji", () => {
-  const doc = "🎙️ note\n\nold line\n";
-  const from = doc.indexOf("old");                      // what edits.changes sends: UTF-16 units
-  assert.equal(from, 10);
-  assert.deepEqual(placeChanges(doc, [{ from, to: from + 9, old: "old line\n", new: "new line\n" }])[0].state, "open");
-});
-
 test("a change that keeps every word is named for the formatting it moves", () => {
   assert.equal(formatChange("## Why is NLP Hard?\n", "### Why is NLP Hard?\n"), "Heading level 2 → 3");
   assert.equal(formatChange("- Lexical ambiguity: many senses.\n- Syntactic ambiguity: scope.\n",
@@ -1463,101 +1442,58 @@ test("the sidebar names a change by its first words and counts what is left", ()
   assert.equal(removalWarning([{ from: 9, old: "x\n", new: "y\n", status: "applied" }], "a\n".repeat(30)), "");
 });
 
+// ---- the live editor's pure parts (the editor itself runs in the real-CodeMirror harness) ----
+
+test("a change's marks: added words, removed words where they were, formatting, and folds", () => {
+  const [words] = changeMarks("replace", [{ old: "The quick brown fox jumps.\n\n", now: "The quick red fox jumps.\n\n" }]);
+  const now = "The quick red fox jumps.\n\n";
+  assert.deepEqual(words.rail, [0, now.length]);
+  assert.deepEqual(words.ins.map(([f, t]) => now.slice(f, t)), ["red"]);
+  assert.deepEqual(words.dels, [[now.indexOf("red"), "brown"]]);         // struck before what replaced it
+  assert.equal(words.fold, null);
+  const [format] = changeMarks("replace", [{ old: "## Why\n", now: "### Why\n" }]);
+  assert.deepEqual([format.formats, format.ins, format.dels], [[[0, 7]], [], []]);
+  const [rewrite] = changeMarks("replace", [{ old: "one two three four\n", now: "five six seven eight\n" }]);
+  assert.deepEqual(rewrite.fold, { text: "one two three four\n", moved: false });  // old text folds above the new
+  const [gone, landed] = changeMarks("move", [{ old: "## A\n\nx\n\n", now: "" }, { old: "", now: "## A\n\nx\n\n" }]);
+  assert.deepEqual([gone.rail, gone.fold.moved, landed.fold, landed.rail], [null, true, null, [0, 9]]);
+});
+
+test("the change between two texts is one replace from the common prefix to the common suffix", () => {
+  assert.deepEqual(textDiff("abc\ndef\n", "abc\nXYZ\ndef\n"), [{ from: 4, to: 4, insert: "XYZ\n" }]);
+  assert.deepEqual(textDiff("same", "same"), []);
+  assert.deepEqual(textDiff("🎙️ a", "🎙️ b"), [{ from: 4, to: 5, insert: "b" }]);   // UTF-16, as the editor counts
+});
+
+test("a folded removal shows its first line without markers", () => {
+  assert.equal(excerpt("\n## **Key** Ideas\n\nbody"), "Key Ideas");
+  assert.equal(excerpt("- `item` one\n"), "item one");
+});
+
+test("See before marks what is gone, what changed, what moved and where something was added", () => {
+  const before = "# T\n\nThe quick brown fox.\n\n## Gone\n\nM block.\n\nKeep one.\n\nKeep two.\n";
+  const now = "# T\n\nThe quick red fox.\n\nA brand new paragraph.\n\nKeep one.\n\nKeep two.\n\nM block.\n";
+  const blocks = beforeBlocks(before, now);
+  assert.deepEqual(blocks.map((b) => b.kind), ["same", "changed", "removed", "moved", "added", "same", "same"]);
+  assert.equal(blocks[1].markdown, "The quick ~~brown~~ fox.");
+  assert.equal(blocks[4].markdown, "A brand new paragraph.");
+  // A fence with blank lines inside is one block.
+  assert.deepEqual(beforeBlocks("```\na\n\nb\n```\n", "```\na\n\nb\n```\n").map((b) => b.kind), ["same"]);
+});
+
 const SlimRecorderPlugin = createRequire(import.meta.url)(path.join(HERE, "main.js"));
 
-function fakeReviewEditor() {
-  const shown = new Map();
-  return {
-    shown,
-    pathOf: (view) => view.path,
-    focusedAt: (view) => view.focusedAt || 0,
-    review: (view) => shown.get(view) || null,
-    start: (view, entry, items) => shown.set(view, { entry, items }),
-    end: (view) => shown.delete(view),
-    decideAll: (view) => (shown.get(view)?.items.length || 0),
-    reveal: (view, index) => { view.revealed = index; },
-  };
-}
-
-function reviewPlugin() {
+test("a run lands in the editor focused last that shows the note, and is found again by its id", () => {
   const plugin = new SlimRecorderPlugin();
-  plugin.reviews = new Map();
-  plugin.reviewViews = new Set();
-  plugin.reviewEditor = fakeReviewEditor();
-  plugin.app = { vault: { getAbstractFileByPath: (p) => ({ path: p }), read: async () => "" },
-                 workspace: { getLeavesOfType: () => [], getLeaf: () => ({ openFile: async () => {} }) } };
-  return plugin;
-}
-
-const editorOf = (path, text, focusedAt = 0) => ({ path, focusedAt, state: { doc: { toString: () => text } } });
-
-test("a review starts only on the note as proposed; a change that lost its place waits in the sidebar", () => {
-  const plugin = reviewPlugin();
-  const text = "a\nb\nc\n";
-  const view = editorOf("Notes/a.md", text);
-  plugin.reviewViews.add(view);
-  const file = { path: "Notes/a.md", kind: "edit", base_hash: sha256Hex("other\n"), changes: [{ from: 0, to: 2, old: "a\n", new: "A\n" }] };
-  const entry = { path: file.path, file, copilot: { render() {} }, lost: new Set() };
-  plugin.offerReview(entry);
-  assert.equal(entry.stale, true);
-  assert.equal(plugin.reviewEditor.review(view), null);
-  assert.equal(plugin.reviews.has("Notes/a.md"), false);
-  file.base_hash = sha256Hex(text);
-  entry.stale = false;
-  file.changes.push({ from: 4, to: 6, old: "x\n", new: "y\n" });
-  plugin.offerReview(entry);
-  assert.deepEqual(plugin.reviewEditor.review(view).items.map((item) => item.index), [0]);
-  assert.deepEqual([...entry.lost], [1]);
-});
-
-test("switching back to a half-reviewed note places the rest after the applied ones", () => {
-  const plugin = reviewPlugin();
-  const file = { path: "Notes/a.md", kind: "edit", base_hash: "not checked once drawn", drawn: true, changes: [
-    { from: 0, to: 2, old: "a\n", new: "AAAA\n", status: "applied" }, { from: 2, to: 4, old: "b\n", new: "B\n" }] };
-  const view = editorOf("Notes/a.md", "AAAA\nb\n");
-  plugin.reviewViews.add(view);
-  plugin.offerReview({ path: file.path, file, copilot: { render() {} }, lost: new Set() });
-  assert.deepEqual(plugin.reviewEditor.review(view).items.map(({ index, from }) => [index, from]), [[1, 5]]);
-});
-
-test("only the editor focused last shows a note's review", () => {
-  const plugin = reviewPlugin();
-  const text = "a\n";
-  const file = { path: "Notes/a.md", kind: "edit", base_hash: sha256Hex(text), changes: [{ from: 0, to: 2, old: "a\n", new: "A\n" }] };
-  const older = editorOf("Notes/a.md", text, 1), newer = editorOf("Notes/a.md", text, 2);
-  plugin.reviewViews.add(older); plugin.reviewViews.add(newer);
-  plugin.offerReview({ path: file.path, file, copilot: { render() {} }, lost: new Set() });
-  assert.equal(plugin.reviewEditor.review(older), null);
-  assert.ok(plugin.reviewEditor.review(newer));
-});
-
-test("Show in note opens a linked note beside the chat without taking focus", async () => {
-  const opened = [];
-  const plugin = reviewPlugin();
-  plugin.app.workspace = { getLeavesOfType: () => [],
-    getLeaf: (how) => ({ openFile: async (file, state) => opened.push([how, file.path, state.active]) }) };
-  const entry = { path: "Notes/linked.md", file: { changes: [] }, lost: new Set(),
-                  copilot: { context: { source: { path: "Notes/a.md" } }, render() {} } };
-  await plugin.showReview(entry);
-  entry.path = "Notes/a.md";
-  await plugin.showReview(entry);
-  assert.deepEqual(opened, [["split", "Notes/linked.md", false], [false, "Notes/a.md", true]]);
-});
-
-test("a decision in the note reaches the chat; Reject the rest also dismisses lost changes", async () => {
-  const plugin = reviewPlugin();
-  const told = [];
-  const file = { path: "Notes/a.md", changes: [{ old: "a" }, { old: "b" }] };
-  const entry = { path: file.path, file, lost: new Set([1]), copilot: { reviewChanged: (e) => told.push(e.file.changes.map((c) => c.status)), render() {} } };
-  plugin.reviewChanged(entry, 0, "edited");
-  assert.deepEqual(told, []);                               // nothing to save
-  plugin.reviewChanged(entry, 0, "applied");
-  assert.deepEqual(told.at(-1), ["applied", undefined]);
-  plugin.reviewChanged(entry, 0, "open");                     // Cmd-Z
-  assert.deepEqual(told.at(-1), [undefined, undefined]);
-  await plugin.decideRest(entry, "rejected");
-  assert.deepEqual(told.at(-1), [undefined, "rejected"]);
-  assert.equal(entry.lost.size, 0);
+  const editor = (path, at, runs = []) => ({ path, at, runs });
+  const older = editor("Notes/a.md", 1), newer = editor("Notes/a.md", 2, ["run-1"]), other = editor("Notes/b.md", 3);
+  plugin.liveViews = new Set([older, newer, other]);
+  plugin.live = { pathOf: (view) => view.path, focusedAt: (view) => view.at,
+                  state: (view, runId) => (view.runs.includes(runId) ? {} : null) };
+  assert.equal(plugin.liveViewFor("Notes/a.md"), newer);
+  assert.equal(plugin.liveViewFor("Notes/none.md"), null);
+  assert.equal(plugin.liveRunView("run-1"), newer);
+  assert.equal(plugin.liveRunView("run-2"), null);
 });
 
 test("an edit is reviewed in the note: the card counts its changes and lists them, with no line diff", () => {
@@ -1644,29 +1580,6 @@ test("history and status count what was applied", () => {
   assert.equal(fresh[0].turn.proposal.files[0].changes[0].status, "applied");
 });
 
-test("once drawn, a review survives the owner's edits elsewhere when it is drawn again", () => {
-  const plugin = reviewPlugin();
-  const text = "a\nb\n";
-  const file = { path: "Notes/a.md", kind: "edit", base_hash: sha256Hex(text), changes: [{ from: 2, to: 4, old: "b\n", new: "B\n" }] };
-  const saves = [];
-  const entry = { path: file.path, file, lost: new Set(), copilot: { render() {}, saveDecisions: () => saves.push(1) } };
-  const first = editorOf("Notes/a.md", text);
-  plugin.reviewViews.add(first);
-  plugin.offerReview(entry);
-  assert.equal(file.drawn, true);
-  assert.equal(saves.length, 1);                              // the mark is saved with the chat
-  plugin.reviewViews.delete(first);                          // switched away, a typo fixed, shown again
-  const again = editorOf("Notes/a.md", "typo fixed\nb\n");
-  plugin.reviewViews.add(again);
-  plugin.syncReviews();
-  assert.ok(!entry.stale);
-  assert.deepEqual(plugin.reviewEditor.review(again).items.map((item) => item.from), [11]);
-  const other = { path: file.path, file: { ...file, base_hash: "not this note", drawn: false }, lost: new Set(), copilot: { render() {} } };
-  plugin.offerReview(other);
-  assert.equal(other.stale, true);
-  assert.equal(plugin.reviewEditor.review(again), null);      // its marks go with it
-});
-
 test("a chat reloaded with fresh objects keeps its review entry and what was decided since the last save", () => {
   const view = makeView({});
   const old = { path: "Notes/a.md", kind: "edit", drawn: true, changes: [{ old: "a", new: "A", status: "applied" }, { old: "b", new: "B" }] };
@@ -1678,16 +1591,6 @@ test("a chat reloaded with fresh objects keeps its review entry and what was dec
   assert.equal(entry.turns, turns);
   assert.deepEqual(fresh.changes.map((change) => change.status), ["applied", undefined]);
   assert.equal(fresh.drawn, true);
-});
-
-test("Accept the rest reaches the chat as one decision, not one per change", () => {
-  const plugin = reviewPlugin();
-  let calls = 0;
-  const file = { path: "Notes/a.md", changes: [{ old: "a" }, { old: "b" }, { old: "c" }] };
-  const entry = { path: file.path, file, lost: new Set(), copilot: { reviewChanged: () => { calls += 1; }, render() {} } };
-  plugin.reviewsChanged(entry, [[0, "applied"], [1, "applied"], [2, "applied"]]);
-  assert.equal(calls, 1);
-  assert.deepEqual(file.changes.map((change) => change.status), ["applied", "applied", "applied"]);
 });
 
 test("deleting a chat takes its reviews out of the notes", async () => {
@@ -1702,8 +1605,3 @@ test("deleting a chat takes its reviews out of the notes", async () => {
   assert.deepEqual(ended, [["Notes/b.md"]]);
 });
 
-test("a change found again by search must start a line", () => {
-  assert.deepEqual(placeChanges("this is fine.\nother\n", [{ from: 40, to: 46, old: "fine.\n", new: "good.\n" }])
-    .map((p) => p.state), ["lost"]);
-  assert.deepEqual(placeChanges("x\nfine.\n", [{ from: 40, to: 46, old: "fine.\n", new: "good.\n" }]).map((p) => p.from), [2]);
-});
