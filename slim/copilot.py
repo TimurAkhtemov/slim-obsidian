@@ -81,15 +81,17 @@ THINK_BUDGET = 8192              # on top of the first call's cap in Deep; think
 RUN_OUTPUT_TOKENS = 12_000       # the reply that crosses it is used, then the run stops (one ran to 25k)
 STEP_TEMPERATURE = 0.0           # a step, and any call that makes a wanted change, writes at 0.0
 STEP_TOOLS = ("replace", "edit_text", "insert", "move")
-# THE INTENT GATE. Before a question's first call, one small structured call on the same
-# messages asks whether the owner wants the note changed; its question and answer never join
-# the conversation. "No": the first call offers no tools and answers, streamed, with sources.
-# Otherwise the tools are offered and the call runs at STEP_TEMPERATURE: retyping at 0.7 drifted
-# (a plural dropped, quotes straightened), and a text-only reply is nudged once. A gate that
-# fails or cannot tell counts as a change. Measured with it: questions 12 of 12 unedited.
-# FIRST_TEMPERATURE is an answer's, and a new note's.
+# THE INTENT GATE. Before a question, one small structured call decides whether the owner wants
+# the note changed. It reads its own short prompt — SLIM's last answer and the question, never
+# the note — so it costs a few hundred tokens, and the note's handles reach only the edit path.
+# "No": today's Ask path (retrieval, no handles, a streamed answer, the sources call). Otherwise
+# the edit path, with the tools at STEP_TEMPERATURE: retyping at 0.7 drifted (a plural dropped,
+# quotes straightened), and a text-only reply is nudged once. A gate that fails or cannot tell
+# counts as a change. Off, every question takes the edit path. FIRST_TEMPERATURE is the edit
+# path's first call when no gate decided, and a new note's.
 INTENT_GATE = True
-GATE_ASK = "Does the owner's last message ask you to change the open note? Reply with JSON only."
+GATE_SYSTEM = ("You decide whether the owner's last message asks to change the note they have open. "
+               "Reply with JSON only.")
 GATE_SCHEMA = {"type": "object", "properties": {"change_note": {"type": "boolean"}}, "required": ["change_note"]}
 GATE_NUM_PREDICT = 20
 NUDGE = "Use the tools to make the change."
@@ -278,17 +280,13 @@ def _passages(evidence: list[dict]) -> str:
         + f"\n{item['text']}" for item in evidence)
 
 
-def edit_message(path: str, note: edits_mod.Note, evidence: list[dict]) -> str:
-    """The system message of a turn that may edit: the persona and EDIT_RIDER, the passages the
-    Ask path retrieves (the sources call picks among them), then the open note whole, with its
-    handles and the map of its sections."""
+def edit_message(path: str, note: edits_mod.Note) -> str:
+    """The system message of the edit path, as measured: the persona and EDIT_RIDER, then the open
+    note whole, with its handles and the map of its sections."""
     sections = note.sections()
     shown = f"Sections:\n{sections}\n\n" if sections else ""
-    parts = [PERSONA, EDIT_RIDER]
-    if evidence:
-        parts.append("Passages from the owner's notes (the open note first):\n" + _passages(evidence))
-    parts.append(f"Notes in view:\n\n=== {path} · the open note ===\n{shown}{note.render()}")
-    return "\n\n".join(parts)
+    return "\n\n".join([PERSONA, EDIT_RIDER,
+                         f"Notes in view:\n\n=== {path} · the open note ===\n{shown}{note.render()}"])
 
 
 @dataclass
@@ -672,12 +670,11 @@ class _Reply:
 
 
 def _call(messages: list[dict], offered: list[str], *, think: bool, temperature: float,
-          num_predict: int, **streams) -> _Reply:
-    """One model call with the `offered` tools; `streams` (on_delta, on_thinking) stream it.
-    String arguments are repaired for the LaTeX a JSON decode turns into control characters
-    (`summarize._repair`, as for summaries)."""
+          num_predict: int) -> _Reply:
+    """One model call with the `offered` tools. String arguments are repaired for the LaTeX a
+    JSON decode turns into control characters (`summarize._repair`, as for summaries)."""
     msg, stats = llm.chat_tools(messages, edits_mod.ollama_tools(offered), think=think,
-                                temperature=temperature, num_predict=num_predict, **streams)
+                                temperature=temperature, num_predict=num_predict)
     calls = [{"name": c["name"], "arguments": summarize._repair(c.get("arguments") or {})}
              for c in msg["tool_calls"]]
     # Ollama's own parser can leave a tool call in the text: unreadable, and never an answer.
@@ -775,62 +772,65 @@ def _fixup(now: list[str], want: list[str], missing: list[int], misplaced: list[
                       *listed("Missing", missing), *listed("Out of order", misplaced)])
 
 
+def _intent(question: str, history: list[dict]) -> tuple[bool | None, dict]:
+    """Does the owner's last message ask to change the open note? (True/False, or None when the
+    gate fails or cannot tell; and the call's stats.) Its prompt is its own: GATE_SYSTEM, SLIM's
+    last answer whole (a plan to "make" lives there), and the question; no note, no tools."""
+    messages = [{"role": "system", "content": GATE_SYSTEM}]
+    last = next((t for t in reversed(history) if t.get("role") == "slim" and t.get("text")), None)
+    if last:
+        messages.append({"role": "assistant", "content": str(last["text"])})
+    messages.append({"role": "user", "content": question})
+    try:
+        msg, stats = llm.chat_tools(messages, None, think=False, temperature=0.0,
+                                    num_predict=GATE_NUM_PREDICT, fmt=GATE_SCHEMA)
+    except llm.LLMError:
+        return None, {}
+    try:
+        said = json.loads(msg["content"])["change_note"]
+    except (ValueError, KeyError, TypeError):
+        return None, stats or {}
+    return (said if isinstance(said, bool) else None), stats or {}
+
+
 def _turn(messages: list[dict], *, think: bool, first_tools: list[str], step_tools: tuple[str, ...],
           note: edits_mod.Note | None, before_text: str, only: set[str] | None = None, create=None,
-          gate: bool = False, temperature: float = FIRST_TEMPERATURE, on_edit, should_stop,
-          on_delta=None, on_thinking=None) -> dict:
-    """One turn. With `gate`, the intent gate decides first whether the owner wants the note
-    changed; if not, the first call offers no tools and its answer streams through `on_delta`
-    (`on_thinking` gets the reasoning's pings). Otherwise the first call answers in text, makes a
-    small change at once, or plans a larger one, at `temperature` (STEP_TEMPERATURE after a gate);
-    a plan is carried out one call per step, then up to MAX_FIXUPS calls if the headings miss its
-    outline. Code holds the plan, applies every call to the draft `note` (or makes a new note
-    through `create`), enforces every limit, and hands each part to `on_edit` as it lands:
-    "start", "plan", "step" and "change". `should_stop()` is asked before every call."""
+          temperature: float = FIRST_TEMPERATURE, nudge: bool = False, on_edit, should_stop) -> dict:
+    """One editing turn. The first call answers in text, makes a small change at once, or plans a
+    larger one, at `temperature`; with `nudge` (the gate wanted a change) a text-only reply is
+    asked once to use the tools. A plan is carried out one call per step, then up to MAX_FIXUPS
+    calls if the headings miss its outline. Code holds the plan, applies every call to the draft
+    `note` (or makes a new note through `create`), enforces every limit, and hands each part to
+    `on_edit` as it lands: "start", "plan", "step" and "change". `should_stop()` is asked before
+    every call."""
     out = {"kind": "answer", "answer": "", "plan": None, "changes": [], "steps_done": 0, "calls": 0,
            "refusals": [], "malformed": [], "empty_steps": 0, "stopped": None, "summary": "",
            "finished_early": False, "replanned": False, "outline": None, "outline_met": None,
-           "fixups": 0, "retries": 0, "first_call_edits": 0, "timing": [], "intent": None,
-           "nudged": False, "first_temperature": None, "streamed": False, "gate": None}
+           "fixups": 0, "retries": 0, "first_call_edits": 0, "timing": [], "nudged": False,
+           "first_temperature": temperature}
     spent, failed = 0, []
     current = {"k": None, "landed": 0, "refused": False}      # the step being worked
     steps: list[str] = []
 
-    def attempt(offered, think, temperature, num_predict, streams):
+    def attempt(offered, think, temperature, num_predict):
         if not out["stopped"] and should_stop():
             out["stopped"] = "stopped"
         if out["stopped"]:
             raise _Stopped
-        return _call(messages, offered, think=think, temperature=temperature, num_predict=num_predict,
-                     **streams)
+        return _call(messages, offered, think=think, temperature=temperature, num_predict=num_predict)
 
-    def ask(offered, think, temperature, num_predict, *, stream: bool = False) -> _Reply:
+    def ask(offered, think, temperature, num_predict) -> _Reply:
         nonlocal spent
-        shown = []                      # words of this reply that already reached the chat
-
-        def relay(text):
-            shown.append(text)
-            on_delta(text)
-        streams = {"on_delta": relay, "on_thinking": on_thinking} if stream and on_delta else {}
         try:
-            reply = attempt(offered, think, temperature, num_predict, streams)
-        except llm.LLMError as exc:
-            if isinstance(exc.__cause__, (BrokenPipeError, ConnectionResetError)):
-                out["stopped"] = "stopped"          # the chat hung up while the reply streamed
+            reply = attempt(offered, think, temperature, num_predict)
+        except llm.LLMError:            # Ollama's own parser fails on a reply now and then: once more
+            out["retries"] += 1
+            try:
+                reply = attempt(offered, think, temperature, num_predict)
+            except llm.LLMError as exc:
+                failed.append(exc)
+                out["stopped"] = f"error: {(str(exc) or type(exc).__name__).splitlines()[0][:200]}"
                 raise _Stopped from exc
-            error, reply = exc, None
-            # Ollama's own parser fails on a reply now and then: the same call once more, unless
-            # part of it already reached the chat, where a second go would repeat it.
-            if not shown:
-                out["retries"] += 1
-                try:
-                    reply = attempt(offered, think, temperature, num_predict, streams)
-                except llm.LLMError as again:
-                    error = again
-            if reply is None:
-                failed.append(error)
-                out["stopped"] = f"error: {(str(error) or type(error).__name__).splitlines()[0][:200]}"
-                raise _Stopped from error
         spent += reply.stats.get("output_tokens") or 0
         if spent > RUN_OUTPUT_TOKENS:
             out["stopped"] = "token budget"
@@ -859,28 +859,6 @@ def _turn(messages: list[dict], *, think: bool, first_tools: list[str], step_too
             out["outline_met"] = _met(*_against(note, out["outline"]))
         return out
 
-    def intent() -> bool | None:
-        """Does the owner's last message ask for a change? One small structured call on the same
-        messages; its question and answer never join the conversation. None when it can't tell."""
-        nonlocal spent
-        if should_stop():
-            out["stopped"] = "stopped"
-            raise _Stopped
-        try:
-            msg, stats = llm.chat_tools(messages + [{"role": "user", "content": GATE_ASK}], None, think=False,
-                                        temperature=0.0, num_predict=GATE_NUM_PREDICT, fmt=GATE_SCHEMA)
-        except llm.LLMError:
-            return None
-        out["gate"] = stats or {}
-        if out["gate"].get("ctx_saturated"):
-            raise CopilotError("this note is too long for one request; edit it in Obsidian")
-        spent += out["gate"].get("output_tokens") or 0
-        try:
-            said = json.loads(msg["content"])["change_note"]
-        except (ValueError, KeyError, TypeError):
-            return None
-        return said if isinstance(said, bool) else None
-
     def split(reply: _Reply):
         """A first reply's plan, and its other calls if any of them changes something."""
         plans = [c for c in reply.calls if c["name"] == "plan"]
@@ -889,15 +867,6 @@ def _turn(messages: list[dict], *, think: bool, first_tools: list[str], step_too
 
     try:
         first_predict = QUICK_NUM_PREDICT + (THINK_BUDGET if think else 0)
-        if gate:
-            out["intent"] = intent()
-            if out["intent"] is False:  # no change wanted: no tools, and the reply is the answer
-                out["first_temperature"] = FIRST_TEMPERATURE
-                first = ask([], think, FIRST_TEMPERATURE, first_predict, stream=True)
-                out.update(answer=first.content.strip(), streamed=on_delta is not None)
-                return out
-            temperature = STEP_TEMPERATURE      # a change is wanted: structured work
-        out["first_temperature"] = temperature
         first = ask(first_tools, think, temperature, first_predict)
         # An overflowing prompt loses its START — the note and the rider — silently.
         if first.stats.get("ctx_saturated"):
@@ -913,7 +882,7 @@ def _turn(messages: list[dict], *, think: bool, first_tools: list[str], step_too
                 messages.extend(_results([said], "Make the plan first: one sentence for the owner, and the "
                                                  "steps in order." if "plan" in first_tools else
                                                  "Make the new note with the create_note tool."))
-            elif gate and not first.calls:      # the gate said change, and the reply is only text
+            elif nudge and not first.calls:     # the gate said change, and the reply is only text
                 out["nudged"] = True
                 messages.extend(_results([], NUDGE))
             if out["replanned"] or out["nudged"]:
@@ -1093,115 +1062,114 @@ def _facts(out: dict, run: dict) -> dict:
 def _answer_or_edit(con, vault: Path, source: dict, question: str, history: list[dict], mode: str,
                     *, skill, args: str, images, selection: str, doc: str | None, on_stage,
                     on_delta, on_edit, should_stop, entry: dict) -> tuple[dict, list[str], list[dict]]:
-    """A turn that may edit: (result, retrieval levels, evidence). A plain question reads like
-    an Ask turn — the passages retrieval finds, the sources call after a text answer — and the
-    open note rides whole, with handles. A selection skill may change only the blocks the
-    selection touches, with `replace` alone; a new-note skill reads its notes as a chat skill
-    does and may only create notes."""
+    """A turn that may edit: (result, retrieval levels, evidence). A plain question meets the
+    intent gate first; "no" is today's Ask path (`generate_answer`, with retrieval and the
+    sources call), anything else the edit path: the open note whole, with handles, and the
+    tools. A selection skill may change only the blocks the selection touches, with `replace`
+    and `edit_text`; a new-note skill reads its notes as a chat skill does and may only create
+    notes."""
     stage = on_stage or (lambda _name: None)
-    text = doc if doc is not None else _note_text(vault, source["path"])
     folder = PurePosixPath(source["path"]).parent.as_posix()
-    prompt = skills_mod.render_prompt(skill, args) if skill else question
-    note, only, create, inputs = edits_mod.Note(text), None, None, None
-    evidence, levels, cited = [], [], None
-    first_tools, step_tools, temperature = ["plan", *STEP_TOOLS], STEP_TOOLS, FIRST_TEMPERATURE
-    if skill and skill.output == "new-note":
-        pack = gather(con, vault, source, skill=skill, links_from=args, selection=selection)
-        system = pack_message(pack, NEW_NOTE_RIDER.format(folder=folder))
-        cited = [{"n": i + 1, "path": d["path"], "title": d["title"]}
-                 for i, d in enumerate(d for d in pack.docs if d["role"] != "selection")]
-        inputs, note = pack_inputs(pack), None
-        first_tools, step_tools = ["create_note", "done"], ("create_note",)
-        made: set[str] = set()
-
-        def create(path, markdown):
-            new = edits_mod.create_note(vault, path, markdown, folder=folder)
-            if new["path"].casefold() in made:
-                raise edits_mod.ToolError(f"{new['path']} is already made in this turn; give the next note "
-                                          "a name of its own", "exists")
-            made.add(new["path"].casefold())
-            return new
-        shown, skipped = open_note_images(vault, source, [])
-    elif skill:
-        # An edit skill: a wanted change by its frontmatter, so no gate, and the first call writes
-        # at STEP_TEMPERATURE. Code knows what it read (the open note): no sources call.
-        cited = [{"n": 1, "path": source["path"], "title": PurePosixPath(source["path"]).stem}]
-        temperature = STEP_TEMPERATURE
-        if skill.input == "selection":
-            only = _selected(note, text, selection, skill)
-            prompt += f"\n\nSelected text:\n{selection.strip()}"
-            first_tools, step_tools = ["plan", "replace", "edit_text"], ("replace", "edit_text")
-        system = edit_message(source["path"], note, [])
-        shown, skipped = open_note_images(vault, source, [])
-    else:
-        evidence, levels = collect_evidence(con, source, question, limit=12 if mode == "deep" else 6)
-        system = edit_message(source["path"], note, evidence)
-        shown, skipped = open_note_images(vault, source, evidence)
-    entry.update(note_images=len(shown), note_images_skipped=len(skipped))
-
-    transcript, embedded, current = _conversation(history, prompt, images, shown)
-    system_turn = {"role": "system", "content": system}
-    recent = fit_window(transcript, [system_turn, *embedded, current],
-                        QUICK_NUM_PREDICT + (THINK_BUDGET if mode == "deep" else 0))
-    messages = [system_turn, *recent, *embedded, current]
-    stage("Thinking deeply" if mode == "deep" else "Writing")
     started = time.time()
-    last_beat = [started]
-
-    def heartbeat(_text):
-        # While a streamed answer reasons nothing reaches the chat; this write is how a Stop
-        # (a closed socket) is noticed, as in generate_answer.
-        if time.time() - last_beat[0] >= HEARTBEAT_S:
-            last_beat[0] = time.time()
-            stage("Thinking deeply")
-
     # The model lock is held for the whole turn: a request slipping in between two steps would
     # evict the prefix every later step reads.
     with llm.hold():
-        out = _turn(list(messages), think=mode == "deep", first_tools=first_tools, step_tools=step_tools,
-                    note=note, before_text=text, only=only, create=create,
-                    gate=INTENT_GATE and not skill, temperature=temperature,
-                    on_edit=on_edit or (lambda _event, _payload: None), should_stop=should_stop,
-                    on_delta=on_delta, on_thinking=heartbeat)
-        if not skill:
-            entry["intent"] = out["intent"]
-        last = out["timing"][-1] if out["timing"] else {}
-        run, sources_stats = None, {}
-        if out["kind"] == "answer":
-            answer = out["answer"]
-            if not answer and last.get("thinking_ate_the_budget"):
-                raise CopilotError("the model spent its whole output budget thinking and wrote no "
-                                   "answer — ask again in Quick mode, or ask a narrower question")
-            if not answer:
-                raise CopilotError("the local model returned no answer")
-            if not out["streamed"]:
-                (on_delta or (lambda _text: None))(answer)
-            if cited is None:
-                if evidence:
-                    stage("Noting sources")
-                cited, sources_stats = notes_used(messages, answer, evidence)
+        intent, gate = None, {}
+        if not skill and INTENT_GATE:
+            if should_stop():
+                raise CopilotError("the turn was stopped before it was answered")
+            intent, gate = _intent(question, history)
+            entry.update(intent=intent, gate={"prompt_tokens": gate.get("prompt_tokens"),
+                                              "duration_s": gate.get("duration_s")})
+        if intent is False:             # no change wanted: today's Ask path
+            evidence, levels = collect_evidence(con, source, question, limit=12 if mode == "deep" else 6)
+            shown, skipped = open_note_images(vault, source, evidence)
+            entry.update(note_images=len(shown), note_images_skipped=len(skipped))
+            result = generate_answer(question, history, evidence, mode, images=images, note_images=shown,
+                                     on_stage=on_stage, on_delta=on_delta)
+            result["timing"]["gate"] = gate
+            result["edit_run"] = None
+            return result, levels, evidence
+
+        text = doc if doc is not None else _note_text(vault, source["path"])
+        prompt = skills_mod.render_prompt(skill, args) if skill else question
+        note, only, create, inputs, cited = edits_mod.Note(text), None, None, None, None
+        first_tools, step_tools = ["plan", *STEP_TOOLS], STEP_TOOLS
+        # A change the gate wanted, or an edit skill's, is written at STEP_TEMPERATURE.
+        temperature = STEP_TEMPERATURE if not skill and INTENT_GATE else FIRST_TEMPERATURE
+        if skill and skill.output == "new-note":
+            pack = gather(con, vault, source, skill=skill, links_from=args, selection=selection)
+            system = pack_message(pack, NEW_NOTE_RIDER.format(folder=folder))
+            cited = [{"n": i + 1, "path": d["path"], "title": d["title"]}
+                     for i, d in enumerate(d for d in pack.docs if d["role"] != "selection")]
+            inputs, note = pack_inputs(pack), None
+            first_tools, step_tools = ["create_note", "done"], ("create_note",)
+            made: set[str] = set()
+
+            def create(path, markdown):
+                new = edits_mod.create_note(vault, path, markdown, folder=folder)
+                if new["path"].casefold() in made:
+                    raise edits_mod.ToolError(f"{new['path']} is already made in this turn; give the next "
+                                              "note a name of its own", "exists")
+                made.add(new["path"].casefold())
+                return new
         else:
-            run = {"plan": out["plan"], "steps_done": min(out["steps_done"], len(out["plan"]["steps"])),
-                   "changes": out["changes"], "stopped": out["stopped"], "outline_met": out["outline_met"],
-                   "fixups": out["fixups"], "hash_before": edits_mod.digest(text),
-                   "hash_after": edits_mod.digest(note.text() if note is not None else text),
-                   "summary": out["summary"]}
-            # A skill names what code read; a plain edit makes no sources call.
-            answer, cited = out["summary"] or out["plan"]["intro"], cited or []
-            entry["edit_run"] = _facts(out, run)
+            if skill:
+                # An edit skill: a wanted change by its frontmatter. Code knows what it read (the
+                # open note), so it makes no sources call.
+                cited, temperature = [{"n": 1, "path": source["path"],
+                                       "title": PurePosixPath(source["path"]).stem}], STEP_TEMPERATURE
+                if skill.input == "selection":
+                    only = _selected(note, text, selection, skill)
+                    prompt += f"\n\nSelected text:\n{selection.strip()}"
+                    first_tools, step_tools = ["plan", "replace", "edit_text"], ("replace", "edit_text")
+            system = edit_message(source["path"], note)
+        # No retrieval orders the edit path's images, so they come in note order.
+        shown, skipped = open_note_images(vault, source, [])
+        entry.update(note_images=len(shown), note_images_skipped=len(skipped))
+
+        transcript, embedded, current = _conversation(history, prompt, images, shown)
+        system_turn = {"role": "system", "content": system}
+        recent = fit_window(transcript, [system_turn, *embedded, current],
+                            QUICK_NUM_PREDICT + (THINK_BUDGET if mode == "deep" else 0))
+        messages = [system_turn, *recent, *embedded, current]
+        stage("Thinking deeply" if mode == "deep" else "Writing")
+        out = _turn(list(messages), think=mode == "deep", first_tools=first_tools, step_tools=step_tools,
+                    note=note, before_text=text, only=only, create=create, temperature=temperature,
+                    nudge=not skill and INTENT_GATE, on_edit=on_edit or (lambda _event, _payload: None),
+                    should_stop=should_stop)
+    last = out["timing"][-1] if out["timing"] else {}
+    run = None
+    if out["kind"] == "answer":     # a text reply on the edit path: said once, whole
+        answer = out["answer"]
+        if not answer and last.get("thinking_ate_the_budget"):
+            raise CopilotError("the model spent its whole output budget thinking and wrote no "
+                               "answer — ask again in Quick mode, or ask a narrower question")
+        if not answer:
+            raise CopilotError("the local model returned no answer")
+        (on_delta or (lambda _text: None))(answer)
+    else:
+        run = {"plan": out["plan"], "steps_done": min(out["steps_done"], len(out["plan"]["steps"])),
+               "changes": out["changes"], "stopped": out["stopped"], "outline_met": out["outline_met"],
+               "fixups": out["fixups"], "hash_before": edits_mod.digest(text),
+               "hash_after": edits_mod.digest(note.text() if note is not None else text),
+               "summary": out["summary"]}
+        answer = out["summary"] or out["plan"]["intro"]
+        entry["edit_run"] = _facts(out, run)
     result = {
         "answer": answer,
         "mode": mode,
-        "citations": cited,
+        # A skill names what code read; the edit path makes no sources call.
+        "citations": cited or [],
         "verification": {"truncated": bool(last.get("output_truncated"))},
         "history_dropped": len(transcript) - len(recent),
-        "timing": {"total_ms": round((time.time() - started) * 1000), "gate": out["gate"],
-                   "answer": out["timing"][0] if out["timing"] else {}, "sources": sources_stats},
+        "timing": {"total_ms": round((time.time() - started) * 1000), "gate": gate,
+                   "answer": out["timing"][0] if out["timing"] else {}, "sources": {}},
         "edit_run": run,
     }
     if inputs is not None:
         result["inputs"] = inputs
-    return result, levels, evidence
+    return result, [], []
 
 
 def run_turn(con, source_id: str, question: str, history: list[dict], mode: str,

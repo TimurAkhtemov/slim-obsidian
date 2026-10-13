@@ -375,17 +375,20 @@ def test_deep_thinking_heartbeats_the_stage_so_a_stopped_client_is_noticed(monke
 
 
 def answering(monkeypatch, content="Answer", stats=None, seen=None):
-    """A model that answers every turn in text, its gate saying no change is wanted; `seen` keeps
-    the messages of its first answering call."""
+    """A model whose gate says no change is wanted, so every turn is an Ask turn; `seen` keeps the
+    messages of its first answering call."""
     def chat_tools(messages, tools=None, **opts):
-        if opts.get("fmt") is not None:
-            return {"content": '{"change_note": false}', "tool_calls": [], "raw_tool_calls": []}, {}
+        assert opts.get("fmt") is not None, "only the gate may call with tools here"
+        return {"content": '{"change_note": false}', "tool_calls": [], "raw_tool_calls": []}, {}
+
+    def chat_stream(messages, **opts):
         if seen is not None:
             seen.setdefault("messages", list(messages))
         if opts.get("on_delta") and content:
             opts["on_delta"](content)
-        return {"content": content, "tool_calls": [], "raw_tool_calls": []}, dict(stats or {"duration_s": 1})
+        return content, dict(stats or {"duration_s": 1})
     monkeypatch.setattr(copilot.llm, "chat_tools", chat_tools)
+    monkeypatch.setattr(copilot.llm, "chat_stream", chat_stream)
 
 
 def test_run_turn_writes_a_replayable_trace(con, vault, monkeypatch):
@@ -600,14 +603,21 @@ def scripted(monkeypatch, *replies, intent=True):
             return {"content": said, "tool_calls": [], "raw_tool_calls": []}, {"output_tokens": 5}
         seen.append({"messages": [dict(m) for m in messages],
                      "tools": [t["function"]["name"] for t in tools or []], "opts": opts,
-                     "held": getattr(llm._HELD, "on", False)})
+                     "held": getattr(llm._HELD, "on", False), "stream": False})
         content, calls, *tokens = replies[len(seen) - 1]
-        if opts.get("on_delta") and content:
-            opts["on_delta"](content)
         return ({"content": content, "tool_calls": [{"name": n, "arguments": a} for n, a in calls],
                  "raw_tool_calls": [{"function": {"name": n, "arguments": a}} for n, a in calls]},
                 {"duration_s": 1.0, "output_tokens": tokens[0] if tokens else 10})
+    def chat_stream(messages, **opts):
+        """Today's Ask path: a streamed answer with no tools."""
+        seen.append({"messages": [dict(m) for m in messages], "tools": [], "opts": opts,
+                     "held": getattr(llm._HELD, "on", False), "stream": True})
+        content, _calls, *tokens = replies[len(seen) - 1]
+        if opts.get("on_delta") and content:
+            opts["on_delta"](content)
+        return content, {"duration_s": 1.0, "output_tokens": tokens[0] if tokens else 10}
     monkeypatch.setattr(copilot.llm, "chat_tools", chat_tools)
+    monkeypatch.setattr(copilot.llm, "chat_stream", chat_stream)
     return seen
 
 
@@ -663,7 +673,7 @@ def test_a_text_reply_is_an_answer_with_sources_and_nothing_changes(turn, monkey
                         lambda messages, schema, **k: asked.append(messages) or ({"notes": [1]}, {}))
     got, events = turn("What is lexical ambiguity?")
     assert got["answer"] == "Lexical ambiguity is…" and got["edit_run"] is None and events == []
-    assert seen[0]["tools"] == [] and len(seen) == 1
+    assert seen[0]["stream"] and seen[0]["tools"] == [] and len(seen) == 1
     assert [c["path"] for c in got["citations"]] == ["Notes/school/n.md"]
     (sources,) = asked                                     # the Ask path's sources call, on the same prefix
     assert sources[-2] == {"role": "assistant", "content": "Lexical ambiguity is…"}
@@ -682,19 +692,17 @@ def test_an_answer_reaches_the_chat_through_on_delta(con, vault, monkeypatch):
     assert deltas == ["It descends."] and stages[0] == "Writing"
 
 
-def test_the_first_call_carries_the_rider_the_passages_and_the_note_with_handles(turn, monkeypatch):
-    seen = scripted(monkeypatch, ("An answer.", []), intent=False)
+def test_a_change_turn_carries_the_rider_and_the_note_with_handles(turn, monkeypatch):
+    seen = scripted(monkeypatch, ("", [("replace", {"target": "b3", "markdown": "## A2"})]))
     turn("q", history=[{"role": "you", "text": "hi"}, {"role": "slim", "text": "hello"}])
     system, *rest = seen[0]["messages"]
-    assert system["content"].startswith(copilot.PERSONA + "\n\n" + copilot.EDIT_RIDER + "\n\n")
-    assert system["content"].index("Intro para.") < system["content"].index("Notes in view:")  # the passages
-    assert system["content"].endswith(
+    assert system["content"] == copilot.PERSONA + "\n\n" + copilot.EDIT_RIDER + "\n\n" + (
         "Notes in view:\n\n=== Notes/school/n.md · the open note ===\nSections:\n"
         "s1  b1–b8  # Title\n  s3  b3–b6  ## A\n  s7  b7–b8  ## B\n\n[b1] # Title\n\n[b2] Intro para.\n\n"
         "[b3] ## A\n\n[b4] Text a.\n[b5] - one\n[b6] - two\n\n[b7] ## B\n\n[b8] Text b.\n")
     assert [m["role"] for m in rest] == ["user", "assistant", "user"] and rest[-1]["content"] == "q"
     opts = seen[0]["opts"]
-    assert opts["think"] is False and opts["temperature"] == copilot.FIRST_TEMPERATURE == llm.REPLY_TEMPERATURE
+    assert opts["think"] is False and opts["temperature"] == copilot.STEP_TEMPERATURE == 0.0
     assert opts["num_predict"] == copilot.QUICK_NUM_PREDICT >= copilot.STEP_NUM_PREDICT
     assert copilot.INTENT_GATE is True
 
@@ -707,8 +715,8 @@ def test_the_rider_is_the_measured_one():
     assert "the note's headings in their final order (each with its # marks)" in copilot.EDIT_RIDER
 
 
-def test_deep_gives_the_first_call_room_to_think(turn, monkeypatch):
-    seen = scripted(monkeypatch, ("Answer.", []), intent=False)
+def test_deep_gives_the_first_edit_call_room_to_think(turn, monkeypatch):
+    seen = scripted(monkeypatch, ("", [("replace", {"target": "b3", "markdown": "## A2"})]))
     turn("q", mode="deep")
     assert seen[0]["opts"]["think"] is True
     assert seen[0]["opts"]["num_predict"] == copilot.QUICK_NUM_PREDICT + copilot.THINK_BUDGET
@@ -1068,43 +1076,49 @@ def test_an_edit_turn_writes_machine_facts_to_the_trace(turn, monkeypatch):
 
 
 
-# --- the intent gate: one small structured call decides whether tools are offered -----------
+# --- the intent gate: one small structured call decides whether this turn may edit -----------
 
-def test_no_change_wanted_means_no_tools_and_the_answer_streams_with_its_sources(turn, monkeypatch, con):
+ANSWER = "## Proposed Structure\n\n1. Rename A\n2. Move B up"
+
+
+def test_the_gate_sees_only_its_own_question_slims_last_answer_and_the_message(turn, monkeypatch):
+    seen = scripted(monkeypatch, ("A is the first section.", []), intent=False)
+    history = [{"role": "you", "text": "How could this note be organised?"}, {"role": "slim", "text": ANSWER},
+               {"role": "you", "text": "a question that failed"}]
+    turn("Ok make the revisions", history=history)
+    (gate,) = seen.gate
+    assert gate["messages"] == [
+        {"role": "system", "content": "You decide whether the owner's last message asks to change the note "
+                                      "they have open. Reply with JSON only."},
+        {"role": "assistant", "content": ANSWER},
+        {"role": "user", "content": "Ok make the revisions"}]
+    assert gate["tools"] is None and gate["held"] is True              # no note, no evidence, no tools
+    assert gate["opts"] == {"think": False, "temperature": 0.0, "num_predict": 20, "fmt": copilot.GATE_SCHEMA}
+    seen = scripted(monkeypatch, ("Answer.", []), intent=False)
+    turn("What is A?")
+    assert seen.gate[0]["messages"][1:] == [{"role": "user", "content": "What is A?"}]   # no history: no answer
+
+
+def test_no_change_wanted_is_todays_ask_path(turn, monkeypatch):
     seen = scripted(monkeypatch, ("Lexical ambiguity is…", []), intent=False)
+    asked = []
+    monkeypatch.setattr(copilot.llm, "chat_json",
+                        lambda messages, schema, **k: asked.append(messages) or ({"notes": [1]}, {}))
     records = []
     monkeypatch.setattr(copilot.trace, "record", lambda kind, payload: records.append(payload))
     got, events = turn("What is lexical ambiguity?")
-    (gate,), (first,) = seen.gate, seen
-    assert {k: v for k, v in gate["opts"].items()} == {"think": False, "temperature": 0.0, "num_predict": 20,
-                                                        "fmt": copilot.GATE_SCHEMA}
-    assert gate["tools"] is None and gate["held"] is True
-    assert gate["messages"][-1] == {"role": "user", "content": "Does the owner's last message ask you to change "
-                                                               "the open note? Reply with JSON only."}
-    assert first["messages"] == gate["messages"][:-1]              # the gate's question leaves no trace
-    assert first["tools"] == [] and first["opts"]["temperature"] == copilot.FIRST_TEMPERATURE
-    assert callable(first["opts"]["on_delta"])                     # streamed, as answers always were
-    assert got["answer"] == "Lexical ambiguity is…" and got["edit_run"] is None and events == []
-    assert got["deltas"] == ["Lexical ambiguity is…"]
+    (first,) = seen
+    system = first["messages"][0]["content"]
+    assert first["stream"] and system.startswith(copilot.PERSONA + "\n\n" + copilot.ASK_RIDER)
+    assert "[b" not in system and "Sections:" not in system and copilot.EDIT_RIDER not in system
+    assert "Intro para." in system                                    # the passages retrieval found
+    assert first["opts"]["temperature"] == llm.REPLY_TEMPERATURE and first["opts"]["num_predict"] == \
+        copilot.QUICK_NUM_PREDICT
+    assert got["deltas"] == ["Lexical ambiguity is…"] and got["edit_run"] is None and events == []
+    assert asked and asked[0][:-2] == first["messages"]               # the sources call, on its prefix
+    assert [c["path"] for c in got["citations"]] == ["Notes/school/n.md"]
     assert records[-1]["intent"] is False and records[-1]["status"] == "answered"
-
-
-def test_a_streamed_answer_goes_to_the_chat_once(con, vault, monkeypatch):
-    write(vault, "Notes/school/lesson.md", "gradient descent")
-    source = copilot.sync_note(con, vault, "Notes/school/lesson.md", embed=False)
-    monkeypatch.setattr(copilot.search_mod, "hybrid", lambda *a, **k: [])
-    monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
-
-    def chat_tools(messages, tools=None, **opts):
-        if opts.get("fmt") is not None:
-            return {"content": '{"change_note": false}', "tool_calls": [], "raw_tool_calls": []}, {}
-        for word in ("It ", "descends."):
-            opts["on_delta"](word)
-        return {"content": "It descends.", "tool_calls": [], "raw_tool_calls": []}, {}
-    monkeypatch.setattr(copilot.llm, "chat_tools", chat_tools)
-    deltas = []
-    got = copilot.run_turn(con, source["id"], "What is it?", [], "quick", vault=vault, on_delta=deltas.append)
-    assert deltas == ["It ", "descends."] and got["answer"] == "It descends."
+    assert records[-1]["timing"]["gate"] == {"output_tokens": 5} and "prompt_tokens" in records[-1]["gate"]
 
 
 def test_a_wanted_change_is_offered_the_tools_at_temperature_zero_and_a_text_reply_is_nudged_once(turn, monkeypatch):
@@ -1114,7 +1128,7 @@ def test_a_wanted_change_is_offered_the_tools_at_temperature_zero_and_a_text_rep
     assert [c["opts"]["temperature"] for c in seen] == [0.0, 0.0] and "on_delta" not in seen[0]["opts"]
     assert seen[1]["messages"][-1] == {"role": "user", "content": "Use the tools to make the change."}
     assert got["answer"] == "Still only text." and got["edit_run"] is None and events == []
-    assert got["deltas"] == ["Still only text."]               # not streamed: said once, whole
+    assert got["deltas"] == ["Still only text."]               # said once, whole
     seen = scripted(monkeypatch, ("I would rename it.", []),
                     ("", [("replace", {"target": "b3", "markdown": "## A renamed"})]))
     got, _ = turn("rename A")
@@ -1131,21 +1145,6 @@ def test_a_gate_that_fails_or_cannot_tell_counts_as_a_change(turn, monkeypatch, 
     assert "## A renamed" in got["final"] and records[-1]["intent"] is None
 
 
-def test_a_streamed_answer_that_fails_part_way_is_not_asked_again(turn, monkeypatch):
-    calls = []
-
-    def chat_tools(messages, tools=None, **opts):
-        if opts.get("fmt") is not None:
-            return {"content": '{"change_note": false}', "tool_calls": [], "raw_tool_calls": []}, {}
-        calls.append(1)
-        opts["on_delta"]("Half an ")
-        raise llm.LLMError("ollama stream failed: connection reset")
-    monkeypatch.setattr(copilot.llm, "chat_tools", chat_tools)
-    with pytest.raises(llm.LLMError, match="stream failed"):
-        turn("What is A?")
-    assert calls == [1]                        # a second go would repeat the words already shown
-
-
 def test_an_edit_skill_is_a_wanted_change_without_asking(turn, monkeypatch):
     seen = scripted(monkeypatch, ("", [("replace", {"target": "b5", "markdown": "- **one**"})]))
     turn("/tidy", selection="- one")
@@ -1153,48 +1152,17 @@ def test_an_edit_skill_is_a_wanted_change_without_asking(turn, monkeypatch):
     assert seen[0]["opts"]["temperature"] == 0.0
 
 
-def test_with_the_gate_off_the_first_call_offers_the_tools_at_the_reply_temperature(turn, monkeypatch):
+def test_with_the_gate_off_every_turn_may_edit_at_the_reply_temperature(turn, monkeypatch):
     monkeypatch.setattr(copilot, "INTENT_GATE", False)
     seen = scripted(monkeypatch, ("A is the first section.", []))
     got, _ = turn("what is A?")
     assert seen.gate == [] and len(seen) == 1 and seen[0]["tools"] == ["plan", *STEP_TOOLS]
-    assert seen[0]["opts"]["temperature"] == copilot.FIRST_TEMPERATURE and "on_delta" not in seen[0]["opts"]
+    assert seen[0]["opts"]["temperature"] == copilot.FIRST_TEMPERATURE and not seen[0]["stream"]
     assert got["answer"] == "A is the first section." and got["deltas"] == ["A is the first section."]
 
 
-def test_a_chat_that_hangs_up_during_a_streamed_answer_stops_it_without_a_second_go(turn, monkeypatch):
-    calls = []
-
-    def chat_tools(messages, tools=None, **opts):
-        if opts.get("fmt") is not None:
-            return {"content": '{"change_note": false}', "tool_calls": [], "raw_tool_calls": []}, {}
-        calls.append(1)
-        raise llm.LLMError("ollama stream failed: [Errno 32] Broken pipe") from BrokenPipeError()
-    monkeypatch.setattr(copilot.llm, "chat_tools", chat_tools)
+def test_a_turn_stopped_before_the_gate_makes_no_call(turn, monkeypatch):
+    seen = scripted(monkeypatch, ("never", []))
     with pytest.raises(copilot.CopilotError, match="stopped"):
-        turn("What is A?")
-    assert calls == [1]
-    with pytest.raises(copilot.CopilotError, match="stopped"):
-        turn("What is A?", should_stop=lambda: True)                # before the gate: no call at all
-    assert calls == [1]
-
-
-def test_a_deep_answer_that_is_still_thinking_keeps_writing_its_stage(con, vault, monkeypatch):
-    write(vault, "Notes/school/lesson.md", "gradient descent")
-    source = copilot.sync_note(con, vault, "Notes/school/lesson.md", embed=False)
-    monkeypatch.setattr(copilot.search_mod, "hybrid", lambda *a, **k: [])
-    monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
-    monkeypatch.setattr(copilot, "HEARTBEAT_S", 0.0)
-
-    def chat_tools(messages, tools=None, **opts):
-        if opts.get("fmt") is not None:
-            return {"content": '{"change_note": false}', "tool_calls": [], "raw_tool_calls": []}, {}
-        for _ in range(2):
-            opts["on_thinking"]("hm")
-        opts["on_delta"]("Answer")
-        return {"content": "Answer", "tool_calls": [], "raw_tool_calls": []}, {}
-    monkeypatch.setattr(copilot.llm, "chat_tools", chat_tools)
-    stages = []
-    copilot.run_turn(con, source["id"], "q", [], "deep", vault=vault, on_stage=stages.append,
-                     on_delta=lambda _t: None)
-    assert stages[:3] == ["Thinking deeply"] * 3
+        turn("What is A?", should_stop=lambda: True)
+    assert seen == [] and seen.gate == []

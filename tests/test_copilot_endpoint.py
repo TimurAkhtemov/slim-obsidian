@@ -327,12 +327,16 @@ def a_note(tmp_path, monkeypatch):
                 return {"content": json.dumps({"change_note": intent}), "tool_calls": [], "raw_tool_calls": []}, {}
             content, calls = replies[script.calls]
             script.calls += 1
-            if opts.get("on_delta") and content:
-                opts["on_delta"](content)
             return ({"content": content, "tool_calls": [{"name": n, "arguments": a} for n, a in calls],
                      "raw_tool_calls": []}, {"duration_s": 1, "output_tokens": 5})
+        def chat_stream(messages, **opts):     # today's Ask path
+            content, _calls = replies[script.calls]
+            script.calls += 1
+            opts["on_delta"](content)
+            return content, {"duration_s": 1}
         script.calls = 0
         monkeypatch.setattr(copilot.llm, "chat_tools", chat_tools)
+        monkeypatch.setattr(copilot.llm, "chat_stream", chat_stream)
     return source, script
 
 

@@ -111,12 +111,13 @@ note loses its id. Embedding is part of ingest; `slim status` reports `unembedde
      cut to one section, `[[links]]`), inside a fixed budget, and names what it left out.
      Code knows what it read, so a skill turn makes no sources call.
    - **Answer or edit** — one chat, no mode. A question first meets the intent gate: one small
-     JSON call on the same messages asks whether the owner wants the note changed. No: no tools,
-     and the answer streams, with sources. Yes, or it can't tell: the model edits the open note
-     through tools (`edits.TOOLS`: `replace`, `edit_text`, `insert`, `move`, `plan`) that point
-     at block handles — [b12] a block, s7 the section under heading b7, b11-b15 a range — at
-     temperature 0.0. A small change is one call; a larger one is a plan carried out one call
-     per step, then up to two fix-ups if the headings miss its outline. Code holds the plan and
+     JSON call on its own short prompt (SLIM's last answer and the question, never the note)
+     asks whether the owner wants the note changed. No: the Ask path above, unchanged. Yes, or
+     it can't tell: the model edits the open note through tools (`edits.TOOLS`: `replace`,
+     `edit_text`, `insert`, `move`, `plan`) that point at block handles — [b12] a block, s7 the
+     section under heading b7, b11-b15 a range — at temperature 0.0. A small change is one
+     call; a larger one is a plan carried out one call per step, then up to two fix-ups if the
+     headings miss its outline. Code holds the plan and
      the limits (`copilot.py`: 8 steps, 30 calls, 3 refusals in a row, 12k output tokens) and
      refuses what a call must not do, with a reason the model reads back; `llm.hold()` keeps the
      model lock for the run. An `edit` skill runs the same loop (tidy: the selection's blocks

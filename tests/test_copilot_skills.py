@@ -1,6 +1,7 @@
 """Copilot skills: whole notes chosen by code. A skill that changes the note or makes a new one
 writes nothing: its changes go to the plugin as they land."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -87,33 +88,42 @@ def test_a_selection_skill_without_a_selection_is_refused(con, vault):
         copilot.gather(con, vault, source, skill=skills.load(vault)["explain"])
 
 
-def tooled(monkeypatch, *replies):
-    """A fake model for turns that may edit: each call returns the next (content, [(tool, args)])."""
+def tooled(monkeypatch, *replies, intent=False):
+    """A fake model: each call returns the next (content, [(tool, args)]). A plain question's gate
+    says `intent`; "no" sends it down today's Ask path, which streams through chat_stream."""
     seen = []
 
     def chat_tools(messages, tools=None, **opts):
-        if opts.get("fmt") is not None:        # the intent gate: these turns are questions
-            return {"content": '{"change_note": false}', "tool_calls": [], "raw_tool_calls": []}, {}
+        if opts.get("fmt") is not None:        # the intent gate
+            return {"content": json.dumps({"change_note": intent}), "tool_calls": [], "raw_tool_calls": []}, {}
         seen.append({"messages": list(messages), "tools": [t["function"]["name"] for t in tools or []],
                      "opts": opts})
         content, calls = replies[len(seen) - 1]
-        if opts.get("on_delta") and content:
-            opts["on_delta"](content)
         return ({"content": content, "tool_calls": [{"name": n, "arguments": a} for n, a in calls],
                  "raw_tool_calls": []}, {"duration_s": 1})
+
+    def chat_stream(messages, **opts):
+        seen.append({"messages": list(messages), "tools": [], "opts": opts})
+        content, _calls = replies[len(seen) - 1]
+        if opts.get("on_delta") and content:
+            opts["on_delta"](content)
+        return content, {"duration_s": 1}
     monkeypatch.setattr(copilot.llm, "chat_tools", chat_tools)
+    monkeypatch.setattr(copilot.llm, "chat_stream", chat_stream)
     return seen
 
 
-def test_a_question_is_one_turn_that_may_edit_and_names_no_mode(con, vault, monkeypatch):
+def test_a_question_names_no_mode_on_either_path(con, vault, monkeypatch):
     source = open_source(con, vault, note(vault, "Notes/work/a.md", "text\n"))
     monkeypatch.setattr(copilot.search_mod, "hybrid", lambda *a, **k: [])
     monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
     seen = tooled(monkeypatch, ("ok", []))
     turn = copilot.run_turn(con, source["id"], "what is /usr/bin for?", [], "quick", vault=vault)
     system = seen[0]["messages"][0]["content"]
-    assert copilot.EDIT_RIDER in system and copilot.ASK_RIDER not in system
-    assert "Edit mode" not in system and "Ask mode" not in system
+    assert copilot.ASK_RIDER in system and copilot.EDIT_RIDER not in system
+    edit_system = copilot.edit_message("Notes/work/a.md", edits.Note("text\n"))
+    for text in (system, edit_system):
+        assert "Edit mode" not in text and "Ask mode" not in text
     assert turn["edit_run"] is None and turn["skill"] is None and turn["answer"] == "ok"
 
 
@@ -209,9 +219,10 @@ def test_a_turn_that_may_edit_sees_the_open_notes_images(con, vault, monkeypatch
     source = open_source(con, vault, open_path)
     monkeypatch.setattr(copilot.search_mod, "hybrid", lambda *a, **k: [])
     monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
-    seen = tooled(monkeypatch, ("Nothing to change.", []))
+    seen = tooled(monkeypatch, ("Nothing to change.", []), ("Still nothing.", []), intent=True)
     copilot.run_turn(con, source["id"], "write the equation under its screenshot", [], "quick",
                      vault=vault)
+    assert seen[0]["tools"]                                        # the edit path
     shown = seen[0]["messages"][-2]
     assert len(shown["images"]) == 2
     assert shown["content"].index("`psi.png`") < shown["content"].index("`mle.png`")
