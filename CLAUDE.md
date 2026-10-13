@@ -251,20 +251,6 @@ reacts to a vault `delete` must first ask whether the server caused it (2026-09-
 - A public repo. Nothing user-specific in code: vocabulary and the owner's name are config,
   `config/projects.yaml` is gitignored, and commit messages and comments stay generic.
 
-## Code map
-
-`slim/cli.py` is the entry point (six commands: `ingest`, `status`, `reflect`, `memos`, `chat`,
-`trace`). Capture: `chat.py` (the plugin's API server — recorder and copilot, loopback-only,
-Host and Origin gates on every write), `record.py` (writes the note), `transcribe.py`
-(Parakeet, two lanes), `speakers.py` (Me/Them from the two channels), `summarize.py`,
-`suggest.py` (the filing card), `enrich.py` and `voicetags.py` (label), `inbox.py`
-(the memo lane's transcribe-and-write), `voicememos.py`.
-Index: `ingest.py`, `chunk.py` (fragments; the frontmatter reader and writer), `embed.py`,
-`db.py`. Answer: `search.py`, `copilot.py`, `skills.py` and `edits.py` (the copilot's
-/commands and its proposals), `threads.py`, `copilot_images.py`, `reflect.py`.
-Seams: `llm.py`, `trace.py`, `config.py` with `config/projects.yaml` and `vaultpath.py`,
-`devserver.py`.
-
 ## Conventions
 
 - `uv` for everything; pytest. Plain, explicit flows — no manager/factory/engine layers.
