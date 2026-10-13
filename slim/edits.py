@@ -922,8 +922,10 @@ TOOLS: dict[str, dict] = {
         "apply": _edit_text},
     "insert": {
         "description": "Insert new markdown after or before a block or section. Give exactly one of after or before.",
-        "parameters": {"type": "object", "properties": {"markdown": {"type": "string"}, "after": _HANDLE_ARG,
-                                                       "before": _HANDLE_ARG}, "required": ["markdown"]},
+        # The place before the text: the model writes them in this order, so the text can show
+        # where it goes as it is written (`copilot._Drafts`).
+        "parameters": {"type": "object", "properties": {"after": _HANDLE_ARG, "before": _HANDLE_ARG,
+                                                       "markdown": {"type": "string"}}, "required": ["markdown"]},
         "apply": _insert},
     "move": {
         "description": "Move a block or section to after or before another one. Give exactly one of after or before.",

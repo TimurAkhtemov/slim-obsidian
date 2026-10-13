@@ -696,10 +696,12 @@ def _repair_args(value):
 
 
 def _call(messages: list[dict], offered: list[str], *, think: bool, temperature: float,
-          num_predict: int) -> _Reply:
-    """One model call with the `offered` tools; its arguments repaired by `_repair_args`."""
+          num_predict: int, on_part=None, should_stop=None) -> _Reply:
+    """One model call with the `offered` tools; its arguments repaired by `_repair_args`. It
+    streams: `on_part` hears its tool calls as they decode (`llm._Reader`)."""
     msg, stats = llm.chat_tools(messages, edits_mod.ollama_tools(offered), think=think,
-                                temperature=temperature, num_predict=num_predict)
+                                temperature=temperature, num_predict=num_predict,
+                                on_part=on_part, should_stop=should_stop)
     calls = [{"name": c["name"], "arguments": _repair_args(c.get("arguments") or {})}
              for c in msg["tool_calls"]]
     # Ollama's own parser can leave a tool call in the text: unreadable, and never an answer.
@@ -846,6 +848,68 @@ def _listed_plan(content: str) -> tuple[str, list[str]] | None:
     return (first.group(1) if first else intro), runs[-1][:MAX_STEPS]
 
 
+class _Drafts:
+    """An insert's or replace's text in the note while the model writes it: a draft at the place
+    the call names, from the moment that place is known, with what was written before it. Code
+    only places it, in UTF-16 units of the run's draft as a change's splices are; it is never the
+    note's text. The change that lands names the draft it replaces; a call refused or never
+    applied ends its draft."""
+    PLACES = {"insert": ("after", "before"), "replace": ("target",)}
+
+    def __init__(self, note: edits_mod.Note, only: set[str] | None, on_edit):
+        self.note, self.only, self.on_edit = note, only, on_edit
+        self.reply, self.calls, self.open = 0, {}, []
+
+    def next_reply(self) -> None:
+        self.end()
+        self.reply, self.calls = self.reply + 1, {}
+
+    def part(self, kind: str, index: int, name, value) -> None:
+        """`on_part` for a model call (`llm._Reader`)."""
+        call = self.calls.setdefault(index, {"tool": None, "text": [], "id": None})
+        if kind == "call":
+            call["tool"] = name
+        elif call["tool"] not in self.PLACES:
+            return
+        elif kind == "value" and name in self.PLACES[call["tool"]] and call["id"] is None:
+            self._start(index, call, name, value)
+        elif kind == "text" and name == "markdown":
+            call["text"].append(value)
+            if call["id"]:
+                self.on_edit("draft_text", {"id": call["id"], "text": value})
+
+    def _start(self, index: int, call: dict, name: str, value) -> None:
+        note = self.note
+        try:
+            if not isinstance(value, str) or not value.strip():
+                return
+            if call["tool"] == "insert":
+                i, j = note.span(note.name(value))
+                note.check_insert(j if name == "after" else i)
+                start = end = note.offset(j if name == "after" else i)
+            else:
+                i, j, _target, _said = note.pick(note.name(value), self.only)
+                start, end = note.offset(i), note.offset(j)
+        except edits_mod.ToolError:
+            return                              # no such place: the call will say so when applied
+        text = note.text()
+        call["id"] = f"d{self.reply}.{index}"
+        self.open.append(call["id"])
+        self.on_edit("draft", {"id": call["id"], "from": edits_mod.u16(text[:start]),
+                               "to": edits_mod.u16(text[:end]), "text": "".join(call["text"])})
+
+    def of(self, index: int) -> str | None:
+        return (self.calls.get(index) or {}).get("id")
+
+    def landed(self, draft: str) -> None:
+        self.open.remove(draft)
+
+    def end(self) -> None:
+        for draft in self.open:
+            self.on_edit("draft_end", {"id": draft})
+        self.open = []
+
+
 def _intent(question: str, history: list[dict]) -> tuple[bool | None, dict]:
     """Does the owner's last message ask to change the open note? (True/False, or None when the
     gate fails or cannot tell; and the call's stats.) Its prompt is its own: GATE_SYSTEM, SLIM's
@@ -893,6 +957,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
     steps: list[str] = []
     # What the owner reads names text, never a handle; the model keeps its own words.
     plain = note.plain if note is not None else (lambda words: words)
+    drafts = _Drafts(note, only, on_edit) if note is not None else None
 
     def attempt(offered, think, temperature, num_predict):
         if not out["stopped"] and should_stop():
@@ -900,20 +965,31 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
         if out["stopped"]:
             raise _Stopped
         on_stage("Thinking deeply" if think else "Writing")
-        return _call(messages, offered, think=think, temperature=temperature, num_predict=num_predict)
+        if drafts:
+            drafts.next_reply()
+        reply = _call(messages, offered, think=think, temperature=temperature, num_predict=num_predict,
+                      on_part=drafts.part if drafts else None, should_stop=should_stop)
+        for index, call in enumerate(reply.calls):
+            if drafts and drafts.of(index):
+                call["draft"] = drafts.of(index)
+        return reply
 
     def ask(offered, think, temperature, num_predict) -> _Reply:
         nonlocal spent
         try:
-            reply = attempt(offered, think, temperature, num_predict)
-        except llm.LLMError:            # Ollama's own parser fails on a reply now and then: once more
-            out["retries"] += 1
             try:
                 reply = attempt(offered, think, temperature, num_predict)
-            except llm.LLMError as exc:
-                failed.append(exc)
-                out["stopped"] = f"error: {(str(exc) or type(exc).__name__).splitlines()[0][:200]}"
-                raise _Stopped from exc
+            except llm.LLMError:        # a failed call (once Ollama's parser, now the transport): once more
+                out["retries"] += 1
+                try:
+                    reply = attempt(offered, think, temperature, num_predict)
+                except llm.LLMError as exc:
+                    failed.append(exc)
+                    out["stopped"] = f"error: {(str(exc) or type(exc).__name__).splitlines()[0][:200]}"
+                    raise _Stopped from exc
+        except llm.Stopped:             # Stop while the call streamed: it ends here, what landed stays
+            out["stopped"] = "stopped"
+            raise _Stopped from None
         spent += reply.stats.get("output_tokens") or 0
         if spent > budget:
             out["stopped"] = "token budget"
@@ -947,6 +1023,8 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
 
     def finish() -> dict:
         close_step()
+        if drafts:
+            drafts.end()
         if out["outline"]:
             out["outline_details"] = _outline_details(*_against(note, out["outline"]))
             out["outline_met"] = not out["outline_details"]["missing"] and not out["outline_details"]["out_of_order"]
@@ -981,6 +1059,8 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
         if not plans and not edits:
             answer = first.content.strip() or next((_summary(c) for c in first.calls if c["name"] == "done"), "")
             out["answer"] = note.plain(answer, bare=False) if note is not None else answer
+            if drafts:
+                drafts.end()
             return out
         args = plans[0]["arguments"] if plans and isinstance(plans[0]["arguments"], dict) else {}
         steps += _steps(args.get("steps"))[:MAX_STEPS]
@@ -1058,9 +1138,14 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
                         break
                     continue
                 out["changes"].append(change)
-                on_edit("change", change)
+                draft = call.get("draft")
+                if draft:                   # the change takes its draft's place
+                    drafts.landed(draft)
+                on_edit("change", {**change, "draft": draft} if draft else change)
                 results.append(f"ok: {said}")
                 landed, in_row = landed + 1, 0
+            if drafts:                      # refused, or never reached
+                drafts.end()
             if current["k"] is not None:
                 current["landed"] += landed
                 current["refused"] = refused

@@ -831,3 +831,10 @@ def test_a_details_keeps_its_place_in_a_list_and_loses_the_indent_of_its_body():
     assert edits.fold("- item\n  <details><summary>T</summary>\n    body\n      nested\n  </details>")[0] == \
         "- item\n\n  > [!note]- T\n  > body\n  >   nested"
     assert edits.fold("<details>\nbody\n</details>")[0] == "> [!note]- Details\n> body"
+
+
+def test_insert_asks_for_its_place_before_its_text():
+    # The model writes parameters in the order the schema lists them; with the place first, an
+    # insert's text can be shown where it goes as it is written (measured 2026-10-13).
+    [tool] = ollama_tools(["insert"])
+    assert list(tool["function"]["parameters"]["properties"]) == ["after", "before", "markdown"]

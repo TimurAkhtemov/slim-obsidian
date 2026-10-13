@@ -1291,6 +1291,9 @@ function fakeLive(text = "# A\n\nold\n") {
     showBefore(_view, id, text, on) { calls.push(["before", id, text, on]); },
     showing: () => null,
     restore(view, text) { calls.push(["restore", text]); view.text = text; runs.clear(); },
+    startDraft(_view, id, draft) { calls.push(["draft", id, draft.id, draft.from, draft.to, draft.text]); return runs.has(id); },
+    growDraft(_view, id, text) { calls.push(["grow", id, text]); },
+    endDraft(_view, id) { calls.push(["drop", id]); },
   };
   return { live, editor, runs };
 }
@@ -1859,3 +1862,25 @@ test("a run lands in the editor focused last that shows the note, and is found a
   assert.equal(plugin.liveRunView("run-2"), null);
 });
 
+
+test("a change's text is a draft in the note while it is written, and the change takes its place", async () => {
+  const { live, editor } = fakeLive();
+  const view = editView({ live, editor, events: async (_body, handlers) => {
+    handlers.draft({ id: "d1.0", from: 3, to: 3, text: "" });          // the first call: before the run is named
+    handlers.draft_text({ id: "d1.0", text: "New" });
+    handlers.edit({ before_ref: "a".repeat(32), hash_before: sha256Hex("# A\n\nold\n") });
+    handlers.plan({ intro: "Add a line.", steps: [], outline: null });
+    handlers.change(change("c1", 1, { draft: "d1.0" }));
+    handlers.draft({ id: "d2.0", from: 5, to: 8, text: "x" });
+    handlers.draft_end({ id: "d2.0" });
+    handlers.turn({ answer: "Add a line.", mode: "quick", citations: [], edit_run: {
+      plan: { intro: "Add a line.", steps: [] }, steps_done: 1, changes: [change("c1", 1)], stopped: null } });
+  } });
+  await view.send("add a line");
+  const local = live.calls[0][1], run = "a".repeat(32);
+  assert.deepEqual(live.calls.filter((c) => ["draft", "grow", "drop", "apply"].includes(c[0])), [
+    ["draft", local, "d1.0", 3, 3, ""], ["grow", "d1.0", "New"],           // on the editor tracking Send
+    ["drop", "d1.0"], ["apply", "c1"],                                     // the change takes its draft's place
+    ["draft", run, "d2.0", 5, 8, "x"], ["drop", "d2.0"]]);
+  assert.equal("draft" in view.turns.at(-1).turn.edit_run.changes[0], false);
+});

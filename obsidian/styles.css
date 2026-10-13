@@ -680,6 +680,15 @@
 .slim-del + .slim-ins { margin-left: 2px; }
 .slim-format { text-decoration: underline dotted var(--color-orange); text-decoration-thickness: 2px; text-underline-offset: 4px; }
 .slim-ins { background: rgba(var(--color-green-rgb), 0.15); color: var(--text-success); border-radius: 3px; }
+/* A change's text while SLIM writes it: where it will go, drawn as the added block it becomes (the
+   rail, the note's own text), tinted until it is in the note. What a replace takes out is dimmed. */
+.slim-draft {
+  box-shadow: inset 3px 0 0 var(--color-orange); padding: 0 2px 0 6px;
+  background: rgba(var(--color-orange-rgb), 0.07); font-family: var(--font-text); white-space: pre-wrap;
+}
+.slim-draft > :first-child { margin-top: 0; }
+.slim-draft > :last-child { margin-bottom: 0; }
+.cm-line.slim-drafting { opacity: 0.45; }
 .slim-removed { position: relative; padding-left: 8px; font-family: var(--font-text); }
 .slim-removed-line {
   display: block; width: 100%; height: auto; padding: 2px 0; text-align: left; background: none; box-shadow: none;

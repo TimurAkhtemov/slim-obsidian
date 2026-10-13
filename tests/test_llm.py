@@ -28,14 +28,14 @@ def _capture(monkeypatch, reply: dict = REPLY):
     return sent
 
 
-def test_chat_tools_sends_the_tools_the_format_and_every_bound(monkeypatch):
+def test_chat_tools_without_tools_sends_the_format_and_every_bound(monkeypatch):
+    # The intent gate. A call WITH tools streams raw instead (tests/test_llm_render.py).
     sent = _capture(monkeypatch)
-    tools = [{"type": "function", "function": {"name": "replace", "parameters": {}}}]
     schema = {"type": "object"}
-    llm.chat_tools([{"role": "user", "content": "q"}], tools, think=True, temperature=0.0,
+    llm.chat_tools([{"role": "user", "content": "q"}], think=True, temperature=0.0,
                    num_predict=2048, fmt=schema)
     (body,) = sent
-    assert body["tools"] == tools and body["format"] == schema
+    assert "tools" not in body and body["format"] == schema
     assert body["think"] is True and body["stream"] is False and body["model"] == llm.MODEL
     assert body["options"] == {"num_ctx": llm.RESIDENT_CTX, "temperature": 0.0, "num_predict": 2048}
 

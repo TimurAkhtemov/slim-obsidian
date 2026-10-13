@@ -3386,6 +3386,9 @@ class CopilotView extends ItemView {
       if (abort.signal.aborted) return;
       try { handle(data); } catch (error) { console.error("[slim] edit event", error); }
     };
+    // A change's text while the model writes it is a draft in the note: on the editor tracking
+    // this question until the server names the run, then on the run's, while it shows the note.
+    const drafting = () => (run ? (this.inView(run) ? [run.view, run.ref] : []) : local ? [tracked, local] : []);
     this.render();
     try {
       await this.refreshNote();
@@ -3429,6 +3432,18 @@ class CopilotView extends ItemView {
           this.streamingText = streamed;
           this.renderDelta();
         },
+        draft: on((data) => {
+          const [view, id] = drafting();
+          if (view) this.plugin.live?.startDraft?.(view, id, data);
+        }),
+        draft_text: on((data) => {
+          const [view] = drafting();
+          if (view) this.plugin.live?.growDraft?.(view, String(data.id), String(data.text || ""));
+        }),
+        draft_end: on((data) => {
+          const [view] = drafting();
+          if (view) this.plugin.live?.endDraft?.(view, String(data.id));
+        }),
         edit: on((data) => {
           const ref = String(data.before_ref || "");
           const claimed = Boolean(local && this.plugin.live?.claimRun(tracked, local, ref));
@@ -3521,6 +3536,7 @@ class CopilotView extends ItemView {
       run.pending.push(this.createNote(change).then((made) => { Object.assign(entry, made); this.renderEdit(); }));
     } else if (this.inView(run)) {
       entry.state = "skipped";            // if the editor throws, the change did not land
+      if (change.draft != null) this.plugin.live.endDraft?.(run.view, String(change.draft));   // it takes the draft's place
       entry.state = this.plugin.live.applyChange(run.view, run.ref, change);
     } else {
       // The note's editor is gone or shows another note: only the note in view is edited.
@@ -4731,6 +4747,8 @@ function makeLiveEditor(cm, host) {
   const setRun = StateEffect.define();      // {id, run}: this transaction is that run's own
   const clearRuns = StateEffect.define();
   const showBefore = StateEffect.define();  // {runId, text} or null
+  const setDraft = StateEffect.define();    // {start: draft} | {grow: {id, text}} | {end: id} | {endRun: runId} | {rename: {from, to}}
+  const DRAFT_RENDER_MS = 250;              // a draft's Markdown is drawn again at most this often
   const lock = new Compartment();
   const focused = new WeakMap();
   const leaving = new WeakMap();            // view → the timer that lets go of its hovered change
@@ -5167,6 +5185,113 @@ function makeLiveEditor(cm, host) {
     provide: (field) => EditorView.decorations.from(field),
   });
 
+  // ---- drafts: a change's text while the model writes it ------------------------------------
+
+  // Shown where the change will go and never in the note: no history, no save, nothing for a
+  // change to skip. A replace dims the text it will replace. Each draft's place is in this
+  // editor's own positions, so every edit, the owner's or SLIM's, maps it; the change that
+  // lands, the server, or the run's end takes it away.
+  const draftsField = StateField.define({
+    create: () => new Map(),
+    update(drafts, tr) {
+      let next = drafts;
+      if (tr.docChanged && drafts.size) {
+        next = new Map([...drafts].map(([id, d]) => {
+          if (d.from === d.to) { const at = tr.changes.mapPos(d.from, -1); return [id, { ...d, from: at, to: at }]; }
+          const from = tr.changes.mapPos(d.from, 1);
+          return [id, { ...d, from, to: Math.max(from, tr.changes.mapPos(d.to, -1)) }];
+        }));
+      }
+      for (const effect of tr.effects) {
+        if (!effect.is(setDraft)) continue;
+        const { start, grow, end, endRun, rename } = effect.value;
+        next = new Map(next);
+        if (start) next.set(start.id, start);
+        if (grow && next.has(grow.id)) next.set(grow.id, { ...next.get(grow.id), text: next.get(grow.id).text + grow.text });
+        if (end != null) next.delete(end);
+        for (const [id, d] of next) {
+          if (endRun != null && d.runId === endRun) next.delete(id);
+          if (rename && d.runId === rename.from) next.set(id, { ...d, runId: rename.to });
+        }
+      }
+      return next;
+    },
+  });
+  const draftsOf = (state, runId) => [...(state.field(draftsField, false)?.values() || [])].some((d) => d.runId === runId);
+
+  // The draft's Markdown, drawn again at most every DRAFT_RENDER_MS with the latest text; plain
+  // text until the first drawing is in. Each drawing is dropped (and its component) with the next.
+  const paintDraft = (view, box, text, path) => {
+    box.slimText = text;
+    if (box.slimTimer) return;
+    box.slimTimer = setTimeout(() => {
+      box.slimTimer = null;
+      box.slimAt = Date.now();
+      const shown = box.slimText, holder = document.createElement("div");
+      const drawn = host.renderFor ? host.renderFor(holder, shown, path)
+        : Promise.resolve(host.render(holder, shown, path)).then(() => null);
+      Promise.resolve(drawn).then((drop) => {
+        if (box.slimGone) { drop?.(); return; }
+        box.slimDrop?.();
+        box.slimDrop = drop;
+        box.replaceChildren(...holder.childNodes);
+        view.requestMeasure();
+      }).catch(() => { box.textContent = shown; });
+    }, Math.max(0, DRAFT_RENDER_MS - (Date.now() - (box.slimAt || 0))));
+  };
+
+  class Draft extends WidgetType {
+    constructor(id, text, path) { super(); this.id = id; this.text = text; this.path = path; }
+    eq(other) { return other.id === this.id && other.text === this.text; }
+    toDOM(view) {
+      const box = document.createElement("div");
+      box.className = "slim-draft";
+      box.dataset.draft = this.id;
+      box.textContent = this.text;
+      paintDraft(view, box, this.text, this.path);
+      return box;
+    }
+    updateDOM(dom, view) {
+      if (dom.dataset.draft !== this.id) return false;
+      paintDraft(view, dom, this.text, this.path);
+      return true;
+    }
+    destroy(dom) {
+      dom.slimGone = true;
+      clearTimeout(dom.slimTimer);
+      dom.slimDrop?.();
+    }
+    ignoreEvent() { return true; }
+  }
+
+  // Under the text it will replace, or at the start of the line its insert goes before; at the
+  // end of a line, under it.
+  const draftMarks = StateField.define({
+    create: () => Decoration.none,
+    update(value, tr) {
+      const drafts = tr.state.field(draftsField, false);
+      if (drafts === tr.startState.field(draftsField, false) && !tr.docChanged) return value;
+      if (!drafts?.size) return Decoration.none;
+      const { doc } = tr.state;
+      const path = pathOf(tr.state) || "";
+      const ranges = [];
+      for (const d of drafts.values()) {
+        const from = Math.min(d.from, doc.length), to = Math.min(Math.max(d.to, from), doc.length);
+        for (let pos = from; pos < to;) {
+          const line = doc.lineAt(pos);
+          ranges.push(Decoration.line({ class: "slim-drafting" }).range(line.from));
+          if (line.to >= doc.length) break;
+          pos = line.to + 1;
+        }
+        const line = doc.lineAt(to), widget = new Draft(d.id, d.text, path);
+        ranges.push(to === line.from ? Decoration.widget({ widget, block: true, side: -1 }).range(to)
+          : Decoration.widget({ widget, block: true, side: 1 }).range(line.to));
+      }
+      return Decoration.set(ranges, true);
+    },
+    provide: (field) => EditorView.decorations.from(field),
+  });
+
   // Every live editor, so the plugin finds the one showing a note; and each run that moved, so
   // the chat and its saved turn follow what happened in the note (↺, Cmd-Z, See before).
   const tracker = ViewPlugin.fromClass(class {
@@ -5223,7 +5348,7 @@ function makeLiveEditor(cm, host) {
   };
 
   const api = {
-    extension: [runsField, marksField, beforeField, beforeMarks, tracker, lock.of([]),
+    extension: [runsField, marksField, beforeField, beforeMarks, draftsField, draftMarks, tracker, lock.of([]),
       EditorView.domEventHandlers({
         mouseover: (event, view) => hover(view, event.target),
         mouseleave: (_event, view) => hover(view, null),
@@ -5250,14 +5375,38 @@ function makeLiveEditor(cm, host) {
     claimRun(view, from, to) {
       const run = runOf(view.state, from);
       if (!run) return false;
-      view.dispatch({ effects: [setRun.of({ id: from, run: null }),
+      view.dispatch({ effects: [setRun.of({ id: from, run: null }), setDraft.of({ rename: { from, to } }),
         setRun.of({ id: to, run: { ...run, id: to, pending: false, version: run.version + 1 } })] });
       return true;
     },
 
     // A question answered, or a request that never became a run: nothing to keep.
     dropRun(view, id) {
-      if (runOf(view.state, id)) view.dispatch({ effects: setRun.of({ id, run: null }) });
+      const effects = draftsOf(view.state, id) ? [setDraft.of({ endRun: id })] : [];
+      if (runOf(view.state, id)) effects.push(setRun.of({ id, run: null }));
+      if (effects.length) view.dispatch({ effects });
+    },
+
+    // A change's text while the model writes it, at its place in the server's copy (UTF-16 units
+    // of that copy, as splices are), shown where that place is now. False when the editor has no
+    // such run or the place is not in its copy.
+    startDraft(view, runId, { id, from, to, text = "" }) {
+      const run = runOf(view.state, runId);
+      if (!run || !Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from || to > run.agent.length) return false;
+      const point = (pos, side) => run.owner.mapPos(run.toDoc.mapPos(pos, side), side);
+      const a = point(from, from === to ? -1 : 1), b = from === to ? a : Math.max(a, point(to, -1));
+      const effects = [setDraft.of({ start: { id: String(id), runId, from: a, to: b, text: String(text) } })];
+      if (!view.hasFocus) effects.push(EditorView.scrollIntoView(b, { y: "nearest", yMargin: 80 }));
+      view.dispatch({ effects });
+      return true;
+    },
+
+    growDraft(view, id, text) {
+      if (text && view.state.field(draftsField, false)?.has(id)) view.dispatch({ effects: setDraft.of({ grow: { id, text } }) });
+    },
+
+    endDraft(view, id) {
+      if (view.state.field(draftsField, false)?.has(id)) view.dispatch({ effects: setDraft.of({ end: id }) });
     },
 
     // One change as the server made it: splices on its copy, in order. It lands where those
@@ -5338,7 +5487,9 @@ function makeLiveEditor(cm, host) {
     // The run is over: no more changes come, and ↺ appears.
     endRun(view, runId) {
       const run = runOf(view.state, runId);
-      if (run?.active) view.dispatch({ effects: setRun.of({ id: runId, run: { ...run, active: false, latest: null, version: run.version + 1 } }) });
+      const effects = draftsOf(view.state, runId) ? [setDraft.of({ endRun: runId })] : [];
+      if (run?.active) effects.push(setRun.of({ id: runId, run: { ...run, active: false, latest: null, version: run.version + 1 } }));
+      if (effects.length) view.dispatch({ effects });
     },
 
     // ↺: these changes and everything made inside them, as one step. Refused, not forced, when
@@ -6003,6 +6154,13 @@ module.exports = class SlimRecorderPlugin extends Plugin {
       infoField: editorInfoField,
       livePreviewField: editorLivePreviewField,
       render: (el, markdown, sourcePath) => MarkdownRenderer.render(this.app, markdown, el, sourcePath, this),
+      // A drawing soon replaced (a draft's) is drawn under a component of its own, removed with it.
+      renderFor: (el, markdown, sourcePath) => {
+        if (!MarkdownRenderChild) return MarkdownRenderer.render(this.app, markdown, el, sourcePath, this).then(() => null);
+        const child = this.addChild(new MarkdownRenderChild(el));
+        return MarkdownRenderer.render(this.app, markdown, el, sourcePath, child)
+          .then(() => () => this.removeChild(child), (error) => { this.removeChild(child); throw error; });
+      },
       icon: (el, name) => setIcon?.(el, name),
       changed: (view, runId) => this.liveChanged(view, runId),
       refused: () => new Notice("SLIM: you've edited this change since, so it stays as it is."),

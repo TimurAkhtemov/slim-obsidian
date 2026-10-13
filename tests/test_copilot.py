@@ -1471,3 +1471,76 @@ def test_every_model_call_of_an_edit_run_names_its_stage_as_it_starts(turn, monk
     got, _ = turn("Capitalize both", mode="deep")
     assert got["edit_run"]["steps_done"] == 2
     assert got["stages"] == ["Thinking deeply", "Writing", "Writing"]
+
+
+# --- the text of a change streams into the note as a draft (2026-10-13) ---
+
+def streamed(monkeypatch, *replies, order=None):
+    """The scripted model, its tool calls arriving through on_part as the reader hands them on:
+    each parameter's text in two pieces. `order` puts a call's parameters in another order."""
+    seen = scripted(monkeypatch, *replies)
+    script = copilot.llm.chat_tools
+
+    def chat_tools(messages, tools=None, **opts):
+        if opts.get("fmt") is None and opts.get("on_part"):
+            content, calls, *_ = replies[len(seen)]
+            for k, (name, args) in enumerate(calls):
+                opts["on_part"]("call", k, name, None)
+                for key in (order or {}).get(name, list(args)):
+                    value = args[key]
+                    opts["on_part"]("parameter", k, key, None)
+                    if isinstance(value, str):
+                        half = len(value) // 2
+                        opts["on_part"]("text", k, key, value[:half])
+                        opts["on_part"]("text", k, key, value[half:])
+                    opts["on_part"]("value", k, key, value)
+                opts["on_part"]("end", k, None, None)
+        return script(messages, tools, **opts)
+    monkeypatch.setattr(copilot.llm, "chat_tools", chat_tools)
+    return seen
+
+
+def test_an_inserts_text_is_a_draft_at_its_place_until_its_change_lands(turn, monkeypatch):
+    streamed(monkeypatch, ("", [("insert", {"after": "b4", "markdown": "New line."})]))
+    got, events = turn("add a line")
+    kinds = [e for e, _ in events]
+    assert kinds == ["draft", "draft_text", "draft_text", "start", "plan", "change"]
+    draft = events[0][1]
+    assert draft == {"id": "d1.0", "from": NOTE.index("- one"), "to": NOTE.index("- one"), "text": ""}
+    assert "".join(p["text"] for e, p in events if e == "draft_text") == "New line."
+    assert events[-1][1]["draft"] == "d1.0" and events[-1][1]["id"] == "c1"
+    assert "draft" not in got["edit_run"]["changes"][0]            # the turn keeps no draft
+
+
+def test_text_written_before_its_place_shows_once_the_place_is_known(turn, monkeypatch):
+    streamed(monkeypatch, ("", [("insert", {"after": "b4", "markdown": "New line."})]),
+             order={"insert": ["markdown", "after"]})
+    _got, events = turn("add a line")
+    assert [e for e, _ in events][:2] == ["draft", "start"]
+    assert events[0][1]["text"] == "New line."
+
+
+def test_a_replace_draft_covers_its_target_and_a_refused_calls_draft_ends(turn, monkeypatch):
+    streamed(monkeypatch, ("", [("replace", {"target": "s7", "markdown": "## B\n\nText B."}),
+                                ("insert", {"after": "b99", "markdown": "Lost."}),
+                                ("insert", {"before": "b2", "markdown": "<div>raw</div>"})]))
+    got, events = turn("fix B")
+    drafts = {p["id"]: p for e, p in events if e == "draft"}
+    assert drafts["d1.0"]["from"] == NOTE.index("## B") and drafts["d1.0"]["to"] == len(NOTE)
+    assert "d1.1" not in drafts                                   # b99 is no place: no draft
+    assert [p["id"] for e, p in events if e == "draft_end"] == ["d1.2"]     # HTML refused
+    assert [p.get("draft") for e, p in events if e == "change"] == ["d1.0"]
+
+
+def test_stop_while_a_call_streams_ends_the_run_where_it_is(turn, monkeypatch):
+    seen = scripted(monkeypatch, ("", [("plan", {"intro": "Two.", "outline": [], "steps": ["one", "two"]})]),
+                    ("", [("insert", {"after": "b4", "markdown": "One."})]))
+    script = copilot.llm.chat_tools
+
+    def chat_tools(messages, tools=None, **opts):
+        if opts.get("fmt") is None and len(seen) == 2:            # the second step's call
+            raise copilot.llm.Stopped
+        return script(messages, tools, **opts)
+    monkeypatch.setattr(copilot.llm, "chat_tools", chat_tools)
+    got, _events = turn("do both")
+    assert got["edit_run"]["stopped"] == "stopped" and len(got["edit_run"]["changes"]) == 1

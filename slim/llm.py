@@ -8,12 +8,18 @@ nonsense, so the caller validates meaning, not syntax.
 """
 
 import json
+import re
 import threading
+import time
 import urllib.error
 import urllib.request
 from contextlib import contextmanager, nullcontext
 
 OLLAMA_CHAT = "http://localhost:11434/api/chat"
+OLLAMA_GENERATE = "http://localhost:11434/api/generate"
+# A streamed call asks its caller's should_stop() this often: a write to a closed client is how
+# Stop is noticed, and a stopped call frees the model at once rather than at its last token.
+STOP_CHECK_S = 1.0
 
 # ONE live call at a time. The chat surface is a ThreadingHTTPServer, and the KV cache is
 # per-runner: concurrent calls evict each other's prefix, which is the whole reason a
@@ -115,6 +121,10 @@ class LLMError(RuntimeError):
     """Ollama unreachable, timed out, or returned unusable output."""
 
 
+class Stopped(Exception):
+    """The caller's should_stop() said stop while a streamed call ran: the call was abandoned."""
+
+
 def chat(messages: list[dict], schema: dict | None = None, model: str | None = None,
          num_ctx: int = RESIDENT_CTX, temperature: float = 0.0,
          num_predict: int = 1024, timeout: int = 600,
@@ -156,13 +166,19 @@ def chat(messages: list[dict], schema: dict | None = None, model: str | None = N
 
 def chat_tools(messages: list[dict], tools: list[dict] | None = None, *, think: bool,
                temperature: float, num_predict: int, fmt: dict | None = None,
-               timeout: int = 600) -> tuple[dict, dict]:
-    """One bounded turn with Ollama's native tool calls. Returns ({content, tool_calls,
-    raw_tool_calls}, stats): tool_calls as [{name, arguments}], raw_tool_calls as Ollama sent
-    them, for the assistant message that goes back into the conversation. The resident's one
-    window, an explicit `think` and a capped `num_predict`, as every call here. `fmt` is a JSON
-    schema for the reply, as chat()'s `schema`. Not streamed: a reply that streams is an answer,
-    and answers go through chat_stream."""
+               timeout: int = 600, on_part=None, should_stop=None) -> tuple[dict, dict]:
+    """One bounded turn that may call tools. Returns ({content, tool_calls, raw_tool_calls},
+    stats): tool_calls as [{name, arguments}], raw_tool_calls as the assistant message that goes
+    back into the conversation carries them. The resident's one window, an explicit `think` and a
+    capped `num_predict`, as every call here. `fmt` is a JSON schema for the reply, as chat()'s
+    `schema`.
+
+    With tools the call streams, raw (`_tools_raw`): `on_part` hears each tool call's parameters
+    as they decode, and `should_stop()`, asked about once a second, abandons it (Stopped).
+    Without them (the intent gate) it is one /api/chat call."""
+    if tools:
+        return _tools_raw(messages, tools, think=think, temperature=temperature, num_predict=num_predict,
+                          fmt=fmt, timeout=timeout, on_part=on_part, should_stop=should_stop)
     body = {
         "model": MODEL,
         "messages": messages,
@@ -185,6 +201,406 @@ def chat_tools(messages: list[dict], tools: list[dict] | None = None, *, think: 
     # A reply that is only tool calls is not one whose thinking ate the budget.
     stats = _stats(resp, MODEL, RESIDENT_CTX, content or bool(raw), thinking_chars)
     return {"content": content, "tool_calls": calls, "raw_tool_calls": raw}, stats
+
+
+# --- a call with tools: the prompt rendered here, the reply read as it decodes ------------------
+#
+# /api/chat runs the model's own parser (Ollama 0.35's `qwen3.5`) on every reply, tools or not, and
+# it holds a tool call back until `</tool_call>`: an insert's 700 characters arrived in one piece
+# at the end (measured 2026-10-13, /api/chat with no tools=: 0 content chunks, the call whole at
+# 3.66 s). A RAW /api/generate runs no parser, so the call streams; its prompt is rendered here, as
+# that renderer renders it (model/renderers/qwen35.go with RenderImgTags on, json.go, image_tags.go,
+# qwen3coder.go's formatToolCallArgument). Byte for byte: equal to Ollama's own `_debug_render_only`
+# for every call of a real run, and a raw call after a chat call re-read 2 of its 8,006 prompt
+# tokens. tests/test_llm_render.py pins it against Ollama's rendering.
+
+_IM_START, _IM_END = "<|im_start|>", "<|im_end|>"
+_TOOLS_HEAD = "# Tools\n\nYou have access to the following functions:\n\n<tools>"
+_TOOLS_TAIL = """
+</tools>
+
+If you choose to call a function ONLY reply in the following format with NO suffix:
+
+<tool_call>
+<function=example_function_name>
+<parameter=example_parameter_1>
+value_1
+</parameter>
+<parameter=example_parameter_2>
+This is the value for the second parameter
+that can span
+multiple lines
+</parameter>
+</function>
+</tool_call>
+
+<IMPORTANT>
+Reminder:
+- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags
+- Required parameters MUST be specified
+- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after
+- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls
+</IMPORTANT>"""
+# What Go's strings.TrimSpace trims (unicode.IsSpace); Python's strip() also takes U+001C-U+001F.
+_SPACE = ("\t\n\v\f\r \x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
+          "\u2028\u2029\u202f\u205f\u3000")
+
+
+def _trim(text: str) -> str:
+    return text.strip(_SPACE)
+
+
+def _go_json(value, sort: bool = True) -> str:
+    """Go's json.Marshal: compact, `<>&` and U+2028/9 escaped, a map's keys sorted."""
+    out = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=sort)
+    return (out.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+               .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
+
+
+def _spaced(compact: str) -> str:
+    """marshalWithSpaces: a space after each ':' and ',' outside strings."""
+    out, quoted, escaped = [], False, False
+    for c in compact:
+        out.append(c + " " if not quoted and c in ":," else c)
+        if escaped:
+            escaped = False
+        elif quoted and c == "\\":
+            escaped = True
+        elif c == '"':
+            quoted = not quoted
+    return "".join(out)
+
+
+def _property(prop: dict) -> dict:
+    """api.ToolProperty's fields in Go's order, empty ones left out; `items` is a map, so sorted."""
+    out = {}
+    if prop.get("anyOf"):
+        out["anyOf"] = [_property(p) for p in prop["anyOf"]]
+    kind = prop.get("type")
+    if kind:
+        out["type"] = kind[0] if isinstance(kind, list) and len(kind) == 1 else kind
+    if prop.get("items") is not None:
+        out["items"] = json.loads(json.dumps(prop["items"], sort_keys=True))
+    for key in ("description", "enum"):
+        if prop.get(key):
+            out[key] = prop[key]
+    if prop.get("properties"):
+        out["properties"] = {k: _property(v) for k, v in prop["properties"].items()}
+    if prop.get("required"):
+        out["required"] = prop["required"]
+    return out
+
+
+def _tool_json(tool: dict) -> str:
+    """A tool as the prompt lists it: type, function {name, description, parameters {type,
+    required, properties}}, the properties in the order given."""
+    fn = tool["function"]
+    params = fn.get("parameters") or {}
+    shown = {"type": params.get("type", "object")}
+    if params.get("required"):
+        shown["required"] = params["required"]
+    shown["properties"] = {k: _property(v) for k, v in (params.get("properties") or {}).items()}
+    function = {"name": fn["name"], **({"description": fn["description"]} if fn.get("description") else {}),
+                "parameters": shown}
+    return _spaced(_go_json({"type": tool.get("type", "function"), "function": function}, sort=False))
+
+
+def _argument(value) -> str:
+    """An argument of a call in the history: text as it is, a list or a map as compact JSON."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (list, dict)):
+        return _go_json(value)
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _content(message: dict, offset: int) -> tuple[str, int]:
+    """A message's text with an [img-N] for each of its images before it, numbered across the
+    prompt; the raw call sends the images in that order."""
+    text, count = message.get("content") or "", len(message.get("images") or ())
+    if not count:
+        return text, offset
+    if "[img-" in text:
+        return text, offset + count
+    prefix = ""
+    for n in range(offset, offset + count):
+        if "[img]" in text:
+            text = text.replace("[img]", f"[img-{n}]", 1)
+        else:
+            prefix += f"[img-{n}]"
+    if prefix and text and text[0] not in _SPACE:
+        prefix += " "
+    return prefix + text, offset + count
+
+
+def _reasoning(content: str, thinking: str, shown: bool) -> tuple[str, str]:
+    if shown and thinking:
+        return _trim(thinking), content
+    reasoning, at = "", content.find("</think>")
+    if at != -1:
+        before = content[:at]
+        opened = before.rfind("<think>")
+        reasoning = before[opened + len("<think>"):] if opened != -1 else before
+        content = content[at + len("</think>"):].lstrip("\n")
+    return _trim(reasoning), content
+
+
+def render(messages: list[dict], tools: list[dict] | None, think: bool) -> str:
+    """The prompt Ollama builds from these messages and tools, ending in the assistant's open turn:
+    `<think>\\n` when it thinks, an empty think block when it does not."""
+    out = []
+    if tools:
+        out.append(_IM_START + "system\n" + _TOOLS_HEAD + "".join("\n" + _tool_json(t) for t in tools) + _TOOLS_TAIL)
+        if messages and messages[0]["role"] == "system":
+            system = _trim(_content(messages[0], 0)[0])
+            if system:
+                out.append("\n\n" + system)
+        out.append(_IM_END + "\n")
+    elif messages and messages[0]["role"] == "system":
+        out.append(_IM_START + "system\n" + _trim(_content(messages[0], 0)[0]) + _IM_END + "\n")
+    query = next((i for i in range(len(messages) - 1, -1, -1) if messages[i]["role"] == "user" and not (
+        (text := _trim(_content(messages[i], 0)[0])).startswith("<tool_response>") and text.endswith("</tool_response>"))),
+        len(messages) - 1)
+    offset = 0
+    for i, message in enumerate(messages):
+        content, offset = _content(message, offset)
+        content = _trim(content)
+        role, last = message["role"], i == len(messages) - 1
+        if role == "user" or (role == "system" and i):
+            out.append(_IM_START + role + "\n" + content + _IM_END + "\n")
+        elif role == "assistant":
+            shown = think and i > query
+            reasoning, content = _reasoning(content, message.get("thinking") or "", shown)
+            out.append(_IM_START + "assistant\n" + (f"<think>\n{reasoning}\n</think>\n\n" if shown else "") + content)
+            for j, call in enumerate(message.get("tool_calls") or ()):
+                out.append(("\n\n" if _trim(content) else "") if j == 0 else "\n")
+                fn = call["function"]
+                out.append(f"<tool_call>\n<function={fn['name']}>\n" + "".join(
+                    f"<parameter={k}>\n{_argument(v)}\n</parameter>\n" for k, v in (fn.get("arguments") or {}).items())
+                    + "</function>\n</tool_call>")
+            if not last:
+                out.append(_IM_END + "\n")
+        elif role == "tool":
+            if i == 0 or messages[i - 1]["role"] != "tool":
+                out.append(_IM_START + "user")
+            out.append("\n<tool_response>\n" + content + "\n</tool_response>")
+            if last or messages[i + 1]["role"] != "tool":
+                out.append(_IM_END + "\n")
+        if last and role != "assistant":
+            out.append(_IM_START + "assistant\n" + ("<think>\n" if think else "<think>\n\n</think>\n\n"))
+    return "".join(out)
+
+
+_FUNCTION = re.compile(r"<function=([^>\n]+)>")
+_PARAMETER = re.compile(r"<parameter=([^>\n]+)>")
+_CALL_OPEN, _CALL_CLOSE, _VALUE_CLOSE = "<tool_call>", "</tool_call>", "</parameter>"
+
+
+def _held(text: str, *tags: str) -> int:
+    """How much of the end of `text` may be the start of one of `tags`: it waits for more."""
+    return max((n for tag in tags for n in range(min(len(text), len(tag) - 1), 0, -1)
+                if tag.startswith(text[-n:])), default=0)
+
+
+class _Reader:
+    """A reply as it decodes, read as Ollama's qwen3.5 parser reads one (model/parsers/qwen35.go and
+    qwen3coder.go): thinking up to `</think>`, text, and `<tool_call>` blocks, each parameter's value
+    typed by the tool's schema. Unlike that parser it hands a value on as it arrives:
+    `on_part(kind, index, name, value)` hears ("call", i, tool, None), ("parameter", i, name, None),
+    ("text", i, name, chunk), ("value", i, name, value) and ("end", i, None, None)."""
+
+    def __init__(self, think: bool, tools: list[dict] | None, on_part=None):
+        self.types = {t["function"]["name"]: {k: (v or {}).get("type") for k, v in
+                                              ((t["function"].get("parameters") or {}).get("properties") or {}).items()}
+                      for t in tools or ()}
+        self.on_part = on_part or (lambda *_part: None)
+        self.state, self.lead = ("think", True) if think else ("text", False)
+        self.buf, self.text, self.thinking, self.calls = "", [], 0, []
+        self.skip = False                     # the whitespace after </think>, however it arrives
+        self.call = None                      # {"name", "arguments", "written"}: the call being read
+        self.param = None                     # [name, text so far, its leading newline to come]
+
+    def feed(self, chunk: str) -> None:
+        self.buf += chunk
+        while {"think": self._think, "text": self._text, "call": self._in_call, "value": self._value}[self.state]():
+            pass
+
+    def _eat(self, n: int) -> str:
+        eaten, self.buf = self.buf[:n], self.buf[n:]
+        if self.call is not None:
+            self.call["written"] += eaten
+        return eaten
+
+    def _think(self) -> bool:
+        if self.lead:                          # one <think> may open the reply
+            head = self.buf.lstrip(_SPACE)
+            if head.startswith("<think>"):
+                self.buf, self.lead = head[len("<think>"):].lstrip(_SPACE), False
+                return bool(self.buf)
+            if "<think>".startswith(head):
+                return False
+            self.lead = False
+        for tag, kept in (("</think>", False), (_CALL_OPEN, True)):   # a call ends thinking too
+            at = self.buf.find(tag)
+            if at >= 0:
+                self.thinking += at
+                self.buf = self.buf[at:] if kept else self.buf[at + len(tag):]
+                self.skip, self.state = not kept, "text"
+                return True
+        n = len(self.buf) - _held(self.buf, "</think>", _CALL_OPEN)
+        self.thinking, self.buf = self.thinking + n, self.buf[n:]
+        return False
+
+    def _text(self) -> bool:
+        if self.skip:
+            self.buf = self.buf.lstrip(_SPACE)
+            self.skip = not self.buf
+        at = self.buf.find(_CALL_OPEN)
+        if at < 0:
+            return False
+        self.text.append(self.buf[:at].rstrip(_SPACE))
+        self.buf = self.buf[at + len(_CALL_OPEN):]
+        self.call, self.state = {"name": None, "arguments": {}, "written": ""}, "call"
+        return True
+
+    def _in_call(self) -> bool:
+        index, end = len(self.calls), self.buf.find(_CALL_CLOSE)
+        if self.call["name"] is None:
+            found = _FUNCTION.search(self.buf)
+            if found and (end < 0 or found.start() < end):
+                self._eat(found.end())
+                self.call["name"] = found.group(1).strip()
+                self.on_part("call", index, self.call["name"], None)
+                return True
+            if end >= 0:                       # a call with no function: text, as the model wrote it
+                self.text.append(_CALL_OPEN + self.call["written"] + self.buf[:end + len(_CALL_CLOSE)])
+                self.buf, self.call, self.state = self.buf[end + len(_CALL_CLOSE):], None, "text"
+                return True
+            return False
+        found = _PARAMETER.search(self.buf)
+        if found and (end < 0 or found.start() < end):
+            self._eat(found.end())
+            self.param, self.state = [found.group(1).strip(), "", True], "value"
+            self.on_part("parameter", index, self.param[0], None)
+            return True
+        if end < 0:
+            return False
+        self._eat(end + len(_CALL_CLOSE))
+        self.calls.append({"name": self.call["name"], "arguments": self.call["arguments"]})
+        # Ollama trims what follows only within the same piece, and the next token is its own piece.
+        self.call, self.state = None, "text"
+        self.on_part("end", index, None, None)
+        return True
+
+    def _value(self) -> bool:
+        index, (name, said, lead) = len(self.calls), self.param
+        if lead:                               # one leading newline is not the value's
+            if not self.buf:
+                return False
+            if self.buf[0] == "\n":
+                self._eat(1)
+            self.param[2] = False
+        end, closed = self.buf.find(_VALUE_CLOSE), True
+        if end < 0 and (end := self.buf.find(_CALL_CLOSE)) >= 0:
+            closed = False                     # never closed: it ends with its call
+        if end < 0:
+            n = len(self.buf) - _held(self.buf, "\n" + _VALUE_CLOSE, _VALUE_CLOSE, "\n" + _CALL_CLOSE, _CALL_CLOSE)
+            if n > 0:
+                chunk = self._eat(n)
+                self.param[1] += chunk
+                self.on_part("text", index, name, chunk)
+            return False
+        value = said + self.buf[:end]
+        value = value[:-1] if value.endswith("\n") else value     # nor one trailing newline
+        if len(value) > len(said):
+            self.on_part("text", index, name, value[len(said):])
+        self._eat(end + (len(_VALUE_CLOSE) if closed else 0))
+        typed = self._typed(self.call["name"], name, value.replace("\r\n", "\n").replace("\r", "\n"))
+        self.call["arguments"][name] = typed
+        self.param, self.state = None, "call"
+        self.on_part("value", index, name, typed)
+        return True
+
+    def _typed(self, tool: str, name: str, value: str):
+        """As Ollama types it: "null" is None; an array or object parameter is JSON if it parses."""
+        if value.lower() == "null":
+            return None
+        kind = self.types.get(tool, {}).get(name)
+        kinds = kind if isinstance(kind, list) else [kind]
+        for want, shape in (("array", list), ("object", dict)):
+            if want in kinds:
+                try:
+                    parsed = json.loads(value)
+                except ValueError:
+                    continue
+                if isinstance(parsed, shape):
+                    return parsed
+        return value
+
+    def close(self) -> tuple[str, int, list[dict], list[dict]]:
+        """(content, thinking characters, tool calls, the calls as the conversation carries them).
+        A call never closed is text, as Ollama leaves it: the caller reads it as malformed."""
+        if self.state == "think":
+            self.thinking += len(self.buf)
+        elif self.state == "text":
+            self.text.append(self.buf)
+        else:
+            self.text.append(_CALL_OPEN + self.call["written"] + self.buf)
+        self.buf = ""
+        return ("".join(self.text), self.thinking, self.calls,
+                [{"function": {"name": c["name"], "arguments": c["arguments"]}} for c in self.calls])
+
+
+def _tools_raw(messages: list[dict], tools: list[dict], *, think: bool, temperature: float, num_predict: int,
+               fmt: dict | None, timeout: int, on_part, should_stop) -> tuple[dict, dict]:
+    body = {"model": MODEL, "prompt": render(messages, tools, think), "raw": True, "stream": True,
+            "images": [image for m in messages for image in m.get("images") or ()],
+            "keep_alive": KEEP_ALIVE,
+            # The prompt's own last line decides thinking; `think` is sent anyway, as on every call.
+            "think": think,
+            "options": {"num_ctx": RESIDENT_CTX, "temperature": temperature, "num_predict": num_predict}}
+    if fmt is not None:
+        body["format"] = fmt
+    reader = _Reader(think, tools, on_part)
+    final = _generate(body, reader.feed, should_stop, timeout)
+    content, thinking_chars, calls, raw = reader.close()
+    # A reply that is only tool calls is not one whose thinking ate the budget.
+    stats = _stats(final, MODEL, RESIDENT_CTX, content or bool(calls), thinking_chars)
+    return {"content": content, "tool_calls": calls, "raw_tool_calls": raw}, stats
+
+
+def _generate(body: dict, on_chunk, should_stop, timeout: int) -> dict:
+    """A raw /api/generate, streamed: each piece of the reply to `on_chunk`, the final chunk (the
+    stats) returned. The lock spans the whole stream, as in `_stream`."""
+    req = urllib.request.Request(OLLAMA_GENERATE, data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"})
+    final, asked = {}, time.monotonic()
+    try:
+        with _lock(), urllib.request.urlopen(req, timeout=timeout) as resp:
+            for line in resp:
+                if not line.strip():
+                    continue
+                data = json.loads(line)
+                if data.get("error"):
+                    raise LLMError(f"ollama failed mid-stream ({body['model']}): {str(data['error'])[:300]}")
+                if data.get("response"):
+                    on_chunk(data["response"])
+                if data.get("done"):
+                    final = data
+                if should_stop is not None and time.monotonic() - asked >= STOP_CHECK_S:
+                    asked = time.monotonic()
+                    if should_stop():
+                        raise Stopped
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:300]
+        raise LLMError(f"ollama rejected the call ({body['model']}): HTTP {e.code} — {detail}") from e
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise LLMError(f"ollama stream failed ({body['model']}): {e}") from e
+    return final
 
 
 def _post(body: dict, model: str, timeout: int) -> dict:

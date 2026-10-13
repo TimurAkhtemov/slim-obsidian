@@ -129,9 +129,12 @@ note loses its id. Embedding is part of ingest; `slim status` reports `unembedde
      only); a `new-note` skill only `create_note`s, in existing folders, never `Journal/`.
      **The server never writes the note.** It works on the editor's text (`doc` + its hash) and
      streams each change as UTF-16 splices; the plugin applies them through the editor as they
-     land (`makeLiveEditor`), skips one whose text the owner typed into meanwhile, draws the
-     marks, then syncs and embeds the note. ↺ undoes a change and those built on it; Undo all and
-     Redo; Cmd-Z is the editor's own. The note as it was before the run is kept beside the chat,
+     land (`makeLiveEditor`). While a call writes an insert or a replace, its text shows where it
+     will go as a draft, never the note's text (`copilot._Drafts`), and the change that lands
+     takes its place; the chat counts each call's seconds. The plugin skips a change whose text
+     the owner typed into meanwhile, draws the marks, then syncs and embeds the note. ↺ undoes a
+     change and those built on it; Undo all and Redo; Cmd-Z is the editor's own. The note as it
+     was before the run is kept beside the chat,
      outside the vault (`threads.save_before`), so See before and Restore work after the note
      is closed; Restore warns when the note has changed since, and is refused when a recording's
      own parts have (`/api/copilot/restore`). A recording's frontmatter, `slim-meeting` block and
@@ -196,7 +199,10 @@ string: cap `num_predict`, put `maxLength` on short fields (Ollama cannot compil
 ~1500). LaTeX does not survive JSON — `\b \f \n \r \t` collide with `\beta \frac \nabla \rho
 \text` — so the summarizer bans backslashes and `summarize._repair` reverses the decode.
 `llm.py` serializes live calls; temperature 0.0 for structured work, 0.7 for prose a person
-reads.
+reads. /api/chat parses a tool call itself and holds it back until it is whole, tools= or not, so
+a call with tools goes RAW to /api/generate, its prompt built by `llm.render` byte for byte as
+Ollama 0.35's `qwen3.5` renderer builds it (`tests/test_llm_render.py` holds Ollama's own
+rendering) and its reply read by `llm._Reader`. ⚠ A model with another renderer needs its own.
 
 **A note can be filed and still be unreachable.** Filing is a markdown file; the copilot and
 `reflect` read SQLite. Anything that writes a note must ingest AND embed, or say plainly
