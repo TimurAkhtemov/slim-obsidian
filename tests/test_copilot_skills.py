@@ -1,10 +1,11 @@
-"""Copilot skills and Edit mode: whole notes chosen by code, and proposals that write nothing."""
+"""Copilot skills: whole notes chosen by code. A skill that changes the note or makes a new one
+writes nothing: its changes go to the plugin as they land."""
 
 from pathlib import Path
 
 import pytest
 
-from slim import copilot, db, skills
+from slim import copilot, db, edits, skills
 
 
 @pytest.fixture
@@ -86,16 +87,30 @@ def test_a_selection_skill_without_a_selection_is_refused(con, vault):
         copilot.gather(con, vault, source, skill=skills.load(vault)["explain"])
 
 
-def test_ask_mode_keeps_retrieval_and_says_edit_mode_exists(con, vault, monkeypatch):
+def tooled(monkeypatch, *replies):
+    """A fake model for turns that may edit: each call returns the next (content, [(tool, args)])."""
+    seen = []
+
+    def chat_tools(messages, tools=None, **opts):
+        seen.append({"messages": list(messages), "tools": [t["function"]["name"] for t in tools or []],
+                     "opts": opts})
+        content, calls = replies[len(seen) - 1]
+        return ({"content": content, "tool_calls": [{"name": n, "arguments": a} for n, a in calls],
+                 "raw_tool_calls": []}, {"duration_s": 1})
+    monkeypatch.setattr(copilot.llm, "chat_tools", chat_tools)
+    return seen
+
+
+def test_a_question_is_one_turn_that_may_edit_and_names_no_mode(con, vault, monkeypatch):
     source = open_source(con, vault, note(vault, "Notes/work/a.md", "text\n"))
-    seen = {}
     monkeypatch.setattr(copilot.search_mod, "hybrid", lambda *a, **k: [])
-    monkeypatch.setattr(copilot.llm, "chat_stream",
-                        lambda messages, **k: seen.update(system=messages[0]["content"]) or ("ok", {}))
     monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
+    seen = tooled(monkeypatch, ("ok", []))
     turn = copilot.run_turn(con, source["id"], "what is /usr/bin for?", [], "quick", vault=vault)
-    assert copilot.ASK_RIDER in seen["system"] and "SEARCH" not in seen["system"]
-    assert turn.get("proposal") is None and turn["skill"] is None
+    system = seen[0]["messages"][0]["content"]
+    assert copilot.EDIT_RIDER in system and copilot.ASK_RIDER not in system
+    assert "SEARCH" not in system and "Edit mode" not in system and "Ask mode" not in system
+    assert turn["edit_run"] is None and turn["skill"] is None and turn["answer"] == "ok"
 
 
 def test_an_unknown_command_is_refused_not_asked(con, vault, monkeypatch):
@@ -108,15 +123,14 @@ def test_an_unknown_command_is_refused_not_asked(con, vault, monkeypatch):
 def test_a_skill_runs_at_its_own_depth_and_its_prompt_rides_in_history(con, vault, monkeypatch):
     meeting(vault, "Kickoff", "2026-09-01T09:00:00", "ship friday")
     source = open_source(con, vault, meeting(vault, "Review", "2026-09-08T09:00:00", "monday"))
-    seen = {}
-    fake_model(monkeypatch, "FILE: Capture/work/All.md\n<<<<<<< SEARCH\n=======\nx\n>>>>>>> REPLACE\n", seen)
+    seen = tooled(monkeypatch, ("Nothing to merge yet.", []), ("Right: 4.", []))
     turn = copilot.run_turn(con, source["id"], "/consolidate-my-notes", [], "quick", vault=vault)
-    assert turn["mode"] == "deep"
+    assert turn["mode"] == "deep" and seen[0]["opts"]["think"] is True
     monkeypatch.setattr(copilot.search_mod, "hybrid", lambda *a, **k: [])
     monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
     copilot.run_turn(con, source["id"], "my answer is 4", [
         {"role": "you", "text": "/quiz"}, {"role": "slim", "text": "What is 2+2?"}], "quick", vault=vault)
-    assert seen["messages"][1]["content"].startswith("Quiz me on this note. Ask ONE question now")
+    assert seen[1]["messages"][1]["content"].startswith("Quiz me on this note. Ask ONE question now")
 
 
 def test_a_skill_reads_the_folder_when_the_invocation_says_so(con, vault, monkeypatch):
@@ -131,13 +145,17 @@ def test_a_skill_reads_the_folder_when_the_invocation_says_so(con, vault, monkey
     assert "folder" not in seen["messages"][-1]["content"]
 
 
-def test_an_overflowing_prompt_is_never_offered_as_a_proposal(con, vault, monkeypatch):
-    source = open_source(con, vault, note(vault, "Notes/work/a.md", "text\n"))
-    monkeypatch.setattr(copilot.llm, "chat_stream", lambda messages, **k: (
-        "FILE: Notes/work/a.md\n<<<<<<< SEARCH\ntext\n=======\nnew\n>>>>>>> REPLACE\n",
-        {"ctx_saturated": True}))
+def test_an_overflowing_prompt_never_makes_a_note(con, vault, monkeypatch):
+    meeting(vault, "Kickoff", "2026-09-01T09:00:00", "ship friday")
+    source = open_source(con, vault, meeting(vault, "Review", "2026-09-08T09:00:00", "monday"))
+    monkeypatch.setattr(copilot.llm, "chat_tools", lambda messages, tools=None, **k: (
+        {"content": "", "tool_calls": [{"name": "create_note", "arguments": {"path": "x.md", "markdown": "x"}}],
+         "raw_tool_calls": []}, {"ctx_saturated": True}))
+    events = []
     with pytest.raises(copilot.CopilotError, match="too long for one request"):
-        copilot.run_turn(con, source["id"], "fix it", [], "quick", edit=True, vault=vault)
+        copilot.run_turn(con, source["id"], "/consolidate-my-notes", [], "quick", vault=vault,
+                         on_edit=lambda *event: events.append(event))
+    assert events == []
 
 
 def test_section_of_skips_code_fences_and_the_derived_summary():
@@ -165,31 +183,100 @@ def test_a_broken_vault_skill_says_which_file_to_fix(con, vault, monkeypatch):
         copilot.run_turn(con, source["id"], "/bad", [], "quick", vault=vault)
 
 
-def test_ask_mode_never_sends_the_selection(con, vault, monkeypatch):
+def test_a_question_never_sends_the_selection(con, vault, monkeypatch):
     """A selection left in the note rode along with every Ask question, unseen (review 2026-09-23)."""
     source = open_source(con, vault, note(vault, "Notes/work/a.md", "text\n"))
-    seen = {}
     monkeypatch.setattr(copilot.search_mod, "hybrid", lambda *a, **k: [])
-    monkeypatch.setattr(copilot.llm, "chat_stream",
-                        lambda messages, **k: seen.update(user=messages[-1]["content"]) or ("ok", {}))
     monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
+    seen = tooled(monkeypatch, ("ok", []))
     copilot.run_turn(con, source["id"], "what does this mean?", [], "quick",
                      selection="leftover", vault=vault)
-    assert seen["user"] == "what does this mean?"
+    assert seen[0]["messages"][-1]["content"] == "what does this mean?"
+    assert "leftover" not in str(seen[0]["messages"])
 
 
-def test_edit_mode_sees_the_open_notes_images(con, vault, monkeypatch):
+def test_a_turn_that_may_edit_sees_the_open_notes_images(con, vault, monkeypatch):
     # "Turn this screenshot into LaTeX" is an edit: the model must see the image it is asked to
-    # transcribe. No retrieval orders a skill's pack, so the images come in note order.
+    # transcribe.
     from PIL import Image
     open_path = note(vault, "Notes/work/eq.md", "# Eq\n\n![[psi.png|300]]\n\n![[mle.png]]\n")
     for name in ("psi.png", "mle.png"):
         Image.new("RGB", (12, 8), color="red").save(str(vault / "Notes/work" / name))
     source = open_source(con, vault, open_path)
-    seen = {}
-    fake_model(monkeypatch, "Nothing to change.", seen)
+    monkeypatch.setattr(copilot.search_mod, "hybrid", lambda *a, **k: [])
+    monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
+    seen = tooled(monkeypatch, ("Nothing to change.", []))
     copilot.run_turn(con, source["id"], "write the equation under its screenshot", [], "quick",
-                     edit=True, vault=vault)
-    shown = seen["messages"][-2]
+                     vault=vault)
+    shown = seen[0]["messages"][-2]
     assert len(shown["images"]) == 2
     assert shown["content"].index("`psi.png`") < shown["content"].index("`mle.png`")
+
+
+def test_consolidation_makes_a_new_note_as_a_change_and_writes_nothing(con, vault, monkeypatch):
+    kickoff = meeting(vault, "Kickoff", "2026-09-01T09:00:00", "ship friday")
+    open_path = meeting(vault, "Review", "2026-09-08T09:00:00", "moved to monday")
+    source = open_source(con, vault, open_path)
+    monkeypatch.setattr(copilot.llm, "chat_json",
+                        lambda *a, **k: pytest.fail("a skill must not ask the model for sources"))
+    body = "# Work\n\n- Ship moved from Friday to Monday [[Review]]"
+    seen = tooled(monkeypatch, ("", [("create_note", {"path": "Consolidated.md", "markdown": body}),
+                                     ("create_note", {"path": "Capture/work/Consolidated.md", "markdown": body}),
+                                     ("done", {"summary": "Merged your two meetings."})]))
+    events = []
+    turn = copilot.run_turn(con, source["id"], "/consolidate-my-notes focus on dates", [], "deep",
+                            vault=vault, on_edit=lambda event, payload: events.append((event, payload)))
+    system, user = seen[0]["messages"][0]["content"], seen[0]["messages"][-1]["content"]
+    assert seen[0]["tools"] == ["create_note", "done"] and len(seen) == 1
+    assert copilot.NEW_NOTE_RIDER.format(folder="Capture/work") in system and copilot.EDIT_RIDER not in system
+    assert "=== Capture/work/Kickoff.md · 2026-09-01 ===\nship friday" in system
+    assert "words from" not in system                                 # the section, not the transcript
+    assert user.endswith("focus on dates")
+    assert [event for event, _ in events] == ["start", "plan", "change"]
+    created = events[2][1]
+    assert created == {"id": "c1", "step": 1, "op": "create", "label": "Created Capture/work/Consolidated.md",
+                       "needs": [], "path": "Capture/work/Consolidated.md",
+                       "text": "---\norigin: copilot\n---\n\n" + body + "\n"}
+    assert len(turn["edit_run"]["changes"]) == 1             # the same new note twice is refused
+    assert turn["edit_run"]["summary"] == "Merged your two meetings." == turn["answer"]
+    assert not (vault / "Capture/work/Consolidated.md").exists()       # the plugin creates it
+    assert [c["path"] for c in turn["citations"]] == [kickoff, open_path]
+    assert turn["inputs"]["used"] == [kickoff, open_path]
+
+
+LIST_NOTE = "# Why\n\n*   **Lexical**: bank\n+ __Pragmatics__: salt\n\n## Next\n\nUntouched.\n"
+
+
+def test_a_selection_skill_changes_only_the_selected_blocks_and_only_with_replace(con, vault, monkeypatch):
+    source = open_source(con, vault, note(vault, "Notes/work/why.md", LIST_NOTE))
+    selected = "*   **Lexical**: bank\n+ __Pragmatics__: salt"
+    seen = tooled(monkeypatch, ("", [("replace", {"target": "b5", "markdown": "Changed."}),
+                                     ("replace", {"target": "b2", "markdown": "- **Lexical**: bank"}),
+                                     ("replace", {"target": "b3", "markdown": "- **Pragmatics**: salt"})]))
+    turn = copilot.run_turn(con, source["id"], "/tidy", [], "quick", vault=vault, selection=selected,
+                            doc=LIST_NOTE, doc_hash=edits.digest(LIST_NOTE))
+    assert seen[0]["tools"] == ["plan", "replace"]
+    assert seen[0]["messages"][-1]["content"].endswith("Selected text:\n" + selected)
+    run = turn["edit_run"]
+    text = LIST_NOTE
+    for change in run["changes"]:
+        text = edits.apply_splices(text, change["splices"])
+    assert text == "# Why\n\n- **Lexical**: bank\n- **Pragmatics**: salt\n\n## Next\n\nUntouched.\n"
+    assert [c["label"] for c in run["changes"]] == ["Replaced b2", "Replaced b3"]
+    assert turn["citations"] == [{"n": 1, "path": "Notes/work/why.md", "title": "why"}]
+    with pytest.raises(copilot.CopilotError, match="select some in the note first"):
+        copilot.run_turn(con, source["id"], "/tidy", [], "quick", vault=vault)
+    with pytest.raises(copilot.CopilotError, match="not in the note as it is now"):
+        copilot.run_turn(con, source["id"], "/tidy", [], "quick", vault=vault, selection="gone text")
+
+
+def test_a_new_note_call_that_could_not_be_read_is_asked_for_once_more(con, vault, monkeypatch):
+    meeting(vault, "Kickoff", "2026-09-01T09:00:00", "ship friday")
+    source = open_source(con, vault, meeting(vault, "Review", "2026-09-08T09:00:00", "monday"))
+    seen = tooled(monkeypatch, ("<tool_call>{broken", []),
+                  ("", [("create_note", {"path": "All.md", "markdown": "# All"})]))
+    turn = copilot.run_turn(con, source["id"], "/consolidate-my-notes", [], "deep", vault=vault)
+    assert seen[1]["messages"][-1] == {"role": "tool", "content": (
+        "refused: your tool call could not be read (a tool call came back as text); write it again\n\n"
+        "Make the new note with the create_note tool.")}
+    assert [c["path"] for c in turn["edit_run"]["changes"]] == ["Capture/work/All.md"]

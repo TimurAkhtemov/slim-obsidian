@@ -1382,9 +1382,7 @@ class _Handler(BaseHTTPRequestHandler):
         history = clean_history(data.get("history"))
         # Quick unless they asked for Deep. There is no third setting to resolve (2026-09-03).
         mode = str(data.get("reasoning_mode") or "quick").strip().lower()
-        # Edit mode proposes changes; the selection is context, and the input of a selection
-        # skill. Neither writes anything here.
-        edit = data.get("edit") is True
+        # The selection is the input of a selection skill; it writes nothing here.
         selection = data.get("selection")
         selection = selection[:copilot_mod.MAX_SELECTION_CHARS] if isinstance(selection, str) else ""
         thread_id = data.get("thread_id")
@@ -1424,7 +1422,7 @@ class _Handler(BaseHTTPRequestHandler):
             con = db.connect()
             turn = copilot_mod.run_turn(
                 con, source_id, question, history, mode, vault=config.VAULT, images=images,
-                edit=edit, selection=selection,
+                selection=selection,
                 on_stage=lambda stage: emit("stage", {"stage": stage}),
                 on_delta=lambda text: emit("delta", {"text": text}))
             turn["attachments"] = attachments

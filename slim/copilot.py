@@ -1,15 +1,17 @@
 """The open-note copilot: gather the notes around the one they have open, run one turn against
-them, and name which notes the answer used. Called by `chat.py`'s sidebar routes."""
+them, and name which notes the answer used — or, when the turn edits, carry out the edit one
+model call at a time and hand each change to the plugin as it lands. Called by `chat.py`'s
+sidebar routes."""
 from __future__ import annotations
 
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 
 from . import config as config_mod, edits as edits_mod, embed as embed_mod, ingest as ingest_mod
-from . import copilot_images, llm, search as search_mod, skills as skills_mod, trace
+from . import copilot_images, llm, search as search_mod, skills as skills_mod, summarize, trace
 from .chunk import (HEADING, body_after_frontmatter, parse_frontmatter, strip_derived_blocks,
                     strip_meeting_wrapper)
 
@@ -31,34 +33,29 @@ Write Markdown. Write math as $inline$ or $$display$$, never \( \) or \[ \]. Rea
 screenshots directly; for an equation, state what you see, name any symbol you are unsure of,
 then explain."""
 
-# One of these follows the persona. Ask is the default; Edit is the sidebar's toggle, or a skill
-# whose output is a change. The block format is parsed by `edits.parse`, never trusted: code
-# decides which files a block may touch and applies it itself.
-ASK_RIDER = """In Ask mode you cannot change files. If they ask you to change a note, give them the text to
-paste, and mention that Edit mode can apply it for them."""
+# One of these follows the persona. A turn answers or edits with EDIT_RIDER, the measured one
+# (the prototype's, word for word: "one small change right away; plan bigger ones" alone kept
+# 12 of 12 questions free of edits). A skill that answers in the chat gets ASK_RIDER, and one
+# that makes a new note NEW_NOTE_RIDER. What a call may touch is code's, never the rider's
+# (`edits.py`).
+ASK_RIDER = """In this reply you cannot change files. If they ask you to change a note, give them the text to
+paste."""
 
-EDIT_RIDER = """You can change notes. The owner reviews every change and applies it with one click; nothing
-changes until they accept. First say in a sentence or two what you are changing. Then write one
-block per change, exactly like this:
+EDIT_RIDER = """You can edit the open note shown below. Each block in it starts with a handle in brackets:
+[b12] is that block. A heading's section (the heading and everything under it) is s plus the
+heading's number: s7 is the section under [b7] ## …. A range like b11-b15 covers those blocks and
+everything between them. Handles are labels, not text: never write them into the note. Parts marked
+[locked] belong to a recording and cannot be changed.
 
-FILE: <the note's path, as shown after === below>
-<<<<<<< SEARCH
-<lines copied exactly from that note>
-=======
-<the lines that replace them>
->>>>>>> REPLACE
+To answer a question, just reply in text and change nothing.
+To make one small change, make it right away, pointing at handles. To change more, first make a plan: a one-sentence intro for the owner saying what you will do,
+the note's headings in their final order (each with its # marks), and the steps in order.
+You will then be given one step at a time; make that step's changes, pointing at handles.
+Use the replace, insert and move tools for a small change and for each step, and the plan tool to start a larger change."""
 
-Copy SEARCH lines exactly, with enough of them to be unique, and change only what needs
-changing. To rewrite most of a note, write the whole new note once instead:
-
-FILE: <the note's path>
-<<<<<<< NOTE
-<the whole new note>
->>>>>>> NOTE
-
-An empty SEARCH adds the text to the end of the note. To create a note, write a new
-path in an existing folder (the open note's folder is `{folder}/`) with an empty SEARCH. A
-recording's frontmatter, its slim-meeting block and its transcript cannot be changed."""
+NEW_NOTE_RIDER = """You can create a new note with the create_note tool: its path, in a folder that already exists
+(the open note's folder is `{folder}/`), and its whole text in Markdown. Then call done with one
+sentence for the owner saying what you made."""
 
 # Sources are decided AFTER the answer by a bounded structured call, not by a contract inside
 # the prose. Measured 2026-09-01: [n] markers made a citation bot; a trailing `Notes used:` line
@@ -70,11 +67,25 @@ SOURCES_NUM_PREDICT = 64
 
 
 # 1400 clipped a worked example mid-sentence, and Quick is the mode nearly every turn uses.
+# It is also the first call's cap in a turn that may edit: that call may be the answer.
 QUICK_NUM_PREDICT = 2400
-# A proposal can carry a whole new note or several rewritten sections: room for the text AND,
-# in Deep, the thinking before it. A block cut off mid-way is refused, not half-applied.
-PROPOSE_NUM_PREDICT = {"quick": 8192, "deep": 16384}
-# Skills and edits read WHOLE notes, chosen by code. Half the resident window in chars/4, so
+# THE EDITING RUN (`_turn`). Measured on the prototype (2026-10-12, 13 cases, 5 runs each):
+# prompt instructions hold this model to no limit, so every limit is code.
+MAX_STEPS = 8
+MAX_CALLS = 30                   # tool calls in one run, fix-ups included
+MAX_REFUSALS = 3                 # refused calls in a row end the run
+MAX_FIXUPS = 2                   # calls after the steps while the headings miss the plan's outline
+STEP_NUM_PREDICT = 2048          # a step's reply: room for one section's new text
+THINK_BUDGET = 8192              # on top of the first call's cap in Deep; thinking counts against it
+RUN_OUTPUT_TOKENS = 12_000       # the reply that crosses it is used, then the run stops (one ran to 25k)
+STEP_TEMPERATURE = 0.0           # a step writes what its plan says
+# STILL BEING MEASURED: the first call's temperature, and whether one small structured call
+# decides first if the owner wants the note changed (an intent gate). Today's values are the
+# measured fast path's: the first call samples like a reply, and there is no gate.
+FIRST_TEMPERATURE = llm.REPLY_TEMPERATURE
+INTENT_GATE = False              # not built; the measurement decides whether it is
+ONE_REPLY = "(done in one reply)"      # the one step of a run whose first reply made its change
+# Skills read WHOLE notes, chosen by code. Half the resident window in chars/4, so
 # the answer and the thinking keep room and every call still uses num_ctx=RESIDENT_CTX (a
 # smaller bespoke window is a second runner). What does not fit is named, never dropped silently.
 INPUT_BUDGET_CHARS = llm.RESIDENT_CTX * 4 // 2
@@ -246,19 +257,33 @@ def system_message(evidence: list[dict]) -> str:
     # 2026-09-01 across three live samples the model bent every answer back to the profile —
     # a career-pivot flourish inside an EQUATION explanation, every time. The persona and the
     # notes are the whole system message.
-    parts = [PERSONA, ASK_RIDER]
-    rendered = "\n\n".join(
+    return "\n\n".join([PERSONA, ASK_RIDER, "Notes in view (the open note first):\n"
+                         + (_passages(evidence) or "(nothing indexed for this note yet)")])
+
+
+def _passages(evidence: list[dict]) -> str:
+    return "\n\n".join(
         f"### {item['title']}"
         + (f" § {item['heading']}" if item.get("heading") else "")
         + f"\n{item['text']}" for item in evidence)
-    parts.append("Notes in view (the open note first):\n"
-                 + (rendered or "(nothing indexed for this note yet)"))
+
+
+def edit_message(path: str, note: edits_mod.Note, evidence: list[dict]) -> str:
+    """The system message of a turn that may edit: the persona and EDIT_RIDER, the passages the
+    Ask path retrieves (the sources call picks among them), then the open note whole, with its
+    handles and the map of its sections."""
+    sections = note.sections()
+    shown = f"Sections:\n{sections}\n\n" if sections else ""
+    parts = [PERSONA, EDIT_RIDER]
+    if evidence:
+        parts.append("Passages from the owner's notes (the open note first):\n" + _passages(evidence))
+    parts.append(f"Notes in view:\n\n=== {path} · the open note ===\n{shown}{note.render()}")
     return "\n\n".join(parts)
 
 
 @dataclass
 class Pack:
-    """What a skill or an edit reads: whole notes, in order, and what did not make it in."""
+    """What a skill reads: whole notes, in order, and what did not make it in."""
     docs: list[dict] = field(default_factory=list)      # {path, title, text, role, date}
     dropped: list[str] = field(default_factory=list)    # did not fit the budget
     skipped: list[str] = field(default_factory=list)    # had no such section
@@ -270,11 +295,8 @@ class Pack:
         return {doc["path"] for doc in self.docs if doc["role"] != "selection"}
 
 
-def _readable(text: str, *, raw: bool) -> str:
-    """A proposal needs the file as it is, so SEARCH lines can match; otherwise the note as a
-    reader sees it — no frontmatter, no derived summary, no meeting fence."""
-    if raw:
-        return text
+def _readable(text: str) -> str:
+    """The note as a reader sees it — no frontmatter, no derived summary, no meeting fence."""
     body = strip_meeting_wrapper(strip_derived_blocks(body_after_frontmatter(text)))
     return re.sub(r"\n{3,}", "\n\n", body).strip()
 
@@ -349,8 +371,8 @@ def resolve_link(con, vault: Path, name: str, near: str) -> str | None:
 
 
 def gather(con, vault: Path, source: dict, *, skill: skills_mod.Skill | None = None,
-           links_from: str = "", selection: str = "", raw: bool = False) -> Pack:
-    """Build the input for a skill or an edit, in code. Priority: the selection, the open note,
+           links_from: str = "", selection: str = "") -> Pack:
+    """Build the input for a skill, in code. Priority: the selection, the open note,
     each [[link]] in `links_from`, then the folder's notes newest first while the budget lasts."""
     vault = Path(vault)
     pack, budget = Pack(), INPUT_BUDGET_CHARS
@@ -389,7 +411,7 @@ def gather(con, vault: Path, source: dict, *, skill: skills_mod.Skill | None = N
         body = section_of(text, section) if section else text
         if body is None:
             raise CopilotError(f"this note has no \"{section}\" section")
-        add(open_path, _readable(body, raw=raw) if not section else body, "open", may_cut=True)
+        add(open_path, _readable(body) if not section else body, "open", may_cut=True)
 
     for name in dict.fromkeys(match.group(1).strip() for match in _LINK.finditer(links_from)):
         path = resolve_link(con, vault, name, open_path)
@@ -400,7 +422,7 @@ def gather(con, vault: Path, source: dict, *, skill: skills_mod.Skill | None = N
             if text is None:
                 pack.missing.append(name)
             else:
-                add(path, _readable(text, raw=raw), "linked")
+                add(path, _readable(text), "linked")
 
     if wants == "folder":
         folder = PurePosixPath(open_path).parent
@@ -415,7 +437,7 @@ def gather(con, vault: Path, source: dict, *, skill: skills_mod.Skill | None = N
             if not _passes(fm, skill.filter):
                 continue
             path = (folder / file.name).as_posix()
-            body = section_of(text, section) if section else _readable(text, raw=raw)
+            body = section_of(text, section) if section else _readable(text)
             if body is None:
                 pack.skipped.append(path)
                 continue
@@ -443,10 +465,9 @@ def gather(con, vault: Path, source: dict, *, skill: skills_mod.Skill | None = N
     return pack
 
 
-def pack_message(pack: Pack, *, proposing: bool, folder: str) -> str:
+def pack_message(pack: Pack, rider: str) -> str:
     labels = {"open": "the open note", "selection": "the text they selected in this note",
               "linked": "a note they linked"}
-    rider = EDIT_RIDER.format(folder=folder) if proposing else ASK_RIDER
     rendered = "\n\n".join(
         f"=== {doc['path']} · {labels.get(doc['role']) or doc['date'] or 'a note in this folder'} ===\n"
         f"{doc['text']}" for doc in pack.docs)
@@ -537,23 +558,10 @@ def fit_window(transcript: list[dict], others: list[dict], num_predict: int) -> 
     return kept[::-1]
 
 
-def generate_answer(question: str, history: list[dict], evidence: list[dict], mode: str,
-                    *, images=None, note_images=None, on_stage=None, on_delta=None,
-                    system: str | None = None, cited: list[dict] | None = None,
-                    proposing: bool = False) -> dict:
-    """Generate one answer; reasoning is private and only content deltas are surfaced.
-
-    TWO depths, and THEY pick (2026-09-03). Auto spent a whole extra classifier call on a choice
-    that is one click in the sidebar, and it resolved to Quick nearly every time.
-
-    A skill or an edit passes its own `system` (whole notes chosen by code) and `cited`: code
-    already knows which notes it read, so the sources call is skipped.
-    """
-    if mode not in {"quick", "deep"}:
-        raise CopilotError("reasoning mode must be quick or deep")
-    stage = on_stage or (lambda _name: None)
-    delta = on_delta or (lambda _text: None)
-    stage("Thinking deeply" if mode == "deep" else "Writing")
+def _conversation(history: list[dict], question: str, images=None,
+                  note_images=None) -> tuple[list[dict], list[dict], dict]:
+    """The conversation as model messages: the earlier turns, the open note's images in a
+    message of their own, and the question with any images they attached."""
     transcript = []
     for turn in history:
         if not isinstance(turn, dict) or turn.get("role") not in {"you", "slim"}:
@@ -577,8 +585,28 @@ def generate_answer(question: str, history: list[dict], evidence: list[dict], mo
     current = {"role": "user", "content": question}
     if images:
         current["images"] = list(images)
-    num_predict = (PROPOSE_NUM_PREDICT[mode] if proposing
-                   else DEEP_NUM_PREDICT if mode == "deep" else QUICK_NUM_PREDICT)
+    return transcript, embedded, current
+
+
+def generate_answer(question: str, history: list[dict], evidence: list[dict], mode: str,
+                    *, images=None, note_images=None, on_stage=None, on_delta=None,
+                    system: str | None = None, cited: list[dict] | None = None) -> dict:
+    """Generate one answer; reasoning is private and only content deltas are surfaced. A skill
+    that answers in the chat runs here.
+
+    TWO depths, and THEY pick (2026-09-03). Auto spent a whole extra classifier call on a choice
+    that is one click in the sidebar, and it resolved to Quick nearly every time.
+
+    A skill passes its own `system` (whole notes chosen by code) and `cited`: code already
+    knows which notes it read, so the sources call is skipped.
+    """
+    if mode not in {"quick", "deep"}:
+        raise CopilotError("reasoning mode must be quick or deep")
+    stage = on_stage or (lambda _name: None)
+    delta = on_delta or (lambda _text: None)
+    stage("Thinking deeply" if mode == "deep" else "Writing")
+    transcript, embedded, current = _conversation(history, question, images, note_images)
+    num_predict = DEEP_NUM_PREDICT if mode == "deep" else QUICK_NUM_PREDICT
     system_turn = {"role": "system", "content": system or system_message(evidence)}
     recent = fit_window(transcript, [system_turn, *embedded, current], num_predict)
     messages = [system_turn, *recent, *embedded, current]
@@ -617,12 +645,489 @@ def generate_answer(question: str, history: list[dict], evidence: list[dict], mo
     }
 
 
+# --- one chat that answers or edits ---------------------------------------------------------
+
+class _Stopped(Exception):
+    """A model call failed twice, the run is out of budget, or the owner stopped it: it ends
+    where it is, and what landed stays."""
+
+
+@dataclass
+class _Reply:
+    content: str
+    calls: list[dict]
+    malformed: list[str]
+    message: dict                       # the assistant message, appended to the conversation
+    stats: dict
+
+
+def _call(messages: list[dict], offered: list[str], *, think: bool, temperature: float,
+          num_predict: int) -> _Reply:
+    """One model call with the `offered` tools. String arguments are repaired for the LaTeX a
+    JSON decode turns into control characters (`summarize._repair`, as for summaries)."""
+    msg, stats = llm.chat_tools(messages, edits_mod.ollama_tools(offered), think=think,
+                                temperature=temperature, num_predict=num_predict)
+    calls = [{"name": c["name"], "arguments": summarize._repair(c.get("arguments") or {})}
+             for c in msg["tool_calls"]]
+    # Ollama's own parser can leave a tool call in the text: unreadable, and never an answer.
+    malformed = ["a tool call came back as text"] if "<tool_call>" in msg["content"] else []
+    message = {"role": "assistant", "content": msg["content"]}
+    if msg.get("raw_tool_calls"):
+        message["tool_calls"] = msg["raw_tool_calls"]
+    return _Reply(msg["content"], calls, malformed, message, stats or {})
+
+
+def _results(results: list[str], instruction: str) -> list[dict]:
+    """What code says back after a reply: a tool message per call, the next instruction after
+    the last; a user message when there were no calls."""
+    if not results:
+        return [{"role": "user", "content": instruction}]
+    out = [{"role": "tool", "content": result} for result in results]
+    out[-1]["content"] += "\n\n" + instruction
+    return out
+
+
+def _summary(call: dict) -> str:
+    args = call.get("arguments")
+    return str((args if isinstance(args, dict) else {}).get("summary") or "").strip()
+
+
+def _unreadable(malformed: list[str]) -> str:
+    return f"refused: your tool call could not be read ({'; '.join(malformed)}); write it again"
+
+
+# What the measured outlines carried besides headings: a list sent as one quoted string with
+# literal \n between the headings, notes like "(New Section)" after a heading, and the rider's
+# placeholder.
+_LITERAL_NEWLINE = re.compile(r"\\n(?=(?:\\n)*\s*#)")
+_PLACEHOLDER = re.compile(r"#*\s*<.*>")
+
+
+def _outline(args: dict) -> list[str] | None:
+    raw = args.get("outline")
+    if isinstance(raw, str):
+        raw = [raw]
+    found = []
+    for item in raw if isinstance(raw, list) else []:
+        for line in _LITERAL_NEWLINE.sub("\n", str(item)).split("\n"):
+            heading = edits_mod.ANNOTATION.sub(
+                "", edits_mod.strip_labels(line.strip().strip("\"'").strip()).strip())
+            if heading and not _PLACEHOLDER.fullmatch(heading):
+                found.append(heading)
+    return found or None
+
+
+def _against(note: edits_mod.Note, outline: list[str]) -> tuple[list[str], list[str]]:
+    """The note's headings and the outline, both without a recording's locked headings:
+    no step can change those, so they are never asked for."""
+    locked = {edits_mod.heading_key(h) for b in note.blocks if b.locked for h in edits_mod.headings(b.text)}
+    now = [h for b in note.blocks if not b.locked for h in edits_mod.headings(b.text)]
+    return now, [h for h in outline if edits_mod.heading_key(h) not in locked]
+
+
+def _misses(now: list[str], want: list[str]) -> tuple[list[int], list[int]]:
+    """The outline is met when its headings appear among the note's in the same order; others
+    between them are fine. Returns the outline's misses as indexes: those the note lacks, and
+    those it has out of order (outside the longest run of outline headings the note has in order)."""
+    a, b = [edits_mod.heading_key(h) for h in want], [edits_mod.heading_key(h) for h in now]
+    longest = [[0] * (len(b) + 1) for _ in range(len(a) + 1)]
+    for i in range(len(a) - 1, -1, -1):
+        for j in range(len(b) - 1, -1, -1):
+            longest[i][j] = longest[i + 1][j + 1] + 1 if a[i] == b[j] else max(longest[i + 1][j], longest[i][j + 1])
+    kept, i, j = set(), 0, 0
+    while i < len(a) and j < len(b):
+        if a[i] == b[j]:
+            kept.add(i)
+            i, j = i + 1, j + 1
+        elif longest[i + 1][j] >= longest[i][j + 1]:
+            i += 1
+        else:
+            j += 1
+    missed = [k for k in range(len(a)) if k not in kept]
+    return [k for k in missed if a[k] not in b], [k for k in missed if a[k] in b]
+
+
+def _met(now: list[str], want: list[str]) -> bool:
+    return not any(_misses(now, want))
+
+
+def _fixup(now: list[str], want: list[str], missing: list[int], misplaced: list[int]) -> str:
+    def where(k: int) -> str:
+        said = f"your outline puts it {f'after {want[k - 1]}' if k else 'first'}"
+        other = next((h for h in now if edits_mod.heading_key(h)[1] == edits_mod.heading_key(want[k])[1]), None)
+        return f"{said}; the note has it as {other}" if other and k in missing else said
+
+    def listed(title: str, found: list[int]) -> list[str]:
+        return [f"{title}:"] + [f"{n}. {want[k]} ({where(k)})" for n, k in enumerate(found, 1)] if found else []
+    return "\n".join(["Fix-up: make the note's headings match your outline.",
+                      "Change only what is needed to match; don't delete sections to re-add them.",
+                      *listed("Missing", missing), *listed("Out of order", misplaced)])
+
+
+def _turn(messages: list[dict], *, think: bool, first_tools: list[str], step_tools: tuple[str, ...],
+          note: edits_mod.Note | None, before_text: str, only: set[str] | None = None, create=None,
+          on_edit, should_stop) -> dict:
+    """One turn: the first call answers in text, makes a small change at once, or plans a larger
+    one; a plan is carried out one call per step, then up to MAX_FIXUPS calls if the headings
+    miss its outline. Code holds the plan, applies every call to the draft `note` (or makes a
+    new note through `create`), enforces every limit, and hands each part to `on_edit` as it
+    lands: "start", "plan", "step" and "change". `should_stop()` is asked before every call."""
+    out = {"kind": "answer", "answer": "", "plan": None, "changes": [], "steps_done": 0, "calls": 0,
+           "refusals": [], "malformed": [], "empty_steps": 0, "stopped": None, "summary": "",
+           "finished_early": False, "replanned": False, "outline": None, "outline_met": None,
+           "fixups": 0, "retries": 0, "first_call_edits": 0, "timing": []}
+    spent, failed = 0, []
+    current = {"k": None, "landed": 0, "refused": False}      # the step being worked
+    steps: list[str] = []
+
+    def attempt(offered, think, temperature, num_predict):
+        if not out["stopped"] and should_stop():
+            out["stopped"] = "stopped"
+        if out["stopped"]:
+            raise _Stopped
+        return _call(messages, offered, think=think, temperature=temperature, num_predict=num_predict)
+
+    def ask(offered, think, temperature, num_predict) -> _Reply:
+        nonlocal spent
+        try:
+            reply = attempt(offered, think, temperature, num_predict)
+        except llm.LLMError:            # Ollama's own parser fails on a reply now and then: once more
+            out["retries"] += 1
+            try:
+                reply = attempt(offered, think, temperature, num_predict)
+            except llm.LLMError as exc:
+                failed.append(exc)
+                out["stopped"] = f"error: {(str(exc) or type(exc).__name__).splitlines()[0][:200]}"
+                raise _Stopped from exc
+        spent += reply.stats.get("output_tokens") or 0
+        if spent > RUN_OUTPUT_TOKENS:
+            out["stopped"] = "token budget"
+        out["timing"].append(reply.stats)
+        out["malformed"] += reply.malformed
+        messages.append(reply.message)
+        return reply
+
+    def open_step(k: int) -> None:
+        current.update(k=k, landed=0, refused=False)
+        if steps[k] != ONE_REPLY:
+            on_edit("step", {"index": k + 1, "state": "doing"})
+
+    def close_step() -> None:
+        k = current["k"]
+        if k is None:
+            return
+        current["k"] = None
+        state = "skipped" if not current["landed"] else "partial" if current["refused"] else "done"
+        if steps[k] != ONE_REPLY:
+            on_edit("step", {"index": k + 1, "state": state})
+
+    def finish() -> dict:
+        close_step()
+        if out["outline"]:
+            out["outline_met"] = _met(*_against(note, out["outline"]))
+        return out
+
+    def split(reply: _Reply):
+        """A first reply's plan, and its other calls if any of them changes something."""
+        plans = [c for c in reply.calls if c["name"] == "plan"]
+        others = [c for c in reply.calls if c["name"] != "plan"]
+        return plans, others if any(c["name"] in step_tools for c in others) else []
+
+    try:
+        first_predict = QUICK_NUM_PREDICT + (THINK_BUDGET if think else 0)
+        first = ask(first_tools, think, FIRST_TEMPERATURE, first_predict)
+        # An overflowing prompt loses its START — the note and the rider — silently.
+        if first.stats.get("ctx_saturated"):
+            raise CopilotError("this note is too long for one request; edit it in Obsidian")
+        plans, edits = split(first)
+        unread = first.malformed and not first.calls
+        if not plans and not edits and not out["stopped"] and (unread or first.calls and "plan" in first_tools):
+            # Calls that change nothing, or a call code could not read: the plan asked for once more
+            # (a new note, where there is no plan, once more).
+            out["replanned"] = True
+            said = _unreadable(first.malformed) if unread else "refused: start with a plan"
+            messages.extend(_results([said], "Make the plan first: one sentence for the owner, and the steps "
+                                             "in order." if "plan" in first_tools else
+                                             "Make the new note with the create_note tool."))
+            first = ask(first_tools, think, FIRST_TEMPERATURE, first_predict)
+            plans, edits = split(first)
+        if not plans and not edits:
+            out["answer"] = first.content.strip() or next(
+                (_summary(c) for c in first.calls if c["name"] == "done"), "")
+            return out
+        args = plans[0]["arguments"] if plans and isinstance(plans[0]["arguments"], dict) else {}
+        steps += [str(s).strip() for s in (args.get("steps") or []) if str(s).strip()][:MAX_STEPS]
+        if edits and not steps:         # edits with no plan, or with an empty one: a one-step run
+            steps.append(ONE_REPLY)
+        intro = str(args.get("intro") or "").strip() if plans else first.content.strip()
+        shown = [] if steps == [ONE_REPLY] else list(steps)
+        out.update(kind="edit", plan={"intro": intro, "steps": shown},
+                   outline=_outline(args) if note is not None else None)
+        on_edit("start", {"before_text": before_text})
+        on_edit("plan", {"intro": intro, "steps": shown, "outline": out["outline"]})
+        if not steps:
+            out["stopped"] = "empty plan"
+            return finish()
+
+        results, in_row = ["ok: plan accepted"], 0
+
+        def step(instruction: str, number: int):
+            """One model call for one step or fix-up, its tool calls applied in order, with the
+            note's map as it is now."""
+            sections = note.sections() if note is not None else ""
+            now = f"\n\nSections now:\n{sections}" if sections else ""
+            messages.extend(_results(results, instruction + now))
+            reply = ask(list(step_tools), False, STEP_TEMPERATURE, STEP_NUM_PREDICT)
+            return reply, apply_calls(reply.calls, number)
+
+        def land(name: str, args, number: int) -> tuple[dict, str]:
+            change_id = f"c{len(out['changes']) + 1}"
+            if name == "create_note":
+                if not isinstance(args, dict):
+                    raise edits_mod.ToolError("the arguments must be an object", "args")
+                made = create(args.get("path"), args.get("markdown"))
+                return ({"id": change_id, "step": number, "op": "create", "label": f"Created {made['path']}",
+                         "needs": [], "path": made["path"], "text": made["text"]}, f"created {made['path']}")
+            change, said = edits_mod.apply(note, name, args, change_id=change_id, step=number, only=only)
+            return asdict(change), said
+
+        def apply_calls(calls: list[dict], number: int) -> int:
+            nonlocal results, in_row
+            results, landed, refused = [], 0, False
+            for call in calls:
+                out["calls"] += 1
+                name = call["name"]
+                if name == "done":          # the work is finished: this step's calls stand, no more steps
+                    out.update(summary=_summary(call), finished_early=True)
+                    break
+                if name == "plan":          # the plan restated: answered, and neither a refusal nor a change
+                    results.append("ok: the plan is already set; make this step's changes")
+                    continue
+                if out["calls"] > MAX_CALLS:
+                    out["stopped"] = out["stopped"] or "call limit"
+                    refused = True
+                    break
+                try:
+                    if name not in step_tools:
+                        raise edits_mod.ToolError(f"{name} is not available now", "tool")
+                    change, said = land(name, call.get("arguments") or {}, number)
+                except edits_mod.ToolError as exc:
+                    out["refusals"].append({"step": number, "tool": name, "code": exc.code})
+                    results.append(f"refused: {exc}")
+                    refused, in_row = True, in_row + 1
+                    if in_row >= MAX_REFUSALS:
+                        out["stopped"] = out["stopped"] or "refusals"
+                        break
+                    continue
+                out["changes"].append(change)
+                on_edit("change", change)
+                results.append(f"ok: {said}")
+                landed, in_row = landed + 1, 0
+            if current["k"] is not None:
+                current["landed"] += landed
+                current["refused"] = refused
+            return landed
+
+        def instruction(k: int) -> str:
+            if steps[k] == ONE_REPLY:   # only ever a retry: the first reply's change was refused
+                return "Make your change again, fixing what was refused."
+            return f"Step {k + 1} of {len(steps)}: {steps[k]}\nMake this step's changes now."
+
+        k, retried, pending = 0, False, first if edits else None
+        while k < len(steps) and not out["stopped"]:
+            if not retried:
+                open_step(k)
+            if pending:                 # the first reply already holds step 1's calls
+                reply, pending = pending, None
+                landed = out["first_call_edits"] = apply_calls(edits, 1)
+                results = (["ok: plan accepted"] if plans else []) + results
+            else:
+                reply, landed = step(instruction(k), k + 1)
+            if out["stopped"]:
+                break
+            if out["finished_early"]:
+                k = out["steps_done"] = k + 1
+                break
+            acted = [c for c in reply.calls if c["name"] != "plan"]
+            if reply.malformed and not acted:
+                results = [_unreadable(reply.malformed)]
+            elif not acted:
+                out["empty_steps"] += 1
+            if (acted or reply.malformed) and not landed and not retried:
+                retried = True              # every call refused or unreadable: the same step once more, with why
+                continue
+            close_step()
+            k = out["steps_done"] = k + 1
+            retried = False
+        close_step()
+
+        # Fix-ups: they count against the call limit, never against the steps.
+        while out["outline"] and not out["stopped"] and out["fixups"] < MAX_FIXUPS:
+            now, want = _against(note, out["outline"])
+            missing, misplaced = _misses(now, want)
+            if not missing and not misplaced:
+                break
+            out["fixups"] += 1
+            reply, _ = step(_fixup(now, want, missing, misplaced), len(steps) + out["fixups"])
+            if any(c["name"] == "done" for c in reply.calls):
+                break
+
+        if not out["stopped"] and not out["finished_early"]:
+            n = len(out["changes"])
+            out["summary"] = intro or f"Done: {n} change{'' if n == 1 else 's'}"
+    except _Stopped:
+        if out["kind"] == "answer":     # no run started, and no answer either
+            if failed:
+                raise failed[-1]
+            raise CopilotError("stopped before the model answered")
+    return finish()
+
+
+def _note_text(vault: Path, path: str) -> str:
+    """The open note from disk, when the editor's text was not sent."""
+    try:
+        text = edits_mod._read(Path(vault) / path)
+    except (OSError, UnicodeDecodeError) as exc:
+        raise CopilotError("the open note could not be read; refresh the sidebar") from exc
+    if "\r" in text or text.startswith("﻿"):
+        raise CopilotError("this note uses Windows line endings or a byte-order mark; edit it in Obsidian")
+    return text
+
+
+def _selected(note: edits_mod.Note, text: str, selection: str, skill: skills_mod.Skill) -> set[str]:
+    """The blocks a selection touches: the only ones a selection skill may change."""
+    chosen = (selection or "").strip()
+    if not chosen:
+        raise CopilotError(f"/{skill.name} works on selected text: select some in the note first")
+    start = text.find(chosen)
+    if start < 0:
+        raise CopilotError("the selected text is not in the note as it is now; select it again")
+    end, pos, found = start + len(chosen), 0, set()
+    for block in note.blocks:
+        if pos < end and start < pos + len(block.text):
+            found.add(block.handle)
+        pos += len(block.text)
+    return found
+
+
+def _facts(out: dict, run: dict) -> dict:
+    """An editing run as the trace keeps it: machine facts, never the note's words."""
+    return {"steps_planned": len(run["plan"]["steps"]), "steps_done": run["steps_done"],
+            "calls": out["calls"], "model_calls": len(out["timing"]),
+            "refusals": [item["code"] for item in out["refusals"]], "malformed": len(out["malformed"]),
+            "empty_steps": out["empty_steps"], "changes": len(out["changes"]),
+            "first_call_edits": out["first_call_edits"], "replanned": out["replanned"],
+            "retries": out["retries"], "stopped": out["stopped"], "finished_early": out["finished_early"],
+            "outline_met": out["outline_met"], "fixups": out["fixups"], "timing": out["timing"]}
+
+
+def _answer_or_edit(con, vault: Path, source: dict, question: str, history: list[dict], mode: str,
+                    *, skill, args: str, images, selection: str, doc: str | None, on_stage,
+                    on_delta, on_edit, should_stop, entry: dict) -> tuple[dict, list[str], list[dict]]:
+    """A turn that may edit: (result, retrieval levels, evidence). A plain question reads like
+    an Ask turn — the passages retrieval finds, the sources call after a text answer — and the
+    open note rides whole, with handles. A selection skill may change only the blocks the
+    selection touches, with `replace` alone; a new-note skill reads its notes as a chat skill
+    does and may only create notes."""
+    stage = on_stage or (lambda _name: None)
+    text = doc if doc is not None else _note_text(vault, source["path"])
+    folder = PurePosixPath(source["path"]).parent.as_posix()
+    prompt = skills_mod.render_prompt(skill, args) if skill else question
+    note, only, create, inputs = edits_mod.Note(text), None, None, None
+    evidence, levels, cited = [], [], None
+    first_tools, step_tools = ["plan", "replace", "insert", "move"], ("replace", "insert", "move")
+    if skill and skill.output == "new-note":
+        pack = gather(con, vault, source, skill=skill, links_from=args, selection=selection)
+        system = pack_message(pack, NEW_NOTE_RIDER.format(folder=folder))
+        cited = [{"n": i + 1, "path": d["path"], "title": d["title"]}
+                 for i, d in enumerate(d for d in pack.docs if d["role"] != "selection")]
+        inputs, note = pack_inputs(pack), None
+        first_tools, step_tools = ["create_note", "done"], ("create_note",)
+        made: set[str] = set()
+
+        def create(path, markdown):
+            new = edits_mod.create_note(vault, path, markdown, folder=folder)
+            if new["path"].casefold() in made:
+                raise edits_mod.ToolError(f"{new['path']} is already made in this turn; give the next note "
+                                          "a name of its own", "exists")
+            made.add(new["path"].casefold())
+            return new
+        shown, skipped = open_note_images(vault, source, [])
+    elif skill:
+        # An edit skill: code knows what it read (the open note), so it makes no sources call.
+        cited = [{"n": 1, "path": source["path"], "title": PurePosixPath(source["path"]).stem}]
+        if skill.input == "selection":
+            only = _selected(note, text, selection, skill)
+            prompt += f"\n\nSelected text:\n{selection.strip()}"
+            first_tools, step_tools = ["plan", "replace"], ("replace",)
+        system = edit_message(source["path"], note, [])
+        shown, skipped = open_note_images(vault, source, [])
+    else:
+        evidence, levels = collect_evidence(con, source, question, limit=12 if mode == "deep" else 6)
+        system = edit_message(source["path"], note, evidence)
+        shown, skipped = open_note_images(vault, source, evidence)
+    entry.update(note_images=len(shown), note_images_skipped=len(skipped))
+
+    transcript, embedded, current = _conversation(history, prompt, images, shown)
+    system_turn = {"role": "system", "content": system}
+    recent = fit_window(transcript, [system_turn, *embedded, current],
+                        QUICK_NUM_PREDICT + (THINK_BUDGET if mode == "deep" else 0))
+    messages = [system_turn, *recent, *embedded, current]
+    stage("Thinking deeply" if mode == "deep" else "Writing")
+    started = time.time()
+    # The model lock is held for the whole turn: a request slipping in between two steps would
+    # evict the prefix every later step reads.
+    with llm.hold():
+        out = _turn(list(messages), think=mode == "deep", first_tools=first_tools, step_tools=step_tools,
+                    note=note, before_text=text, only=only, create=create,
+                    on_edit=on_edit or (lambda _event, _payload: None), should_stop=should_stop)
+        last = out["timing"][-1] if out["timing"] else {}
+        run, sources_stats = None, {}
+        if out["kind"] == "answer":
+            answer = out["answer"]
+            if not answer and last.get("thinking_ate_the_budget"):
+                raise CopilotError("the model spent its whole output budget thinking and wrote no "
+                                   "answer — ask again in Quick mode, or ask a narrower question")
+            if not answer:
+                raise CopilotError("the local model returned no answer")
+            (on_delta or (lambda _text: None))(answer)
+            if cited is None:
+                if evidence:
+                    stage("Noting sources")
+                cited, sources_stats = notes_used(messages, answer, evidence)
+        else:
+            run = {"plan": out["plan"], "steps_done": min(out["steps_done"], len(out["plan"]["steps"])),
+                   "changes": out["changes"], "stopped": out["stopped"], "outline_met": out["outline_met"],
+                   "fixups": out["fixups"], "hash_before": edits_mod.digest(text),
+                   "hash_after": edits_mod.digest(note.text() if note is not None else text),
+                   "summary": out["summary"]}
+            # A skill names what code read; a plain edit makes no sources call.
+            answer, cited = out["summary"] or out["plan"]["intro"], cited or []
+            entry["edit_run"] = _facts(out, run)
+    result = {
+        "answer": answer,
+        "mode": mode,
+        "citations": cited,
+        "verification": {"truncated": bool(last.get("output_truncated"))},
+        "history_dropped": len(transcript) - len(recent),
+        "timing": {"total_ms": round((time.time() - started) * 1000),
+                   "answer": out["timing"][0] if out["timing"] else {}, "sources": sources_stats},
+        "edit_run": run,
+    }
+    if inputs is not None:
+        result["inputs"] = inputs
+    return result, levels, evidence
+
+
 def run_turn(con, source_id: str, question: str, history: list[dict], mode: str,
-             *, images=None, on_stage=None, on_delta=None, edit: bool = False,
-             selection: str = "", vault: Path | None = None) -> dict:
-    """One sidebar turn. A `/command` naming a skill, or Edit mode, reads whole notes chosen by
-    code (`gather`); anything else is today's retrieval turn. Edit mode and a skill whose output
-    is a change end with a proposal the plugin shows for Accept/Reject — nothing is written here."""
+             *, images=None, on_stage=None, on_delta=None, on_edit=None, selection: str = "",
+             vault: Path | None = None, doc: str | None = None, doc_hash: str | None = None,
+             should_stop=lambda: False) -> dict:
+    """One sidebar turn. A `/command` whose output is chat reads whole notes chosen by code
+    (`gather`) and answers. Every other turn is one chat that answers or edits: it may answer in
+    text, or change the open note, which it reads from `doc` — the editor's text, whose
+    `doc_hash` must match — or else from disk. `on_edit(event, payload)` gets each part of an
+    edit as it lands; nothing is written here: the plugin applies each change through the editor."""
     vault = Path(vault or config_mod.VAULT)
     source_row = con.execute(
         "SELECT id, path, title, type, current_hash FROM sources "
@@ -635,7 +1140,6 @@ def run_turn(con, source_id: str, question: str, history: list[dict], mode: str,
     skill, args = found or (None, "")
     if skill and skill.mode in ("quick", "deep"):
         mode = skill.mode                      # the skill's author chose its depth
-    proposing = edit or bool(skill and skill.proposes)
     # A /command in an earlier turn is its whole prompt to the model: "/quiz" alone never told
     # the answering turn how to grade.
     history = [{**turn, "text": skills_mod.expand(turn.get("text") or "", loaded)}
@@ -646,52 +1150,47 @@ def run_turn(con, source_id: str, question: str, history: list[dict], mode: str,
              "mode": mode, "history_turns": len(history),
              "images": len(images or []),
              "history_images": sum(len(turn.get("images") or []) for turn in history),
-             "skill": skill.name if skill else None, "edit": proposing,
+             "skill": skill.name if skill else None,
              "selection_chars": len(selection or "")}
     started = time.time()
+    evidence, levels = [], []
     try:
+        if mode not in {"quick", "deep"}:
+            raise CopilotError("reasoning mode must be quick or deep")
         if skill and skill.error:
             raise CopilotError(f"/{skill.name} cannot run: {skill.error} "
                                f"({skills_mod.VAULT_DIR}/{skill.name}.md)")
         unknown = re.match(r"^/([a-z0-9][a-z0-9-]*)(?:\s|$)", question)
         if unknown and not skill:
             raise CopilotError(f"there is no /{unknown.group(1)} skill; type / to see them")
-        if skill or proposing:
-            pack = gather(con, vault, source, skill=skill, links_from=args if skill else question,
-                          selection=selection, raw=proposing)
-            folder = PurePosixPath(source["path"]).parent.as_posix()
+        if doc is not None and edits_mod.digest(doc) != doc_hash:
+            raise CopilotError("the note changed while sending; try again")
+        if doc is not None and len(doc) > edits_mod.MAX_EDIT_CHARS:
+            raise CopilotError("this note is too large for the sidebar; edit it in Obsidian")
+        if skill and skill.output == "chat":
+            pack = gather(con, vault, source, skill=skill, links_from=args, selection=selection)
             cited = [{"n": i + 1, "path": doc["path"], "title": doc["title"]}
                      for i, doc in enumerate(d for d in pack.docs if d["role"] != "selection")]
             # No retrieval orders a skill's images, so they come in note order.
             shown, skipped = open_note_images(vault, source, [])
             entry.update(note_images=len(shown), note_images_skipped=len(skipped))
             result = generate_answer(
-                skills_mod.render_prompt(skill, args) if skill else question, history, [], mode,
+                skills_mod.render_prompt(skill, args), history, [], mode,
                 images=images, note_images=shown, on_stage=on_stage, on_delta=on_delta,
-                system=pack_message(pack, proposing=proposing, folder=folder),
-                cited=cited, proposing=proposing)
-            result["inputs"] = pack_inputs(pack)
-            levels = []
-            # An overflowing prompt loses its START — the notes and the edit instructions —
-            # silently. Nothing built on that is offered for Accept.
-            if proposing and result["timing"]["answer"].get("ctx_saturated"):
-                raise CopilotError("these notes are too long for one request; ask about fewer notes")
+                system=pack_message(pack, ASK_RIDER), cited=cited)
+            result.update(inputs=pack_inputs(pack), edit_run=None)
         else:
-            limit = 12 if mode == "deep" else 6
-            evidence, levels = collect_evidence(con, source, question, limit=limit)
-            shown, skipped = open_note_images(vault, source, evidence)
-            entry.update(note_images=len(shown), note_images_skipped=len(skipped))
-            result = generate_answer(
-                question, history, evidence, mode, images=images, note_images=shown,
-                on_stage=on_stage, on_delta=on_delta)
+            result, levels, evidence = _answer_or_edit(
+                con, vault, source, question, history, mode, skill=skill, args=args, images=images,
+                selection=selection, doc=doc, on_stage=on_stage, on_delta=on_delta, on_edit=on_edit,
+                should_stop=should_stop, entry=entry)
     except (CopilotError, llm.LLMError) as exc:
         trace.record("copilot", {**entry, "status": "failed", "error": str(exc),
                                  "duration_ms": round((time.time() - started) * 1000)})
         raise
-    result.update({"source": source, "retrieval_levels": levels, "skill": entry["skill"],
-                   "edit": proposing})
+    result.update({"source": source, "retrieval_levels": levels, "skill": entry["skill"]})
     record = {
-        **entry, "status": "answered",
+        **entry, "status": "edited" if result["edit_run"] else "answered",
         "cited": sorted({item["path"] for item in result["citations"]}),
         "truncated": result["verification"]["truncated"],
         "history_dropped": result["history_dropped"], "timing": result["timing"],

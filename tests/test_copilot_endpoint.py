@@ -248,23 +248,22 @@ def test_thread_listing_and_load_report_the_source_current_path(server_url):
         assert json.load(response)["source_path"] == "Notes/school/cs-201/lesson.md"
 
 
-def test_stream_endpoint_passes_edit_mode_and_a_bounded_selection(server_url, monkeypatch):
+def test_stream_endpoint_passes_a_bounded_selection(server_url, monkeypatch):
     seen = {}
 
     def fake_run(con, source_id, question, history, mode, **kwargs):
-        seen.update(edit=kwargs["edit"], selection=kwargs["selection"])
-        return {"answer": "ok", "mode": "quick", "citations": [], "proposal": None}
+        seen.update(selection=kwargs["selection"], edit="edit" in kwargs)
+        return {"answer": "ok", "mode": "quick", "citations": [], "edit_run": None}
 
     monkeypatch.setattr(copilot, "run_turn", fake_run)
     post(server_url, "/api/copilot/stream", {
         "thread_id": "chat-1", "source_id": "source-1", "question": "tidy", "history": [],
         "edit": True, "selection": "x" * (copilot.MAX_SELECTION_CHARS + 50)})
-    assert seen == {"edit": True, "selection": "x" * copilot.MAX_SELECTION_CHARS}
-    # Only a literal true turns Edit mode on; a truthy string is not consent to propose.
+    assert seen == {"selection": "x" * copilot.MAX_SELECTION_CHARS, "edit": False}   # no Edit mode left
     post(server_url, "/api/copilot/stream", {
         "thread_id": "chat-1", "source_id": "source-1", "question": "tidy", "history": [],
-        "edit": "yes", "selection": 5})
-    assert seen == {"edit": False, "selection": ""}
+        "selection": 5})
+    assert seen == {"selection": "", "edit": False}
 
 
 def test_skills_endpoint_lists_builtins_and_the_vaults_own(server_url, monkeypatch, tmp_path):

@@ -14,7 +14,7 @@ import urllib.request
 
 import pytest
 
-from slim import embed, enrich, db, threads, trace
+from slim import embed, enrich, db, llm, threads, trace
 
 
 def ollama_available() -> bool:
@@ -76,6 +76,15 @@ def _isolate_threads(tmp_path, monkeypatch):
     (chat-fluidity F5), the store is an always-on durable writer — no test may read or
     write the production conversation history."""
     monkeypatch.setattr(threads, "THREADS_DIR", tmp_path / "threads")
+
+
+@pytest.fixture(autouse=True)
+def _no_live_model(monkeypatch):
+    """A test that forgets to fake the model must fail, not reach the resident: a generative
+    call from the suite loads or queues on the 25 GB model while a real job may be using it.
+    Every chat call goes to a closed local port instead, and raises LLMError at once. Tests
+    that fake `urlopen` never see the address."""
+    monkeypatch.setattr(llm, "OLLAMA_CHAT", "http://127.0.0.1:9/api/chat")
 
 
 @pytest.fixture(autouse=True)

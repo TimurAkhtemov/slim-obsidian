@@ -173,7 +173,12 @@ def _spans(lines: list[str]) -> list[tuple[str, int, int]]:
 # --- handles ----------------------------------------------------------------------------------
 
 class ToolError(ValueError):
-    """A tool call code refuses; the message goes back to the model as the call's result."""
+    """A tool call code refuses; the message goes back to the model as the call's result, and
+    `code`, a short word, goes to the trace (the message can quote the note)."""
+
+    def __init__(self, message: str, code: str):
+        super().__init__(message)
+        self.code = code
 
 
 _LABEL = re.compile(r"^\[(?:b\d+(?: s\d+)?|locked)\] ?", re.MULTILINE)
@@ -247,7 +252,7 @@ def _end(blocks: list[Block], i: int) -> int:
 def cut_refused(cut: tuple[str, int, str]) -> ToolError:
     s, _, first = cut
     return ToolError(f"that would cut {s}: its text from {first} on would end up under your new heading. "
-                     f"Put it after {s} (after that whole section) or before {s}.")
+                     f"Put it after {s} (after that whole section) or before {s}.", "cut")
 
 
 def placed(cut: tuple[str, int, str]) -> str:
@@ -340,24 +345,25 @@ class Note:
         """A block, a section, or a range from the first handle's start to the last one's end."""
         found = self._handles(target)
         if not found:
-            raise ToolError(f"'{handle_name(target)}' is not a handle; use one shown in brackets ({self._range()})")
+            raise ToolError(f"'{handle_name(target)}' is not a handle; use one shown in brackets "
+                            f"({self._range()})", "handle")
         if len(found) == 1:
             return self._span(found[0])
         first, last = found[0], found[-1]
         if len(found) == 2 and first[0] != last[0] and first[1:] == last[1:]:
             n = first[1:]
             raise ToolError(f"b{n} is the heading line alone and s{n} is the heading with everything under it: "
-                            "use one of them")
+                            "use one of them", "ambiguous")
         i, _ = self._span(first)
         k, l = self._span(last)
         if k < i:
-            raise ToolError(f"{first}-{last}: a range goes from the earlier handle to the later one")
+            raise ToolError(f"{first}-{last}: a range goes from the earlier handle to the later one", "range")
         return i, l
 
     def _span(self, handle: str) -> tuple[int, int]:
         i = next((k for k, b in enumerate(self.blocks) if b.handle == "b" + handle[1:]), None)
         if i is None:
-            raise ToolError(f"there is no {handle}; use a handle shown in brackets ({self._range()})")
+            raise ToolError(f"there is no {handle}; use a handle shown in brackets ({self._range()})", "handle")
         if handle[0] == "b" or not self.blocks[i].level:
             return i, i + 1
         return i, _end(self.blocks, i)
@@ -390,10 +396,10 @@ class Note:
 
     def _check(self, handle: str, i: int, j: int, only: set[str] | None) -> None:
         if any(b.locked for b in self.blocks[i:j]):
-            raise ToolError(f"{handle} is {PROTECTED}")
+            raise ToolError(f"{handle} is {PROTECTED}", "locked")
         if only is not None and any(b.handle not in only for b in self.blocks[i:j] if b.kind != "blank"):
             allowed = ", ".join(sorted(only, key=lambda h: int(h[1:])))
-            raise ToolError(f"{handle} is outside the selected text; change only {allowed}")
+            raise ToolError(f"{handle} is outside the selected text; change only {allowed}", "selection")
 
     def offset(self, index: int) -> int:
         return sum(len(b.text) for b in self.blocks[:index])
@@ -404,9 +410,9 @@ class Note:
         text, at = self.text(), self.offset(pos)
         for start, stop in protected_ranges(text):
             if start < at < stop or (at == 0 and start == 0):
-                raise ToolError(f"that place is inside the recording, which is {PROTECTED}")
+                raise ToolError(f"that place is inside the recording, which is {PROTECTED}", "locked")
         if self.tail_locked and pos == len(self.blocks):
-            raise ToolError("nothing can go after the transcript; put it before the transcript")
+            raise ToolError("nothing can go after the transcript; put it before the transcript", "locked")
 
     def cut(self, pos: int, level: int, blocks: list[Block] | None = None) -> tuple[str, int, str] | None:
         """Text holding a heading of `level` may not land inside a section of that level or lower
@@ -521,10 +527,10 @@ def _text(args: dict, name: str, required: bool = True) -> str | None:
     value = args.get(name)
     if value is None or (isinstance(value, str) and not value.strip() and name != "markdown"):
         if required:
-            raise ToolError(f"{name} is missing")
+            raise ToolError(f"{name} is missing", "args")
         return None
     if not isinstance(value, str):
-        raise ToolError(f"{name} must be text")
+        raise ToolError(f"{name} must be text", "args")
     return value
 
 
@@ -536,7 +542,7 @@ def _handle(note: Note, args: dict, name: str, required: bool = True) -> str | N
 def _where(note: Note, args: dict) -> tuple[str, bool]:
     after, before = _handle(note, args, "after", False), _handle(note, args, "before", False)
     if bool(after) == bool(before):
-        raise ToolError("give exactly one of after or before")
+        raise ToolError("give exactly one of after or before", "args")
     return (after, True) if after else (before, False)
 
 
@@ -544,9 +550,10 @@ def _written(markdown: str, old: str = "") -> None:
     """New text may not add a recording's block or transcript heading, which would lock the
     owner's text below it, nor a lone `...` for "the rest as before", which would delete the rest."""
     if any(new > was for was, new in zip(_markers(old), _markers(markdown))):
-        raise ToolError("that adds a recording's block or transcript heading; SLIM never writes one")
+        raise ToolError("that adds a recording's block or transcript heading; SLIM never writes one", "marker")
     if len(_ELISION.findall(markdown)) > len(_ELISION.findall(old)):
-        raise ToolError("the new text skips lines with `...`; write out what stays, or change only what changes")
+        raise ToolError("the new text skips lines with `...`; write out what stays, or change only what "
+                        "changes", "elision")
 
 
 def _lines(text: str) -> list[str]:
@@ -568,7 +575,7 @@ def _copied(note: Note, markdown: str, mine: range, place: str) -> None:
                 continue
             s = "s" + b.handle[1:]
             raise ToolError(f"{heading} is already in the note as {s}; to put that section here, use move {s} "
-                            f"{place}, and replace it afterwards if it needs new text.")
+                            f"{place}, and replace it afterwards if it needs new text.", "copy")
 
 
 def _replace(note: Note, args: dict, ctx: dict):
@@ -587,7 +594,7 @@ def _replace(note: Note, args: dict, ctx: dict):
 def _insert(note: Note, args: dict, ctx: dict):
     markdown = strip_labels(_text(args, "markdown", False) or "")
     if not markdown.strip():
-        raise ToolError("markdown is empty; write the new text")
+        raise ToolError("markdown is empty; write the new text", "empty")
     anchor, after = _where(note, args)
     i, j = note.span(anchor)
     pos = j if after else i
@@ -614,9 +621,9 @@ def _move(note: Note, args: dict, ctx: dict):
     k, l = note.span(anchor)
     pos = l if after else k
     if i < pos < j:
-        raise ToolError(f"{anchor} is inside {target}; choose a place outside it")
+        raise ToolError(f"{anchor} is inside {target}; choose a place outside it", "place")
     if pos in (i, j):
-        raise ToolError(f"{target} is already there")
+        raise ToolError(f"{target} is already there", "place")
     note.check_insert(pos)
     level = min((b.level for b in note.blocks[i:j] if b.level), default=0)
     cut, said = note.cut(pos - (j - i) if pos > i else pos, level, note.blocks[:i] + note.blocks[j:]), ""
@@ -625,7 +632,7 @@ def _move(note: Note, args: dict, ctx: dict):
     if cut:                             # after the whole section it would cut, counted without the moved blocks
         pos, said = (cut[1] if cut[1] <= i else cut[1] + (j - i)), placed(cut)
         if pos in (i, j):
-            raise ToolError(f"{target} is already right after {cut[0]}")
+            raise ToolError(f"{target} is already right after {cut[0]}", "place")
         note.check_insert(pos)
     needs = note.owners(i, j) | note.owners(k, l)
     moved = note.move(i, j, pos)
@@ -686,14 +693,14 @@ def apply(note: Note, name: str, args: dict, *, change_id: str, step: int,
     Raises ToolError, with the note unchanged, for a call code refuses."""
     tool = TOOLS.get(name)
     if not tool or not tool["apply"]:
-        raise ToolError(f"{name} is not an editing tool")
+        raise ToolError(f"{name} is not an editing tool", "tool")
     if not isinstance(args, dict):
-        raise ToolError("the arguments must be an object")
+        raise ToolError("the arguments must be an object", "args")
     before = note.text()
     needs, label, result = tool["apply"](note, args, {"id": change_id, "only": only})
     after = note.text()
     if after == before:
-        raise ToolError("that changes nothing")
+        raise ToolError("that changes nothing", "noop")
     needs.discard(change_id)
     return Change(change_id, step, name, label, splices(before, after),
                   sorted(needs, key=lambda c: int(c[1:]))), result
@@ -756,24 +763,28 @@ def create_note(vault: Path, raw_path: str, markdown: str, *, folder: str) -> di
     """A new note a skill makes: {path, text}, or ToolError. A bare name goes in `folder`, the
     open note's folder. `Journal/` is the floor (CLAUDE.md): nothing is created in it, and a
     Journal note's words never leave it. Nothing is written here; the plugin creates the note."""
+    if not isinstance(raw_path, str) or not isinstance(markdown, str):
+        raise ToolError("path and markdown must be text", "args")
     raw = _clean_path(raw_path)
     if raw and "/" not in raw and folder not in ("", "."):
         raw = f"{folder}/{raw}"
     path = note_path(raw)
     if path is None:
-        raise ToolError(f"'{raw_path}' is not a note path in this vault; give a path ending in .md")
+        raise ToolError(f"'{raw_path}' is not a note path in this vault; give a path ending in .md",
+                        "path")
     if _on_floor(path):
-        raise ToolError("SLIM never creates a note in Journal/")
+        raise ToolError("SLIM never creates a note in Journal/", "journal")
     if _on_floor(folder.rstrip("/") + "/"):
-        raise ToolError("a Journal note's text stays in Journal/")
+        raise ToolError("a Journal note's text stays in Journal/", "journal")
     parent = PurePosixPath(path).parent.as_posix()
     if not _exact(vault, parent):
-        raise ToolError(f"the folder {parent}/ does not exist; use a folder that does, such as {folder}/")
+        raise ToolError(f"the folder {parent}/ does not exist; use a folder that does, such as {folder}/",
+                        "folder")
     if (Path(vault) / path).exists():
-        raise ToolError(f"{path} already exists; give the new note a name of its own")
-    text = strip_labels(markdown or "")
+        raise ToolError(f"{path} already exists; give the new note a name of its own", "exists")
+    text = strip_labels(markdown)
     if not text.strip():
-        raise ToolError("markdown is empty; write the new note")
+        raise ToolError("markdown is empty; write the new note", "empty")
     if len(text) > MAX_EDIT_CHARS:
-        raise ToolError("that note is too large to create from the sidebar")
+        raise ToolError("that note is too large to create from the sidebar", "size")
     return {"path": path, "text": _with_origin(text.strip("\n") + "\n")}
