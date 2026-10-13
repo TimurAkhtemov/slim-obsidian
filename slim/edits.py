@@ -33,6 +33,7 @@ _ELISION = re.compile(r"^[ \t]*(?:\.\.\.|…)[ \t]*$", re.MULTILINE)
 # Obsidian renders no Markdown or math inside these, in Live Preview, and an unclosed one leaves
 # everything after it raw (live, 2026-10-13: a `<details>` whose `</details>` a later step dropped).
 _HTML_BLOCK = re.compile(r"<(?:details|summary|div)\b", re.IGNORECASE)
+_CODE = re.compile(r"^(`{3,}|~{3,})[^\n]*\n[\s\S]*?^\1[ \t]*$|`[^`\n]+`", re.MULTILINE)   # shown, not rendered
 # Binaries, SLIM's own derived output and Obsidian's config are never a copilot edit target.
 _NEVER_TOP = {"attachments", "_reflections"}
 _EXCLUDED_CF = {name.casefold() for name in EXCLUDED_DIRS}
@@ -606,7 +607,7 @@ def _written(markdown: str, old: str = "") -> None:
     if len(_ELISION.findall(markdown)) > len(_ELISION.findall(old)):
         raise ToolError("the new text skips lines with `...`; write out what stays, or change only what "
                         "changes", "elision")
-    if len(_HTML_BLOCK.findall(markdown)) > len(_HTML_BLOCK.findall(old)):
+    if len(_HTML_BLOCK.findall(_CODE.sub("", markdown))) > len(_HTML_BLOCK.findall(_CODE.sub("", old))):
         raise ToolError("Obsidian renders no Markdown or math inside HTML tags; write Markdown. A heading already "
                         "folds in Obsidian; for a section that starts folded, write a callout: "
                         "> [!note]- Title, with each line under it starting with > .", "html")

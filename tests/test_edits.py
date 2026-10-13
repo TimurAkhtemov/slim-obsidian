@@ -655,3 +655,10 @@ def test_a_quote_of_long_words_is_cut_at_a_word_by_characters_too():
     said = edits.quote("Use cases: sentiment/hate-speech detection, knowledge discovery, dialogue/chatbots, documents")
     assert said == "“Use cases: sentiment/hate-speech detection, knowledge…”"
     assert len(said) <= edits.QUOTE_CHARS + 3
+
+
+def test_html_shown_as_code_is_text_not_an_html_block():
+    note = Note(NOTE)
+    apply(note, "insert", {"after": "b1", "markdown": "Use `<details>` to fold.\n\n```html\n<div>x</div>\n```"},
+          change_id="c1", step=1)
+    assert "```html\n<div>x</div>\n```" in note.text()
