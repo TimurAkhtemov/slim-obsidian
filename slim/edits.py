@@ -20,6 +20,7 @@ import difflib
 import hashlib
 import os
 import re
+import textwrap
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
@@ -33,7 +34,12 @@ _MEETING_OPEN = re.compile(r"^\s*(`{3,})slim-meeting")
 _ELISION = re.compile(r"^[ \t]*(?:\.\.\.|…)[ \t]*$", re.MULTILINE)
 # Obsidian renders no Markdown or math inside these, in Live Preview, and an unclosed one leaves
 # everything after it raw (live, 2026-10-13: a `<details>` whose `</details>` a later step dropped).
+# A new `<details>` is written as the callout that folds the same way (`fold`); the rest are refused.
 _HTML_BLOCK = re.compile(r"<(/?(?:details|summary|div))\b", re.IGNORECASE)
+_DETAILS = re.compile(r"<(/?)details\b([^>]*)>", re.IGNORECASE)
+_SUMMARY = re.compile(r"\s*<summary\b[^>]*>", re.IGNORECASE)
+_SUMMARY_END = re.compile(r"</summary\s*>", re.IGNORECASE)
+_TAG = re.compile(r"<[^>]*>")
 # Code is shown, not rendered: a fence (closed by a run as long or longer, or the end of the text;
 # a backtick fence's info string has no backtick) and a code span (closed by a backtick run of
 # the same length, before a blank line).
@@ -649,8 +655,88 @@ def _written(markdown: str, old: str = "") -> None:
 def _html_lines(text: str) -> Counter:
     """The HTML block tags of each line outside code, in order: a line keeps its tags only where
     the old text had a line with the same ones, never a tag counted elsewhere."""
-    lines = (tuple(tag.lower() for tag in _HTML_BLOCK.findall(line)) for line in _CODE.sub("", text).splitlines())
+    lines = (_line_tags(line) for line in _CODE.sub("", text).splitlines())
     return Counter(tags for tags in lines if tags)
+
+
+def _line_tags(line: str) -> tuple[str, ...]:
+    return tuple(tag.lower() for tag in _HTML_BLOCK.findall(line))
+
+
+def _line_end(text: str, pos: int) -> int:
+    end = text.find("\n", pos)
+    return len(text) if end < 0 else end
+
+
+def fold(markdown: str, old: str = "") -> tuple[str, list[str]]:
+    """`markdown` with each <details> the old text did not have written as the callout Obsidian
+    folds the same way, with Markdown rendered inside: `> [!note]- Title`, `+` for <details open>,
+    its <summary> the title. One never closed runs to the end of the text; one in code is code; a
+    <details> of the old text (a line with the same tags, as `_html_lines` counts) stays as it was.
+    Returns the text and the titles of the callouts it made, outer first."""
+    code = [m.span() for m in _CODE.finditer(markdown)]
+    tags = [m for m in _DETAILS.finditer(markdown) if not any(a <= m.start() < b for a, b in code)]
+    had = _html_lines(old)
+    out, titles, at, k = [], [], 0, 0
+    while k < len(tags):
+        tag = tags[k]
+        if tag.group(1) or tag.start() < at:        # a </details> with none open, or text already written
+            k += 1
+            continue
+        depth, close = 0, None
+        for n in range(k, len(tags)):
+            depth += -1 if tags[n].group(1) else 1
+            if depth == 0:
+                close = n
+                break
+        start = markdown.rfind("\n", 0, tag.start()) + 1
+        last = close + 1 if close is not None else len(tags)
+        key = _line_tags(_CODE.sub("", markdown[start:_line_end(markdown, tag.start())]))
+        if had[key]:
+            had[key] -= 1
+            k = last
+            continue
+        inner_end, close_end = (tags[close].start(), tags[close].end()) if close is not None else (len(markdown),) * 2
+        title, body = "", markdown[tag.end():inner_end]
+        summary = _SUMMARY.match(body)
+        if summary:
+            stop = _SUMMARY_END.search(body, summary.end())
+            cut = stop.start() if stop else _line_end(body, summary.end())
+            title, body = body[summary.end():cut], body[stop.end() if stop else cut:]
+        name = " ".join(_TAG.sub("", title).split()).lstrip("#").strip() or "Details"
+        body, inner = fold(body)
+        titles += [name, *inner]
+        lines = textwrap.dedent(body).strip("\n").split("\n") if body.strip() else []
+        sign = "+" if re.search(r"\bopen\b", tag.group(2), re.IGNORECASE) else "-"
+        lead = markdown[start:tag.start()]
+        indent, before = lead[:len(lead) - len(lead.lstrip(" \t"))], lead.strip()
+        before = "" if re.fullmatch(r"#{1,6}", before) else before     # "### <details>": the callout is the heading
+        end = _line_end(markdown, close_end)
+        after = markdown[close_end:end].strip()
+        piece = "\n".join(indent + line for line in [f"> [!note]{sign} {name}",
+                                                     *(f"> {line}" if line.strip() else ">" for line in lines)])
+        done = "".join(out) + markdown[at:start]
+        # Set apart, so a line around it is never read as part of the callout.
+        if before:
+            piece = f"{indent}{before}\n\n{piece}"
+        elif done.strip() and not re.search(r"\n[ \t]*\n\Z", done):
+            piece = "\n" + piece
+        if after:
+            piece += f"\n\n{indent}{after}"
+        elif markdown[end + 1:_line_end(markdown, end + 1)].strip():
+            piece += "\n"
+        out.append(markdown[at:start] + piece)
+        at, k = end, last
+    out.append(markdown[at:])
+    return "".join(out), titles
+
+
+def _callouts(titles: list[str]) -> str:
+    """What a tool's result says of the <details> it wrote as callouts."""
+    if not titles:
+        return ""
+    return (f" (written as {'a callout' if len(titles) == 1 else 'callouts'}: Obsidian folds a callout, and shows "
+            "no Markdown inside HTML)")
 
 
 def _own(note: Note, changed: list[Block], target: str, ctx: dict) -> None:
@@ -701,6 +787,7 @@ def _replace(note: Note, args: dict, ctx: dict):
     markdown = strip_labels(_text(args, "markdown", False) or "")
     i, j, target, trimmed = note.pick(_handle(note, args, "target"), ctx["only"])
     old = "".join(b.text for b in note.blocks[i:j])
+    markdown, folded = fold(markdown, old)
     renames = _renames(note, i, j, markdown)
     ctx["targets"] = note.changed(i, i + 1 if renames else j, markdown)
     _own(note, ctx["targets"], target, ctx)
@@ -722,7 +809,7 @@ def _replace(note: Note, args: dict, ctx: dict):
     then, done = note.then(i + len(new)), f"{target} ({trimmed})" if trimmed else target
     if not markdown:
         return needs, label, f"deleted {done}\n{then}"
-    return needs, label, f"replaced {done}; it now reads:\n{note.render(new).rstrip()}\n{then}"
+    return needs, label, f"replaced {done}{_callouts(folded)}; it now reads:\n{note.render(new).rstrip()}\n{then}"
 
 
 def _edit_text(note: Note, args: dict, ctx: dict):
@@ -739,7 +826,7 @@ def _edit_text(note: Note, args: dict, ctx: dict):
         raise ToolError(f"'{old}' is not in {target}; it reads: {text.rstrip()[:300]}", "quote")
     if found > 1:
         raise ToolError(f"'{old}' appears {found} times in {target}; quote a little more around it", "quote")
-    changed = text.replace(old, new, 1)
+    changed, folded = fold(text.replace(old, new, 1), text)
     ctx["targets"] = note.changed(i, j, changed.rstrip("\n"))
     _own(note, ctx["targets"], target, ctx)
     _written(changed, text)
@@ -747,14 +834,16 @@ def _edit_text(note: Note, args: dict, ctx: dict):
     needs = note.owners(i, j)
     made = note.replace(i, j, changed.rstrip("\n"), ctx["id"], keep=note.blocks[i].handle if j - i == 1 else None)
     then = note.then(i + len(made))
-    label = f"Changed {quote(old)} to {quote(new)}" if new.strip() else f"Removed {quote(old)}"
-    return needs, label, f"edited {target}; it now reads:\n{note.render(made).rstrip()}\n{then}"
+    shown = fold(new)[0] if folded else new
+    label = f"Changed {quote(old)} to {quote(shown)}" if new.strip() else f"Removed {quote(old)}"
+    return needs, label, f"edited {target}{_callouts(folded)}; it now reads:\n{note.render(made).rstrip()}\n{then}"
 
 
 def _insert(note: Note, args: dict, ctx: dict):
     markdown = strip_labels(_text(args, "markdown", False) or "")
     if not markdown.strip():
         raise ToolError("markdown is empty; write the new text", "empty")
+    markdown, folded = fold(markdown)
     anchor, after = _where(note, args)
     i, j = note.span(anchor)
     pos = j if after else i
@@ -771,7 +860,8 @@ def _insert(note: Note, args: dict, ctx: dict):
     new = note.insert(pos, markdown, ctx["id"])
     made = " ".join(b.handle for b in new if b.kind != "blank")
     then = note.then(pos + len(new))
-    return needs, f"Added {quote(markdown)}", f"inserted {made} {where} {anchor}{said}:\n{note.render(new).rstrip()}\n{then}"
+    return needs, f"Added {quote(markdown)}", (f"inserted {made} {where} {anchor}{said}{_callouts(folded)}:\n"
+                                               f"{note.render(new).rstrip()}\n{then}")
 
 
 def _move(note: Note, args: dict, ctx: dict):

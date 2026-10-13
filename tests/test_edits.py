@@ -642,7 +642,7 @@ def test_handles_in_words_for_the_owner_become_the_text_they_point_at():
 def test_new_html_blocks_are_refused_with_obsidians_own_ways_to_fold():
     note = Note(NOTE)
     with pytest.raises(ToolError) as refused:
-        apply(note, "insert", {"after": "b1", "markdown": "### <details><summary>Why</summary>\n\nText\n</details>"},
+        apply(note, "insert", {"after": "b1", "markdown": "<div class=\"why\">\n\nText\n</div>"},
               change_id="c1", step=1)
     assert refused.value.code == "html" and note.text() == NOTE
     assert "> [!note]- Title" in str(refused.value) and "heading already folds" in str(refused.value)
@@ -714,7 +714,7 @@ def test_ordinary_words_that_look_like_handles_are_left_alone():
 def test_existing_html_is_no_allowance_for_a_different_block():
     note = Note("<div>x</div>\n\nb\n")
     with pytest.raises(ToolError) as refused:
-        apply(note, "replace", {"target": "b1", "markdown": "<details>\nraw markdown"}, change_id="c1", step=1)
+        apply(note, "replace", {"target": "b1", "markdown": "<div>\nraw markdown"}, change_id="c1", step=1)
     assert refused.value.code == "html"
 
 
@@ -766,3 +766,68 @@ def test_an_answer_keeps_bare_words_that_look_like_handles():
     assert note.plain("Use an s3 bucket.", bare=False) == "Use an s3 bucket."
     assert note.plain("See block b3 and [b4].", bare=False) == "See “Paragraph 3.” and “Paragraph 4.”."
     assert note.plain("Move s3.") == "Move “Paragraph 3.”."
+
+
+# --- a new <details> is written as the callout Obsidian folds (2026-10-13) ---
+
+TVM = ("<details>\n<summary>TVM Explanation</summary>\n\nMoney now is worth more than later.\n\n"
+       "$$PV = \\frac{FV}{(1+r)^n}$$\n\n</details>")
+
+
+def test_a_new_details_is_written_as_a_callout_that_starts_folded():
+    note = Note(NOTE)
+    change, said = apply(note, "insert", {"after": "b1", "markdown": TVM}, change_id="c1", step=1)
+    assert note.text().startswith("# Title\n\n> [!note]- TVM Explanation\n> Money now is worth more than later.\n>\n"
+                                  "> $$PV = \\frac{FV}{(1+r)^n}$$\n\nIntro para.\n")
+    assert "callout" in said and "<details>" not in said
+    assert change.label == "Added “TVM Explanation”"
+
+
+def test_details_open_starts_unfolded_and_one_never_closed_runs_to_the_end():
+    note = Note(NOTE)
+    apply(note, "insert", {"after": "b1", "markdown": "<details open><summary>Why</summary>\nA.\n\nB."},
+          change_id="c1", step=1)
+    assert "# Title\n\n> [!note]+ Why\n> A.\n>\n> B.\n\nIntro para." in note.text()
+
+
+def test_a_heading_that_opens_a_details_gives_the_callout_its_title():
+    note = Note(NOTE)                       # as the model wrote it live
+    apply(note, "insert", {"after": "b2", "markdown": "### <details><summary>Why</summary>\n\nText\n</details>"},
+          change_id="c1", step=1)
+    assert "Intro para.\n\n> [!note]- Why\n> Text\n\n## A" in note.text()
+
+
+def test_edit_text_that_wraps_words_in_details_writes_a_callout():
+    note = Note(NOTE)
+    apply(note, "edit_text", {"target": "b2", "old": "Intro para.",
+                              "new": "<details><summary>Intro</summary>\nIntro para.\n</details>"}, change_id="c1", step=1)
+    assert "# Title\n\n> [!note]- Intro\n> Intro para.\n\n## A" in note.text()
+
+
+def test_details_the_old_text_had_and_details_in_code_stay_as_written():
+    mine = "<details>\n<summary>Mine</summary>\n\nOwner text.\n\n</details>\n"
+    note = Note(mine)
+    edited = mine.replace("Owner text.", "Owner text, edited.")
+    apply(note, "replace", {"target": "b1-b3", "markdown": edited.rstrip("\n")}, change_id="c1", step=1)
+    assert note.text() == edited
+    shown = "Use `<details>` to fold.\n\n```html\n<details><summary>x</summary></details>\n```"
+    assert edits.fold(shown) == (shown, [])
+
+
+def test_nested_details_nest_callouts_and_a_summary_keeps_only_its_words():
+    out, titles = edits.fold("<details><summary><b>Outer</b> part</summary>\nx\n"
+                             "<details><summary>### Inner</summary>\ny\n</details>\n</details>")
+    assert out == "> [!note]- Outer part\n> x\n>\n> > [!note]- Inner\n> > y"
+    assert titles == ["Outer part", "Inner"]
+
+
+def test_a_callout_is_set_apart_so_the_lines_around_it_stay_outside_it():
+    assert edits.fold("Intro\n<details><summary>T</summary>\nbody\n</details> After.\nNext")[0] == \
+        "Intro\n\n> [!note]- T\n> body\n\nAfter.\nNext"
+    assert edits.fold("<details><summary>T</summary>\nbody\n</details>\nNext")[0] == "> [!note]- T\n> body\n\nNext"
+
+
+def test_a_details_keeps_its_place_in_a_list_and_loses_the_indent_of_its_body():
+    assert edits.fold("- item\n  <details><summary>T</summary>\n    body\n      nested\n  </details>")[0] == \
+        "- item\n\n  > [!note]- T\n  > body\n  >   nested"
+    assert edits.fold("<details>\nbody\n</details>")[0] == "> [!note]- Details\n> body"

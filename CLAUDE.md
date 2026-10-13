@@ -121,7 +121,8 @@ note loses its id. Embedding is part of ingest; `slim status` reports `unembedde
      holds the plan and the limits (`copilot.py`: 8 steps, 30 calls, 3 refusals in a row, 12k
      output tokens) and refuses what a call must not do, with a reason the model reads back:
      among them, a later step rewriting what an earlier step wrote, and new HTML blocks, which
-     Obsidian renders no Markdown inside. A change that reworks only the run's own text is
+     Obsidian renders no Markdown inside (a new `<details>` is written as a folded callout instead,
+     `edits.fold`). A change that reworks only the run's own text is
      `part_of` the change it grew from, so the owner never sees SLIM's drafts as removals. What
      the owner reads (steps, labels, summary) names text, never a handle (`Note.plain`,
      `edits.quote`). `llm.hold()` keeps the model lock for the run. An `edit` skill runs the same loop (tidy: the selection's blocks
