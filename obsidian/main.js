@@ -5196,7 +5196,8 @@ function makeLiveEditor(cm, host) {
     update(drafts, tr) {
       let next = drafts;
       if (tr.docChanged && drafts.size) {
-        next = new Map([...drafts].map(([id, d]) => {
+        const path = pathOf(tr.state);              // the editor shows another note now: none of its drafts
+        next = new Map([...drafts].filter(([, d]) => !(d.path && path && d.path !== path)).map(([id, d]) => {
           if (d.from === d.to) { const at = tr.changes.mapPos(d.from, -1); return [id, { ...d, from: at, to: at }]; }
           const from = tr.changes.mapPos(d.from, 1);
           return [id, { ...d, from, to: Math.max(from, tr.changes.mapPos(d.to, -1)) }];
@@ -5395,7 +5396,7 @@ function makeLiveEditor(cm, host) {
       if (!run || !Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from || to > run.agent.length) return false;
       const point = (pos, side) => run.owner.mapPos(run.toDoc.mapPos(pos, side), side);
       const a = point(from, from === to ? -1 : 1), b = from === to ? a : Math.max(a, point(to, -1));
-      const effects = [setDraft.of({ start: { id: String(id), runId, from: a, to: b, text: String(text) } })];
+      const effects = [setDraft.of({ start: { id: String(id), runId, path: run.path, from: a, to: b, text: String(text) } })];
       if (!view.hasFocus) effects.push(EditorView.scrollIntoView(b, { y: "nearest", yMargin: 80 }));
       view.dispatch({ effects });
       return true;

@@ -515,3 +515,22 @@ def test_restore_validates_its_ids_and_its_doc(server_url):
     assert restore(server_url, "../x", NOTE)[0] == 400
     assert restore(server_url, ref, NOTE, thread="../x")[0] == 400
     assert restore(server_url, ref, 5)[0] == 400
+
+
+def test_an_inserts_text_reaches_the_stream_as_a_draft_before_its_change(server_url, a_note, monkeypatch):
+    source, script = a_note
+    script(("", [("insert", {"after": "b2", "markdown": "More."})]))
+    scripted = copilot.llm.chat_tools
+
+    def chat_tools(messages, tools=None, **opts):
+        if opts.get("on_part"):                 # the call decodes: its place, then its text
+            for part in [("call", 0, "insert", None), ("value", 0, "after", "b2"), ("text", 0, "markdown", "Mo"),
+                         ("text", 0, "markdown", "re."), ("end", 0, None, None)]:
+                opts["on_part"](*part)
+        return scripted(messages, tools, **opts)
+    monkeypatch.setattr(copilot.llm, "chat_tools", chat_tools)
+    _status, _headers, body = stream(server_url, source, "add a line")
+    events = events_of(body)
+    assert [e for e, _ in events] == ["stage", "draft", "draft_text", "draft_text", "edit", "plan", "change", "turn"]
+    assert events[1][1] == {"id": "d1.0", "from": NOTE.index("## A"), "to": NOTE.index("## A"), "text": ""}
+    assert events[6][1]["draft"] == "d1.0" and "draft" not in events[-1][1]["edit_run"]["changes"][0]

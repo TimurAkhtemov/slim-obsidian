@@ -1544,3 +1544,19 @@ def test_stop_while_a_call_streams_ends_the_run_where_it_is(turn, monkeypatch):
     monkeypatch.setattr(copilot.llm, "chat_tools", chat_tools)
     got, _events = turn("do both")
     assert got["edit_run"]["stopped"] == "stopped" and len(got["edit_run"]["changes"]) == 1
+
+
+def test_a_draft_that_fails_is_counted_and_the_change_still_lands(turn, monkeypatch, tmp_path):
+    streamed(monkeypatch, ("", [("insert", {"after": "b4", "markdown": "New line."})]))
+    real_span = copilot.edits_mod.Note.span
+
+    def span(self, target):
+        if any(frame.function == "_start" for frame in __import__("inspect").stack()):
+            raise RuntimeError("a bug in the draft")
+        return real_span(self, target)
+    monkeypatch.setattr(copilot.edits_mod.Note, "span", span)
+    records = []
+    monkeypatch.setattr(copilot.trace, "record", lambda kind, payload: records.append(payload))
+    got, events = turn("add a line")
+    assert [e for e, _ in events] == ["start", "plan", "change"] and "New line." in got["final"]
+    assert records[-1]["edit_run"]["draft_failures"] == 1

@@ -858,14 +858,21 @@ class _Drafts:
 
     def __init__(self, note: edits_mod.Note, only: set[str] | None, on_edit):
         self.note, self.only, self.on_edit = note, only, on_edit
-        self.reply, self.calls, self.open = 0, {}, []
+        self.reply, self.calls, self.open, self.failed = 0, {}, [], 0
 
     def next_reply(self) -> None:
         self.end()
         self.reply, self.calls = self.reply + 1, {}
 
     def part(self, kind: str, index: int, name, value) -> None:
-        """`on_part` for a model call (`llm._Reader`)."""
+        """`on_part` for a model call (`llm._Reader`). A draft is only ever shown: one that fails is
+        counted for the trace, and the call goes on."""
+        try:
+            self._part(kind, index, name, value)
+        except Exception:                   # noqa: BLE001
+            self.failed += 1
+
+    def _part(self, kind: str, index: int, name, value) -> None:
         call = self.calls.setdefault(index, {"tool": None, "text": [], "id": None})
         if kind == "call":
             call["tool"] = name
@@ -902,7 +909,8 @@ class _Drafts:
         return (self.calls.get(index) or {}).get("id")
 
     def landed(self, draft: str) -> None:
-        self.open.remove(draft)
+        if draft in self.open:
+            self.open.remove(draft)
 
     def end(self) -> None:
         for draft in self.open:
@@ -1025,6 +1033,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
         close_step()
         if drafts:
             drafts.end()
+            out["draft_failures"] = drafts.failed
         if out["outline"]:
             out["outline_details"] = _outline_details(*_against(note, out["outline"]))
             out["outline_met"] = not out["outline_details"]["missing"] and not out["outline_details"]["out_of_order"]
@@ -1237,7 +1246,7 @@ def _facts(out: dict, run: dict) -> dict:
             "first_call_edits": out["first_call_edits"], "replanned": out["replanned"],
             "retries": out["retries"], "stopped": out["stopped"], "finished_early": out["finished_early"],
             "outline_met": out["outline_met"], "outline_details": out["outline_details"],
-            "nudged": out["nudged"],
+            "nudged": out["nudged"], "draft_failures": out.get("draft_failures", 0),
             "first_temperature": out["first_temperature"], "timing": out["timing"]}
 
 
