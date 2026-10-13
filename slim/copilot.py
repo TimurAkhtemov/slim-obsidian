@@ -80,8 +80,6 @@ PROPOSE_NUM_PREDICT = {"quick": 8192, "deep": 16384}
 INPUT_BUDGET_CHARS = llm.RESIDENT_CTX * 4 // 2
 MAX_SELECTION_CHARS = 20_000
 _LINK = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]")
-# A proposal's stream is stopped and continued at most this often (`_Steer`); then it runs on.
-MAX_STEERS = 4
 # Thinking tokens bill against num_predict but return in a separate field (llm.chat's
 # docstring). Deep mode must budget for the reasoning AND the answer, or a long think returns
 # content="" and reads as "the model can't answer": one benign sample spent ~3k of 4096.
@@ -110,15 +108,6 @@ IMAGE_TOKENS = (1600 // 32) ** 2
 
 class CopilotError(RuntimeError):
     """A user-facing copilot request refusal."""
-
-
-class _Steer(Exception):
-    """Raised inside a proposal's stream to stop the model and go on from `prefill` instead: a
-    SEARCH copying a whole note becomes a NOTE, and a NOTE never retypes a recording's parts."""
-
-    def __init__(self, prefill: str, done: bool):
-        super().__init__("go on from a prefill")
-        self.prefill, self.done = prefill, done
 
 
 def sync_note(con, vault: Path, path: str, *, embed: bool = True) -> dict:
@@ -551,17 +540,14 @@ def fit_window(transcript: list[dict], others: list[dict], num_predict: int) -> 
 def generate_answer(question: str, history: list[dict], evidence: list[dict], mode: str,
                     *, images=None, note_images=None, on_stage=None, on_delta=None,
                     system: str | None = None, cited: list[dict] | None = None,
-                    proposing: bool = False, notes: dict[str, str] | None = None) -> dict:
+                    proposing: bool = False) -> dict:
     """Generate one answer; reasoning is private and only content deltas are surfaced.
 
     TWO depths, and THEY pick (2026-09-03). Auto spent a whole extra classifier call on a choice
     that is one click in the sidebar, and it resolved to Quick nearly every time.
 
     A skill or an edit passes its own `system` (whole notes chosen by code) and `cited`: code
-    already knows which notes it read, so the sources call is skipped. A proposal passes the
-    `notes` it may change: a SEARCH that starts copying one of them whole is cut off and the
-    model continues with a NOTE block (`edits.rewrite_prefill`), and a NOTE that starts
-    retyping a recording's block or transcript gets them from disk (`edits.recording_prefill`).
+    already knows which notes it read, so the sources call is skipped.
     """
     if mode not in {"quick", "deep"}:
         raise CopilotError("reasoning mode must be quick or deep")
@@ -604,44 +590,10 @@ def generate_answer(question: str, history: list[dict], evidence: list[dict], mo
             last_beat[0] = time.time()
             stage("Thinking deeply")
 
-    prefill, streamed, watching = "", [], [bool(notes)]
-
-    def watch(chunk):
-        delta(chunk)
-        streamed.append(chunk)
-        if not notes or "\n" not in chunk:
-            return
-        answer = prefill + "".join(streamed)
-        if watching[0]:
-            decided, rewrite = edits_mod.rewrite_prefill(answer, notes)
-            watching[0] = not decided
-            if rewrite:
-                raise _Steer(rewrite, done=False)
-        kept = edits_mod.recording_prefill(answer, notes)
-        if kept:
-            raise _Steer(*kept)
-
-    options = {"model": llm.MODEL, "num_ctx": llm.RESIDENT_CTX, "timeout": 600,
-               "temperature": llm.REPLY_TEMPERATURE, "num_predict": num_predict}
-    steered = []
-    while True:
-        # Closing the stream stops the model; it goes on from its own words, as code left them.
-        turn = [{"role": "assistant", "content": prefill}] if prefill else []
-        try:
-            text, stats = llm.chat_stream(
-                [*messages, *turn], think=mode == "deep" and not prefill,
-                on_delta=watch if len(steered) < MAX_STEERS else delta,
-                on_thinking=heartbeat, **options)
-            text = prefill + text
-            break
-        except _Steer as steer:
-            steered.append(len(streamed))
-            prefill, streamed = steer.prefill, []
-            if steer.done:
-                text, stats = prefill, {"model": llm.MODEL, "num_ctx": llm.RESIDENT_CTX}
-                break
-    if steered:
-        stats = {**stats, "steered_after_tokens": steered}
+    text, stats = llm.chat_stream(
+        messages, model=llm.MODEL, num_ctx=llm.RESIDENT_CTX, timeout=600,
+        temperature=llm.REPLY_TEMPERATURE, num_predict=num_predict, think=mode == "deep",
+        on_delta=delta, on_thinking=heartbeat)
     answer = (text or "").strip()
     if not answer and stats.get("thinking_ate_the_budget"):
         raise CopilotError("the model spent its whole output budget thinking and wrote no "
@@ -717,26 +669,13 @@ def run_turn(con, source_id: str, question: str, history: list[dict], mode: str,
                 skills_mod.render_prompt(skill, args) if skill else question, history, [], mode,
                 images=images, note_images=shown, on_stage=on_stage, on_delta=on_delta,
                 system=pack_message(pack, proposing=proposing, folder=folder),
-                cited=cited, proposing=proposing,
-                notes={doc["path"]: doc["text"] for doc in pack.docs
-                       if doc["role"] in ("open", "linked")} if proposing else None)
+                cited=cited, proposing=proposing)
             result["inputs"] = pack_inputs(pack)
             levels = []
             # An overflowing prompt loses its START — the notes and the edit instructions —
             # silently. Nothing built on that is offered for Accept.
             if proposing and result["timing"]["answer"].get("ctx_saturated"):
                 raise CopilotError("these notes are too long for one request; ask about fewer notes")
-            if proposing:
-                prose, blocks = edits_mod.parse(result["answer"])
-                # What a skill may touch is its frontmatter's word, enforced here: a note in the
-                # pack can carry instructions the model obeys (measured live, 2026-09-23).
-                result["proposal"] = edits_mod.propose(
-                    vault, blocks, in_view=pack.paths,
-                    creates_only=bool(skill and skill.output == "new-note"),
-                    within=(source["path"], selection) if skill and skill.input == "selection" else None)
-                if not blocks:
-                    result["proposal"] = None
-                result["answer"] = prose or "Proposed changes are below."
         else:
             limit = 12 if mode == "deep" else 6
             evidence, levels = collect_evidence(con, source, question, limit=limit)
@@ -761,13 +700,5 @@ def run_turn(con, source_id: str, question: str, history: list[dict], mode: str,
         record["inputs"] = result["inputs"]
     else:
         record.update({"evidence": [item["path"] for item in evidence], "retrieval_levels": levels})
-    if result.get("proposal"):
-        record["proposal"] = {
-            "files": [{"path": item["path"], "kind": item["kind"],
-                       "applied": sum(block["ok"] for block in item["blocks"]),
-                       "changes": len(item.get("changes") or []),
-                       "failed": [block["reason"] for block in item["blocks"] if not block["ok"]]}
-                      for item in result["proposal"]["files"]],
-            "dropped": result["proposal"]["dropped"]}
     trace.record("copilot", record)
     return result

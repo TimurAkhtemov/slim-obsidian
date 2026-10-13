@@ -86,56 +86,6 @@ def test_a_selection_skill_without_a_selection_is_refused(con, vault):
         copilot.gather(con, vault, source, skill=skills.load(vault)["explain"])
 
 
-def test_consolidation_proposes_a_new_note_and_writes_nothing(con, vault, monkeypatch):
-    meeting(vault, "Kickoff", "2026-09-01T09:00:00", "ship friday")
-    open_path = meeting(vault, "Review", "2026-09-08T09:00:00", "moved to monday")
-    source = open_source(con, vault, open_path)
-    seen = {}
-    fake_model(monkeypatch, (
-        "Merged your two meetings.\n\n"
-        "FILE: Capture/work/Consolidated.md\n<<<<<<< SEARCH\n=======\n"
-        "# Work\n\n- Ship moved from Friday to Monday [[Review]]\n>>>>>>> REPLACE\n"), seen)
-    turn = copilot.run_turn(con, source["id"], "/consolidate-my-notes focus on dates", [], "deep",
-                            vault=vault)
-    system, user = seen["messages"][0]["content"], seen["messages"][-1]["content"]
-    assert copilot.EDIT_RIDER.split("\n")[0] in system
-    assert "=== Capture/work/Kickoff.md · 2026-09-01 ===\nship friday" in system
-    assert "words from" not in system                                 # the section, not the transcript
-    assert user.endswith("focus on dates")
-    assert seen["num_predict"] == copilot.PROPOSE_NUM_PREDICT["deep"]
-    assert turn["answer"] == "Merged your two meetings."
-    assert turn["skill"] == "consolidate-my-notes" and turn["edit"] is True
-    (created,) = turn["proposal"]["files"]
-    assert created["kind"] == "create" and created["path"] == "Capture/work/Consolidated.md"
-    assert not (vault / "Capture/work/Consolidated.md").exists()       # proposals never write
-    assert [c["path"] for c in turn["citations"]] == ["Capture/work/Kickoff.md", open_path]
-    assert turn["inputs"]["used"] == ["Capture/work/Kickoff.md", open_path]
-
-
-def test_edit_mode_changes_notes_in_view_and_drops_the_rest(con, vault, monkeypatch):
-    open_path = note(vault, "Notes/work/plan.md", "# Plan\n\nold intro\n")
-    linked = note(vault, "Notes/work/todo.md", "- [ ] first\n")
-    other = note(vault, "Notes/work/other.md", "untouched\n")
-    for path in (linked, other):
-        open_source(con, vault, path)
-    source = open_source(con, vault, open_path)
-    seen = {}
-    fake_model(monkeypatch, (
-        "Tightened the intro and added a task.\n"
-        "FILE: Notes/work/plan.md\n<<<<<<< SEARCH\nold intro\n=======\nnew intro\n>>>>>>> REPLACE\n"
-        "FILE: Notes/work/todo.md\n<<<<<<< SEARCH\n=======\n- [ ] second\n>>>>>>> REPLACE\n"
-        "FILE: Notes/work/other.md\n<<<<<<< SEARCH\nuntouched\n=======\nx\n>>>>>>> REPLACE\n"), seen)
-    turn = copilot.run_turn(con, source["id"], "tighten this and add a task to [[todo]]", [],
-                            "quick", edit=True, vault=vault)
-    files = {item["path"]: item for item in turn["proposal"]["files"]}
-    assert files[open_path]["after"] == "# Plan\n\nnew intro\n"
-    assert files[linked]["after"] == "- [ ] first\n\n- [ ] second\n"
-    assert turn["proposal"]["dropped"] == [
-        {"path": other, "reason": "not part of this request"}]
-    assert "=== Notes/work/plan.md · the open note ===\n# Plan" in seen["messages"][0]["content"]
-    assert (vault / open_path).read_text() == "# Plan\n\nold intro\n"
-
-
 def test_ask_mode_keeps_retrieval_and_says_edit_mode_exists(con, vault, monkeypatch):
     source = open_source(con, vault, note(vault, "Notes/work/a.md", "text\n"))
     seen = {}
@@ -243,52 +193,3 @@ def test_edit_mode_sees_the_open_notes_images(con, vault, monkeypatch):
     shown = seen["messages"][-2]
     assert len(shown["images"]) == 2
     assert shown["content"].index("`psi.png`") < shown["content"].index("`mle.png`")
-
-
-def test_a_search_copying_the_whole_note_is_cut_off_and_continued_as_a_note_block(con, vault, monkeypatch):
-    """The copy cost as much as the rewrite and was where the mistakes were (2026-10-12): code
-    stops it, and the model goes on from its own words with the note written once."""
-    body = "# Softmax\n\n" + "".join(f"Line {i} of the long explanation.\n" for i in range(12))
-    path = note(vault, "Notes/work/softmax.md", body)
-    source = open_source(con, vault, path)
-    calls, shown = [], []
-
-    def fake_stream(messages, **kwargs):
-        calls.append({"messages": messages, "think": kwargs["think"]})
-        if len(calls) == 1:
-            answer = f"Shorter.\n\nFILE: {path}\n<<<<<<< SEARCH\n" + body + "=======\n"
-            for line in answer.splitlines(keepends=True):
-                kwargs["on_delta"](line)
-            pytest.fail("the copy was not cut off")
-        kwargs["on_delta"]("# Softmax\n\nOne line.\n>>>>>>> NOTE\n")
-        return "# Softmax\n\nOne line.\n>>>>>>> NOTE\n", {"output_tokens": 9}
-
-    monkeypatch.setattr(copilot.llm, "chat_stream", fake_stream)
-    turn = copilot.run_turn(con, source["id"], "make it simpler", [], "deep", edit=True,
-                            vault=vault, on_delta=shown.append)
-    assert len(calls) == 2 and calls[1]["think"] is False
-    assert calls[1]["messages"][-1] == {"role": "assistant", "content":
-                                        f"Shorter.\n\nFILE: {path}\n<<<<<<< NOTE\n"}
-    (only,) = turn["proposal"]["files"]
-    assert only["after"] == "# Softmax\n\nOne line.\n" and turn["answer"] == "Shorter."
-    assert turn["timing"]["answer"]["steered_after_tokens"] == [len(shown) - 1]
-    assert (vault / path).read_text() == body
-
-
-def test_a_note_block_ends_where_it_starts_retyping_a_transcript(con, vault, monkeypatch):
-    path = note(vault, "Capture/work/call.md",
-                "---\ntype: meeting-note\n---\n\n# Call\n\none\ntwo\n\n## Transcript\n\nMe: hi\n")
-    source = open_source(con, vault, path)
-    calls = []
-
-    def fake_stream(messages, **kwargs):
-        calls.append(messages)
-        for line in f"Shorter.\n\nFILE: {path}\n<<<<<<< NOTE\n# Call\n\nOne line.\n\n## Transcript\n".splitlines(True):
-            kwargs["on_delta"](line)
-        pytest.fail("the transcript was retyped")
-
-    monkeypatch.setattr(copilot.llm, "chat_stream", fake_stream)
-    turn = copilot.run_turn(con, source["id"], "shorten my notes", [], "quick", edit=True, vault=vault)
-    assert len(calls) == 1
-    assert turn["proposal"]["files"][0]["after"] == (
-        "---\ntype: meeting-note\n---\n\n# Call\n\nOne line.\n\n## Transcript\n\nMe: hi\n")
