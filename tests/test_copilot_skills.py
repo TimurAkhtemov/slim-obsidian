@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from slim import copilot, db, edits, skills
+from slim import copilot, db, edits, edits_note, skills
 
 
 @pytest.fixture
@@ -121,7 +121,7 @@ def test_a_question_names_no_mode_on_either_path(con, vault, monkeypatch):
     turn = copilot.run_turn(con, source["id"], "what is /usr/bin for?", [], "quick", vault=vault)
     system = seen[0]["messages"][0]["content"]
     assert copilot.ASK_RIDER in system and copilot.EDIT_RIDER not in system
-    edit_system = copilot.edit_message("Notes/work/a.md", edits.Note("text\n"))
+    edit_system = copilot.edit_message("Notes/work/a.md", edits_note.Note("text\n"))
     for text in (system, edit_system):
         assert "Edit mode" not in text and "Ask mode" not in text
     assert turn["edit_run"] is None and turn["skill"] is None and turn["answer"] == "ok"

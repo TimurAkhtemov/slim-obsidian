@@ -574,7 +574,7 @@ def test_an_image_whose_passage_retrieval_missed_still_rides_after_the_packs(con
 
 import json  # noqa: E402
 
-from slim import edits, llm  # noqa: E402
+from slim import chunk, edits, llm  # noqa: E402
 
 NOTE = "# Title\n\nIntro para.\n\n## A\n\nText a.\n- one\n- two\n\n## B\n\nText b.\n"
 NOTE3 = "# Title\n\n## A\n\na\n\n## B\n\nb\n\n## C\n\nc\n"
@@ -905,8 +905,8 @@ def test_the_outline_is_met_by_its_headings_in_order_with_others_between(turn, m
 
 
 def test_the_outline_is_read_leniently_and_locked_headings_are_left_out(turn, monkeypatch):
-    memo = f"# Memo\n\nSummary.\n\n{edits.TRANSCRIPT_MARKER}\nwords words\n"
-    for outline in ([" [b1] #   Memo "], ["#Memo", edits.TRANSCRIPT_MARKER]):
+    memo = f"# Memo\n\nSummary.\n\n{chunk.TRANSCRIPT_MARKER}\nwords words\n"
+    for outline in ([" [b1] #   Memo "], ["#Memo", chunk.TRANSCRIPT_MARKER]):
         seen = scripted(monkeypatch, ("", [("plan", {"intro": "x", "outline": outline, "steps": ["Shorten"]})]),
                         ("", [("replace", {"target": "b2", "markdown": "Short."})]))
         got, _ = turn("shorten", text=memo, path="Capture/m.md")

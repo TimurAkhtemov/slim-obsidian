@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 
-from . import config as config_mod, edits as edits_mod, embed as embed_mod, ingest as ingest_mod
+from . import config as config_mod, edits as edits_mod, edits_note, embed as embed_mod, ingest as ingest_mod
 from . import copilot_images, llm, search as search_mod, skills as skills_mod, trace
 from .chunk import (HEADING, body_after_frontmatter, parse_frontmatter, strip_derived_blocks,
                     strip_meeting_wrapper)
@@ -280,7 +280,7 @@ def _passages(evidence: list[dict]) -> str:
         + f"\n{item['text']}" for item in evidence)
 
 
-def edit_message(path: str, note: edits_mod.Note) -> str:
+def edit_message(path: str, note: edits_note.Note) -> str:
     """The system message of the edit path, as measured: the persona and EDIT_RIDER, then the open
     note whole, with its handles and the map of its sections."""
     sections = note.sections()
@@ -720,8 +720,8 @@ def _outline(args: dict) -> list[str] | None:
     found = []
     for item in raw if isinstance(raw, list) else []:
         for line in _LITERAL_NEWLINE.sub("\n", str(item)).split("\n"):
-            heading = edits_mod.ANNOTATION.sub(
-                "", edits_mod.strip_labels(line.strip().strip("\"'").strip()).strip())
+            heading = edits_note.ANNOTATION.sub(
+                "", edits_note.strip_labels(line.strip().strip("\"'").strip()).strip())
             if heading.startswith("#") and not _PLACEHOLDER.fullmatch(heading):
                 found.append(heading)
     return found or None
@@ -738,12 +738,12 @@ def _steps(raw) -> list[str]:
     return [step for step in found if step]
 
 
-def _against(note: edits_mod.Note, outline: list[str]) -> tuple[list[str], list[str]]:
+def _against(note: edits_note.Note, outline: list[str]) -> tuple[list[str], list[str]]:
     """The note's headings and the outline, both without a recording's locked headings:
     no step can change those, so they are never asked for."""
-    locked = {edits_mod.heading_key(h) for b in note.blocks if b.locked for h in edits_mod.headings(b.text)}
-    now = [h for b in note.blocks if not b.locked for h in edits_mod.headings(b.text)]
-    return now, [h for h in outline if edits_mod.heading_key(h) not in locked]
+    locked = {edits_note.heading_key(h) for b in note.blocks if b.locked for h in edits_note.headings(b.text)}
+    now = [h for b in note.blocks if not b.locked for h in edits_note.headings(b.text)]
+    return now, [h for h in outline if edits_note.heading_key(h) not in locked]
 
 
 # An outline heading and a note heading this alike, by their sets of words, are the same heading.
@@ -769,7 +769,7 @@ def _match(now: list[str], want: list[str]) -> tuple[list[tuple[int, int]], list
     others between them are fine. Returns the matched (outline, note) index pairs, then the
     outline's misses: those the note lacks, and those it has out of order (outside the longest
     run of outline headings the note has in order)."""
-    a, b = [edits_mod.heading_key(h) for h in want], [edits_mod.heading_key(h) for h in now]
+    a, b = [edits_note.heading_key(h) for h in want], [edits_note.heading_key(h) for h in now]
     longest = [[0] * (len(b) + 1) for _ in range(len(a) + 1)]
     for i in range(len(a) - 1, -1, -1):
         for j in range(len(b) - 1, -1, -1):
@@ -794,7 +794,7 @@ def _outline_details(now: list[str], want: list[str]) -> dict:
     """How the note's headings stand against the outline, for the trace: outline headings it
     lacks, has out of order, and has at another level."""
     pairs, missing, misplaced = _match(now, want)
-    level = lambda h: edits_mod.heading_key(h)[0]
+    level = lambda h: edits_note.heading_key(h)[0]
     return {"missing": len(missing), "out_of_order": len(misplaced),
             "other_level": sum(level(want[i]) != level(now[j]) for i, j in pairs)}
 
@@ -832,7 +832,7 @@ class _Drafts:
     and one that turns into text ends it at once."""
     PLACES = {"insert": ("after", "before"), "replace": ("target",)}
 
-    def __init__(self, note: edits_mod.Note, only: set[str] | None, on_edit):
+    def __init__(self, note: edits_note.Note, only: set[str] | None, on_edit):
         self.note, self.only, self.on_edit = note, only, on_edit
         self.reply, self.calls, self.open, self.failed = 0, {}, [], 0
         self.begun = 0                      # the reply's calls so far, dropped ones too: each draft id is its own
@@ -892,8 +892,8 @@ class _Drafts:
         name, value = call["place"]
         try:
             i, j, _name, _said, renames = edits_mod.lands(self.note, call["tool"], {name: value},
-                                                          edits_mod.strip_labels("".join(call["text"])), self.only)
-        except edits_mod.ToolError:
+                                                          edits_note.strip_labels("".join(call["text"])), self.only)
+        except edits_note.ToolError:
             return None                     # no such place: the call will say so when applied
         return self.note.offset(i), self.note.offset(i + 1 if renames and call.get("whole") else j)
 
@@ -947,7 +947,7 @@ def _intent(question: str, history: list[dict]) -> tuple[bool | None, dict]:
 
 
 def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tuple[str, ...],
-          note: edits_mod.Note | None, before_text: str, only: set[str] | None = None, create=None,
+          note: edits_note.Note | None, before_text: str, only: set[str] | None = None, create=None,
           temperature: float = FIRST_TEMPERATURE, nudge: bool = False, on_edit, should_stop,
           on_stage=lambda _name: None) -> dict:
     """One editing turn. Every call offers the same `tools`, in the same order: they sit at the
@@ -1116,7 +1116,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
             change_id = f"c{len(out['changes']) + 1}"
             if name == "create_note":
                 if not isinstance(args, dict):
-                    raise edits_mod.ToolError("the arguments must be an object", "args")
+                    raise edits_note.ToolError("the arguments must be an object", "args")
                 made = create(args.get("path"), args.get("markdown"))
                 return ({"id": change_id, "step": number, "op": "create", "label": f"Created {made['path']}",
                          "needs": [], "path": made["path"], "text": made["text"]}, f"created {made['path']}")
@@ -1145,9 +1145,9 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
                     break
                 try:
                     if name not in step_tools:
-                        raise edits_mod.ToolError(f"{name} is not available now", "tool")
+                        raise edits_note.ToolError(f"{name} is not available now", "tool")
                     change, said = land(name, call.get("arguments") or {}, at)
-                except edits_mod.ToolError as exc:
+                except edits_note.ToolError as exc:
                     out["refusals"].append({"step": at, "tool": name, "code": exc.code})
                     results.append(f"refused: {exc}")
                     refused, in_row = True, in_row + 1
@@ -1242,7 +1242,7 @@ def _index_of_u16(text: str, units: int) -> int | None:
         return None
 
 
-def _selected(note: edits_mod.Note, text: str, selection: str, skill: skills_mod.Skill,
+def _selected(note: edits_note.Note, text: str, selection: str, skill: skills_mod.Skill,
               selection_from: int | None = None) -> set[str]:
     """The blocks a selection touches: the only ones a selection skill may change. It is where
     the editor says it starts (`selection_from`): the same words can be in a note twice. Without
@@ -1319,7 +1319,7 @@ def _answer_or_edit(con, vault: Path, source: dict, question: str, history: list
             raise CopilotError(f"this note is too long to edit here "
                                f"(over {edits_mod.MAX_EDIT_CHARS:,} characters)")
         prompt = skills_mod.render_prompt(skill, args) if skill else question
-        note, only, create, inputs, cited = edits_mod.Note(text), None, None, None, None
+        note, only, create, inputs, cited = edits_note.Note(text), None, None, None, None
         tools, step_tools = ["plan", *STEP_TOOLS], STEP_TOOLS
         # A change the gate wanted, or an edit skill's, is written at STEP_TEMPERATURE.
         temperature = STEP_TEMPERATURE if not skill and INTENT_GATE else FIRST_TEMPERATURE
@@ -1335,7 +1335,7 @@ def _answer_or_edit(con, vault: Path, source: dict, question: str, history: list
             def create(path, markdown):
                 new = edits_mod.create_note(vault, path, markdown, folder=folder)
                 if new["path"].casefold() in made:
-                    raise edits_mod.ToolError(f"{new['path']} is already made in this turn; give the next "
+                    raise edits_note.ToolError(f"{new['path']} is already made in this turn; give the next "
                                               "note a name of its own", "exists")
                 made.add(new["path"].casefold())
                 return new

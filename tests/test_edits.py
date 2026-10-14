@@ -3,8 +3,9 @@ code refuses, and the splices the plugin applies. Nothing here writes a note."""
 
 import pytest
 
-from slim import edits
-from slim.edits import Note, ToolError, apply, apply_splices, ollama_tools, splices, strip_labels
+from slim import chunk, edits, edits_note
+from slim.edits import apply, apply_splices, ollama_tools, splices
+from slim.edits_note import Note, ToolError, strip_labels
 
 NOTE = "# Title\n\nIntro para.\n\n## A\n\nText a.\n- one\n- two\n\n## B\n\nText b.\n"
 RECORDING = "---\ntitle: x\n---\n\n````slim-meeting\nid: 1\n````\n\nMy notes.\n"
@@ -37,11 +38,11 @@ MEMO = "---\ntype: meeting-note\n---\n\n# Call\n\none\ntwo\n\n## Transcript\n\nM
 # --- what a recording keeps, and which paths are notes --------------------------------------
 
 def test_a_recordings_own_parts_are_its_frontmatter_its_block_and_its_transcript():
-    take = lambda text: [text[begin:end] for begin, end in edits.protected_ranges(text)]
+    take = lambda text: [text[begin:end] for begin, end in edits_note.protected_ranges(text)]
     assert take(MEETING) == [MEETING[:MEETING.index("---\n\n") + 4],
                              MEETING[MEETING.index("```slim"):MEETING.index("\nAfterwards")]]
     assert take(MEMO) == ["---\ntype: meeting-note\n---\n", "## Transcript\n\nMe: hi\n"]
-    assert edits.protected_ranges("---\ntags: [a]\n---\n\n## Transcript of a talk\n") == []
+    assert edits_note.protected_ranges("---\ntags: [a]\n---\n\n## Transcript of a talk\n") == []
 
 
 def test_backslash_colon_and_case_variant_paths_are_refused():
@@ -139,7 +140,7 @@ def test_a_recordings_protected_blocks_are_locked_and_unlabelled():
 
 
 def test_nothing_goes_after_a_transcript_that_ends_the_file():
-    note = Note(f"# Memo\n\nSummary.\n\n{edits.TRANSCRIPT_MARKER}\nwords words\n")
+    note = Note(f"# Memo\n\nSummary.\n\n{chunk.TRANSCRIPT_MARKER}\nwords words\n")
     assert note.tail_locked
     with pytest.raises(ToolError, match="after the transcript"):
         note.check_insert(len(note.blocks))
@@ -262,14 +263,14 @@ def test_the_sections_map_names_each_heading_with_its_first_and_last_block():
     assert Note(NOTE).sections() == "s1  b1–b8  # Title\n  s3  b3–b6  ## A\n  s7  b7–b8  ## B"
     assert Note("## Alone\n\n## Two\n\nx\n").sections() == "s1  b1  ## Alone\ns2  b2–b3  ## Two"
     assert Note(RECORDING).sections() == ""
-    memo = Note(f"# Memo\n\nSummary.\n\n{edits.TRANSCRIPT_MARKER}\nwords\n")
+    memo = Note(f"# Memo\n\nSummary.\n\n{chunk.TRANSCRIPT_MARKER}\nwords\n")
     assert memo.sections() == "s1  b1–b4  # Memo"             # the transcript's own heading is locked: not listed
 
 
 def test_headings_are_compared_by_level_and_words_without_a_trailing_note():
-    assert edits.headings("# T\n\ntext # not\n## A  \n```\n") == ["# T", "## A"]
-    assert edits.heading_key("##  Toolkit (New Section)") == edits.heading_key("## toolkit") == (2, "toolkit")
-    assert edits.heading_key("## Bag of Words (BoW)") == (2, "bag of words (bow)")
+    assert edits_note.headings("# T\n\ntext # not\n## A  \n```\n") == ["# T", "## A"]
+    assert edits_note.heading_key("##  Toolkit (New Section)") == edits_note.heading_key("## toolkit") == (2, "toolkit")
+    assert edits_note.heading_key("## Bag of Words (BoW)") == (2, "bag of words (bow)")
 
 
 # --- the tools -------------------------------------------------------------------------------
@@ -334,7 +335,7 @@ def test_a_recordings_parts_are_refused_and_new_text_goes_after_the_meeting_bloc
         apply(note, "insert", {"before": "b1", "markdown": "x"}, change_id="c1", step=1)
     before = note.text()
     apply(note, "insert", {"after": "b3", "markdown": "## Takeaways\n\n- one"}, change_id="c1", step=1)
-    take = lambda t: [t[s:e] for s, e in edits.protected_ranges(t)]
+    take = lambda t: [t[s:e] for s, e in edits_note.protected_ranges(t)]
     assert take(before) == take(note.text()) and note.text().endswith("## Takeaways\n\n- one\n")
 
 
@@ -504,7 +505,7 @@ def test_a_range_ending_on_the_next_sections_heading_leaves_it_out():
 def test_new_text_may_not_add_a_recordings_marker_or_skip_lines_with_dots():
     """A `## Transcript` or a meeting block would lock the owner's text below it; a lone `...`
     is the model's "the rest as before", and it would delete the rest."""
-    for markdown in (f"Notes.\n\n{edits.TRANSCRIPT_MARKER}\n\nMe: made up", "```slim-meeting\nx\n```"):
+    for markdown in (f"Notes.\n\n{chunk.TRANSCRIPT_MARKER}\n\nMe: made up", "```slim-meeting\nx\n```"):
         note = Note(NOTE)
         with pytest.raises(ToolError, match="recording's block or transcript heading"):
             apply(note, "insert", {"after": "s7", "markdown": markdown}, change_id="c1", step=1)
@@ -637,7 +638,7 @@ LONG = "---\ntitle: x\n---\n\n## Top\n\ntop\n\n```slim-meeting\nid: 1\nkind: x\n
 
 
 def _u16_ranges(text):
-    return [(edits.u16(text[:s]), edits.u16(text[:e])) for s, e in edits.protected_ranges(text)]
+    return [(edits.u16(text[:s]), edits.u16(text[:e])) for s, e in edits_note.protected_ranges(text)]
 
 
 def test_a_move_is_its_chunk_taken_out_and_put_back_never_a_neighbour_moved_round_it():
@@ -762,9 +763,9 @@ def test_new_html_blocks_are_refused_with_obsidians_own_ways_to_fold():
 
 
 def test_a_quote_of_long_words_is_cut_at_a_word_by_characters_too():
-    said = edits.quote("Use cases: sentiment/hate-speech detection, knowledge discovery, dialogue/chatbots, documents")
+    said = edits_note.quote("Use cases: sentiment/hate-speech detection, knowledge discovery, dialogue/chatbots, documents")
     assert said == "“Use cases: sentiment/hate-speech detection, knowledge…”"
-    assert len(said) <= edits.QUOTE_CHARS + 3
+    assert len(said) <= edits_note.QUOTE_CHARS + 3
 
 
 def test_html_shown_as_code_is_text_not_an_html_block():
@@ -840,7 +841,7 @@ def test_html_after_an_unmatched_backtick_is_not_code():
 
 
 def test_a_quote_of_one_long_word_is_cut_too():
-    assert len(edits.quote("x" * 100)) <= edits.QUOTE_CHARS + 3 and edits.quote("x" * 100).endswith("…”")
+    assert len(edits_note.quote("x" * 100)) <= edits_note.QUOTE_CHARS + 3 and edits_note.quote("x" * 100).endswith("…”")
 
 
 # --- second review (2026-10-13) ---

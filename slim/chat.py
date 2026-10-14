@@ -32,7 +32,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from . import (chat_record, config, copilot as copilot_mod, copilot_images, db,
-               edits as edits_mod, skills as skills_mod, threads as threads_mod)
+               edits as edits_mod, edits_note, skills as skills_mod, threads as threads_mod)
 
 DEFAULT_PORT = 7546          # "slim" on a phone keypad
 MAX_QUESTION_CHARS = 4000
@@ -373,7 +373,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if before is None:
             self._send_json(404, {"error": "no such copy"})
-        elif edits_mod.same_recording(before, doc):
+        elif edits_note.same_recording(before, doc):
             self._send_json(200, {"text": before})
         else:
             self._send_json(200, {"refused": RESTORE_REFUSED})
