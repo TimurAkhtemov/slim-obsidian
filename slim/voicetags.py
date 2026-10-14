@@ -2,12 +2,13 @@
 
 The owner opens a memo by saying what it is — "this is a journal", "meeting with Jordan about the
 roster", "lecture note for school". That preamble is parsed in CODE from a small explicit
-vocabulary, never handed to a model. `route` is called by the memo sweep (`voicememos`) and
-by the recorder's filing card (`suggest`).
+vocabulary, never handed to a model. `route` is called by the memo lane (`inbox`) only; the
+recorder lane uses the constants and `registered_project`.
 
 The rules that make it safe to run unattended: only the opening ~120 chars are examined, no
-match routes nowhere new, the functions are pure, and spoken always beats a model's guess.
-`routed_by` and `subject_by` record which layer decided.
+match routes nowhere new, matching is deterministic (given no registry, a function loads the
+default one from `config`), and spoken always beats a model's guess. `routed_by` and
+`subject_by` record which layer decided.
 """
 from __future__ import annotations
 
