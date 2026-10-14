@@ -13,17 +13,15 @@ one way a remote page reaches a loopback server. Mutating routes additionally re
 `Origin` and any non-JSON body (`_refuse_cross_site_write`): a blind cross-site POST cannot
 read the response, but a write does not need reading.
 
-The recording pipeline (`handle_record` and friends) is the bulk of the file: one bounded FIFO
-for the heavy model jobs, a job-local progress registry the plugin polls, cooperative cancel,
-and segment-cached transcription so a resumed recording never pays twice.
+The `/api/record*` routes are adapters in `chat_record`, past the same gates. The recorder
+itself is `record_pipeline` (segment-cached transcription, so a resumed recording never pays
+twice), `record_review` (the card's edits) and `record_state` (one bounded FIFO for the heavy
+model jobs, a job-local progress registry the plugin polls, cooperative cancel).
 """
 
-import base64
-import binascii
 import ipaddress
 import json
 import os
-import re
 import select
 import socket
 import threading
@@ -33,9 +31,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import (config, copilot as copilot_mod, copilot_images, db, edits as edits_mod,
-               record_pipeline, record_review, record_state, skills as skills_mod,
-               threads as threads_mod)
+from . import (chat_record, config, copilot as copilot_mod, copilot_images, db,
+               edits as edits_mod, skills as skills_mod, threads as threads_mod)
 
 DEFAULT_PORT = 7546          # "slim" on a phone keypad
 MAX_QUESTION_CHARS = 4000
@@ -49,10 +46,6 @@ MAX_COPILOT_STREAM_BODY_BYTES = (
     MAX_THREAD_BODY_BYTES
     + copilot_images.MAX_IMAGES_PER_TURN * ((copilot_images.MAX_IMAGE_BYTES + 2) // 3 * 4 + 4096)
 )
-# The recorder body carries notes they TYPED during a recording, plus a path — never the audio,
-# which the plugin writes into the vault itself precisely because a recording dwarfs any
-# sane HTTP cap. An hour of typed notes still fits comfortably here.
-MAX_RECORD_BODY_BYTES = 1_000_000
 RESTORE_REFUSED = ("This recording changed since (a new transcript or card edit); restoring would remove "
                    "that. Use ↺ on the changes instead.")
 
@@ -202,19 +195,8 @@ class _Handler(BaseHTTPRequestHandler):
         if url.path == "/api/health":
             self._send_json(200, code_state(getattr(self.server, "managed_parent_pid", None)))
             return
-        if url.path == "/api/record/progress":
-            job_id = (parse_qs(url.query).get("job_id") or [""])[0]
-            if not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", job_id):
-                self._send_json(400, {"error": "a valid job_id is required"})
-                return
-            state = record_state.record_progress(job_id)
-            if state is None:
-                self._send_json(404, {"error": "no such recording job"})
-            else:
-                self._send_json(200, state)
-            return
-        if url.path == "/api/record/folders":
-            self._send_json(200, record_pipeline._card_lists(config.VAULT))
+        if url.path in chat_record.GET:
+            chat_record.GET[url.path](self, parse_qs(url.query))
             return
         if url.path == "/api/copilot/threads":
             listed = threads_mod.list_copilot_threads()
@@ -278,24 +260,13 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_copilot_thread_save()
         elif path == "/api/copilot/thread/delete":
             self._handle_copilot_thread_delete()
-        elif path == "/api/record":
-            self._handle_record()
-        elif path == "/api/record/live":
-            self._handle_record_live()
-        elif path == "/api/record/apply":
-            self._handle_record_apply()
-        elif path == "/api/record/review":
-            self._handle_record_review()
-        elif path == "/api/record/notes":
-            self._handle_record_notes()
-        elif path == "/api/record/summary":
-            self._handle_record_summary()
-        elif path == "/api/record/cancel":
-            self._handle_record_cancel()
-        elif path == "/api/record/transcript":
-            self._handle_record_transcript()
-        elif path == "/api/record/append":
-            self._handle_record_append()
+        elif path in chat_record.POST:
+            handle, max_bytes = chat_record.POST[path]
+            if self._refuse_cross_site_write():
+                return
+            data = self._read_json_body(max_bytes or MAX_BODY_BYTES)
+            if data is not None:
+                handle(self, data)
         else:
             self._send_json(404, {"error": f"no such path {self.path!r}"})
 
@@ -553,272 +524,6 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "body must be a JSON object"})
             return None
         return data
-
-    def _handle_record(self):
-        """One finished recording. The body names an audio file the plugin already wrote into
-        the vault — it never carries the audio itself."""
-        if self._refuse_cross_site_write():
-            return
-        data = self._read_json_body(MAX_RECORD_BODY_BYTES)
-        if data is None:
-            return
-        job_id = str(data.get("job_id") or "").strip()
-        if job_id and not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", job_id):
-            self._send_json(400, {"error": "job_id is invalid"})
-            return
-        record_state._record_progress_start(job_id)
-        update = (lambda **event: record_state._record_progress_update(job_id, **event)) if job_id else None
-        try:
-            # Blank title stays blank. `handle_record` owns the transcript-derived fallback,
-            # and only after the model has had its turn.
-            with record_state._record_pipeline_slot(job_id):
-                result = record_pipeline.handle_record(**record_pipeline._record_args(data), on_progress=update, job_id=job_id)
-        except record_state.RecordQueueFull as e:
-            if job_id:
-                record_state._record_progress_update(job_id, stage="failed", label="Processing queue is full",
-                                        detail=str(e), done=True, error=str(e))
-            self._send_json(503, {"error": str(e)})
-            return
-        except record_state.NoSpeech as e:
-            # 422 and `silent: true`: the plugin shows a calm line and the ordinary way
-            # forward, never the red "delete or keep your files?" screen.
-            if job_id:
-                record_state._record_progress_update(job_id, stage="silent", label="No words captured",
-                                        detail=str(e), done=True)
-            self._send_json(422, {"silent": True, "error": str(e)})
-            return
-        except record_state.RecordCancelled:
-            # 409, and a body that says nothing was lost: the plugin returns to the paused
-            # state with the draft and the audio exactly where they were.
-            if job_id:
-                record_state._record_progress_update(job_id, stage="cancelled", label="Cancelled",
-                                        detail="Your recording and notes are untouched",
-                                        done=True)
-            self._send_json(409, {"cancelled": True,
-                                  "error": "cancelled — nothing was written or deleted"})
-            return
-        except (ValueError, FileNotFoundError) as e:
-            if job_id:
-                record_state._record_progress_update(job_id, stage="failed", label="Processing stopped",
-                                        detail=str(e), done=True, error=str(e))
-            self._send_json(400, {"error": str(e)})
-            return
-        except Exception as e:  # noqa: BLE001 - surface the local failure and finish progress
-            if job_id:
-                record_state._record_progress_update(job_id, stage="failed", label="Processing stopped",
-                                        detail=str(e), done=True, error=str(e))
-            self._send_json(500, {"error": f"{type(e).__name__}: {e}"})
-            return
-        if job_id:
-            record_state._record_progress_update(job_id, stage="complete", label="AI review ready",
-                                    detail="The note is filed and ready for approval", done=True)
-        self._send_json(200, result)
-
-    def _handle_record_live(self):
-        """Local incremental captions. Audio arrives as bounded 16 kHz PCM, never leaves loopback."""
-        if self._refuse_cross_site_write():
-            return
-        from . import transcribe
-
-        data = self._read_json_body(MAX_RECORD_BODY_BYTES)
-        if data is None:
-            return
-        session_id = str(data.get("session_id") or "").strip()
-        if not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", session_id):
-            self._send_json(400, {"error": "a valid session_id is required"})
-            return
-        action = str(data.get("action") or "").strip()
-        try:
-            if action == "start":
-                transcribe.live_start(session_id)
-                text = ""
-            elif action == "chunk":
-                encoded = str(data.get("pcm16") or "")
-                if not encoded or len(encoded) > 800_000:
-                    raise ValueError("live transcript chunk is empty or too large")
-                try:
-                    pcm = base64.b64decode(encoded, validate=True)
-                except (binascii.Error, ValueError) as exc:
-                    raise ValueError("live transcript chunk is not valid base64") from exc
-                text = transcribe.live_add(session_id, pcm)
-            elif action == "stop":
-                text = transcribe.live_stop(session_id)
-            else:
-                raise ValueError("action must be start, chunk, or stop")
-        except (ValueError, KeyError) as exc:
-            self._send_json(400, {"error": str(exc).strip("'")})
-            return
-        except Exception as exc:  # captions are optional; report without touching the recording
-            self._send_json(500, {"error": f"{type(exc).__name__}: {exc}"})
-            return
-        self._send_json(200, {"transcript": text, "provisional": True})
-
-    def _handle_record_apply(self):
-        if self._refuse_cross_site_write():
-            return
-        data = self._read_json_body(MAX_RECORD_BODY_BYTES)
-        if data is None:
-            return
-        note = str(data.get("note") or "").strip()
-        if not note:
-            self._send_json(400, {"error": "note is required"})
-            return
-        try:
-            result = record_review.handle_record_apply(
-                note=note,
-                dest_dir=str(data.get("dest_dir") or "").strip(),
-                type_tag=str(data.get("type_tag") or "").strip(),
-                topics=[str(t) for t in (data.get("topics") or [])],
-                summary_md=str(data.get("summary_md") or ""),
-                notes_md=(str(data.get("notes_md") or "") if "notes_md" in data else None),
-                title=str(data.get("title") or ""))
-        except (ValueError, FileNotFoundError) as e:
-            self._send_json(400, {"error": str(e)})
-            return
-        self._send_json(200, result)
-
-    def _handle_record_review(self):
-        if self._refuse_cross_site_write():
-            return
-        data = self._read_json_body(MAX_RECORD_BODY_BYTES)
-        if data is None:
-            return
-        note = str(data.get("note") or "").strip()
-        if not note:
-            self._send_json(400, {"error": "note is required"})
-            return
-        try:
-            result = record_review.handle_record_review(note=note)
-        except (ValueError, FileNotFoundError) as e:
-            self._send_json(400, {"error": str(e)})
-            return
-        self._send_json(200, result)
-
-    def _handle_record_cancel(self):
-        if self._refuse_cross_site_write():
-            return
-        data = self._read_json_body()
-        if data is None:
-            return
-        job_id = str(data.get("job_id") or "").strip()
-        if not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", job_id or ""):
-            self._send_json(400, {"error": "a valid job_id is required"})
-            return
-        self._send_json(200, {"cancelling": record_state.request_record_cancel(job_id)})
-
-    def _handle_record_append(self):
-        if self._refuse_cross_site_write():
-            return
-        data = self._read_json_body(MAX_RECORD_BODY_BYTES)
-        if data is None:
-            return
-        note = str(data.get("note") or "").strip()
-        raw = data.get("audio")
-        rels = [str(a).strip() for a in raw] if isinstance(raw, list) else [str(raw or "").strip()]
-        rels = [r for r in rels if r]
-        if not note or not rels:
-            self._send_json(400, {"error": "note and audio are required"})
-            return
-        job_id = str(data.get("job_id") or "").strip()
-        if job_id and not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", job_id):
-            self._send_json(400, {"error": "job_id is invalid"})
-            return
-        record_state._record_progress_start(job_id)
-        update = (lambda **event: record_state._record_progress_update(job_id, **event)) if job_id else None
-        try:
-            with record_state._record_pipeline_slot(job_id):
-                result = record_pipeline.handle_record_append(note=note, audio_rel=rels, job_id=job_id,
-                                              on_progress=update)
-        except record_state.RecordQueueFull as e:
-            if job_id:
-                record_state._record_progress_update(job_id, stage="failed", label="Processing queue is full",
-                                        detail=str(e), done=True, error=str(e))
-            self._send_json(503, {"error": str(e)})
-            return
-        except record_state.NoSpeech as e:
-            if job_id:
-                record_state._record_progress_update(job_id, stage="silent", label="No words captured",
-                                        detail=str(e), done=True)
-            self._send_json(422, {"silent": True, "error": str(e)})
-            return
-        except record_state.RecordCancelled:
-            self._send_json(409, {"cancelled": True,
-                                  "error": "cancelled — nothing was written or deleted"})
-            return
-        except (ValueError, FileNotFoundError) as e:
-            if job_id:
-                record_state._record_progress_update(job_id, stage="failed", label="Processing stopped",
-                                        detail=str(e), done=True, error=str(e))
-            self._send_json(400, {"error": str(e)})
-            return
-        if job_id:
-            record_state._record_progress_update(job_id, stage="complete", label="Added to the note",
-                                    detail=f"{result['words']} more words", done=True)
-        self._send_json(200, result)
-
-    def _handle_record_transcript(self):
-        if self._refuse_cross_site_write():
-            return
-        data = self._read_json_body(MAX_RECORD_BODY_BYTES)
-        if data is None:
-            return
-        raw = data.get("audio")
-        rels = [str(a).strip() for a in raw] if isinstance(raw, list) else [str(raw or "").strip()]
-        rels = [r for r in rels if r]
-        if not rels:
-            self._send_json(400, {"error": "audio (a vault-relative path) is required"})
-            return
-        try:
-            self._send_json(200, record_pipeline.handle_record_transcript(audio_rel=rels))
-        except (ValueError, FileNotFoundError) as e:
-            self._send_json(400, {"error": str(e)})
-
-    def _handle_record_notes(self):
-        if self._refuse_cross_site_write():
-            return
-        data = self._read_json_body(MAX_RECORD_BODY_BYTES)
-        if data is None:
-            return
-        note = str(data.get("note") or "").strip()
-        if not note:
-            self._send_json(400, {"error": "note is required"})
-            return
-        try:
-            result = record_review.handle_record_notes(note=note, notes_md=str(data.get("notes_md") or ""))
-        except (ValueError, FileNotFoundError) as e:
-            self._send_json(400, {"error": str(e)})
-            return
-        self._send_json(200, result)
-
-    def _handle_record_summary(self):
-        if self._refuse_cross_site_write():
-            return
-        data = self._read_json_body(MAX_RECORD_BODY_BYTES)
-        if data is None:
-            return
-        note = str(data.get("note") or "").strip()
-        if not note:
-            self._send_json(400, {"error": "note is required"})
-            return
-        job_id = str(data.get("job_id") or "").strip()
-        if job_id and not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", job_id):
-            self._send_json(400, {"error": "job_id is invalid"})
-            return
-        record_state._record_progress_start(job_id)
-        try:
-            with record_state._record_pipeline_slot(job_id):
-                result = record_review.handle_record_summary(
-                    note=note, instructions=str(data.get("instructions") or ""), job_id=job_id)
-        except record_state.RecordQueueFull as e:
-            if job_id:
-                record_state._record_progress_update(job_id, stage="failed", label="Processing queue is full",
-                                        detail=str(e), done=True, error=str(e))
-            self._send_json(503, {"error": str(e)})
-            return
-        except (ValueError, FileNotFoundError) as e:
-            self._send_json(400, {"error": str(e)})
-            return
-        self._send_json(200, result)
 
     def _refuse_cross_site_write(self) -> bool:
         """The write-endpoint gate, shared by every mutating route. The Host check alone
