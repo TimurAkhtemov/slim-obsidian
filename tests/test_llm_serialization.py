@@ -17,6 +17,7 @@ import time
 import pytest
 
 from slim import llm
+from tests.test_llm_tools import _capture
 
 
 class _Overlap:
@@ -153,4 +154,41 @@ def test_every_call_path_shares_the_residents_one_window():
     assert llm.RECORD_CTX == llm.RESIDENT_CTX, "the recording path IS the resident"
 
 
+# --- an editing run holds the lock across its calls ---------------------------------------------
 
+def test_calls_inside_hold_do_not_take_the_lock_again(monkeypatch):
+    _capture(monkeypatch)
+    done = []
+
+    def run():
+        with llm.hold():
+            llm.chat_tools([], think=False, temperature=0.0, num_predict=10)
+            llm.chat_tools([], think=False, temperature=0.0, num_predict=10)
+            llm.chat([], num_predict=10)
+        done.append(True)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(2)
+    assert done == [True], "a call inside hold() deadlocked on the lock hold() took"
+    assert not llm._CALL_LOCK.locked()
+
+
+def test_another_threads_call_waits_until_hold_exits(monkeypatch):
+    _capture(monkeypatch)
+    order = []
+    inside = threading.Event()
+
+    def other():
+        inside.wait(2)
+        llm.chat_tools([], think=False, temperature=0.0, num_predict=10)
+        order.append("other")
+
+    worker = threading.Thread(target=other, daemon=True)
+    with llm.hold():
+        worker.start()
+        inside.set()
+        time.sleep(0.1)                                 # the other call has had time to try
+        order.append("run")
+    worker.join(2)
+    assert order == ["run", "other"]

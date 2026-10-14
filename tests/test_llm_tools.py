@@ -1,10 +1,8 @@
-"""Tool calls on the wire, and the lock an editing run holds across its calls. The transport is
-faked: the properties under test are the request body, the parse and the lock, not the decode."""
+"""Tool calls on the wire without streaming: the intent gate's request and the reply's parse. The
+transport is faked: the properties under test are the request body and the parse, not the decode."""
 
 import io
 import json
-import threading
-import time
 import urllib.error
 
 import pytest
@@ -29,7 +27,7 @@ def _capture(monkeypatch, reply: dict = REPLY):
 
 
 def test_chat_tools_without_tools_sends_the_format_and_every_bound(monkeypatch):
-    # The intent gate. A call WITH tools streams raw instead (tests/test_llm_render.py).
+    # The intent gate. A call WITH tools streams raw instead (tests/test_llm_wire.py).
     sent = _capture(monkeypatch)
     schema = {"type": "object"}
     llm.chat_tools([{"role": "user", "content": "q"}], think=True, temperature=0.0,
@@ -66,42 +64,3 @@ def test_chat_tools_turns_an_http_error_into_an_llm_error(monkeypatch):
     with pytest.raises(llm.LLMError, match="HTTP 500 — XML syntax error on line 10"):
         llm.chat_tools([], think=False, temperature=0.0, num_predict=10)
     assert not llm._CALL_LOCK.locked()
-
-
-def test_calls_inside_hold_do_not_take_the_lock_again(monkeypatch):
-    _capture(monkeypatch)
-    done = []
-
-    def run():
-        with llm.hold():
-            llm.chat_tools([], think=False, temperature=0.0, num_predict=10)
-            llm.chat_tools([], think=False, temperature=0.0, num_predict=10)
-            llm.chat([], num_predict=10)
-        done.append(True)
-
-    worker = threading.Thread(target=run, daemon=True)
-    worker.start()
-    worker.join(2)
-    assert done == [True], "a call inside hold() deadlocked on the lock hold() took"
-    assert not llm._CALL_LOCK.locked()
-
-
-def test_another_threads_call_waits_until_hold_exits(monkeypatch):
-    _capture(monkeypatch)
-    order = []
-    inside = threading.Event()
-
-    def other():
-        inside.wait(2)
-        llm.chat_tools([], think=False, temperature=0.0, num_predict=10)
-        order.append("other")
-
-    worker = threading.Thread(target=other, daemon=True)
-    with llm.hold():
-        worker.start()
-        inside.set()
-        time.sleep(0.1)                                 # the other call has had time to try
-        order.append("run")
-    worker.join(2)
-    assert order == ["run", "other"]
-
