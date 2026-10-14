@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from slim import cli, inbox, trace, voicememos
+from slim import cli, inbox, trace, vaultidentity, voicememos
 
 
 @pytest.fixture
@@ -242,9 +242,9 @@ def _written():
 
 def test_memos_cli_runs_sweep_then_process_then_indexes_when_written(monkeypatch):
     calls: list[str] = []
-    monkeypatch.setattr(cli, "_require_vault_dir", lambda: None)
+    monkeypatch.setattr(vaultidentity, "require_vault_dir", lambda: None)
     monkeypatch.setattr(cli.db, "connect", lambda: SimpleNamespace(close=lambda: None))
-    monkeypatch.setattr(cli, "require_vault_identity", lambda _con: None)
+    monkeypatch.setattr(vaultidentity, "require_vault_identity", lambda _con: None)
     monkeypatch.setattr(voicememos, "sweep",
                         lambda container, dry_run: (calls.append("sweep"), [])[1])
     monkeypatch.setattr(inbox, "process",
@@ -257,9 +257,9 @@ def test_memos_cli_runs_sweep_then_process_then_indexes_when_written(monkeypatch
 
 def test_memos_cli_skips_index_when_nothing_written(monkeypatch):
     calls: list[str] = []
-    monkeypatch.setattr(cli, "_require_vault_dir", lambda: None)
+    monkeypatch.setattr(vaultidentity, "require_vault_dir", lambda: None)
     monkeypatch.setattr(cli.db, "connect", lambda: SimpleNamespace(close=lambda: None))
-    monkeypatch.setattr(cli, "require_vault_identity", lambda _con: None)
+    monkeypatch.setattr(vaultidentity, "require_vault_identity", lambda _con: None)
     monkeypatch.setattr(voicememos, "sweep",
                         lambda container, dry_run: (calls.append("sweep"), [])[1])
     monkeypatch.setattr(inbox, "process",
@@ -272,9 +272,9 @@ def test_memos_cli_skips_index_when_nothing_written(monkeypatch):
 
 def test_memos_cli_dry_run_never_indexes(monkeypatch):
     calls: list[str] = []
-    monkeypatch.setattr(cli, "_require_vault_dir", lambda: None)
+    monkeypatch.setattr(vaultidentity, "require_vault_dir", lambda: None)
     monkeypatch.setattr(cli.db, "connect", lambda: SimpleNamespace(close=lambda: None))
-    monkeypatch.setattr(cli, "require_vault_identity", lambda _con: None)
+    monkeypatch.setattr(vaultidentity, "require_vault_identity", lambda _con: None)
     monkeypatch.setattr(voicememos, "sweep",
                         lambda container, dry_run: (calls.append("sweep"), [])[1])
     monkeypatch.setattr(inbox, "process",
