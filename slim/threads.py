@@ -48,7 +48,7 @@ class ThreadSummary:
     reasoning_mode: str | None = None
 
 
-def _validate_id(thread_id) -> str:
+def validate_id(thread_id) -> str:
     value = (thread_id or "").strip() if isinstance(thread_id, str) else ""
     if not _ID_RE.fullmatch(value):
         raise ThreadError(
@@ -110,7 +110,7 @@ def _write(payload: dict) -> ThreadSummary:
 def save_copilot(thread_id: str, title: str, turns, *, source_id: str,
                  source_path: str, reasoning_mode: str) -> ThreadSummary:
     """Upsert one source-anchored copilot chat."""
-    tid = _validate_id(thread_id)
+    tid = validate_id(thread_id)
     sid = (source_id or "").strip() if isinstance(source_id, str) else ""
     if not _ID_RE.fullmatch(sid):
         raise ThreadError("source id must be 1-64 letters, digits, or hyphens")
@@ -133,7 +133,7 @@ def save_copilot(thread_id: str, title: str, turns, *, source_id: str,
 
 
 def load(thread_id: str) -> dict | None:
-    tid = _validate_id(thread_id)
+    tid = validate_id(thread_id)
     path = THREADS_DIR / f"{tid}.json"
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -171,7 +171,7 @@ def list_copilot_threads() -> list[ThreadSummary]:
 
 
 def _before_dir(thread_id: str):
-    return THREADS_DIR / f"{_validate_id(thread_id)}.before"
+    return THREADS_DIR / f"{validate_id(thread_id)}.before"
 
 
 def save_before(thread_id: str, text: str) -> str:
@@ -205,7 +205,7 @@ def delete_thread(thread_id: str) -> bool:
     history is exactly the kind of action a trace log exists to record. A bad id
     is refused before touching the filesystem; a missing file returns False, not an error
     (delete is idempotent — nothing to remove is a valid outcome, not a failure)."""
-    tid = _validate_id(thread_id)
+    tid = validate_id(thread_id)
     try:
         (THREADS_DIR / f"{tid}.json").unlink()
         removed = True

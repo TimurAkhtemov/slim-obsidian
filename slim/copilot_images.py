@@ -29,12 +29,12 @@ class ImageError(RuntimeError):
 
 
 def _thread_dir(thread_id: str) -> Path:
-    return threads.THREADS_DIR / f"{threads._validate_id(thread_id)}.images"
+    return threads.THREADS_DIR / f"{threads.validate_id(thread_id)}.images"
 
 
 def request_lock(thread_id: str) -> threading.RLock:
     """Serialize one thread's save/use/rollback lifecycle across HTTP handlers."""
-    tid = threads._validate_id(thread_id)
+    tid = threads.validate_id(thread_id)
     with _LOCKS_GUARD:
         return _LOCKS.setdefault(tid, threading.RLock())
 
