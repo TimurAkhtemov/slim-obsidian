@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from slim import chat, cli, vaultidentity
+from slim import chat, cli, config, vaultidentity
 
 
 # --- loopback-only, by construction ---------------------------------------------------------
@@ -89,6 +89,15 @@ def test_terminal_health_has_no_managed_parent():
     state = chat.code_state()
     assert state["managed_parent_pid"] is None
     assert state["managed_parent_alive"] is None
+
+
+def test_health_reports_the_serving_vault(monkeypatch, tmp_path):
+    """The plugin sends vault-RELATIVE paths and reuses whatever is on 7546. A server that
+    resolves them against a different vault has to be visible from the outside."""
+    vault = tmp_path / "ServedVault"
+    monkeypatch.setattr(config, "VAULT", vault)
+
+    assert chat.code_state()["vault"] == str(vault)
 
 
 def test_parent_watch_stops_the_server_when_obisidian_exits(monkeypatch):
