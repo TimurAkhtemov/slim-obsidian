@@ -8,7 +8,7 @@ import urllib.request
 
 import pytest
 
-from slim import chat, copilot, copilot_images, db
+from slim import chat, copilot, copilot_context, copilot_images, db
 
 
 @pytest.fixture
@@ -45,7 +45,7 @@ def seed_source(source_id="source-1", path="Notes/school/lesson.md"):
 
 
 def test_context_endpoint_returns_the_active_source(server_url, monkeypatch):
-    monkeypatch.setattr(copilot, "context_payload", lambda con, vault, path, related=True: {
+    monkeypatch.setattr(copilot_context, "context_payload", lambda con, vault, path, related=True: {
         "source": {"id": "source-1", "path": path},
         "related": []})
     status, _headers, body = post(
@@ -159,7 +159,7 @@ def test_context_endpoint_can_skip_the_nearby_notes_search(server_url, monkeypat
         seen["related"] = related
         return {"source": {"id": "source-1", "path": path}, "related": []}
 
-    monkeypatch.setattr(copilot, "context_payload", fake_context)
+    monkeypatch.setattr(copilot_context, "context_payload", fake_context)
     status, _headers, _body = post(
         server_url, "/api/copilot/context", {"path": "Notes/school/lesson.md", "related": False})
     assert status == 200
@@ -258,8 +258,8 @@ def test_stream_endpoint_passes_a_bounded_selection(server_url, monkeypatch):
     monkeypatch.setattr(copilot, "run_turn", fake_run)
     post(server_url, "/api/copilot/stream", {
         "thread_id": "chat-1", "source_id": "source-1", "question": "tidy", "history": [],
-        "edit": True, "selection": "x" * (copilot.MAX_SELECTION_CHARS + 50), "selection_from": 13})
-    assert seen == {"selection": "x" * copilot.MAX_SELECTION_CHARS, "selection_from": 13,
+        "edit": True, "selection": "x" * (copilot_context.MAX_SELECTION_CHARS + 50), "selection_from": 13})
+    assert seen == {"selection": "x" * copilot_context.MAX_SELECTION_CHARS, "selection_from": 13,
                     "edit": False}                                      # no Edit mode left
     for where in (-1, "13", True, 1.5, None):
         post(server_url, "/api/copilot/stream", {
@@ -317,10 +317,10 @@ def a_note(tmp_path, monkeypatch):
     (vault / "Notes").mkdir(parents=True)
     (vault / "Notes/n.md").write_text(NOTE, encoding="utf-8")
     monkeypatch.setattr(config, "VAULT", vault)
-    monkeypatch.setattr(copilot.search_mod, "hybrid", lambda *a, **k: [])
+    monkeypatch.setattr(copilot_context.search_mod, "hybrid", lambda *a, **k: [])
     monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
     con = db.connect()
-    source = copilot.sync_note(con, vault, "Notes/n.md", embed=False)
+    source = copilot_context.sync_note(con, vault, "Notes/n.md", embed=False)
     con.close()
 
     def script(*replies, intent=True):

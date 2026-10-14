@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from slim import copilot, db, edits, edits_note, skills
+from slim import copilot, copilot_context, db, edits, edits_note, skills
 
 
 @pytest.fixture
@@ -39,7 +39,7 @@ def note(root: Path, path: str, body: str) -> str:
 
 
 def open_source(con, vault, path):
-    return copilot.sync_note(con, vault, path, embed=False)
+    return copilot_context.sync_note(con, vault, path, embed=False)
 
 
 def fake_model(monkeypatch, reply: str, seen: dict):
@@ -61,8 +61,8 @@ def test_folder_input_filters_cuts_to_the_section_and_fills_newest_first(con, va
     source = open_source(con, vault, second)
     skill = skills.load(vault)["consolidate-my-notes"]
     budget = len("middle point") + len("newest point") + 5
-    monkeypatch.setattr(copilot, "INPUT_BUDGET_CHARS", budget)
-    pack = copilot.gather(con, vault, source, skill=skill)
+    monkeypatch.setattr(copilot_context, "INPUT_BUDGET_CHARS", budget)
+    pack = copilot_context.gather(con, vault, source, skill=skill)
     assert [doc["path"] for doc in pack.docs] == [second, third]           # oldest first to read
     assert [doc["text"] for doc in pack.docs] == ["middle point", "newest point"]
     assert pack.dropped == [first]                                         # the oldest did not fit
@@ -76,7 +76,7 @@ def test_links_resolve_by_name_nearest_folder_first_and_missing_ones_are_named(c
     for path in (open_path, near, "Capture/work/deeper/budget.md"):
         open_source(con, vault, path)
     source = open_source(con, vault, open_path)
-    pack = copilot.gather(con, vault, source, links_from="use [[budget]] and [[Nope|x]]")
+    pack = copilot_context.gather(con, vault, source, links_from="use [[budget]] and [[Nope|x]]")
     assert [(doc["path"], doc["role"]) for doc in pack.docs] == [
         (open_path, "open"), (near, "linked")]
     assert pack.missing == ["Nope"]
@@ -85,7 +85,7 @@ def test_links_resolve_by_name_nearest_folder_first_and_missing_ones_are_named(c
 def test_a_selection_skill_without_a_selection_is_refused(con, vault):
     source = open_source(con, vault, note(vault, "Notes/work/a.md", "text\n"))
     with pytest.raises(copilot.CopilotError, match="select some"):
-        copilot.gather(con, vault, source, skill=skills.load(vault)["explain"])
+        copilot_context.gather(con, vault, source, skill=skills.load(vault)["explain"])
 
 
 def tooled(monkeypatch, *replies, intent=False):
@@ -115,7 +115,7 @@ def tooled(monkeypatch, *replies, intent=False):
 
 def test_a_question_names_no_mode_on_either_path(con, vault, monkeypatch):
     source = open_source(con, vault, note(vault, "Notes/work/a.md", "text\n"))
-    monkeypatch.setattr(copilot.search_mod, "hybrid", lambda *a, **k: [])
+    monkeypatch.setattr(copilot_context.search_mod, "hybrid", lambda *a, **k: [])
     monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
     seen = tooled(monkeypatch, ("ok", []))
     turn = copilot.run_turn(con, source["id"], "what is /usr/bin for?", [], "quick", vault=vault)
@@ -140,7 +140,7 @@ def test_a_skill_runs_at_its_own_depth_and_its_prompt_rides_in_history(con, vaul
     seen = tooled(monkeypatch, ("Nothing to merge yet.", []), ("Right: 4.", []))
     turn = copilot.run_turn(con, source["id"], "/consolidate-my-notes", [], "quick", vault=vault)
     assert turn["mode"] == "deep" and seen[0]["opts"]["think"] is True
-    monkeypatch.setattr(copilot.search_mod, "hybrid", lambda *a, **k: [])
+    monkeypatch.setattr(copilot_context.search_mod, "hybrid", lambda *a, **k: [])
     monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
     copilot.run_turn(con, source["id"], "my answer is 4", [
         {"role": "you", "text": "/quiz"}, {"role": "slim", "text": "What is 2+2?"}], "quick", vault=vault)
@@ -175,7 +175,7 @@ def test_an_overflowing_prompt_never_makes_a_note(con, vault, monkeypatch):
 def test_section_of_skips_code_fences_and_the_derived_summary():
     text = ("<!-- slim:summary -->\n## Notes\nmodel opinion\n<!-- /slim:summary -->\n"
             "## Notes\n\nsetup:\n```bash\n# install deps\n## Notes\n```\nafter\n## Transcript\nMe: x\n")
-    assert copilot.section_of(text, "Notes") == "setup:\n```bash\n# install deps\n## Notes\n```\nafter"
+    assert copilot_context.section_of(text, "Notes") == "setup:\n```bash\n# install deps\n## Notes\n```\nafter"
 
 
 def test_a_partial_link_path_ends_at_a_folder_boundary(con, vault):
@@ -184,8 +184,8 @@ def test_a_partial_link_path_ends_at_a_folder_boundary(con, vault):
     right = note(vault, "Notes/work/sub/budget.md", "right\n")
     for path in ("Notes/homework/budget.md", right):
         open_source(con, vault, path)
-    assert copilot.resolve_link(con, vault, "work/sub/budget", open_path) == right
-    assert copilot.resolve_link(con, vault, "ork/sub/budget", open_path) is None
+    assert copilot_context.resolve_link(con, vault, "work/sub/budget", open_path) == right
+    assert copilot_context.resolve_link(con, vault, "ork/sub/budget", open_path) is None
 
 
 def test_a_broken_vault_skill_says_which_file_to_fix(con, vault, monkeypatch):
@@ -200,7 +200,7 @@ def test_a_broken_vault_skill_says_which_file_to_fix(con, vault, monkeypatch):
 def test_a_question_never_sends_the_selection(con, vault, monkeypatch):
     """A selection left in the note rode along with every Ask question, unseen (review 2026-09-23)."""
     source = open_source(con, vault, note(vault, "Notes/work/a.md", "text\n"))
-    monkeypatch.setattr(copilot.search_mod, "hybrid", lambda *a, **k: [])
+    monkeypatch.setattr(copilot_context.search_mod, "hybrid", lambda *a, **k: [])
     monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
     seen = tooled(monkeypatch, ("ok", []))
     copilot.run_turn(con, source["id"], "what does this mean?", [], "quick",
@@ -217,7 +217,7 @@ def test_a_turn_that_may_edit_sees_the_open_notes_images(con, vault, monkeypatch
     for name in ("psi.png", "mle.png"):
         Image.new("RGB", (12, 8), color="red").save(str(vault / "Notes/work" / name))
     source = open_source(con, vault, open_path)
-    monkeypatch.setattr(copilot.search_mod, "hybrid", lambda *a, **k: [])
+    monkeypatch.setattr(copilot_context.search_mod, "hybrid", lambda *a, **k: [])
     monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
     seen = tooled(monkeypatch, ("Nothing to change.", []), ("Still nothing.", []), intent=True)
     copilot.run_turn(con, source["id"], "write the equation under its screenshot", [], "quick",

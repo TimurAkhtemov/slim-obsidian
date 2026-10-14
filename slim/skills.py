@@ -5,7 +5,7 @@ live in the vault's `Skills/` folder (excluded from ingest: a prompt is not evid
 file overrides the built-in of the same name. The file name is the command; the body is the
 prompt, with `{{args}}` standing for whatever follows the command.
 
-Frontmatter says what the model reads. Code builds that input (`copilot.gather`), never
+Frontmatter says what the model reads. Code builds that input (`copilot_context.gather`), never
 retrieval, and never the model:
 
     input:   note | selection | folder   the open note (default), the editor selection, or
