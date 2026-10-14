@@ -14,7 +14,7 @@ import sqlite3
 import uuid
 from pathlib import Path
 
-from .chunk import chunk_markdown, strip_derived_blocks, strip_meeting_wrapper
+from .chunk import chunk_markdown, source_text
 from .config import EXCLUDED_DIRS, EXCLUDED_TOP, VAULT
 from .frontmatter import parse_frontmatter
 
@@ -102,7 +102,7 @@ def source_fields(fm: dict) -> dict:
 def write_fragments(con: sqlite3.Connection, source_id: str, content_hash: str, text: str):
     # A recorded note carries a DERIVED summary above its transcript. Strip that fenced block
     # before chunking so SLIM never indexes its own opinion as evidence.
-    text = strip_meeting_wrapper(strip_derived_blocks(text))
+    text = source_text(text)
     con.execute("DELETE FROM fragments WHERE source_id = ?", (source_id,))
     for frag in chunk_markdown(text):
         con.execute(

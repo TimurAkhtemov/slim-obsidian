@@ -93,6 +93,12 @@ def strip_derived_blocks(text: str) -> str:
     return result
 
 
+def source_text(text: str) -> str:
+    """The note as evidence: SLIM's derived blocks and the `slim-meeting` fence blanked, line
+    count kept. What ingest chunks and what the copilot reads as the note's own words."""
+    return strip_meeting_wrapper(strip_derived_blocks(text))
+
+
 def chunk_markdown(text: str) -> list[Fragment]:
     """Split on headings, then pack sections toward CHUNK_TARGET chars,
     splitting oversized sections at paragraph boundaries."""

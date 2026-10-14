@@ -10,7 +10,7 @@ from pathlib import Path, PurePosixPath
 
 from . import config as config_mod, edits as edits_mod, embed as embed_mod, ingest as ingest_mod
 from . import copilot_images, llm, search as search_mod, skills as skills_mod
-from .chunk import HEADING, strip_derived_blocks, strip_meeting_wrapper
+from .chunk import HEADING, source_text
 from .frontmatter import body_after_frontmatter, parse_frontmatter
 
 # Skills read WHOLE notes, chosen by code. Half the resident window in chars/4, so
@@ -176,7 +176,7 @@ class Pack:
 
 def _readable(text: str) -> str:
     """The note as a reader sees it — no frontmatter, no derived summary, no meeting fence."""
-    body = strip_meeting_wrapper(strip_derived_blocks(body_after_frontmatter(text)))
+    body = source_text(body_after_frontmatter(text))
     return re.sub(r"\n{3,}", "\n\n", body).strip()
 
 
@@ -187,7 +187,7 @@ def section_of(text: str, heading: str) -> str | None:
     # SLIM's own summary is blanked first (it may carry a "Notes" heading of its own) and the
     # `slim-meeting` fence around a recording's sections comes off, as ingest does; then a
     # `# comment` inside a code fence is code, not a heading — as in `chunk.chunk_markdown`.
-    lines = strip_meeting_wrapper(strip_derived_blocks(text)).splitlines(keepends=True)
+    lines = source_text(text).splitlines(keepends=True)
     fenced, in_code = [], False
     for line in lines:
         if line.lstrip().startswith("```"):
