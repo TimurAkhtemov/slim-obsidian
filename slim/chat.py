@@ -1436,9 +1436,13 @@ class _Handler(BaseHTTPRequestHandler):
         history = clean_history(data.get("history"))
         # Quick unless they asked for Deep. There is no third setting to resolve (2026-09-03).
         mode = str(data.get("reasoning_mode") or "quick").strip().lower()
-        # The selection is the input of a selection skill; it writes nothing here.
+        # The selection is the input of a selection skill; it writes nothing here. Where it
+        # starts, in the editor's UTF-16 units: the same words can be in the note twice.
         selection = data.get("selection")
         selection = selection[:copilot_mod.MAX_SELECTION_CHARS] if isinstance(selection, str) else ""
+        selection_from = data.get("selection_from")
+        if type(selection_from) is not int or selection_from < 0:
+            selection_from = None
         # The editor's text and its hash: an editing run works on exactly what the owner sees. A
         # note too big to edit is still asked about; run_turn refuses only an edit of it.
         doc, doc_hash = data.get("doc"), data.get("doc_hash")
@@ -1496,7 +1500,9 @@ class _Handler(BaseHTTPRequestHandler):
                 text = payload["before_text"]
                 before.update(before_ref=threads_mod.save_before(thread_id, text),
                               hash_before=edits_mod.digest(text))
-                event, payload = "edit", dict(before)
+                # The plugin keeps a run's turn however it ends, and a stopped or failed run
+                # never gets the `turn` naming its images: the start names them, and they stay.
+                event, payload = "edit", {**before, "attachments": attachments}
             quietly(lambda: emit(event, payload))
 
         def should_stop():
@@ -1511,16 +1517,13 @@ class _Handler(BaseHTTPRequestHandler):
             con = db.connect()
             turn = copilot_mod.run_turn(
                 con, source_id, question, history, mode, vault=config.VAULT, images=images,
-                selection=selection, doc=doc, doc_hash=doc_hash,
+                selection=selection, selection_from=selection_from, doc=doc, doc_hash=doc_hash,
                 on_stage=lambda stage: emit("stage", {"stage": stage}),
                 on_delta=lambda text: emit("delta", {"text": text}),
                 on_edit=on_edit, should_stop=should_stop)
             turn["attachments"] = attachments
             if turn.get("edit_run"):
                 turn["edit_run"]["before_ref"] = before.get("before_ref")
-                # Its changes are in the editor whether or not this last write arrives, and the
-                # plugin keeps a stopped run's turn: its images stay.
-                completed = True
             emit("turn", turn)
             completed = True
         except (BrokenPipeError, ConnectionResetError):
@@ -1533,7 +1536,7 @@ class _Handler(BaseHTTPRequestHandler):
         finally:
             if con is not None:
                 con.close()
-            if not completed:
+            if not (completed or before):       # a run that started keeps them (see on_edit)
                 copilot_images.discard_created(created)
             image_lock.release()
 

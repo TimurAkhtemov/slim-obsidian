@@ -1245,11 +1245,17 @@ test("the inputs line says what code handed the model, including what it left ou
   assert.equal(inputsText(undefined), "");
 });
 
-test("the selection comes from the pane showing the open note, not the focused one", () => {
-  const leaf = (path, text) => ({ view: { file: { path }, editor: { getSelection: () => text } } });
-  const app = { workspace: { getLeavesOfType: () => [leaf("Notes/other.md", "wrong"), leaf("Notes/a.md", "right")] } };
-  assert.equal(editorSelection(app, "Notes/a.md"), "right");
-  assert.equal(editorSelection(app, "Notes/none.md"), "");
+test("the selection comes from the pane showing the open note, not the focused one, with where it starts", () => {
+  // Where, as the editor counts: the same words can be in the note twice.
+  const leaf = (path, text, from) => ({ view: { file: { path }, editor: {
+    getSelection: () => text, getCursor: (which) => (which === "from" ? { line: 1, ch: 2 } : null),
+    posToOffset: ({ line, ch }) => (line === 1 ? from + ch - 2 : null) } } });
+  const app = { workspace: { getLeavesOfType: () => [leaf("Notes/other.md", "wrong", 3), leaf("Notes/a.md", "right", 7)] } };
+  assert.deepEqual(editorSelection(app, "Notes/a.md"), { text: "right", from: 7 });
+  assert.deepEqual(editorSelection(app, "Notes/none.md"), { text: "" });
+  const bare = { workspace: { getLeavesOfType: () => [{ view: { file: { path: "Notes/a.md" },
+    editor: { getSelection: () => "right" } } }] } };
+  assert.deepEqual(editorSelection(bare, "Notes/a.md"), { text: "right" });   // an editor that cannot say where
 });
 
 // ---- one chat that answers or edits: the run lands in the note, the chat shows its steps -------
@@ -1353,11 +1359,12 @@ test("only a /command carries the note's selection", async () => {
   const { live, editor } = fakeLive();
   const bodies = [];
   const view = editView({ live, editor, events: async (sent, handlers) => { bodies.push(sent); handlers.turn({ answer: "ok", citations: [] }); } });
-  const leaf = { view: { file: { path: "Notes/one.md" }, getMode: () => "source", editor: { getSelection: () => "picked" } } };
+  const leaf = { view: { file: { path: "Notes/one.md" }, getMode: () => "source", editor: { getSelection: () => "picked",
+    getCursor: () => ({ line: 2, ch: 0 }), posToOffset: () => 5 } } };
   view.app.workspace = { getLeavesOfType: () => [leaf], getMostRecentLeaf: () => leaf };
   await view.send("tidy it");
   await view.send("/tidy");
-  assert.deepEqual(bodies.map((b) => b.selection), ["", "picked"]);
+  assert.deepEqual(bodies.map((b) => [b.selection, b.selection_from]), [["", undefined], ["picked", 5]]);
 });
 
 test("an editing run's events land in the note in order and the turn keeps what happened", async () => {
@@ -1489,6 +1496,49 @@ test("stop keeps a partial turn: what landed stays, with its copy from before", 
   assert.equal(saved.at(-1).turns.at(-1).turn.edit_run.stopped, "stopped");
   assert.deepEqual(indexed.slice(-1), ["Notes/one.md"]);
   assert.match(editOutcome(run), /^Stopped after 0 of 2 steps\. Not done: Rename the heading and Tighten the intro\.$/);
+});
+
+test("a run that stops or fails keeps its question's pasted images as the server stored them", async () => {
+  // Its turn is kept and saved, but no `turn` came to swap in the refs: the run's start names them.
+  const pending = { name: "eq.png", mime: "image/png", data: "BASE64", preview: "data:image/png;base64,BASE64", bytes: 6 };
+  const ref = { id: "a".repeat(64), name: "eq.png", mime: "image/png", bytes: 6 };
+  for (const ending of ["stop", "error"]) {
+    const { live, editor } = fakeLive();
+    const saved = [];
+    const view = editView({ live, editor, saved, events: (_body, handlers, signal) => new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => { const error = new Error("Cancelled"); error.name = "AbortError"; reject(error); });
+      handlers.edit({ before_ref: "d".repeat(32), hash_before: "h0", attachments: [ref] });
+      handlers.plan(PLAN);
+      handlers.change(change("c1", 1));
+      if (ending === "error") handlers.error({ error: "the model failed" });
+    }) });
+    view.pendingImages = [pending];
+    const sending = view.send("Turn the screenshot into a table");
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    if (ending === "stop") view.cancel();
+    await sending;
+    assert.deepEqual(view.turns.map((t) => t.role), ["you", "slim"], ending);
+    assert.deepEqual(saved.at(-1).turns[0].attachments, [ref], ending);
+    await view.saveRun(view.activeThread, view.turns);                 // a later save: ↺ on its change
+    assert.deepEqual(saved.at(-1).turns[0].attachments, [ref], ending);
+  }
+});
+
+test("a question that failed before an answer never saves its pasted images: the server kept none", async () => {
+  const pending = { name: "eq.png", mime: "image/png", data: "BASE64", preview: "data:image/png;base64,BASE64", bytes: 6 };
+  const saved = [];
+  const view = editView({ live: fakeLive().live, editor: fakeLive().editor, saved,
+                          events: async () => { throw new Error("offline"); } });
+  view.turns = [{ role: "you", text: "Fix the title" },
+                { role: "slim", text: "Done", turn: { mode: "quick", edit_run: { before_ref: "e".repeat(32), changes: [] } } }];
+  view.pendingImages = [pending];
+  await view.send("Explain this");
+  assert.deepEqual(view.retryImages, [pending]);                      // Try again sends them again
+  assert.deepEqual(view.turns.at(-1).attachments, [pending]);          // and they still show under it
+  await view.saveRun(view.activeThread, view.turns);                 // ↺ on the earlier run saves the chat
+  assert.equal(saved.at(-1).turns.at(-1).text, "Explain this");
+  assert.equal("attachments" in saved.at(-1).turns.at(-1), false);
 });
 
 test("when the note's editor closes or shows another note, the run stops and what landed stays", async () => {

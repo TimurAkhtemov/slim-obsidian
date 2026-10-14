@@ -252,18 +252,20 @@ def test_stream_endpoint_passes_a_bounded_selection(server_url, monkeypatch):
     seen = {}
 
     def fake_run(con, source_id, question, history, mode, **kwargs):
-        seen.update(selection=kwargs["selection"], edit="edit" in kwargs)
+        seen.update(selection=kwargs["selection"], selection_from=kwargs["selection_from"], edit="edit" in kwargs)
         return {"answer": "ok", "mode": "quick", "citations": [], "edit_run": None}
 
     monkeypatch.setattr(copilot, "run_turn", fake_run)
     post(server_url, "/api/copilot/stream", {
         "thread_id": "chat-1", "source_id": "source-1", "question": "tidy", "history": [],
-        "edit": True, "selection": "x" * (copilot.MAX_SELECTION_CHARS + 50)})
-    assert seen == {"selection": "x" * copilot.MAX_SELECTION_CHARS, "edit": False}   # no Edit mode left
-    post(server_url, "/api/copilot/stream", {
-        "thread_id": "chat-1", "source_id": "source-1", "question": "tidy", "history": [],
-        "selection": 5})
-    assert seen == {"selection": "", "edit": False}
+        "edit": True, "selection": "x" * (copilot.MAX_SELECTION_CHARS + 50), "selection_from": 13})
+    assert seen == {"selection": "x" * copilot.MAX_SELECTION_CHARS, "selection_from": 13,
+                    "edit": False}                                      # no Edit mode left
+    for where in (-1, "13", True, 1.5, None):
+        post(server_url, "/api/copilot/stream", {
+            "thread_id": "chat-1", "source_id": "source-1", "question": "tidy", "history": [],
+            "selection": 5, "selection_from": where})
+        assert seen == {"selection": "", "selection_from": None, "edit": False}, where
 
 
 def test_skills_endpoint_lists_builtins_and_the_vaults_own(server_url, monkeypatch, tmp_path):
@@ -357,7 +359,8 @@ def test_the_stream_emits_the_edit_events_in_order(server_url, a_note):
     assert [e for e, _ in events] == ["stage", "edit", "plan", "step", "stage", "change", "step", "step", "stage",
                                       "change", "step", "turn"]    # each model call names its stage as it starts
     edit = events[1][1]
-    assert set(edit) == {"before_ref", "hash_before"} and edit["hash_before"] == edits.digest(NOTE)
+    assert set(edit) == {"before_ref", "hash_before", "attachments"} and edit["hash_before"] == edits.digest(NOTE)
+    assert edit["attachments"] == []
     assert threads.load_before("chat-1", edit["before_ref"]) == NOTE
     assert events[2][1] == {"intro": "Rename A and add a line.", "steps": ["Rename A", "Add a line"],
                             "outline": None}
@@ -474,6 +477,32 @@ def test_a_client_that_hangs_up_stops_the_run_after_the_current_call(server_url,
     # The changes stay in the editor and the plugin keeps the turn, so its image stays too.
     assert len(list((threads.THREADS_DIR / "chat-1.images").glob("*.png"))) == 1
     client.close()
+
+
+def test_a_run_keeps_its_images_from_its_start_and_its_start_names_them(server_url, a_note, monkeypatch):
+    """However a run ends, the plugin keeps its turn, so the question's images stay stored from the
+    run's start, and the `edit` event that starts it names them: a stopped or failed run never
+    sees the `turn` that would. A request that fails before a run starts leaves nothing behind."""
+    source, _script = a_note
+
+    def run_turn(_con, _source_id, question, _history, _mode, **kwargs):
+        if question == "go":
+            kwargs["on_edit"]("start", {"before_text": NOTE})
+        raise copilot.CopilotError("the model failed")
+    monkeypatch.setattr(copilot, "run_turn", run_turn)
+
+    def image(payload: bytes) -> dict:
+        data = base64.b64encode(b"\x89PNG\r\n\x1a\n" + payload).decode()
+        return {"name": "eq.png", "mime": "image/png", "data": data}
+
+    _status, _headers, body = stream(server_url, source, "go", images=[image(b"one")])
+    events = events_of(body)
+    assert [e for e, _ in events] == ["edit", "error"]
+    (ref,) = events[0][1]["attachments"]
+    assert ref["name"] == "eq.png" and "data" not in ref
+    assert copilot_images.image_path("chat-1", ref["id"]) is not None
+    stream(server_url, source, "never started", images=[image(b"two")])
+    assert len(list((threads.THREADS_DIR / "chat-1.images").glob("*.png"))) == 1
 
 
 

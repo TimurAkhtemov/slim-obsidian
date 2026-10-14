@@ -1237,14 +1237,35 @@ def _note_text(vault: Path, path: str) -> str:
     return text
 
 
-def _selected(note: edits_mod.Note, text: str, selection: str, skill: skills_mod.Skill) -> set[str]:
-    """The blocks a selection touches: the only ones a selection skill may change."""
+def _index_of_u16(text: str, units: int) -> int | None:
+    """The index into `text` of an offset in UTF-16 units (the editor's), or None when no
+    character of `text` starts there."""
+    encoded = text.encode("utf-16-le")
+    if not 0 <= 2 * units <= len(encoded):
+        return None
+    try:
+        return len(encoded[:2 * units].decode("utf-16-le"))
+    except UnicodeDecodeError:          # inside a character outside the BMP
+        return None
+
+
+def _selected(note: edits_mod.Note, text: str, selection: str, skill: skills_mod.Skill,
+              selection_from: int | None = None) -> set[str]:
+    """The blocks a selection touches: the only ones a selection skill may change. It is where
+    the editor says it starts (`selection_from`): the same words can be in a note twice. Without
+    that, or when the words are not there, they are found, if the note has them once."""
     chosen = (selection or "").strip()
     if not chosen:
         raise CopilotError(f"/{skill.name} works on selected text: select some in the note first")
-    start = text.find(chosen)
-    if start < 0:
+    start = _index_of_u16(text, selection_from) if selection_from is not None else None
+    if start is not None and text.startswith(selection, start):
+        start += len(selection) - len(selection.lstrip())
+    elif (count := text.count(chosen)) > 1:
+        raise CopilotError(f"the selected text appears {count} times in the note; select a little more around it")
+    elif not count:
         raise CopilotError("the selected text is not in the note as it is now; select it again")
+    else:
+        start = text.find(chosen)
     end, pos, found = start + len(chosen), 0, set()
     for block in note.blocks:
         if pos < end and start < pos + len(block.text):
@@ -1267,8 +1288,9 @@ def _facts(out: dict, run: dict) -> dict:
 
 
 def _answer_or_edit(con, vault: Path, source: dict, question: str, history: list[dict], mode: str,
-                    *, skill, args: str, images, selection: str, doc: str | None, on_stage,
-                    on_delta, on_edit, should_stop, entry: dict) -> tuple[dict, list[str], list[dict]]:
+                    *, skill, args: str, images, selection: str, selection_from: int | None,
+                    doc: str | None, on_stage, on_delta, on_edit, should_stop,
+                    entry: dict) -> tuple[dict, list[str], list[dict]]:
     """A turn that may edit: (result, retrieval levels, evidence). A plain question meets the
     intent gate first; "no" is today's Ask path (`generate_answer`, with retrieval and the
     sources call), anything else the edit path: the open note whole, with handles, and the
@@ -1331,7 +1353,7 @@ def _answer_or_edit(con, vault: Path, source: dict, question: str, history: list
                 cited, temperature = [{"n": 1, "path": source["path"],
                                        "title": PurePosixPath(source["path"]).stem}], STEP_TEMPERATURE
                 if skill.input == "selection":
-                    only = _selected(note, text, selection, skill)
+                    only = _selected(note, text, selection, skill, selection_from)
                     prompt += f"\n\nSelected text:\n{selection.strip()}"
                     tools, step_tools = ["plan", "replace", "edit_text"], ("replace", "edit_text")
             system = edit_message(source["path"], note)
@@ -1386,13 +1408,14 @@ def _answer_or_edit(con, vault: Path, source: dict, question: str, history: list
 
 def run_turn(con, source_id: str, question: str, history: list[dict], mode: str,
              *, images=None, on_stage=None, on_delta=None, on_edit=None, selection: str = "",
-             vault: Path | None = None, doc: str | None = None, doc_hash: str | None = None,
-             should_stop=lambda: False) -> dict:
+             selection_from: int | None = None, vault: Path | None = None, doc: str | None = None,
+             doc_hash: str | None = None, should_stop=lambda: False) -> dict:
     """One sidebar turn. A `/command` whose output is chat reads whole notes chosen by code
     (`gather`) and answers. Every other turn is one chat that answers or edits: it may answer in
     text, or change the open note, which it reads from `doc` — the editor's text, whose
-    `doc_hash` must match — or else from disk. `on_edit(event, payload)` gets each part of an
-    edit as it lands; nothing is written here: the plugin applies each change through the editor."""
+    `doc_hash` must match — or else from disk; `selection_from` is where the selection starts
+    in it, in UTF-16 units. `on_edit(event, payload)` gets each part of an edit as it lands;
+    nothing is written here: the plugin applies each change through the editor."""
     vault = Path(vault or config_mod.VAULT)
     source_row = con.execute(
         "SELECT id, path, title, type, current_hash FROM sources "
@@ -1445,8 +1468,8 @@ def run_turn(con, source_id: str, question: str, history: list[dict], mode: str,
         else:
             result, levels, evidence = _answer_or_edit(
                 con, vault, source, question, history, mode, skill=skill, args=args, images=images,
-                selection=selection, doc=doc, on_stage=on_stage, on_delta=on_delta, on_edit=on_edit,
-                should_stop=should_stop, entry=entry)
+                selection=selection, selection_from=selection_from, doc=doc, on_stage=on_stage,
+                on_delta=on_delta, on_edit=on_edit, should_stop=should_stop, entry=entry)
     except Exception as exc:
         # Any failure leaves its record, a closed chat's BrokenPipe included; the message only
         # for refusals and model errors, whose words are SLIM's own.

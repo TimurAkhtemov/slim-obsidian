@@ -286,6 +286,28 @@ def test_a_selection_skill_changes_only_the_selected_blocks_and_only_with_replac
         copilot.run_turn(con, source["id"], "/tidy", [], "quick", vault=vault, selection="gone text")
 
 
+TWICE = "# Todo 📚\n\n- [ ] review chapter\n\n## Later\n\n- [ ] review chapter\n"
+
+
+def test_a_selection_is_the_one_made_when_its_words_are_in_the_note_twice(con, vault, monkeypatch):
+    """The editor says where a selection starts, in its own UTF-16 units (📚 is two). Without that,
+    or when it does not fit the text, words the note has twice are refused, never guessed."""
+    source = open_source(con, vault, note(vault, "Notes/work/todo.md", TWICE))
+    selected, second = "- [ ] review chapter", TWICE.rindex("- [ ] review chapter")
+    tooled(monkeypatch, ("", [("replace", {"target": "b2", "markdown": "- [x] review chapter"}),
+                              ("replace", {"target": "b4", "markdown": "- [x] review chapter"})]))
+    turn = copilot.run_turn(con, source["id"], "/tidy", [], "quick", vault=vault, selection=selected,
+                            selection_from=edits.u16(TWICE[:second]), doc=TWICE, doc_hash=edits.digest(TWICE))
+    text = TWICE
+    for change in turn["edit_run"]["changes"]:
+        text = edits.apply_splices(text, change["splices"])
+    assert text == TWICE[:second] + "- [x] review chapter\n"           # the first is outside the selection
+    for where in (None, second):        # no place, or one in code points: one unit short of it
+        with pytest.raises(copilot.CopilotError, match="appears 2 times in the note"):
+            copilot.run_turn(con, source["id"], "/tidy", [], "quick", vault=vault, selection=selected,
+                             selection_from=where, doc=TWICE, doc_hash=edits.digest(TWICE))
+
+
 def test_a_new_note_call_that_could_not_be_read_is_asked_for_once_more(con, vault, monkeypatch):
     meeting(vault, "Kickoff", "2026-09-01T09:00:00", "ship friday")
     source = open_source(con, vault, meeting(vault, "Review", "2026-09-08T09:00:00", "monday"))

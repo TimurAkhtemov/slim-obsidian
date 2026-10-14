@@ -2802,7 +2802,8 @@ function inputsText(inputs) {
 }
 
 // The open note's editor selection, from whichever pane shows it: the sidebar has focus when
-// they press Send, so "the active editor" is not the question.
+// they press Send, so "the active editor" is not the question. Its text, and where it starts as
+// the editor counts (UTF-16 units): the same words can be in the note twice.
 function editorSelection(app, path) {
   const recent = app?.workspace?.getMostRecentLeaf?.();
   const leaves = app?.workspace?.getLeavesOfType?.("markdown") || [];
@@ -2812,9 +2813,12 @@ function editorSelection(app, path) {
     if (view?.file?.path !== path || view.getMode?.() === "preview") continue;
     if (typeof view.editor?.getSelection !== "function") continue;
     const text = view.editor.getSelection();
-    if (text) return text.slice(0, MAX_SELECTION_CHARS);
+    if (!text) continue;
+    const at = view.editor.getCursor?.("from");
+    const from = at ? view.editor.posToOffset?.(at) : undefined;
+    return { text: text.slice(0, MAX_SELECTION_CHARS), ...(Number.isInteger(from) ? { from } : {}) };
   }
-  return "";
+  return { text: "" };
 }
 
 // Mirrors copilot.py MAX_SELECTION_CHARS.
@@ -3308,7 +3312,14 @@ class CopilotView extends ItemView {
 
   async saveRecord(thread, turns) {
     const body = {
-      id: thread.id, title: thread.title, turns,
+      id: thread.id, title: thread.title,
+      // A question's images by the refs the server stored them under. One pasted for a question
+      // that failed before a run began was never stored: it has no id, and is not saved.
+      turns: turns.map(({ attachments, ...turn }) => {
+        const refs = (attachments || []).filter((image) => image.id)
+          .map(({ id, name, mime, bytes }) => ({ id, name, mime, bytes }));
+        return refs.length ? { ...turn, attachments: refs } : turn;
+      }),
       source_id: thread.source_id, source_path: thread.source_path,
       // ⚠ Normalized HERE, not at the point a thread is opened: `renameThread` fetches a
       // thread it never opened and hands it straight to this method, so a pre-2026-09-03
@@ -3405,6 +3416,9 @@ class CopilotView extends ItemView {
         tracked = view;
         this.plugin.live.startRun(view, { id: local, base: doc, pending: true });
       }
+      // Only where it is visibly the input: a /command. A selection left in the note rode
+      // along with every question, unseen (review, 2026-09-23).
+      const picked = question.startsWith("/") ? editorSelection(this.app, path) : { text: "" };
       await this.plugin.streamCopilot({
         thread_id: thread.id, source_id: this.context.source.id, question,
         // Role, text and small image refs only, every turn whole: the server fits the
@@ -3422,9 +3436,8 @@ class CopilotView extends ItemView {
           data ? { name, mime, data } : { id, name, mime, bytes }),
         reasoning_mode: this.mode,
         ...(doc === null ? {} : { doc, doc_hash: sha256Hex(doc) }),
-        // Only where it is visibly the input: a /command. A selection left in the note rode
-        // along with every question, unseen (review, 2026-09-23).
-        selection: question.startsWith("/") ? editorSelection(this.app, path) : "",
+        selection: picked.text,
+        ...(picked.from === undefined ? {} : { selection_from: picked.from }),
       }, {
         stage: (data) => this.setStage(data.stage),
         delta: (data) => {
@@ -3445,6 +3458,9 @@ class CopilotView extends ItemView {
           if (view) this.plugin.live?.endDraft?.(view, String(data.id));
         }),
         edit: on((data) => {
+          // A run's turn is kept however it ends, and one that stops or fails never gets the
+          // `turn` with its question's image refs: the run's start names them.
+          if (Array.isArray(data.attachments) && data.attachments.length) asked.attachments = data.attachments;
           const ref = String(data.before_ref || "");
           const claimed = Boolean(local && this.plugin.live?.claimRun(tracked, local, ref));
           local = null;
