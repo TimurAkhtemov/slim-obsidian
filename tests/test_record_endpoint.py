@@ -542,10 +542,10 @@ def test_a_filed_recording_is_indexed_so_the_brain_can_reach_it(tmp_path, monkey
     chat vault lane, or reflect — all of which read SQLite. ⚠ reflect._journals() selects
     type='journal' FROM THE DATABASE, so an unindexed journal is skipped by the nightly
     synthesis silently."""
-    from slim import chat
+    from slim import chat, record_state
     _fakes(monkeypatch)
     called = {}
-    monkeypatch.setattr(chat, "_index_now", lambda v, note: called.update(vault=v, note=note) or {})
+    monkeypatch.setattr(record_state, "_index_now", lambda v, note: called.update(vault=v, note=note) or {})
     out = chat.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="meeting-note",
                              title="T", when=NOW, vault=tmp_path)
     assert called.get("vault") == tmp_path
@@ -555,10 +555,10 @@ def test_a_filed_recording_is_indexed_so_the_brain_can_reach_it(tmp_path, monkey
 def test_the_card_reindexes_after_it_commits(tmp_path, monkeypatch):
     """The card changes both content and path, so the index must be refreshed after it, not
     only after the initial filing."""
-    from slim import chat
+    from slim import chat, record_state
     r = _existing(tmp_path, monkeypatch)
     called = []
-    monkeypatch.setattr(chat, "_index_now",
+    monkeypatch.setattr(record_state, "_index_now",
                         lambda v, note, **kw: called.append((v, note, kw.get("moved_from"))) or {})
     original = str(r.note.relative_to(tmp_path))
     moved = chat.handle_record_apply(note=original, dest_dir="Capture/work",
@@ -573,10 +573,10 @@ def test_filing_keeps_the_source_id_a_copilot_chat_was_opened_on(tmp_path, monke
     keyed by source id. Apply changes content AND path in one ingest — the one sequence the
     hash rename rule cannot follow — so without a hint the note is re-minted and every chat
     on it is orphaned (2026-09-22)."""
-    from slim import chat, db, embed, ingest
+    from slim import chat, db, embed, ingest, record_state
     r = _existing(tmp_path, monkeypatch)
     monkeypatch.setattr(embed, "embed_source", lambda con, sid: 0)
-    monkeypatch.setattr(chat, "_schedule_sweep", lambda vault: None)
+    monkeypatch.setattr(record_state, "_schedule_sweep", lambda vault: None)
     original = str(r.note.relative_to(tmp_path))
     con = db.connect()
     draft_id = ingest.ingest_note(con, tmp_path, original)["id"]
@@ -667,10 +667,10 @@ def test_a_silent_recording_is_refused_the_same_way(tmp_path, monkeypatch):
     """Silence reaches the same worthless note by a different route — a muted mic, the wrong
     input. Nothing is written; ⚠ since 2026-08-26 it is `NoSpeech`, not a failure, because
     saying so LOUDLY was the friction they objected to."""
-    from slim import chat
+    from slim import chat, record_state
     _fakes(monkeypatch, transcript="   ")
     staged = _staged(tmp_path)
-    with pytest.raises(chat.NoSpeech, match="no words"):
+    with pytest.raises(record_state.NoSpeech, match="no words"):
         chat.handle_record(audio_rel=staged, notes_md="", declared_type="lecture",
                            title="T", when=NOW, vault=tmp_path)
     assert (tmp_path / staged).exists()
@@ -804,7 +804,7 @@ def test_the_request_indexes_only_its_note_and_sweeps_the_vault_afterwards(tmp_p
     ~50-fragment note — a backlog from 11 other edited notes — and the recording waited for
     it. `ingest_note` + `embed_source` share the sweep's code, so the docstring's old
     objection (a second, less-tested copy) no longer holds."""
-    from slim import chat, embed as embed_mod, ingest as ingest_mod
+    from slim import chat, embed as embed_mod, ingest as ingest_mod, record_state
     _fakes(monkeypatch)
     seen = {"note": [], "source": [], "sweep_ingest": 0, "sweep_embed": 0}
     monkeypatch.setattr(ingest_mod, "ingest_note",
@@ -816,20 +816,20 @@ def test_the_request_indexes_only_its_note_and_sweeps_the_vault_afterwards(tmp_p
     monkeypatch.setattr(embed_mod, "embed_missing", lambda con, **k: (
         seen.__setitem__("sweep_embed", seen["sweep_embed"] + 1), {"embedded": 0})[1])
     scheduled = []
-    monkeypatch.setattr(chat, "_schedule_sweep", lambda vault: scheduled.append(vault))
+    monkeypatch.setattr(record_state, "_schedule_sweep", lambda vault: scheduled.append(vault))
     out = chat.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="meeting-note",
                              title="T", when=NOW, vault=tmp_path)
     assert seen["note"] == [out["note"]]
     assert seen["source"] == ["src-1"]
     assert seen["sweep_ingest"] == 0                     # nothing vault-wide inside the request
     assert scheduled == [tmp_path]
-    chat._sweep_vault(tmp_path)                          # what the scheduled thread runs
+    record_state._sweep_vault(tmp_path)                          # what the scheduled thread runs
     assert (seen["sweep_ingest"], seen["sweep_embed"]) == (1, 1)
 
 
 def test_a_quiet_sweep_writes_no_trace(tmp_path, monkeypatch):
     """776 `record/sweep` records in a month, all but a few with nothing changed."""
-    from slim import chat, embed as embed_mod, ingest as ingest_mod, trace
+    from slim import embed as embed_mod, ingest as ingest_mod, record_state, trace
     quiet = {"unchanged": 3, "new": 0, "edited": 0, "renamed": 0, "removed": 0}
     results = iter([(quiet, {"embedded": 0, "already": 3}),
                     ({**quiet, "removed": 1}, {"embedded": 0, "already": 3}),
@@ -846,7 +846,7 @@ def test_a_quiet_sweep_writes_no_trace(tmp_path, monkeypatch):
     monkeypatch.setattr(ingest_mod, "ingest", fake_ingest)
     monkeypatch.setattr(embed_mod, "embed_missing", lambda con, **k: fake_ingest.embedded)
     for _ in range(4):
-        chat._sweep_vault(tmp_path)
+        record_state._sweep_vault(tmp_path)
     swept = [r for r in trace.last(10) if r.get("stage") == "sweep"]
     assert [(r["status"], r.get("ingest", {}).get("removed"), r.get("embed", {}).get("embedded"))
             for r in swept] == [("ok", 1, 0), ("ok", 0, 2), ("failed", None, None)]
@@ -854,26 +854,26 @@ def test_a_quiet_sweep_writes_no_trace(tmp_path, monkeypatch):
 
 def test_the_sweep_runs_on_a_daemon_thread_and_sweeps_serialize(tmp_path, monkeypatch):
     import threading
-    from slim import chat
+    from slim import record_state
     order = []
     def slow_sweep(vault):
         order.append(("start", threading.current_thread().name))
         threading.Event().wait(0.05)
         order.append(("end", threading.current_thread().name))
-    monkeypatch.setattr(chat, "_sweep_vault", lambda vault: chat._serialized(slow_sweep, vault))
-    first, second = chat._schedule_sweep(tmp_path), chat._schedule_sweep(tmp_path)
+    monkeypatch.setattr(record_state, "_sweep_vault", lambda vault: record_state._serialized(slow_sweep, vault))
+    first, second = record_state._schedule_sweep(tmp_path), record_state._schedule_sweep(tmp_path)
     assert first.daemon and second.daemon
     first.join(2); second.join(2)
     assert [kind for kind, _ in order] == ["start", "end", "start", "end"]   # never interleaved
 
 
 def test_a_broken_single_note_index_never_costs_the_recording(tmp_path, monkeypatch):
-    from slim import chat, ingest as ingest_mod
+    from slim import chat, ingest as ingest_mod, record_state
     _fakes(monkeypatch)
     def boom(con, vault, rel):
         raise RuntimeError("index exploded")
     monkeypatch.setattr(ingest_mod, "ingest_note", boom)
-    monkeypatch.setattr(chat, "_schedule_sweep", lambda vault: None)
+    monkeypatch.setattr(record_state, "_schedule_sweep", lambda vault: None)
     out = chat.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="meeting-note",
                              title="T", when=NOW, vault=tmp_path)
     assert (tmp_path / out["note"]).exists()
@@ -991,19 +991,19 @@ def test_cancelling_a_job_stops_the_pass_and_writes_nothing(tmp_path, monkeypatc
     """Their case: Stop is hit 40 minutes into a lecture by accident. Cancel has to leave the
     recording exactly as it was — ⚠ NOTHING WRITTEN, NOTHING DELETED — because the draft note
     and the staged audio are the only copies of what they said."""
-    from slim import chat, summarize, transcribe
+    from slim import chat, record_state, summarize, transcribe
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="forty minutes of lecture", model="fake", audio_seconds=2400.0, wall_seconds=30.0))
 
     def cancel_midway(*a, **k):
-        chat.request_record_cancel("job-1")
+        record_state.request_record_cancel("job-1")
         return summarize.Summary(overview="never used")
     monkeypatch.setattr(summarize, "summarize", cancel_midway)
 
     audio = _staged(tmp_path)
     draft = _draft(tmp_path)
-    chat._record_progress_start("job-1")
-    with pytest.raises(chat.RecordCancelled):
+    record_state._record_progress_start("job-1")
+    with pytest.raises(record_state.RecordCancelled):
         chat.handle_record(audio_rel=audio, draft_rel=draft, declared_type="lecture",
                            title="T", when=NOW, vault=tmp_path, job_id="job-1")
 
@@ -1016,22 +1016,22 @@ def test_cancelling_a_job_stops_the_pass_and_writes_nothing(tmp_path, monkeypatc
 def test_cancelling_before_the_expensive_part_is_honoured(tmp_path, monkeypatch):
     """The stages that are not streaming — transcription, the card, the title — are blocking
     calls, so cancel lands at the next boundary. It must at least be CHECKED at each one."""
-    from slim import chat, transcribe
+    from slim import chat, record_state, transcribe
     calls = []
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: (
         calls.append(p), transcribe.Transcript(text="x", model="f", audio_seconds=1.0,
                                                wall_seconds=1.0))[1])
-    chat._record_progress_start("job-2")
-    chat.request_record_cancel("job-2")
-    with pytest.raises(chat.RecordCancelled):
+    record_state._record_progress_start("job-2")
+    record_state.request_record_cancel("job-2")
+    with pytest.raises(record_state.RecordCancelled):
         chat.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
                            title="T", when=NOW, vault=tmp_path, job_id="job-2")
     assert calls == [], "a cancel before transcription does not pay for a transcription"
 
 
 def test_cancelling_an_unknown_job_says_so(tmp_path):
-    from slim import chat
-    assert chat.request_record_cancel("no-such-job") is False
+    from slim import record_state
+    assert record_state.request_record_cancel("no-such-job") is False
 
 
 def test_a_resumed_recording_is_one_note_from_several_segments(tmp_path, monkeypatch):
@@ -1088,7 +1088,7 @@ def test_a_transcribed_segment_is_not_transcribed_twice(tmp_path, monkeypatch):
     """⚠ THE REASON CANCEL IS AFFORDABLE. Without a cache, cancelling after a 40-minute
     transcription makes them pay for that transcription again on resume — which is most of the
     wait they cancelled to avoid."""
-    from slim import chat, transcribe
+    from slim import chat, record_state, transcribe
     calls = []
 
     def fake_tx(p, model=None):
@@ -1098,10 +1098,10 @@ def test_a_transcribed_segment_is_not_transcribed_twice(tmp_path, monkeypatch):
     monkeypatch.setattr(transcribe, "transcribe", fake_tx)
     from slim import summarize as summarize_mod
     monkeypatch.setattr(summarize_mod, "summarize",
-                        lambda *a, **k: (_ for _ in ()).throw(chat.RecordCancelled()))
+                        lambda *a, **k: (_ for _ in ()).throw(record_state.RecordCancelled()))
     first = _staged(tmp_path, "r-001.webm")
-    chat._record_progress_start("job-3")
-    with pytest.raises(chat.RecordCancelled):
+    record_state._record_progress_start("job-3")
+    with pytest.raises(record_state.RecordCancelled):
         chat.handle_record(audio_rel=first, notes_md="", declared_type="lecture", title="T",
                            when=NOW, vault=tmp_path, job_id="job-3")
     assert calls == ["r-001.webm"]
@@ -1216,12 +1216,12 @@ def test_an_appended_segment_leaves_the_summary_alone(tmp_path, monkeypatch):
 
 def test_appending_silence_is_refused_and_keeps_the_audio(tmp_path, monkeypatch):
     """Same rule as the recording path: a transcript with no words is refused, not filed."""
-    from slim import chat, transcribe
+    from slim import chat, record_state, transcribe
     r = _existing(tmp_path, monkeypatch)
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="   ", model="fake", audio_seconds=60.0, wall_seconds=1.0))
     staged = _staged(tmp_path, "more-001.webm")
-    with pytest.raises(chat.NoSpeech, match="no words"):
+    with pytest.raises(record_state.NoSpeech, match="no words"):
         chat.handle_record_append(note=str(r.note.relative_to(tmp_path)),
                                   audio_rel=[staged], vault=tmp_path)
     assert (tmp_path / staged).is_file(), "the audio stays staged for a retry"
@@ -1235,10 +1235,10 @@ def test_silence_is_reported_as_silence_not_as_a_failure(tmp_path, monkeypatch):
     a red screen asking whether to delete their files — a decision they should never have to make
     over a recording that simply had nothing in it. The note is still not written (an empty
     note is worthless), but the caller has to be able to tell silence from a real failure."""
-    from slim import chat, transcribe
+    from slim import chat, record_state, transcribe
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="   ", model="fake", audio_seconds=30.0, wall_seconds=1.0))
-    with pytest.raises(chat.NoSpeech) as caught:
+    with pytest.raises(record_state.NoSpeech) as caught:
         chat.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
                            title="T", when=NOW, vault=tmp_path)
     assert "no words" in str(caught.value).casefold()
@@ -1257,12 +1257,12 @@ def test_a_real_transcription_failure_is_still_an_error(tmp_path, monkeypatch):
 
 
 def test_appending_silence_is_the_same_quiet_outcome(tmp_path, monkeypatch):
-    from slim import chat, transcribe
+    from slim import chat, record_state, transcribe
     r = _existing(tmp_path, monkeypatch)
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="", model="fake", audio_seconds=9.0, wall_seconds=1.0))
     staged = _staged(tmp_path, "more-001.webm")
-    with pytest.raises(chat.NoSpeech):
+    with pytest.raises(record_state.NoSpeech):
         chat.handle_record_append(note=str(r.note.relative_to(tmp_path)), audio_rel=[staged],
                                   vault=tmp_path)
     assert (tmp_path / staged).is_file()
@@ -1331,19 +1331,19 @@ def test_cancelling_a_one_segment_resume_actually_cancels(tmp_path, monkeypatch)
     """⚠ Cancel was checked only at the top of the per-segment loop, and a resume normally has
     exactly ONE segment — so the check ran once, before a transcription that can take forty
     minutes, and never again. They were told "nothing is written or deleted" and the note grew."""
-    from slim import chat, transcribe
+    from slim import chat, record_state, transcribe
 
     def cancel_during(p, model=None):
-        chat.request_record_cancel("job-append")
+        record_state.request_record_cancel("job-append")
         return transcribe.Transcript(text="more words", model="fake", audio_seconds=9.0,
                                      wall_seconds=1.0)
     monkeypatch.setattr(transcribe, "transcribe", cancel_during)
     r = _existing(tmp_path, monkeypatch)
     before = r.note.read_text(encoding="utf-8")
     staged = _staged(tmp_path, "more-001.webm")
-    chat._record_progress_start("job-append")
+    record_state._record_progress_start("job-append")
 
-    with pytest.raises(chat.RecordCancelled):
+    with pytest.raises(record_state.RecordCancelled):
         chat.handle_record_append(note=str(r.note.relative_to(tmp_path)), audio_rel=[staged],
                                   job_id="job-append", vault=tmp_path)
 
@@ -1356,10 +1356,10 @@ def test_an_autosave_does_not_sweep_the_vault(tmp_path, monkeypatch):
     old that is right — the sweep retires the old path's row. On every blur of the notes field
     it is a dozen full-vault hash-and-embed passes for a dozen click-aways, each competing with
     the resident model for the box. Index the note; leave the vault alone."""
-    from slim import chat
+    from slim import chat, record_state
     r = _existing(tmp_path, monkeypatch)
     sweeps = []
-    monkeypatch.setattr(chat, "_schedule_sweep", lambda v: sweeps.append(v))
+    monkeypatch.setattr(record_state, "_schedule_sweep", lambda v: sweeps.append(v))
 
     chat.handle_record_notes(note=str(r.note.relative_to(tmp_path)), notes_md="- typed",
                              vault=tmp_path)
@@ -1573,14 +1573,14 @@ def test_two_writers_on_one_note_take_turns(tmp_path, monkeypatch):
     Re-reading before the write closed the long-job case; it does NOT close the case where two
     writers interleave between one another's read and write. One lock per note does."""
     import threading
-    from slim import chat
+    from slim import chat, record_state
     r = _existing(tmp_path, monkeypatch)
     note_rel = str(r.note.relative_to(tmp_path))
     order, errors = [], []
 
     def notes(text, delay):
         try:
-            with chat._note_lock(tmp_path, note_rel):
+            with record_state._note_lock(tmp_path, note_rel):
                 order.append(f"enter {text}")
                 time.sleep(delay)
                 chat.handle_record_notes(note=note_rel, notes_md=text, vault=tmp_path)
@@ -1598,10 +1598,10 @@ def test_two_writers_on_one_note_take_turns(tmp_path, monkeypatch):
 
 
 def test_the_lock_is_per_note_not_global(tmp_path, monkeypatch):
-    from slim import chat
-    a = chat._note_lock(tmp_path, "Capture/a.md")
-    b = chat._note_lock(tmp_path, "Capture/b.md")
-    again = chat._note_lock(tmp_path, "Capture/a.md")
+    from slim import record_state
+    a = record_state._note_lock(tmp_path, "Capture/a.md")
+    b = record_state._note_lock(tmp_path, "Capture/b.md")
+    again = record_state._note_lock(tmp_path, "Capture/a.md")
     assert a is again and a is not b
 
 
@@ -1635,21 +1635,21 @@ def test_a_leftover_live_session_never_blocks_the_next_recording(monkeypatch):
 # --- parallel recorder sessions: bounded heavy work and isolated progress -----------------
 
 def test_recording_progress_is_job_local_and_never_exposes_private_reasoning():
-    from slim import chat
+    from slim import record_state
 
-    chat._record_progress_start("meeting-a")
-    chat._record_progress_start("meeting-b")
-    chat._record_progress_update(
+    record_state._record_progress_start("meeting-a")
+    record_state._record_progress_start("meeting-b")
+    record_state._record_progress_update(
         "meeting-a", stage="summarizing", label="Writing A", kind="thinking",
         text="private reasoning for A", metrics={"transcript_words": 41},
     )
-    chat._record_progress_update(
+    record_state._record_progress_update(
         "meeting-b", stage="queued", label="Queued behind 1 recording",
         detail="Waiting for the local recording pipeline",
     )
 
-    a = chat.record_progress("meeting-a")
-    b = chat.record_progress("meeting-b")
+    a = record_state.record_progress("meeting-a")
+    b = record_state.record_progress("meeting-b")
     assert a["stage"] == "summarizing" and a["metrics"]["transcript_words"] == 41
     assert b["stage"] == "queued" and b["label"] == "Queued behind 1 recording"
     assert "thinking" not in a and "draft" not in a
@@ -1657,14 +1657,14 @@ def test_recording_progress_is_job_local_and_never_exposes_private_reasoning():
     assert "private reasoning" not in json.dumps(a)
 
     a["metrics"]["transcript_words"] = 999
-    assert chat.record_progress("meeting-a")["metrics"]["transcript_words"] == 41
-    assert chat.record_progress("meeting-b")["metrics"] == {}
+    assert record_state.record_progress("meeting-a")["metrics"]["transcript_words"] == 41
+    assert record_state.record_progress("meeting-b")["metrics"] == {}
 
 
 def test_recording_pipeline_is_fifo_and_an_exception_releases_the_next_job():
-    from slim import chat
+    from slim import record_state
 
-    pipeline = chat.RecordingPipelineQueue(limit=3)
+    pipeline = record_state.RecordingPipelineQueue(limit=3)
     release_a = threading.Event()
     entered_a = threading.Event()
     queued = {"b": threading.Event(), "c": threading.Event()}
@@ -1703,9 +1703,9 @@ def test_recording_pipeline_is_fifo_and_an_exception_releases_the_next_job():
 
 
 def test_recording_pipeline_has_a_hard_admission_bound():
-    from slim import chat
+    from slim import record_state
 
-    pipeline = chat.RecordingPipelineQueue(limit=2)
+    pipeline = record_state.RecordingPipelineQueue(limit=2)
     release = threading.Event()
     entered = threading.Event()
     queued = threading.Event()
@@ -1724,7 +1724,7 @@ def test_recording_pipeline_has_a_hard_admission_bound():
     a.start(); assert entered.wait(1)
     b.start(); assert queued.wait(1)
     try:
-        with pytest.raises(chat.RecordQueueFull):
+        with pytest.raises(record_state.RecordQueueFull):
             with pipeline.slot("c"):
                 pass
     finally:
@@ -1733,29 +1733,29 @@ def test_recording_pipeline_has_a_hard_admission_bound():
 
 
 def test_waiting_recording_job_reports_its_own_queue_position(monkeypatch):
-    from slim import chat
+    from slim import record_state
 
-    monkeypatch.setattr(chat, "_RECORD_PIPELINE", chat.RecordingPipelineQueue(limit=2))
+    monkeypatch.setattr(record_state, "_RECORD_PIPELINE", record_state.RecordingPipelineQueue(limit=2))
     release = threading.Event()
     entered = {"a": threading.Event(), "b": threading.Event()}
 
     def run(name):
-        with chat._record_pipeline_slot(name):
+        with record_state._record_pipeline_slot(name):
             entered[name].set()
             if name == "a":
                 release.wait(2)
 
-    chat._record_progress_start("a")
-    chat._record_progress_start("b")
+    record_state._record_progress_start("a")
+    record_state._record_progress_start("b")
     a = threading.Thread(target=run, args=("a",))
     b = threading.Thread(target=run, args=("b",))
     a.start(); assert entered["a"].wait(1)
     b.start()
     deadline = time.time() + 1
-    while time.time() < deadline and chat.record_progress("b")["label"] == "Queued":
+    while time.time() < deadline and record_state.record_progress("b")["label"] == "Queued":
         time.sleep(0.005)
 
-    queued_state = chat.record_progress("b")
+    queued_state = record_state.record_progress("b")
     assert queued_state["stage"] == "queued"
     assert queued_state["label"] == "Queued behind 1 recording"
     assert entered["b"].is_set() is False

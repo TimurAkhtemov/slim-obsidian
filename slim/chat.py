@@ -28,15 +28,13 @@ import select
 import socket
 import threading
 import time
-from collections import deque
-from contextlib import contextmanager
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from . import (config, copilot as copilot_mod, copilot_images, db, edits as edits_mod,
-               llm, skills as skills_mod, threads as threads_mod,
+               llm, record_state, skills as skills_mod, threads as threads_mod,
                trace)
 
 DEFAULT_PORT = 7546          # "slim" on a phone keypad
@@ -57,172 +55,6 @@ MAX_COPILOT_STREAM_BODY_BYTES = (
 MAX_RECORD_BODY_BYTES = 1_000_000
 RESTORE_REFUSED = ("This recording changed since (a new transcript or card edit); restoring would remove "
                    "that. Use ↺ on the changes instead.")
-
-# Recorder progress is local, short-lived diagnostic state. The recording request remains the
-# source of truth; this registry only lets the Obsidian object observe a long synchronous job.
-_RECORD_PROGRESS_LOCK = threading.Lock()
-_RECORD_PROGRESS: dict[str, dict] = {}
-_RECORD_PROGRESS_LIMIT = 32
-
-
-class RecordQueueFull(RuntimeError):
-    """The bounded local recording pipeline has no admission slot left."""
-
-
-class RecordingPipelineQueue:
-    """A bounded FIFO around the heavyweight local recording pipeline.
-
-    Request threads stay alive independently, but Parakeet, Ollama, filing and indexing run one
-    recording at a time. The deque includes the active job, so ``limit`` bounds admitted work.
-    """
-
-    def __init__(self, *, limit: int = _RECORD_PROGRESS_LIMIT):
-        if limit < 1:
-            raise ValueError("recording pipeline limit must be positive")
-        self.limit = limit
-        self._condition = threading.Condition()
-        self._jobs: deque[object] = deque()
-
-    @property
-    def size(self) -> int:
-        with self._condition:
-            return len(self._jobs)
-
-    @contextmanager
-    def slot(self, job_id: str, *, on_queued=None):
-        token = object()
-        with self._condition:
-            if len(self._jobs) >= self.limit:
-                raise RecordQueueFull(
-                    f"local recording pipeline already has {self.limit} admitted jobs")
-            position = len(self._jobs)
-            self._jobs.append(token)
-        try:
-            if position and on_queued is not None:
-                on_queued(position)
-            with self._condition:
-                while self._jobs[0] is not token:
-                    self._condition.wait()
-            yield
-        finally:
-            with self._condition:
-                try:
-                    self._jobs.remove(token)
-                except ValueError:
-                    pass
-                self._condition.notify_all()
-
-
-_RECORD_PIPELINE = RecordingPipelineQueue()
-
-
-@contextmanager
-def _record_pipeline_slot(job_id: str):
-    """Admit one heavy recorder job and publish a job-local queued state while it waits."""
-    def queued(position: int) -> None:
-        noun = "recording" if position == 1 else "recordings"
-        _record_progress_update(
-            job_id,
-            stage="queued",
-            label=f"Queued behind {position} {noun}",
-            detail="Waiting for the local recording pipeline",
-        )
-
-    with _RECORD_PIPELINE.slot(job_id, on_queued=queued):
-        yield
-
-
-def _record_progress_start(job_id: str) -> None:
-    if not job_id:
-        return
-    with _RECORD_PROGRESS_LOCK:
-        if len(_RECORD_PROGRESS) >= _RECORD_PROGRESS_LIMIT:
-            oldest = min(_RECORD_PROGRESS, key=lambda key: _RECORD_PROGRESS[key]["updated_at"])
-            _RECORD_PROGRESS.pop(oldest, None)
-        _RECORD_PROGRESS[job_id] = {
-            "job_id": job_id, "stage": "queued", "label": "Queued",
-            "detail": "Waiting for the local pipeline", "steps": [],
-            "metrics": {}, "done": False,
-            "error": "", "updated_at": time.time(),
-        }
-
-
-def _record_progress_update(job_id: str, *, stage: str, label: str, detail: str = "",
-                            kind: str = "", text: str = "", metrics: dict | None = None,
-                            done: bool = False, error: str = "") -> None:
-    if not job_id:
-        return
-    with _RECORD_PROGRESS_LOCK:
-        state = _RECORD_PROGRESS.get(job_id)
-        if state is None:
-            return
-        if stage != state["stage"]:
-            if state["steps"]:
-                state["steps"][-1]["status"] = "done"
-            state["steps"].append({"stage": stage, "label": label, "status": "active"})
-        state.update({"stage": stage, "label": label, "detail": detail,
-                      "done": done, "error": error, "updated_at": time.time()})
-        if kind in ("thinking", "draft") and text:
-            state["metrics"]["model_activity_events"] = (
-                state["metrics"].get("model_activity_events", 0) + 1)
-        if metrics:
-            state["metrics"].update(metrics)
-        if done and state["steps"]:
-            state["steps"][-1]["status"] = "error" if error else "done"
-
-
-class NoSpeech(Exception):
-    """The recording had no words in it. NOT an error, and the distinction is theirs (2026-08-26).
-
-    Nothing is written either way, but silence must not reach them as a red failure screen
-    asking whether to delete their audio. The caller tells this apart from a broken ASR.
-    """
-
-
-class RecordCancelled(Exception):
-    """They asked for this pass to stop. Not an error: nothing is wrong and nothing is lost."""
-
-
-def request_record_cancel(job_id: str) -> bool:
-    """Flag a running pass. Returns False if there is no such job to flag.
-
-    ⚠ COOPERATIVE, and it has to be. The summary is a STREAMING call, so the flag raises out of
-    it mid-generation; every other stage is a blocking call, so the flag lands at the next stage
-    boundary. Nothing here kills a thread.
-    """
-    if not job_id:
-        return False
-    with _RECORD_PROGRESS_LOCK:
-        state = _RECORD_PROGRESS.get(job_id)
-        if state is None:
-            return False
-        state["cancelled"] = True
-        state.update({"stage": "cancelling", "label": "Cancelling",
-                      "detail": "Stopping at the end of the current step",
-                      "updated_at": time.time()})
-        return True
-
-
-def _record_cancelled(job_id: str) -> bool:
-    if not job_id:
-        return False
-    with _RECORD_PROGRESS_LOCK:
-        state = _RECORD_PROGRESS.get(job_id)
-        return bool(state and state.get("cancelled"))
-
-
-def _check_record_cancel(job_id: str) -> None:
-    if _record_cancelled(job_id):
-        raise RecordCancelled("cancelled")
-
-
-def record_progress(job_id: str) -> dict | None:
-    with _RECORD_PROGRESS_LOCK:
-        state = _RECORD_PROGRESS.get(job_id)
-        if state is None:
-            return None
-        return {**state, "steps": [dict(step) for step in state["steps"]],
-                "metrics": dict(state["metrics"])}
 
 
 class ChatError(Exception):
@@ -297,28 +129,6 @@ def clean_history(raw) -> list[dict]:
     return turns
 
 
-# --------------------------------------------------------------------------
-# the recorder
-# --------------------------------------------------------------------------
-
-def _vault_path(vault: Path, rel: str) -> Path:
-    """Resolve a caller-supplied vault-relative path, refusing anything that escapes.
-
-    `rel` arrives over HTTP: without this a caller could name `../../etc/passwd`. Loopback-only
-    is not an argument against checking — the browser is the untrusted party, not the network.
-
-    ⚠ Validates with `resolve()` but RETURNS THE UNRESOLVED JOIN, so every path here stays in
-    one coordinate system. Returning the resolved path breaks `relative_to(vault)` wherever the
-    vault sits under a symlink: on macOS `/var` is a symlink to `/private/var`, which made
-    `handle_record_apply` move a note correctly and then report a 400. Tests hide it — pytest's
-    `tmp_path` is already resolved, so the two spellings coincide there.
-    """
-    target = vault / rel
-    if not target.resolve().is_relative_to(vault.resolve()):
-        raise ValueError(f"path escapes the vault: {rel!r}")
-    return target
-
-
 def _strip_frontmatter_key(text: str, key: str) -> str:
     """Remove a single `key:` line from the frontmatter block only, leaving the body exact."""
     lines = text.splitlines()
@@ -334,94 +144,6 @@ def _strip_frontmatter_key(text: str, key: str) -> str:
     return "\n".join(out) + ("\n" if text.endswith("\n") else "")
 
 
-def _index_now(vault: Path, note_rel: str, *, sweep: bool = True,
-               moved_from: str | None = None) -> dict:
-    """Make THIS note reachable by everything that reads the INDEX rather than the vault.
-
-    Filing makes a note findable in Obsidian immediately; it does NOT reach the two readers of
-    SQLite, the copilot and `reflect`. ⚠ The second fails silently: `reflect._journals()`
-    selects `type = 'journal'` FROM THE DATABASE, so a journal they record would be skipped by
-    the nightly synthesis with no error anywhere.
-
-    One note in the request, the vault in the background (`_schedule_sweep`) — a full pass here
-    once embedded 1,287 fragments for a ~50-fragment note inside the pause after the summary.
-    ⚠ `sweep=False` for edits to a note that ALREADY EXISTS: on every blur of the notes field
-    that pass is a full hash-and-embed of the whole vault, and typing in a filed note changes
-    no other note.
-
-    ⚠ Called after record AND after apply, so a note is indexed twice with both its content and
-    its path changed in between — the exact sequence the hash rename rule cannot follow. The
-    note is NOT lineage-free by then: the copilot can be opened on the draft, and its threads
-    are keyed by source id (a filed note was re-minted and its chat orphaned, 2026-09-22).
-    Apply therefore passes `moved_from`, and ingest keeps the id.
-
-    Never raises: a note filed but not indexed is recoverable by the sweep. One that failed to
-    file is not.
-    """
-    from . import db, embed as embed_mod, ingest as ingest_mod
-
-    try:
-        con = db.connect()
-        try:
-            source = ingest_mod.ingest_note(con, vault, note_rel, moved_from=moved_from)
-            embedded = embed_mod.embed_source(con, source["id"])
-        finally:
-            con.close()
-        out = {"note": note_rel, "source_id": source["id"], "embed": embedded}
-        trace.record("record", {"stage": "index", "status": "ok", **out})
-    except Exception as exc:                       # noqa: BLE001 - see the docstring
-        trace.record("record", {"stage": "index", "status": "failed", "error": str(exc)})
-        out = {"error": str(exc)}
-    if sweep:
-        _schedule_sweep(vault)
-    return out
-
-
-# One sweep at a time: record and apply arrive seconds apart, and two full passes writing the
-# same tables would contend for SQLite's write lock (5 s default busy timeout) for nothing.
-_SWEEP_LOCK = threading.Lock()
-
-
-def _serialized(fn, *args):
-    with _SWEEP_LOCK:
-        return fn(*args)
-
-
-def _sweep_vault(vault: Path) -> dict:
-    """The full incremental pass — hash every note, index what changed, embed what has no
-    vector — off the request path. WAL lets the sidebar keep reading while it runs; a sidebar
-    WRITE (ingest_note on the note they just opened) waits on the lock like any other writer."""
-    from . import db, embed as embed_mod, ingest as ingest_mod
-
-    def pass_once(vault):
-        try:
-            con = db.connect()
-            try:
-                stats = ingest_mod.ingest(con, vault=vault)
-                embedded = embed_mod.embed_missing(con)
-            finally:
-                con.close()
-            out = {"ingest": stats, "embed": embedded}
-            if any(stats.get(key) for key in ("new", "edited", "renamed", "removed")) \
-                    or embedded.get("embedded"):
-                trace.record("record", {"stage": "sweep", "status": "ok", **out})   # quiet ones write nothing
-            return out
-        except Exception as exc:                   # noqa: BLE001 - background; never raises
-            trace.record("record", {"stage": "sweep", "status": "failed", "error": str(exc)})
-            return {"error": str(exc)}
-
-    return _serialized(pass_once, vault)
-
-
-def _schedule_sweep(vault: Path) -> threading.Thread:
-    # Daemon: a sweep cut off by shutdown is redone by the next one — ingest commits at the
-    # end of a pass and embed per batch, so nothing half-written survives.
-    thread = threading.Thread(target=lambda: _sweep_vault(vault), name="slim-index-sweep",
-                              daemon=True)
-    thread.start()
-    return thread
-
-
 _DRAFT_SUFFIX = ".slim-draft.md"
 
 
@@ -429,7 +151,7 @@ def _draft_source(*, vault: Path, draft_rel: str, audio_rel: str | list[str],
                   declared_type: str) -> tuple[Path, str]:
     from . import record
 
-    draft = _vault_path(vault, draft_rel)
+    draft = record_state._vault_path(vault, draft_rel)
     if not draft.is_file():
         raise FileNotFoundError(f"no draft at {draft_rel!r}")
     if not draft.name.endswith(_DRAFT_SUFFIX):
@@ -584,7 +306,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
     audio_rels = [audio_rel] if isinstance(audio_rel, str) else list(audio_rel)
     if not audio_rels:
         raise ValueError("audio (a vault-relative path) is required")
-    segments = [_vault_path(vault, rel) for rel in audio_rels]
+    segments = [record_state._vault_path(vault, rel) for rel in audio_rels]
     # ⚠ THEIR title, captured before any fallback overwrites it. A title they typed is TESTIMONY,
     # so `build_card` gets it. A title the MODEL just wrote must never be fed back in: it is
     # derived from the same transcript the card reads, so one bad guess would reinforce the
@@ -603,7 +325,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
     # ⚠ CANCEL IS CHECKED BEFORE EVERY EXPENSIVE STEP AND WRITES NOTHING WHEN IT FIRES. The
     # draft note and the staged audio are the only copies of what they said, so a cancelled pass
     # leaves the recording exactly as it found it — they resume into the same draft.
-    _check_record_cancel(job_id)
+    record_state._check_record_cancel(job_id)
 
     draft: Path | None = None
     if draft_rel is not None:
@@ -619,7 +341,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
     # and left Obsidian's own player unable to seek the file. A 0.12 s lossless remux fixes
     # both, and doing it HERE means every reader downstream gets a sane file. `_transcribe_segment`
     # does it per segment, right before reading each one.
-    _check_record_cancel(job_id)
+    record_state._check_record_cancel(job_id)
     progress("preparing", "Preparing audio", "Making the recording seekable and readable")
 
     # Keep the Transcript, not just its text: `asr_model` and `audio_seconds` are deterministic
@@ -629,7 +351,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
     gots, words, seconds, wall = [], 0, 0.0, 0.0
     try:
         for i, seg in enumerate(segments, start=1):
-            _check_record_cancel(job_id)
+            record_state._check_record_cancel(job_id)
             of = f" ({i} of {len(segments)})" if len(segments) > 1 else ""
             progress("transcribing", f"Transcribing{of}",
                      "Converting the local audio into exact source text")
@@ -647,7 +369,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
                  metrics={"transcript_words": words, "audio_seconds": seconds,
                           "transcription_seconds": wall, "segments": len(segments),
                           "transcription_realtime_factor": round(seconds / wall, 2) if wall else 0})
-    except RecordCancelled:
+    except record_state.RecordCancelled:
         raise
     except Exception as exc:                       # noqa: BLE001 - re-raised, see below
         trace.record("record", {"stage": "transcribe", "status": "failed", "error": str(exc)})
@@ -657,7 +379,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
         # Silence is the same outcome by a different route — a muted mic, the wrong input — and
         # it produces exactly the same worthless note. Saying so is the point.
         trace.record("record", {"stage": "transcribe", "status": "empty"})
-        raise NoSpeech("no words were captured — nothing was filed, and your audio and notes "
+        raise record_state.NoSpeech("no words were captured — nothing was filed, and your audio and notes "
                        "are exactly where they were")
 
     summary = None
@@ -669,11 +391,11 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
             # response line by line, so raising from here stops a summary that is already
             # generating instead of waiting out its remaining minutes.
             def activity_fn(kind, chunk):
-                _check_record_cancel(job_id)
+                record_state._check_record_cancel(job_id)
                 progress("summarizing", "Reasoning about the summary",
                          "Live local-model activity", kind=kind, text=chunk)
             activity = activity_fn if on_progress is not None else None
-            _check_record_cancel(job_id)
+            record_state._check_record_cancel(job_id)
             # ⚠ RECORD_MODEL is the resident (llm.py says why). Their notes ride along as
             # context — what they noticed, how they spell things — never as a filter.
             clean_notes, note_images = _extract_note_images(notes_md or "", vault)
@@ -692,7 +414,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
                               "summary_seconds": s.stats.get("duration_s"),
                               "summary_output_tokens": s.stats.get("output_tokens"),
                               "summary_decode_tok_s": s.stats.get("decode_tok_s")})
-        except RecordCancelled:
+        except record_state.RecordCancelled:
             # ⚠ NOT swallowed by the summary's catch-all. A cancel is their instruction, not a
             # degraded summary, and continuing on to file the note would ignore it.
             raise
@@ -722,7 +444,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
     # No empty-transcript branch: it was unreachable once an empty transcript became an error,
     # and its job — keeping a failed journal inside the privacy floor — belongs to `build_card`,
     # which returns `JOURNAL_FOLDER` for a declared journal before it consults the model at all.
-    _check_record_cancel(job_id)
+    record_state._check_record_cancel(job_id)
     progress("filing", "Choosing filing details", "Comparing the recording with the vault's existing structure")
     card = suggest.build_card(text, declared_type=declared_type, title=declared_title,
                               notes=notes_md, vault=vault, model=llm.RECORD_MODEL)
@@ -732,7 +454,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
 
     # The last chance: past this line the note is on disk and cancelling would mean deleting
     # a written recording, which this never does.
-    _check_record_cancel(job_id)
+    record_state._check_record_cancel(job_id)
     progress("saving", "Saving the note", "Archiving audio, writing Markdown and refreshing the index")
     r = record.write_recording(
         audio_src=segments, title=title, when=when, type_tag=card.type_tag, transcript=text,
@@ -751,7 +473,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
             except OSError:
                 pass                  # visible in _incoming, harmless, removable by hand
 
-    _index_now(vault, str(r.note.relative_to(vault)))
+    record_state._index_now(vault, str(r.note.relative_to(vault)))
     trace.record("record", {"note": str(r.note), "dest": card.dest_dir,
                             "type": card.type_tag, "has_summary": bool(summary_md),
                             "speakers_by": speakers_by})
@@ -818,11 +540,11 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
     from .config import VAULT as _VAULT
 
     vault = vault or _VAULT
-    src = _vault_path(vault, note)
+    src = record_state._vault_path(vault, note)
     text = src.read_text(encoding="utf-8")
     rels = [audio_rel] if isinstance(audio_rel, str) else list(audio_rel)
-    segments = [_vault_path(vault, rel) for rel in rels]
-    staging = _vault_path(vault, record_mod.STAGING_DIR)
+    segments = [record_state._vault_path(vault, rel) for rel in rels]
+    staging = record_state._vault_path(vault, record_mod.STAGING_DIR)
     for rel, seg in zip(rels, segments):
         if not seg.is_file():
             raise FileNotFoundError(f"no audio at {rel!r}")
@@ -840,7 +562,7 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
 
     gots, seconds, asr_model, speakers_by = [], 0.0, "", ""
     for i, seg in enumerate(segments, start=1):
-        _check_record_cancel(job_id)
+        record_state._check_record_cancel(job_id)
         of = f" ({i} of {len(segments)})" if len(segments) > 1 else ""
         progress("transcribing", f"Transcribing{of}", "Adding the new words to this note")
         got, _cached = _transcribe_segment(seg, transcribe)
@@ -851,16 +573,16 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
     fm, _ = parse_frontmatter(text)
     addition = _join_segments(gots, labelled=bool(fm.get("speakers_by")))
     if not addition:
-        raise NoSpeech("no words were captured — nothing was added, and your audio is exactly "
+        raise record_state.NoSpeech("no words were captured — nothing was added, and your audio is exactly "
                        "where it was")
 
     # ⚠ PAST THE LOOP, AND BEFORE ARCHIVING. A resume normally has ONE segment, so a check
     # only at the top of the loop ran once and never again — they were told "nothing is written"
     # and the note grew anyway. `archive_audio` writes durable files, so a cancel landing after
     # it left orphan copies. This is the last boundary; nothing durable happens before it.
-    _check_record_cancel(job_id)
-    with _note_lock(vault, note):
-        text = _reread_for_write(src, note)
+    record_state._check_record_cancel(job_id)
+    with record_state._note_lock(vault, note):
+        text = record_state._reread_for_write(src, note)
 
         archived_rels, digests = [], []
         for seg in segments:
@@ -878,7 +600,7 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
                                                    speakers_by=speakers_by)
         record_mod.write_note_text(src, record_mod.append_transcript(text, addition))
 
-    archived_paths = {_vault_path(vault, rel).resolve() for rel in archived_rels}
+    archived_paths = {record_state._vault_path(vault, rel).resolve() for rel in archived_rels}
     for seg in segments:
         cache = _segment_cache(seg)
         # Belt as well as braces: never unlink a file that IS the archive it was copied to.
@@ -889,7 +611,7 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
                     path.unlink()
                 except OSError:
                     pass
-    _index_now(vault, str(src.relative_to(vault)), sweep=False)
+    record_state._index_now(vault, str(src.relative_to(vault)), sweep=False)
     trace.record("record", {"stage": "append", "note": str(src), "segments": len(segments),
                             "words": len(addition.split())})
     return {"note": str(src.relative_to(vault)), "words": len(addition.split()),
@@ -909,7 +631,7 @@ def handle_record_transcript(*, audio_rel: str | list[str],
     rels = [audio_rel] if isinstance(audio_rel, str) else list(audio_rel)
     gots, pending = [], 0
     for rel in rels:
-        cache = _segment_cache(_vault_path(vault, rel))
+        cache = _segment_cache(record_state._vault_path(vault, rel))
         if not cache.is_file():
             pending += 1
             continue
@@ -920,41 +642,6 @@ def handle_record_transcript(*, audio_rel: str | list[str],
     text = _join_segments(gots)
     return {"text": text, "pending": pending, "segments": len(rels),
             "words": len(text.split())}
-
-
-# ⚠ ONE WRITER AT A TIME, PER NOTE. `ThreadingHTTPServer` runs handlers in parallel and five
-# endpoints write the same file. Re-reading before the write does NOT close two writers
-# interleaving between one another's read and write, which is how a notes save silently
-# reverted a finished append; the lock is held across read AND write, so the pair is atomic.
-# Keyed on the resolved path, so `apply` moving a note releases the old key naturally.
-_NOTE_LOCKS_GUARD = threading.Lock()
-_NOTE_LOCKS: dict[str, threading.RLock] = {}
-
-
-def _note_lock(vault: Path, note: str) -> threading.RLock:
-    key = str(_vault_path(vault, note).resolve())
-    with _NOTE_LOCKS_GUARD:
-        lock = _NOTE_LOCKS.get(key)
-        if lock is None:
-            if len(_NOTE_LOCKS) > 256:               # a recorder touches a handful of notes
-                _NOTE_LOCKS.clear()
-            lock = _NOTE_LOCKS[key] = threading.RLock()
-        return lock
-
-
-def _reread_for_write(src: Path, note: str) -> str:
-    """The note as it stands RIGHT NOW, for a job that has been thinking for minutes.
-
-    ⚠ A summary retry takes minutes and the notes editor autosaves on blur the whole time, so
-    writing back the text read at entry reverts whatever they typed in between. And `write_text`
-    CREATES: if `apply` moved the note, writing the old path would put a second, stale copy of
-    the recording into the vault. Both are one re-read away.
-    """
-    if not src.is_file():
-        raise FileNotFoundError(
-            f"{note} is no longer there — it was moved or renamed while this ran, so nothing "
-            f"was written")
-    return src.read_text(encoding="utf-8")
 
 
 def handle_record_notes(*, note: str, notes_md: str, vault: Path | None = None) -> dict:
@@ -969,12 +656,12 @@ def handle_record_notes(*, note: str, notes_md: str, vault: Path | None = None) 
     from .config import VAULT as _VAULT
 
     vault = vault or _VAULT
-    src = _vault_path(vault, note)
-    with _note_lock(vault, note):
+    src = record_state._vault_path(vault, note)
+    with record_state._note_lock(vault, note):
         text = src.read_text(encoding="utf-8")
         record_mod.write_note_text(
             src, record_mod.replace_review_sections(text, summary_md=None, notes_md=notes_md))
-    _index_now(vault, str(src.relative_to(vault)), sweep=False)
+    record_state._index_now(vault, str(src.relative_to(vault)), sweep=False)
     trace.record("record", {"stage": "notes", "note": str(src)})
     return {"note": str(src.relative_to(vault))}
 
@@ -995,16 +682,16 @@ def handle_record_summary(*, note: str, instructions: str = "", job_id: str = ""
     from .config import VAULT as _VAULT
 
     vault = vault or _VAULT
-    src = _vault_path(vault, note)
+    src = record_state._vault_path(vault, note)
     text = src.read_text(encoding="utf-8")
     parts = record_mod.read_review_sections(text)
     if not parts["transcript"].strip():
         raise ValueError("this note has no transcript to summarize")
 
-    _record_progress_start(job_id)
-    _record_progress_update(job_id, stage="summarizing", label="Reasoning about the summary",
+    record_state._record_progress_start(job_id)
+    record_state._record_progress_update(job_id, stage="summarizing", label="Reasoning about the summary",
                             detail="The local model is re-reading the transcript")
-    activity = (lambda kind, chunk: _record_progress_update(
+    activity = (lambda kind, chunk: record_state._record_progress_update(
         job_id, stage="summarizing", label="Reasoning about the summary",
         detail="Live local-model activity", kind=kind, text=chunk)) if job_id else None
 
@@ -1016,7 +703,7 @@ def handle_record_summary(*, note: str, instructions: str = "", job_id: str = ""
                             notes=clean_notes, instructions=instructions,
                             images=note_images or None)
     if not s.valid:
-        _record_progress_update(job_id, stage="failed", label="Retry failed", detail=s.error)
+        record_state._record_progress_update(job_id, stage="failed", label="Retry failed", detail=s.error)
         raise ValueError(f"the summary could not be rewritten: {s.error}")
 
     fm, _ = parse_frontmatter(text)
@@ -1026,19 +713,19 @@ def handle_record_summary(*, note: str, instructions: str = "", job_id: str = ""
     # to "". Writing that removes the summary and its fence, which is the one thing a failed
     # retry promises not to do. An empty answer is a failed answer.
     if not summary_md.strip():
-        _record_progress_update(job_id, stage="failed", label="Retry failed",
+        record_state._record_progress_update(job_id, stage="failed", label="Retry failed",
                                 detail="the model returned an empty summary")
         raise ValueError("the summary could not be rewritten: the model returned an empty "
                          "summary, so the one you had is untouched")
     # The note as it stands NOW, not as it stood before the model started thinking. The lock
     # covers the read and the write, never the model call: holding it for the minutes a summary
     # takes would hang their notes autosave on every blur.
-    with _note_lock(vault, note):
-        current = _reread_for_write(src, note)
+    with record_state._note_lock(vault, note):
+        current = record_state._reread_for_write(src, note)
         current = record_mod.replace_review_sections(current, summary_md=summary_md)
         record_mod.write_note_text(src, current)
-    _index_now(vault, str(src.relative_to(vault)), sweep=False)
-    _record_progress_update(job_id, stage="done", label="Summary rewritten", detail="")
+    record_state._index_now(vault, str(src.relative_to(vault)), sweep=False)
+    record_state._record_progress_update(job_id, stage="done", label="Summary rewritten", detail="")
     trace.record("record", {"stage": "resummarize", "note": str(src),
                             "instructions": bool(instructions.strip()), "stats": s.stats})
     return {"note": str(src.relative_to(vault)), "summary": summary_md}
@@ -1061,10 +748,10 @@ def handle_record_apply(*, note: str, dest_dir: str, type_tag: str, topics: list
     from .config import VAULT as _VAULT
 
     vault = vault or _VAULT
-    src = _vault_path(vault, note)
+    src = record_state._vault_path(vault, note)
     # ⚠ Held across read, write AND move: apply is the one writer that can invalidate another
     # endpoint's path, and a bare acquire/release would leak the lock on the raise paths below.
-    with _note_lock(vault, note):
+    with record_state._note_lock(vault, note):
         text = src.read_text(encoding="utf-8")
 
         # ⚠ The summary was rendered against the type the CARD guessed, and this is where they
@@ -1099,7 +786,7 @@ def handle_record_apply(*, note: str, dest_dir: str, type_tag: str, topics: list
         text = record_mod.replace_review_sections(
             text, summary_md=summary_md, notes_md=notes_md)
 
-        dest = _vault_path(vault, dest_dir) / name
+        dest = record_state._vault_path(vault, dest_dir) / name
         if dest != src and dest.exists():
             # Both movers grew this guard on 2026-08-04 after two notes could resolve to one
             # destination and one was silently lost. A third mover does not get to relearn it.
@@ -1109,7 +796,7 @@ def handle_record_apply(*, note: str, dest_dir: str, type_tag: str, topics: list
         if dest != src:
             src.unlink()
 
-    _index_now(vault, str(dest.relative_to(vault)),
+    record_state._index_now(vault, str(dest.relative_to(vault)),
                moved_from=str(src.relative_to(vault)) if dest != src else None)
     trace.record("record", {"stage": "apply", "note": str(dest), "moved": dest != src})
     return {"note": str(dest.relative_to(vault))}
@@ -1125,15 +812,15 @@ def handle_record_review(*, note: str, vault: Path | None = None) -> dict:
     from .config import VAULT as _VAULT
 
     vault = vault or _VAULT
-    src = _vault_path(vault, note)
-    with _note_lock(vault, note):
+    src = record_state._vault_path(vault, note)
+    with record_state._note_lock(vault, note):
         text = src.read_text(encoding="utf-8")
         fm, _ = parse_frontmatter(text)
         if fm.get("origin") != "recorded":
             raise ValueError("review status is only valid for recorded notes")
         text = record_mod.set_review_status(text, "complete")
         record_mod.write_note_text(src, _strip_frontmatter_key(text, "filed_by"))
-    _index_now(vault, str(src.relative_to(vault)), sweep=False)
+    record_state._index_now(vault, str(src.relative_to(vault)), sweep=False)
     trace.record("record", {"stage": "review", "note": str(src)})
     return {"note": str(src.relative_to(vault))}
 
@@ -1216,7 +903,7 @@ class _Handler(BaseHTTPRequestHandler):
             if not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", job_id):
                 self._send_json(400, {"error": "a valid job_id is required"})
                 return
-            state = record_progress(job_id)
+            state = record_state.record_progress(job_id)
             if state is None:
                 self._send_json(404, {"error": "no such recording job"})
             else:
@@ -1575,32 +1262,32 @@ class _Handler(BaseHTTPRequestHandler):
         if job_id and not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", job_id):
             self._send_json(400, {"error": "job_id is invalid"})
             return
-        _record_progress_start(job_id)
-        update = (lambda **event: _record_progress_update(job_id, **event)) if job_id else None
+        record_state._record_progress_start(job_id)
+        update = (lambda **event: record_state._record_progress_update(job_id, **event)) if job_id else None
         try:
             # Blank title stays blank. `handle_record` owns the transcript-derived fallback,
             # and only after the model has had its turn.
-            with _record_pipeline_slot(job_id):
+            with record_state._record_pipeline_slot(job_id):
                 result = handle_record(**_record_args(data), on_progress=update, job_id=job_id)
-        except RecordQueueFull as e:
+        except record_state.RecordQueueFull as e:
             if job_id:
-                _record_progress_update(job_id, stage="failed", label="Processing queue is full",
+                record_state._record_progress_update(job_id, stage="failed", label="Processing queue is full",
                                         detail=str(e), done=True, error=str(e))
             self._send_json(503, {"error": str(e)})
             return
-        except NoSpeech as e:
+        except record_state.NoSpeech as e:
             # 422 and `silent: true`: the plugin shows a calm line and the ordinary way
             # forward, never the red "delete or keep your files?" screen.
             if job_id:
-                _record_progress_update(job_id, stage="silent", label="No words captured",
+                record_state._record_progress_update(job_id, stage="silent", label="No words captured",
                                         detail=str(e), done=True)
             self._send_json(422, {"silent": True, "error": str(e)})
             return
-        except RecordCancelled:
+        except record_state.RecordCancelled:
             # 409, and a body that says nothing was lost: the plugin returns to the paused
             # state with the draft and the audio exactly where they were.
             if job_id:
-                _record_progress_update(job_id, stage="cancelled", label="Cancelled",
+                record_state._record_progress_update(job_id, stage="cancelled", label="Cancelled",
                                         detail="Your recording and notes are untouched",
                                         done=True)
             self._send_json(409, {"cancelled": True,
@@ -1608,18 +1295,18 @@ class _Handler(BaseHTTPRequestHandler):
             return
         except (ValueError, FileNotFoundError) as e:
             if job_id:
-                _record_progress_update(job_id, stage="failed", label="Processing stopped",
+                record_state._record_progress_update(job_id, stage="failed", label="Processing stopped",
                                         detail=str(e), done=True, error=str(e))
             self._send_json(400, {"error": str(e)})
             return
         except Exception as e:  # noqa: BLE001 - surface the local failure and finish progress
             if job_id:
-                _record_progress_update(job_id, stage="failed", label="Processing stopped",
+                record_state._record_progress_update(job_id, stage="failed", label="Processing stopped",
                                         detail=str(e), done=True, error=str(e))
             self._send_json(500, {"error": f"{type(e).__name__}: {e}"})
             return
         if job_id:
-            _record_progress_update(job_id, stage="complete", label="AI review ready",
+            record_state._record_progress_update(job_id, stage="complete", label="AI review ready",
                                     detail="The note is filed and ready for approval", done=True)
         self._send_json(200, result)
 
@@ -1713,7 +1400,7 @@ class _Handler(BaseHTTPRequestHandler):
         if not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", job_id or ""):
             self._send_json(400, {"error": "a valid job_id is required"})
             return
-        self._send_json(200, {"cancelling": request_record_cancel(job_id)})
+        self._send_json(200, {"cancelling": record_state.request_record_cancel(job_id)})
 
     def _handle_record_append(self):
         if self._refuse_cross_site_write():
@@ -1732,36 +1419,36 @@ class _Handler(BaseHTTPRequestHandler):
         if job_id and not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", job_id):
             self._send_json(400, {"error": "job_id is invalid"})
             return
-        _record_progress_start(job_id)
-        update = (lambda **event: _record_progress_update(job_id, **event)) if job_id else None
+        record_state._record_progress_start(job_id)
+        update = (lambda **event: record_state._record_progress_update(job_id, **event)) if job_id else None
         try:
-            with _record_pipeline_slot(job_id):
+            with record_state._record_pipeline_slot(job_id):
                 result = handle_record_append(note=note, audio_rel=rels, job_id=job_id,
                                               on_progress=update)
-        except RecordQueueFull as e:
+        except record_state.RecordQueueFull as e:
             if job_id:
-                _record_progress_update(job_id, stage="failed", label="Processing queue is full",
+                record_state._record_progress_update(job_id, stage="failed", label="Processing queue is full",
                                         detail=str(e), done=True, error=str(e))
             self._send_json(503, {"error": str(e)})
             return
-        except NoSpeech as e:
+        except record_state.NoSpeech as e:
             if job_id:
-                _record_progress_update(job_id, stage="silent", label="No words captured",
+                record_state._record_progress_update(job_id, stage="silent", label="No words captured",
                                         detail=str(e), done=True)
             self._send_json(422, {"silent": True, "error": str(e)})
             return
-        except RecordCancelled:
+        except record_state.RecordCancelled:
             self._send_json(409, {"cancelled": True,
                                   "error": "cancelled — nothing was written or deleted"})
             return
         except (ValueError, FileNotFoundError) as e:
             if job_id:
-                _record_progress_update(job_id, stage="failed", label="Processing stopped",
+                record_state._record_progress_update(job_id, stage="failed", label="Processing stopped",
                                         detail=str(e), done=True, error=str(e))
             self._send_json(400, {"error": str(e)})
             return
         if job_id:
-            _record_progress_update(job_id, stage="complete", label="Added to the note",
+            record_state._record_progress_update(job_id, stage="complete", label="Added to the note",
                                     detail=f"{result['words']} more words", done=True)
         self._send_json(200, result)
 
@@ -1813,14 +1500,14 @@ class _Handler(BaseHTTPRequestHandler):
         if job_id and not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", job_id):
             self._send_json(400, {"error": "job_id is invalid"})
             return
-        _record_progress_start(job_id)
+        record_state._record_progress_start(job_id)
         try:
-            with _record_pipeline_slot(job_id):
+            with record_state._record_pipeline_slot(job_id):
                 result = handle_record_summary(
                     note=note, instructions=str(data.get("instructions") or ""), job_id=job_id)
-        except RecordQueueFull as e:
+        except record_state.RecordQueueFull as e:
             if job_id:
-                _record_progress_update(job_id, stage="failed", label="Processing queue is full",
+                record_state._record_progress_update(job_id, stage="failed", label="Processing queue is full",
                                         detail=str(e), done=True, error=str(e))
             self._send_json(503, {"error": str(e)})
             return

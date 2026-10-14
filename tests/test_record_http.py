@@ -11,7 +11,7 @@ import urllib.request
 
 import pytest
 
-from slim import chat, config, suggest, summarize, transcribe
+from slim import chat, config, record_state, suggest, summarize, transcribe
 from tests.test_record_endpoint import (_archive_in_tmp, _draft, _existing, _fakes,  # noqa: F401
                                         _staged)
 
@@ -55,7 +55,7 @@ def _silent(monkeypatch):
 
 
 def _full_queue(monkeypatch):
-    monkeypatch.setattr(chat._RECORD_PIPELINE, "limit", 0)
+    monkeypatch.setattr(record_state._RECORD_PIPELINE, "limit", 0)
 
 
 # --- POST /api/record -------------------------------------------------------------------
