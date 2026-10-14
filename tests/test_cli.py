@@ -3,7 +3,11 @@ refuse elsewhere."""
 
 from types import SimpleNamespace
 
-from slim import cli, vaultidentity
+import pytest
+
+from slim import cli, db, inbox, vaultidentity, voicememos
+from slim.ingest import ingest
+from tests.test_ingest import counts
 from tests.test_vaultidentity import stub_ingest, use_vault
 
 
@@ -103,3 +107,86 @@ def test_status_reports_the_newest_reflection(monkeypatch, tmp_path, capsys):
 
 def test_status_says_when_nothing_was_ever_reflected(monkeypatch, tmp_path, capsys):
     assert "reflected: never" in _status_out(monkeypatch, tmp_path, capsys)
+
+
+@pytest.fixture(name="vault")
+def _one_note_vault(tmp_path):
+    v = tmp_path / "vault"
+    (v / "Projects/Demo").mkdir(parents=True)
+    (v / "Projects/Demo/note.md").write_text(
+        "---\ntitle: \"Demo Note\"\ntype: meeting-note\ndate: 2026-07-01\n---\n\n"
+        "# Demo Note\n\n## Decisions\n\n"
+        "We decided to use SQLite with FTS5 for the index.\n")
+    return v
+
+
+@pytest.fixture(name="con")
+def _db(tmp_path):
+    return db.connect(tmp_path / "test.db")
+
+
+def test_status_reports_fragments_without_a_current_vector(con, vault, monkeypatch, capsys):
+    """`embedded:` counts rows in `embeddings`, which includes STALE vectors, so after a content
+    pass it can equal `fragments:` while retrieval runs on a fraction of the corpus (measured
+    2026-08-04: 2,802 of 3,403). `slim status` must show the counter that catches it."""
+    from slim import cli
+    ingest(con, vault)
+    fragments = counts(con)["fragments"]
+    assert fragments > 0
+    monkeypatch.setattr(cli.db, "connect", lambda *a, **k: con)
+    cli.cmd_status(None)
+    out = capsys.readouterr().out
+    assert f"unembedded: {fragments}" in out
+    assert "slim ingest" in out
+
+
+# --- CLI wiring: sweep -> process -> (index only if written, not dry-run) ------------------
+
+def _written():
+    return SimpleNamespace(status="written", note=None, detail="",
+                           audio=SimpleNamespace(name="x.m4a"), transcript=None)
+
+
+def test_memos_cli_runs_sweep_then_process_then_indexes_when_written(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(vaultidentity, "require_vault_dir", lambda: None)
+    monkeypatch.setattr(cli.db, "connect", lambda: SimpleNamespace(close=lambda: None))
+    monkeypatch.setattr(vaultidentity, "require_vault_identity", lambda _con: None)
+    monkeypatch.setattr(voicememos, "sweep",
+                        lambda container, dry_run: (calls.append("sweep"), [])[1])
+    monkeypatch.setattr(inbox, "process",
+                        lambda **k: (calls.append("process"), [_written()])[1])
+    monkeypatch.setattr(cli, "cmd_ingest", lambda args: calls.append("ingest"))
+
+    cli.cmd_memos(SimpleNamespace(container=None, dry_run=False))
+    assert calls == ["sweep", "process", "ingest"]
+
+
+def test_memos_cli_skips_index_when_nothing_written(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(vaultidentity, "require_vault_dir", lambda: None)
+    monkeypatch.setattr(cli.db, "connect", lambda: SimpleNamespace(close=lambda: None))
+    monkeypatch.setattr(vaultidentity, "require_vault_identity", lambda _con: None)
+    monkeypatch.setattr(voicememos, "sweep",
+                        lambda container, dry_run: (calls.append("sweep"), [])[1])
+    monkeypatch.setattr(inbox, "process",
+                        lambda **k: (calls.append("process"), [])[1])
+    monkeypatch.setattr(cli, "cmd_ingest", lambda args: calls.append("ingest"))
+
+    cli.cmd_memos(SimpleNamespace(container=None, dry_run=False))
+    assert calls == ["sweep", "process"]         # no ingest
+
+
+def test_memos_cli_dry_run_never_indexes(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(vaultidentity, "require_vault_dir", lambda: None)
+    monkeypatch.setattr(cli.db, "connect", lambda: SimpleNamespace(close=lambda: None))
+    monkeypatch.setattr(vaultidentity, "require_vault_identity", lambda _con: None)
+    monkeypatch.setattr(voicememos, "sweep",
+                        lambda container, dry_run: (calls.append("sweep"), [])[1])
+    monkeypatch.setattr(inbox, "process",
+                        lambda **k: (calls.append("process"), [_written()])[1])
+    monkeypatch.setattr(cli, "cmd_ingest", lambda args: calls.append("ingest"))
+
+    cli.cmd_memos(SimpleNamespace(container=None, dry_run=True))
+    assert "ingest" not in calls

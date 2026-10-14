@@ -235,21 +235,6 @@ def test_sweep_skips_managed_recorder_drafts_like_the_single_note_path(tmp_path)
         ingest_note(con, vault, "Journal/2026-08-25.slim-draft.md")
 
 
-def test_status_reports_fragments_without_a_current_vector(con, vault, monkeypatch, capsys):
-    """`embedded:` counts rows in `embeddings`, which includes STALE vectors, so after a content
-    pass it can equal `fragments:` while retrieval runs on a fraction of the corpus (measured
-    2026-08-04: 2,802 of 3,403). `slim status` must show the counter that catches it."""
-    from slim import cli
-    ingest(con, vault)
-    fragments = counts(con)["fragments"]
-    assert fragments > 0
-    monkeypatch.setattr(cli.db, "connect", lambda *a, **k: con)
-    cli.cmd_status(None)
-    out = capsys.readouterr().out
-    assert f"unembedded: {fragments}" in out
-    assert "slim ingest" in out
-
-
 def test_a_note_edited_and_moved_in_one_step_keeps_identity_when_told_where_it_came_from(con, vault):
     """Filing a recording rewrites the note AND moves it before one ingest. The hash rule
     cannot see a rename through an edit, so the mover names the old path and the row is
