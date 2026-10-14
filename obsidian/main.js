@@ -1,6466 +1,6553 @@
-/*
- * SLIM Recorder — record, take notes, file the result.
- *
- * Deliberately a single CommonJS file with NO build step. Obsidian loads `main.js` directly, so
- * there is no esbuild, no npm install, and no bundler config standing between an edit and a
- * reload. That matters more than type checking here: this plugin's first real test is a live
- * meeting, and a toolchain that fails to build is a failure mode with no upside.
- *
- * THE DIVISION OF LABOUR IS THE ARCHITECTURE (CLAUDE.md, "Capture"):
- * this file owns the UI and writes files through the Vault API. Every judgement — transcribe,
- * summarize, suggest a path — belongs to the Python server on 127.0.0.1.
- * A judgement that migrates into this file is a bug, because it becomes untestable by the
- * suite that protects the rest of SLIM.
- *
- * ⚠ AUDIO GOES INTO THE VAULT, NOT OVER HTTP. The server caps request bodies far below what a
- * recording weighs, so the file is written to disk here and only its PATH is posted.
- *
- * ⚠ AUDIO IS FLUSHED TO DISK AS IT ARRIVES, through Node's `fs` rather than the Vault API,
- * because Obsidian can only create or overwrite a binary file and never append. `isDesktopOnly`
- * is what licenses that. The alternative — holding every chunk in browser memory until Stop —
- * makes a crash during a two-hour meeting cost the entire meeting, and long meetings are the
- * use case.
- *
- * ⚠ THIS PLUGIN OWNS `slim chat`'s LIFECYCLE. Nothing else starts it, so recording with the
- * server down used to fail at the POST. It spawns on load if the port is free and kills the
- * process GROUP on unload — see `stopServer`.
- */
+/* generated from src/ by npm run build; do not edit */
 "use strict";
-
-const { Plugin, ItemView, MarkdownView, MarkdownRenderer, MarkdownRenderChild, Modal,
-        PluginSettingTab, Setting, Notice, requestUrl, setIcon,
-        editorInfoField, editorLivePreviewField } = require("obsidian");
-const { spawn } = require("child_process");
-const { randomUUID } = require("crypto");
-const http = require("http");
-const net = require("net");
-const os = require("os");
-const nodePath = require("path");
-
-const STAGING_DIR = "Attachments/_incoming";
-const MIC_CHANNEL = 0;      // left  — the server labels it Me
-const SYSTEM_CHANNEL = 1;   // right — the server labels it Them
-const RECORDER_ATTACHMENTS = "Attachments/Recorder";
-const DRAFT_SUFFIX = ".slim-draft.md";
-const EMPTY_MEETING_BLOCK = "````slim-meeting\n\n````\n\n";
-
-// Matches slim/voicetags.py TYPE_FRONTMATTER. A type they PICKS is testimony: the pipeline never
-// overrides a declared type, so choosing here removes the whole axis from guesswork.
-const TYPES = [
-  ["meeting-note", "Meeting"],
-  ["lecture", "Lecture"],
-  ["idea", "Idea"],
-  ["journal", "Journal"],
-  ["note", "Note"],
-];
-
-// ⚠ Defaults are DERIVED from the home directory, never a literal path — this file is in a
-// git repo that may one day be public, and a hard-coded /Users/<name> is both a leak and a
-// machine-specific bug.
-const DEFAULTS = {
-  port: 7546,
-  repoPath: `${os.homedir()}/Programming/Personal/slim-public`,
-  uvPath: `${os.homedir()}/.local/bin/uv`,
-  recordVoice: true,
-  lastType: "meeting-note",
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __commonJS = (cb, mod) => function __require() {
+  try {
+    return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  } catch (e) {
+    throw mod = 0, e;
+  }
 };
 
-function pad(n) { return String(n).padStart(2, "0"); }
-
-function serverArgv(settings, parentPid = process.pid) {
-  return ["--directory", settings.repoPath, "run", "slim", "chat",
-          "--port", String(settings.port), "--parent-pid", String(parentPid)];
-}
-
-// ⚠ The server DISCOVERS its own vault (slim/vaultpath.py). This plugin sends vault-RELATIVE
-// paths, so a server that discovered a different vault than this one would look for the audio
-// in a vault nobody wrote to, and file the note there. The plugin knows which vault it is in;
-// it says so, and the override wins over discovery.
-function serverEnv(vaultBase, env = process.env) {
-  return Object.assign({}, env, { SLIM_VAULT: vaultBase });
-}
-
-/* The recording clock, read from the wall. `since` is when it last started running, null while
- * paused; `base` is the seconds banked before that. ⚠ Counting setInterval ticks undercounted:
- * Chromium throttles timers in a hidden or occluded window, and with the display asleep a
- * 51-minute meeting read about 30 while the audio ran the whole time. */
-function clockSeconds(clock, now) {
-  if (!clock) return 0;
-  return Math.floor(clock.base + (clock.since == null ? 0 : (now - clock.since) / 1000));
-}
-
-function hhmmss(totalSeconds) {
-  const s = Math.floor(totalSeconds);
-  return `${pad(Math.floor(s / 3600))}:${pad(Math.floor((s % 3600) / 60))}:${pad(s % 60)}`;
-}
-
-// A TCP connect is the only honest test of "is
-// something serving this port" — a pid file lies after a crash.
-function portOpen(port) {
-  return new Promise((resolve) => {
-    const sock = net.connect({ port, host: "127.0.0.1" }, () => {
-      sock.end();
-      resolve(true);
-    });
-    sock.on("error", () => resolve(false));
-    sock.setTimeout(1000, () => {
-      sock.destroy();
-      resolve(false);
-    });
-  });
-}
-
-async function waitForPort(port, timeoutMs) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await portOpen(port)) return true;
-    await new Promise((r) => setTimeout(r, 250));
-  }
-  return false;
-}
-
-/* Which recording a staged file belongs to. `<id>-001.webm` -> `<id>`; a name with no segment
- * number is returned unchanged, because recordings made before segments existed still have to
- * resolve. ONE spelling: the rule lived in three places across two languages, they agreed only
- * by luck, and missing one of them made every recording fail on 2026-08-26. */
-function recordingIdFromStaged(filePath) {
-  return nodePath.posix.basename(filePath, ".webm").replace(/-\d{3}$/, "");
-}
-
-function localDay(d = new Date()) {
-  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`;
-}
-
-function recordingId() {
-  const d = new Date();
-  const date = localDay(d);
-  const time = `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
-  return `${date}T${time}-${randomUUID().slice(0, 8)}`;
-}
-
-/* Presentation-only parser for the finished meeting object.
- *
- * It NEVER writes the note. `slim/record.py` remains the sole owner of frontmatter and of the
- * Summary / Notes / Transcript boundaries. Keeping the complete frontmatter block here is a
- * regression seam: the tabbed object may hide it visually, but it must never normalize, reorder,
- * or replace a byte of it.
- */
-function splitMeetingNote(text) {
-  const source = String(text || "");
-  let frontmatter = "";
-  let body = source;
-  if (source.startsWith("---\n")) {
-    const end = source.indexOf("\n---", 4);
-    if (end >= 0) {
-      const after = end + 4;
-      frontmatter = source.slice(0, after);
-      body = source.slice(after).replace(/^\r?\n/, "");
-    }
-  }
-  let managed = body;
-  let tail = "";
-  const blockOpen = body.match(/^(`{3,})slim-meeting[^\n]*\n/m);
-  if (blockOpen) {
-    const fence = blockOpen[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const afterOpen = body.slice(blockOpen.index + blockOpen[0].length);
-    const close = afterOpen.match(new RegExp(`^${fence}[ \\t]*(?:\\r?\\n|$)`, "m"));
-    if (close) {
-      managed = afterOpen.slice(0, close.index);
-      tail = afterOpen.slice(close.index + close[0].length);
-    }
-  }
-  const summaryMatch = managed.match(/<!-- slim:summary[^\n]*-->\s*\n## Summary\s*\n([\s\S]*?)\n<!-- \/slim:summary -->/);
-  const notesMatch = managed.match(/(?:^|\n)## Notes\s*\n([\s\S]*?)(?=\n## Transcript\s*(?:\n|$))/);
-  const transcriptMatch = managed.match(/(?:^|\n)## Transcript\s*\n([\s\S]*)$/);
-  return {
-    frontmatter,
-    summary: summaryMatch ? summaryMatch[1].trim() : "",
-    notes: notesMatch ? notesMatch[1].replace(/^\r?\n/, "").replace(/\s+$/, "") : "",
-    transcript: transcriptMatch ? transcriptMatch[1].trim() : "",
-    tail,
-  };
-}
-
-function frontmatterScalar(text, key) {
-  const frontmatter = splitMeetingNote(text).frontmatter;
-  if (!frontmatter) return "";
-  const escaped = String(key).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = frontmatter.match(new RegExp(`^${escaped}:\\s*(.*?)\\s*$`, "m"));
-  if (!match) return "";
-  return match[1].trim().replace(/^(["'])(.*)\1$/, "$2");
-}
-
-function hasMeetingBlock(text) {
-  return /^`{3,}slim-meeting[^\n]*$/m.test(String(text || ""));
-}
-
-function embedLegacyMeetingBlock(text) {
-  const source = String(text || "");
-  if (hasMeetingBlock(source)) return source;
-  let split = 0;
-  if (source.startsWith("---\n")) {
-    const end = source.indexOf("\n---", 4);
-    if (end >= 0) split = end + 4;
-  }
-  const before = source.slice(0, split);
-  const body = source.slice(split).replace(/^\r?\n+/, "").replace(/\s+$/, "");
-  const longest = Math.max(0, ...Array.from(body.matchAll(/`+/g), (m) => m[0].length));
-  const fence = "`".repeat(Math.max(4, longest + 1));
-  return `${before}${before ? "\n\n" : ""}${fence}slim-meeting\n${body}\n${fence}\n\n`;
-}
-
-function markdownBlockShortcut(text) {
-  const heading = String(text || "").match(/^(#{1,6})\s$/);
-  if (heading) return { tag: `h${heading[1].length}`, kind: "block" };
-  if (/^[-*+]\s$/.test(text || "")) return { tag: "ul", kind: "list" };
-  if (/^\d+\.\s$/.test(text || "")) return { tag: "ol", kind: "list" };
-  if (/^>\s$/.test(text || "")) return { tag: "blockquote", kind: "block" };
-  return null;
-}
-
-/* Markdown this editor RENDERS but cannot reconstruct from the DOM: an Obsidian embed, a
- * formula, a wikilink. Each rendered node keeps the source it came from on `data-slim-src`, and
- * the serializer hands that back verbatim.
- *
- * ⚠ WITHOUT THIS THE EDITOR EATS THEIR SCREENSHOTS. `markdownFromEditable` runs on every
- * keystroke over the RENDERED tree, and `inlineMarkdown` had no case for an <img> — so a note
- * containing `![[Attachments/Recorder/…png]]` lost the embed the moment they typed a character
- * next to it. Same for `$…$`, which came back as bare text with its delimiters gone.
- */
-const SOURCE_ATOM = /(!?\[\[[^\]]+\]\]|!\[[^\]]*\]\([^)]*\)|\$\$[^$]+\$\$|\$[^$\n]+\$)/g;
-
-function stampSourceAtoms(root, markdown) {
-  if (!root || typeof root.querySelectorAll !== "function") return;
-  const atoms = String(markdown || "").match(SOURCE_ATOM) || [];
-  if (!atoms.length) return;
-  const matched = Array.from(
-    root.querySelectorAll("img, .internal-embed, a.internal-link, mjx-container, .math"));
-  // ⚠ OUTERMOST ONLY. Obsidian renders an embed as `<span class="internal-embed"><img></span>`
-  // and a formula as `<span class="math"><mjx-container>`: two matches for one atom. Counting
-  // both put every source after the first on the wrong node and the second half on none, and
-  // each blur-save of the notes pane then halved their screenshots — 7, 4, 2 (2026-09-05).
-  const inside = new Set(matched);
-  const nodes = matched.filter((node) => {
-    for (let up = node.parentElement; up; up = up.parentElement) if (inside.has(up)) return false;
-    return true;
-  });
-  for (let i = 0; i < nodes.length && i < atoms.length; i += 1) {
-    if (typeof nodes[i].setAttribute === "function") {
-      nodes[i].setAttribute("data-slim-src", atoms[i]);
-    }
-  }
-}
-
-function inlineMarkdown(node) {
-  if (!node) return "";
-  if (node.nodeType === 3) return node.nodeValue || "";
-  // The source this node was rendered from, when it is something we cannot rebuild.
-  const stamped = typeof node.getAttribute === "function"
-    ? node.getAttribute("data-slim-src") : null;
-  if (stamped) return stamped;
-  const tag = String(node.tagName || "").toLowerCase();
-  if (tag === "br") return "\n";
-  const inner = Array.from(node.childNodes || [], inlineMarkdown).join("");
-  if (tag === "strong" || tag === "b") return `**${inner}**`;
-  if (tag === "em" || tag === "i") return `*${inner}*`;
-  if (tag === "code") return `\`${inner}\``;
-  if (tag === "a") return `[${inner}](${node.getAttribute("href") || ""})`;
-  return inner;
-}
-
-function markdownFromEditable(root) {
-  const list = (node, depth) => {
-    const ordered = String(node.tagName || "").toLowerCase() === "ol";
-    return Array.from(node.children || []).map((li, i) => {
-      // ⚠ An inner list is a CHILD of its <li>. Serializing the item inline flattened it into
-      // the item's text, and their sub-bullets came back as a bare paragraph (2026-09-05).
-      const own = [], inner = [];
-      for (const child of li.childNodes || []) {
-        const tag = String(child.tagName || "").toLowerCase();
-        if (tag === "ul" || tag === "ol") inner.push(list(child, depth + 1));
-        else own.push(inlineMarkdown(child));
+// src/audio.js
+var require_audio = __commonJS({
+  "src/audio.js"(exports2, module2) {
+    "use strict";
+    var MIC_CHANNEL = 0;
+    var SYSTEM_CHANNEL = 1;
+    var LIVE_FLUSH_BYTES = 64e3;
+    function pcm16k(input, inputRate) {
+      const source = input || new Float32Array();
+      const ratio = Math.max(1, Number(inputRate || 16e3) / 16e3);
+      const length = Math.floor(source.length / ratio);
+      const out = Buffer.alloc(length * 2);
+      for (let i = 0; i < length; i++) {
+        const start = Math.floor(i * ratio);
+        const end = Math.min(source.length, Math.floor((i + 1) * ratio));
+        let value = 0;
+        for (let j = start; j < end; j++) value += source[j];
+        value = Math.max(-1, Math.min(1, value / Math.max(1, end - start)));
+        out.writeInt16LE(value < 0 ? value * 32768 : value * 32767, i * 2);
       }
-      const marker = ordered ? `${i + 1}.` : "-";
-      return [`${"\t".repeat(depth)}${marker} ${own.join("").trim()}`, ...inner].join("\n");
-    }).join("\n");
-  };
-  const block = (node) => {
-    const tag = String(node.tagName || "").toLowerCase();
-    if (/^h[1-6]$/.test(tag)) return `${"#".repeat(Number(tag[1]))} ${inlineMarkdown(node).trim()}`;
-    if (tag === "ul" || tag === "ol") return list(node, 0);
-    if (tag === "blockquote") {
-      return inlineMarkdown(node).split("\n").map((line) => `> ${line}`).join("\n").trim();
+      return out;
     }
-    if (tag === "pre") return `\`\`\`\n${node.textContent || ""}\n\`\`\``;
-    if (tag === "hr") return "---";
-    return inlineMarkdown(node).trimEnd();
-  };
-  return Array.from((root && root.children) || []).map(block)
-    .filter((part) => part.trim()).join("\n\n").trim();
-}
-
-/* ONE tabbed reader for a meeting note (2026-09-03). Two surfaces show the same three tabs —
- * the recorder's review and finished states, and every `slim-meeting` block rendered passively
- * in a note — and they had drifted into two copies of the same tab bar, body shell and section
- * labels. The recorder's extra affordances (an editable summary, a notes editor that saves on
- * blur) arrive as pane overrides rather than as a second copy of the reader.
- *
- * `editable` says which surface this is. False is the plain read-only reader; true means the
- * caller supplies `summaryPane`/`notesPane` and owns what goes inside them.
- */
-function renderMeetingTabs(app, el, parts, sourcePath, {
-  editable = false, component = null, activeTab = "summary", onTab = null,
-  summaryPane = null, notesPane = null,
-} = {}) {
-  const renderMarkdown = (target, markdown) => {
-    if (!markdown) {
-      target.createEl("p", { cls: "slim-empty", text: "Nothing was captured here." });
-      return;
+    var SILENT_PEAK = 10 ** (-80 / 20);
+    var SILENT_START_S = 5;
+    var SILENT_LATER_S = 20;
+    function captureSilence(watch, peaks, seconds = 1) {
+      const prev = watch || { heard: false, silent: 0, warn: false };
+      const sound = peaks.mic >= SILENT_PEAK || peaks.system >= SILENT_PEAK;
+      const silent = sound ? 0 : prev.silent + seconds;
+      const limit = prev.heard ? SILENT_LATER_S : SILENT_START_S;
+      return { heard: prev.heard || sound, silent, warn: silent >= limit };
     }
-    if (MarkdownRenderer && typeof MarkdownRenderer.render === "function") {
-      MarkdownRenderer.render(app, markdown, target, sourcePath || "", component).catch((e) => {
-        console.error("[slim] render meeting", e);
-        target.setText(markdown);
-      });
-    } else target.setText(markdown);
-  };
-
-  const tabs = el.createDiv({ cls: "slim-object-tabs", attr: { role: "tablist" } });
-  [["summary", "AI summary"], ["notes", "My notes"], ["transcript", "Transcript"]]
-    .forEach(([value, label]) => {
-      const tab = tabs.createEl("button", {
-        cls: `slim-object-tab${activeTab === value ? " is-active" : ""}`,
-        text: label,
-        attr: { role: "tab", "aria-selected": String(activeTab === value) },
-      });
-      tab.addEventListener("click", () => { if (onTab) onTab(value); });
-    });
-
-  const body = el.createDiv({ cls: `slim-object-body is-${activeTab}` });
-  if (activeTab === "summary") {
-    // ONE thing per tab (2026-08-26). Review used to show the generated summary beside their
-    // notes as a reference column; two documents in the tab named for one of them read as
-    // clutter, and "My notes" already exists one click away.
-    body.createDiv({ cls: "slim-object-section-label", text: "Generated summary" });
-    if (editable && summaryPane) summaryPane(body);
-    else renderMarkdown(body.createDiv({ cls: "slim-rendered-markdown" }), parts.summary);
-  } else if (activeTab === "notes") {
-    body.createDiv({ cls: "slim-object-section-label", text: "Your notes" });
-    if (editable && notesPane) notesPane(body);
-    else renderMarkdown(body.createDiv({ cls: "slim-rendered-markdown" }), parts.notes);
-  } else {
-    body.createDiv({ cls: "slim-object-section-label", text: "Raw transcript — read only" });
-    renderMarkdown(body.createDiv({ cls: "slim-rendered-markdown slim-transcript" }),
-                   parts.transcript);
-  }
-  return body;
-}
-
-/* A review can be open for only one meeting at a time, but a vault can render many meeting
- * blocks at once. This renderer deliberately owns no RecorderView state: it keeps every other
- * recorded note visible while the active controller retains the pending approval unchanged.
- */
-function renderPassiveMeetingBlock(app, plugin, el, source, sourcePath) {
-  const body = String(source || "");
-  const longestFence = Math.max(0, ...Array.from(body.matchAll(/`+/g), (m) => m[0].length));
-  const fence = "`".repeat(Math.max(4, longestFence + 1));
-  const parts = splitMeetingNote(`${fence}slim-meeting\n${body}\n${fence}`);
-  let activeTab = "summary";
-
-  const draw = () => {
-    el.empty();
-    el.addClass("slim-meeting-object");
-    el.addClass("slim-passive-meeting");
-    const head = el.createDiv({ cls: "slim-object-head" });
-    const copy = head.createDiv({ cls: "slim-object-head-copy" });
-    copy.createDiv({ cls: "slim-object-eyebrow", text: "SLIM meeting note" });
-    copy.createEl("h3", { text: "Meeting note" });
-    const badge = head.createDiv({ cls: "slim-object-status" });
-    badge.createSpan({ cls: "slim-object-status-dot" });
-    badge.createSpan({ text: "Saved" });
-
-    renderMeetingTabs(app, el, parts, sourcePath, {
-      editable: false, component: plugin, activeTab,
-      onTab: (value) => { activeTab = value; draw(); },
-    });
-  };
-  draw();
-}
-
-// One caption request per this much audio: 2.0 s of 16 kHz PCM16. The server re-encodes ~20 s
-// of context on EVERY request whatever the chunk holds (parakeet-mlx's streaming design, ~170 ms
-// per call on this machine), so the number of requests IS the cost — and a request that carries
-// 85 ms of audio costs the same as one that carries two seconds.
-const LIVE_FLUSH_BYTES = 64000;
-
-function pcm16k(input, inputRate) {
-  const source = input || new Float32Array();
-  const ratio = Math.max(1, Number(inputRate || 16000) / 16000);
-  const length = Math.floor(source.length / ratio);
-  const out = Buffer.alloc(length * 2);
-  for (let i = 0; i < length; i++) {
-    const start = Math.floor(i * ratio);
-    const end = Math.min(source.length, Math.floor((i + 1) * ratio));
-    let value = 0;
-    for (let j = start; j < end; j++) value += source[j];
-    value = Math.max(-1, Math.min(1, value / Math.max(1, end - start)));
-    out.writeInt16LE(value < 0 ? value * 32768 : value * 32767, i * 2);
-  }
-  return out;
-}
-
-/* Digital silence — exact zeros — on the channels the file gets, said WHILE it can be fixed.
- *
- * ⚠ THIS WAS FOUND AT THE END, NOT DURING (2026-09-24): 157 s of zeros on both channels, and
- * the refusal of the empty transcript was the first anyone knew of it. The same refusal on
- * 09-04, 09-09 and 09-17. For "I record and forget", a meeting you think is being recorded is
- * the worst failure there is.
- *
- * ONE level, and only when BOTH channels are zeros: then nothing at all is being recorded. The
- * mic ALONE is zeros whenever echo cancellation does its job — 09-28, a lecture played on the
- * Mac: mic -91 dB for 20+ min, system -23.5, and the recording was fine. A line for that fired
- * on every lecture, so it was cut (2026-09-29). System silence alone is nobody else talking.
- *
- * -80 dBFS PEAK per second. Above what a dead input emits through Chromium's processing (one
- * 16-bit step is -90 dBFS; AEC3's comfort-noise floor is -96), well below a real room after
- * noise suppression, and a channel needs to cross it only ONCE a second to count. 5 s at the
- * start of each segment, when a broken capture is still cheap to fix; 20 s once anything has
- * been heard, because a pause is not zeros but a device lost mid-meeting is the same loss. */
-const SILENT_PEAK = 10 ** (-80 / 20);
-const SILENT_START_S = 5;
-const SILENT_LATER_S = 20;
-
-function captureSilence(watch, peaks, seconds = 1) {
-  const prev = watch || { heard: false, silent: 0, warn: false };
-  const sound = peaks.mic >= SILENT_PEAK || peaks.system >= SILENT_PEAK;
-  const silent = sound ? 0 : prev.silent + seconds;
-  const limit = prev.heard ? SILENT_LATER_S : SILENT_START_S;
-  return { heard: prev.heard || sound, silent, warn: silent >= limit };
-}
-
-class RecorderView {
-  constructor(leaf, plugin) {
-    this.leaf = leaf || null;
-    this.plugin = plugin;
-    this.app = (leaf && leaf.app) || plugin.app;
-    this.contentEl = null;
-    this.editorView = null;
-    this.activeTab = "notes";
-    this.noteParts = { summary: "", notes: "", transcript: "" };
-    this.summaryEditing = false;
-    this.processingProgress = null;
-    this.stopProgressWatch = null;
-    this.liveTranscript = "";
-    // What earlier SEGMENTS of this same recording said. Resume used to show an empty pane and
-    // a clock back at zero, so the first forty minutes read as lost while the server had them.
-    this.liveCarry = "";
-    this.elapsedCarry = 0;
-    this.liveTranscriptStatus = "Listening…";
-    this.liveTranscriptQueue = Promise.resolve();
-    this.livePcm = [];
-    this.livePcmBytes = 0;
-    this.liveProcessor = null;
-    this.silenceTap = null;       // one analyser per recorded channel; see captureSilence
-    this.silenceSamples = null;
-    this.silenceWatch = null;
-    this.liveTranscriptActive = false;
-    this.liveTranscriptPaused = false;
-    this.state = "idle";          // idle | recording | processing | paused | card | finished | error
-    this.chunks = [];             // ONLY used when the disk lane is unavailable
-    this.pending = [];            // written buffers that a failed append still owes the file
-    this.writeQueue = Promise.resolve();
-    this.diskWrite = false;
-    this.audioRel = "";
-    this.audioAbs = "";
-    this.recorder = null;
-    this.streams = [];            // every raw input stream, so all get stopped
-    this.audioCtx = null;
-    this.elapsed = 0;
-    this.timer = null;
-    this.clock = null;           // the recording clock; see clockSeconds
-    this.recordingId = "";
-    this.draftRel = "";
-    this.editorFrozen = false;
-    this.editorLeaf = null;
-    this.title = "";
-    this.type = plugin.settings.lastType || "meeting-note";
-    this.recordVoice = plugin.settings.recordVoice !== false;
-    this.result = null;           // the server's response
-    this.edited = false;          // has they touched the card?
-    this.filedNotePath = "";
-    this.filingFrom = "";
-    this.filing = false;
-    this.cardTitle = null;
-    this.reviewCloseNotified = false;
-  }
-
-  async onOpen() {
-    this.attachEditorObject();
-    this.render();
-  }
-
-  async onClose() {
-    // The final note is already safe. Closing or reloading the plugin must not impersonate the
-    // explicit approval action by applying half-reviewed edits.
-    this.teardownStream();
-    if (this.stopProgressWatch) this.stopProgressWatch();
-    this.detachEditorObject();
-  }
-
-  ownsEditor(info) {
-    return info === (this.editorLeaf && this.editorLeaf.view) && !this.editorFrozen &&
-      !!this.draftRel && !!info.file && info.file.path === this.draftRel;
-  }
-
-  async open() {
-    if (this.state === "idle" && !this.draftRel) {
-      this.recordingId = recordingId();
-      await this.createDraft();
-    } else if (this.filedNotePath) {
-      await this.loadEditorFile(this.filedNotePath);
-    } else if (this.draftRel) {
-      await this.loadEditorFile(this.draftRel);
-    }
-    this.attachEditorObject();
-    this.render();
-  }
-
-  attachEditorObject() {
-    const view = this.editorLeaf && this.editorLeaf.view;
-    if (!(view instanceof MarkdownView) || !view.file) return false;
-    const object = typeof this.plugin.meetingBlockFor === "function"
-      ? this.plugin.meetingBlockFor(view.file.path) : null;
-    if (!object) return false;
-    if (this.editorView === view && this.contentEl && this.contentEl.isConnected !== false) {
-      return true;
-    }
-    this.detachEditorObject();
-    this.editorView = view;
-    object.empty();
-    object.addClass("slim-meeting-object");
-    object.addClass("slim-recorder");
-    this.contentEl = object;
-    return true;
-  }
-
-  detachEditorObject() {
-    if (this.editorView && this.editorView.contentEl) {
-      this.editorView.contentEl.removeClass("slim-recorder-draft-frozen");
-    }
-    if (this.contentEl && typeof this.contentEl.empty === "function") this.contentEl.empty();
-    this.contentEl = null;
-    this.editorView = null;
-  }
-
-  async ensureVaultDirs(path) {
-    const parts = path.split("/").filter(Boolean);
-    let current = "";
-    for (const part of parts) {
-      current = current ? `${current}/${part}` : part;
-      if (!(await this.app.vault.adapter.exists(current))) {
-        try { await this.app.vault.createFolder(current); } catch (e) { /* raced */ }
-      }
-    }
-  }
-
-  async loadEditorFile(path) {
-    const file = this.app.vault.getAbstractFileByPath(path);
-    if (!file) throw new Error(`no note at ${path}`);
-    if (!this.isOpenMarkdownLeaf(this.editorLeaf)) {
-      this.detachEditorObject();
-      const prior = this.plugin.editorLeaf;
-      const priorOwner = this.manager && typeof this.manager.sessionForLeaf === "function"
-        ? this.manager.sessionForLeaf(prior) : null;
-      this.editorLeaf = this.isOpenMarkdownLeaf(prior) && (!priorOwner || priorOwner === this)
-        ? prior : this.app.workspace.getLeaf("split");
-    }
-    await this.editorLeaf.openFile(file, { active: true, state: { mode: "source", source: false } });
-    this.plugin.editorLeaf = this.editorLeaf;
-    // Live Preview exposes the source of the block containing the cursor. A brand-new note
-    // otherwise opens with its caret inside the empty slim-meeting fence and looks broken until
-    // the user clicks away. Keep the object rendered while leaving the native editor ready for
-    // ordinary Markdown immediately below it.
-    if (path === this.draftRel && this.state === "idle") {
-      const editor = this.editorLeaf.view && this.editorLeaf.view.editor;
-      if (editor && typeof editor.lastLine === "function" &&
-          typeof editor.setCursor === "function") {
-        const moveBelowObject = () => {
-          editor.setCursor({ line: editor.lastLine(), ch: 0 });
-          if (typeof editor.focus === "function") editor.focus();
-        };
-        moveBelowObject();
-        // `openFile()` resolves before Obsidian has finished restoring the leaf's cursor. Run
-        // once more after that render cycle or its restoration puts the caret back inside the
-        // fence and exposes the raw block on first open.
-        if (typeof requestAnimationFrame === "function") {
-          await new Promise((resolve) => requestAnimationFrame(() => {
-            moveBelowObject();
-            resolve();
-          }));
-        }
-      }
-    }
-    this.attachEditorObject();
-  }
-
-  isOpenMarkdownLeaf(leaf) {
-    if (!leaf || !(leaf.view instanceof MarkdownView)) return false;
-    const workspace = this.app && this.app.workspace;
-    if (!workspace || typeof workspace.getLeavesOfType !== "function") return true;
-    return workspace.getLeavesOfType("markdown").includes(leaf);
-  }
-
-  async loadNoteParts() {
-    if (!this.filedNotePath || !this.app || !this.app.vault) return this.noteParts;
-    const file = this.app.vault.getAbstractFileByPath(this.filedNotePath);
-    if (!file) return this.noteParts;
-    const text = await this.app.vault.read(file);
-    this.noteParts = splitMeetingNote(text);
-    return this.noteParts;
-  }
-
-  /* A cancelled recording parks its segments, their caches and the draft on DISK, but the
-   * session lives only in this view. After an Obsidian restart the draft rendered as a passive
-   * block: no Resume, no Finish, and no way back to the audio except by hand.
-   * Adopting it turns the draft back into the paused object it was. */
-  async adoptPausedDraft(draftPath) {
-    const name = nodePath.posix.basename(draftPath);
-    if (!name.endsWith(DRAFT_SUFFIX) || !name.includes("--recording--")) return false;
-    const id = name.slice(0, -DRAFT_SUFFIX.length).split("--recording--").pop();
-    if (!id) return false;
-    const adapter = this.app && this.app.vault && this.app.vault.adapter;
-    if (!adapter || typeof adapter.list !== "function") return false;
-    let listing;
-    try { listing = await adapter.list(STAGING_DIR); } catch (e) { return false; }
-    const segments = (listing.files || [])
-      .filter((f) => f.toLowerCase().endsWith(".webm") && recordingIdFromStaged(f) === id)
-      .sort();
-    if (!segments.length) return false;      // a draft with no audio is just a draft
-
-    this.resetSession();
-    this.recordingId = id;
-    this.draftRel = draftPath;
-    this.segments = segments;
-    this.audioRel = segments[segments.length - 1];
-    this.type = draftPath.startsWith("Journal/") ? "journal" : this.type;
-    this.pausedTranscript = null;
-    this.state = "paused";
-    return true;
-  }
-
-  async openExisting(file, leaf) {
-    if (!file || !leaf || !(leaf.view instanceof MarkdownView)) return false;
-    const cache = this.app.metadataCache && this.app.metadataCache.getFileCache(file);
-    const fm = cache && cache.frontmatter;
-    if (!fm || fm.origin !== "recorded") return false;
-    let text = await this.app.vault.read(file);
-    if (!hasMeetingBlock(text)) {
-      text = embedLegacyMeetingBlock(text);
-      await this.app.vault.modify(file, text);
-    }
-    const parts = splitMeetingNote(text);
-    if (!parts.transcript) return false;
-    this.resetSession();
-    this.editorLeaf = leaf;
-    this.filedNotePath = file.path;
-    this.noteParts = parts;
-    const parent = file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/")) : "";
-    const topics = Array.isArray(fm.topics) ? fm.topics.slice() : [];
-    const type = String(fm.type || "meeting-note");
-    this.result = {
-      note: file.path,
-      title: String(fm.title || file.basename || "Meeting note"),
-      summary: parts.summary,
-      notes_md: parts.notes,
-      card: { dest_dir: parent, type_tag: type, topics, folders: [] },
+    module2.exports = {
+      MIC_CHANNEL,
+      SYSTEM_CHANNEL,
+      LIVE_FLUSH_BYTES,
+      pcm16k,
+      SILENT_PEAK,
+      SILENT_START_S,
+      SILENT_LATER_S,
+      captureSilence
     };
-    this.cardTitle = this.result.title;
-    // Absence means complete for backwards compatibility: hundreds of historical recordings
-    // predate durable review state and must not suddenly become an inbox. New recordings write
-    // `pending`, which makes review survive a closed tab or Obsidian restart.
-    this.state = frontmatterScalar(text, "review_status") === "pending" ? "card" : "finished";
-    this.activeTab = "summary";
-    this.attachEditorObject();
-    this.render();
-    // The folder tree and the tag counts come only with a fresh recording's response, so a card
-    // reopened after a reload browsed an empty box and called every topic "new". Not awaited:
-    // the server may still be starting, and the note must open now.
-    const card = this.result.card;
-    this.cardListsLoad = Promise.resolve()
-      .then(() => this.plugin.getJSON("/api/record/folders"))
-      .then((lists) => {
-        if (!this.result || this.result.card !== card) return;
-        card.folders = lists.folders || [];
-        card.tag_counts = lists.tag_counts || {};
-        this.render();
-      })
-      .catch((e) => console.error("[slim] card folders", e));
-    return true;
   }
+});
 
-  /* Returns the render promise when there is one, so a caller can act when the DOM is
-   * actually there; a synchronous fallback returns undefined. */
-  renderMarkdown(el, markdown) {
-    if (!markdown) {
-      el.createEl("p", { cls: "slim-empty", text: "Nothing was captured here." });
-      return undefined;
+// src/chat-text.js
+var require_chat_text = __commonJS({
+  "src/chat-text.js"(exports2, module2) {
+    "use strict";
+    function groupThreads(threads, activeSourceId) {
+      const grouped = /* @__PURE__ */ new Map();
+      for (const thread of threads || []) {
+        if (!thread.source_id || !thread.source_path) continue;
+        if (!grouped.has(thread.source_id)) grouped.set(thread.source_id, {
+          sourceId: thread.source_id,
+          path: thread.source_path,
+          threads: [],
+          expanded: false
+        });
+        const group = grouped.get(thread.source_id);
+        group.threads.push(thread);
+        if (thread.source_path) group.path = thread.source_path;
+      }
+      const groups = [...grouped.values()];
+      for (const group of groups) {
+        group.threads.sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
+        group.updatedAt = group.threads[0]?.updated_at || "";
+        group.expanded = group.sourceId === activeSourceId;
+      }
+      groups.sort((a, b) => {
+        if (a.sourceId === activeSourceId) return -1;
+        if (b.sourceId === activeSourceId) return 1;
+        return b.updatedAt.localeCompare(a.updatedAt);
+      });
+      return groups;
     }
-    if (MarkdownRenderer && typeof MarkdownRenderer.render === "function") {
-      return MarkdownRenderer.render(this.app, markdown, el,
-                                     this.filedNotePath || this.draftRel || "",
-                                     this.plugin).catch((e) => {
-        console.error("[slim] render markdown", e);
-        el.setText(markdown);
+    function pathStem(path) {
+      const name = String(path || "").split("/").pop() || "";
+      return name.replace(/\.md$/i, "");
+    }
+    function noteTitle(app, path) {
+      const file = app?.vault?.getAbstractFileByPath?.(path);
+      if (file && file.extension) {
+        const title = app.metadataCache?.getFileCache?.(file)?.frontmatter?.title;
+        return typeof title === "string" && title.trim() || file.basename || pathStem(path);
+      }
+      return pathStem(path);
+    }
+    function groupCitations(citations) {
+      const groups = /* @__PURE__ */ new Map();
+      for (const citation of citations || []) {
+        const key = citation.source_id || citation.path;
+        if (!groups.has(key)) {
+          groups.set(key, {
+            source_id: citation.source_id,
+            path: citation.path,
+            title: citation.title || pathStem(citation.path),
+            ns: []
+          });
+        }
+        groups.get(key).ns.push(citation.n);
+      }
+      return [...groups.values()];
+    }
+    function sha256Hex(text) {
+      return require("crypto").createHash("sha256").update(String(text), "utf8").digest("hex");
+    }
+    function slashQuery(draft) {
+      const match = /^\/([a-z0-9-]*)$/.exec(String(draft || ""));
+      return match ? match[1] : null;
+    }
+    function matchSkills(skills, query) {
+      if (query === null || query === void 0) return [];
+      return (skills || []).filter((skill) => skill.name.startsWith(query)).slice(0, 8);
+    }
+    function inputsText(inputs) {
+      if (!inputs) return "";
+      const parts = [];
+      const used = inputs.used?.length || 0;
+      if (used) parts.push(`Read ${used} note${used === 1 ? "" : "s"}${inputs.selection ? " and your selection" : ""}`);
+      else if (inputs.selection) parts.push("Read your selection");
+      if (inputs.dropped?.length) parts.push(`${inputs.dropped.length} left out (too long together)`);
+      if (inputs.cut?.length) parts.push(`${inputs.cut.length} cut to fit`);
+      if (inputs.skipped?.length) parts.push(`${inputs.skipped.length} without that section`);
+      for (const name of inputs.missing || []) parts.push(`[[${name}]] not found`);
+      return parts.join(" \xB7 ");
+    }
+    function editorSelection(app, path) {
+      const recent = app?.workspace?.getMostRecentLeaf?.();
+      const leaves = app?.workspace?.getLeavesOfType?.("markdown") || [];
+      for (const leaf of recent && leaves.includes(recent) ? [recent, ...leaves] : leaves) {
+        const view = leaf.view;
+        if (view?.file?.path !== path || view.getMode?.() === "preview") continue;
+        if (typeof view.editor?.getSelection !== "function") continue;
+        const text = view.editor.getSelection();
+        if (!text) continue;
+        const at = view.editor.getCursor?.("from");
+        const from = at ? view.editor.posToOffset?.(at) : void 0;
+        return { text: text.slice(0, MAX_SELECTION_CHARS), ...Number.isInteger(from) ? { from } : {} };
+      }
+      return { text: "" };
+    }
+    var MAX_SELECTION_CHARS = 2e4;
+    var MAX_EDIT_CHARS = 4e5;
+    function looksLikeMath(inner) {
+      const text = inner.trim();
+      return text.length > 0 && (/\\[A-Za-z]|[=^_+{}<>]|\d\s*[*/-]\s*\d/.test(text) || /^[A-Za-z]$/.test(text));
+    }
+    function normalizeMath(markdown) {
+      const parts = String(markdown || "").split(/(```[\s\S]*?```|`[^`\n]*`)/);
+      return parts.map((part, index) => index % 2 ? part : part.replace(/\\\[([\s\S]*?)\\\](?!\()/g, (match, inner) => looksLikeMath(inner) ? `$$${inner}$$` : match).replace(/\\\((.*?)\\\)(?!\()/g, (match, inner) => looksLikeMath(inner) ? `$${inner}$` : match)).join("");
+    }
+    var LIVE_RENDER_MS = 350;
+    function quickOrDeep(value) {
+      return value === "deep" ? "deep" : "quick";
+    }
+    function metaText(turn) {
+      const mode = turn?.mode === "deep" ? "Deep" : "Quick";
+      const ms = Number(turn?.timing?.total_ms);
+      return Number.isFinite(ms) && ms > 0 ? `${mode} \xB7 ${Math.max(1, Math.round(ms / 1e3))} s` : mode;
+    }
+    function stageLine(stage, since, now) {
+      const seconds = since ? Math.floor((now - since) / 1e3) : 0;
+      return `${stage || "Working"}\u2026${seconds >= 1 ? ` ${seconds} s` : ""}`;
+    }
+    var SUGGESTED_PROMPTS = [
+      "Explain this note like I'm new to it",
+      "Quiz me on this note",
+      "What is unclear or missing here?"
+    ];
+    function titleFromQuestion(question) {
+      const title = question.trim().replace(/\s+/g, " ");
+      return title.length > 60 ? `${title.slice(0, 57)}...` : title || "Conversation";
+    }
+    function threadId() {
+      return `chat-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
+    }
+    function cancelledError() {
+      const error = new Error("Cancelled");
+      error.name = "AbortError";
+      return error;
+    }
+    function runCounts(run) {
+      const landed = (run.changes || []).filter((change) => !change.part_of && !["skipped", "failed", "creating"].includes(change.state));
+      const undone = run.restored ? landed.length : landed.filter((change) => change.state === "undone" || change.state === "trashed").length;
+      return { landed, undone };
+    }
+    function historyText(turn) {
+      const run = turn?.turn?.edit_run;
+      if (turn?.role !== "slim" || !run) return turn?.text;
+      const { landed, undone } = runCounts(run);
+      const steps = run.plan?.steps || [];
+      return `[Changed the note: ${run.plan?.intro || run.summary || "no plan"}${steps.length ? `; steps: ${steps.join("; ")}` : ""}; ${landed.length} change${landed.length === 1 ? "" : "s"}, ${undone} undone${run.stopped && steps.length ? `; stopped after ${run.steps_done || 0} of ${steps.length} steps` : ""}]`;
+    }
+    var STOPPED_BECAUSE = {
+      refusals: "its changes kept being refused",
+      "call limit": "it reached its limit of calls",
+      "token budget": "it reached its output budget",
+      "empty plan": "the plan had no steps"
+    };
+    function editOutcome(run) {
+      const steps = run.plan?.steps || [];
+      const { landed } = runCounts(run);
+      if (!run.stopped) {
+        const said = run.summary && run.summary !== run.plan?.intro ? run.summary : "";
+        if (!said) return landed.length ? "Done." : "Done. Nothing needed changing.";
+        return /^done\b/i.test(said) ? said : `Done: ${said}`;
+      }
+      const why = run.stopped === "stopped" ? "" : STOPPED_BECAUSE[run.stopped] || String(run.stopped).replace(/^error: /, "");
+      if (!landed.length) return `Stopped before changing anything${why ? `: ${why}` : ""}.`;
+      if (!steps.length) return `Stopped${why ? `: ${why}` : ""}.`;
+      const done = Math.min(run.steps_done || 0, steps.length);
+      const states = run.step_states || [];
+      const left = [
+        ...steps.slice(0, done).filter((_step, i) => states[i] === "partial").map((step) => `the rest of ${step}`),
+        ...steps.slice(done)
+      ];
+      const list = left.length < 2 ? left.join("") : `${left.slice(0, -1).join(", ")} and ${left.at(-1)}`;
+      return `Stopped after ${done} of ${steps.length} step${steps.length === 1 ? "" : "s"}${why ? `: ${why}` : ""}.${left.length ? ` Not done: ${list}.` : ""}`;
+    }
+    module2.exports = {
+      groupThreads,
+      pathStem,
+      noteTitle,
+      groupCitations,
+      sha256Hex,
+      slashQuery,
+      matchSkills,
+      inputsText,
+      editorSelection,
+      MAX_SELECTION_CHARS,
+      MAX_EDIT_CHARS,
+      looksLikeMath,
+      normalizeMath,
+      LIVE_RENDER_MS,
+      quickOrDeep,
+      metaText,
+      stageLine,
+      SUGGESTED_PROMPTS,
+      titleFromQuestion,
+      threadId,
+      cancelledError,
+      runCounts,
+      historyText,
+      STOPPED_BECAUSE,
+      editOutcome
+    };
+  }
+});
+
+// src/chat-images.js
+var require_chat_images = __commonJS({
+  "src/chat-images.js"(exports2, module2) {
+    "use strict";
+    var MAX_COPILOT_IMAGES = 3;
+    var MAX_COPILOT_IMAGE_BYTES = 2e6;
+    var MAX_COPILOT_IMAGE_INPUT_BYTES = 2e7;
+    var MAX_COPILOT_IMAGE_EDGE = 1600;
+    var COPILOT_IMAGE_TYPES = /* @__PURE__ */ new Set(["image/png", "image/jpeg", "image/webp"]);
+    function imageBytes(data) {
+      return Buffer.byteLength(String(data || ""), "base64");
+    }
+    function imageName(name, mime) {
+      const safe = String(name || "image").replace(/\\/g, "/").split("/").pop().slice(0, 120);
+      const ext = mime === "image/png" ? "png" : mime === "image/webp" ? "webp" : "jpg";
+      return `${safe.replace(/\.[^.]+$/, "") || "image"}.${ext}`;
+    }
+    function loadBrowserImage(source) {
+      return new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error("This image could not be decoded."));
+        image.src = source;
       });
     }
-    el.setText(markdown);
-    return undefined;
+    async function resizeCopilotImage(file) {
+      const mime = String(file?.type || "").toLowerCase();
+      if (!COPILOT_IMAGE_TYPES.has(mime)) throw new Error("Use a PNG, JPEG, or WebP image.");
+      if (!Number.isFinite(file.size) || file.size <= 0) throw new Error("This image is empty.");
+      if (file.size > MAX_COPILOT_IMAGE_INPUT_BYTES) throw new Error("Images must be 20 MB or smaller before resizing.");
+      const buffer = Buffer.from(await file.arrayBuffer());
+      const original = `data:${mime};base64,${buffer.toString("base64")}`;
+      const image = await loadBrowserImage(original);
+      if (Math.max(image.naturalWidth, image.naturalHeight) <= MAX_COPILOT_IMAGE_EDGE && buffer.length <= MAX_COPILOT_IMAGE_BYTES) {
+        return {
+          name: imageName(file.name, mime),
+          mime,
+          data: original.split(",")[1],
+          preview: original,
+          bytes: buffer.length
+        };
+      }
+      let scale = Math.min(1, MAX_COPILOT_IMAGE_EDGE / Math.max(image.naturalWidth, image.naturalHeight));
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+        const context = canvas.getContext("2d");
+        context.fillStyle = "#fff";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        const quality = Math.max(0.65, 0.9 - attempt * 0.07);
+        const resized = canvas.toDataURL("image/jpeg", quality);
+        const data = resized.split(",")[1];
+        const bytes = imageBytes(data);
+        if (bytes <= MAX_COPILOT_IMAGE_BYTES) {
+          return {
+            name: imageName(file.name, "image/jpeg"),
+            mime: "image/jpeg",
+            data,
+            preview: resized,
+            bytes
+          };
+        }
+        scale *= 0.8;
+      }
+      throw new Error("The image is still over 2 MB after resizing. Crop it and try again.");
+    }
+    module2.exports = {
+      MAX_COPILOT_IMAGES,
+      MAX_COPILOT_IMAGE_BYTES,
+      MAX_COPILOT_IMAGE_INPUT_BYTES,
+      MAX_COPILOT_IMAGE_EDGE,
+      COPILOT_IMAGE_TYPES,
+      imageBytes,
+      imageName,
+      loadBrowserImage,
+      resizeCopilotImage
+    };
   }
+});
 
-  renderLiveMarkdownEditor(parent, markdown, onChange, cls = "") {
-    const editor = parent.createDiv({
-      cls: `slim-live-markdown-editor ${cls}`.trim(),
-      attr: {
-        contenteditable: "true", spellcheck: "true", role: "textbox",
-        "aria-multiline": "true", "data-placeholder": "Write Markdown…",
+// src/dom.js
+var require_dom = __commonJS({
+  "src/dom.js"(exports2, module2) {
+    "use strict";
+    var { setIcon } = require("obsidian");
+    function clear(element) {
+      if (element.empty) element.empty();
+      else while (element.firstChild) element.removeChild(element.firstChild);
+    }
+    function create(parent, tag, cls, text) {
+      const options = {};
+      if (cls) options.cls = cls;
+      if (text !== void 0) options.text = text;
+      if (parent.createEl) return parent.createEl(tag, options);
+      const node = document.createElement(tag);
+      if (cls) node.className = cls;
+      if (text !== void 0) node.textContent = text;
+      parent.appendChild(node);
+      return node;
+    }
+    function iconButton(parent, icon, label, cls = "clickable-icon") {
+      const button = create(parent, "button", cls);
+      button.setAttribute("aria-label", label);
+      button.setAttribute("title", label);
+      if (typeof setIcon === "function") setIcon(button, icon);
+      else button.textContent = label;
+      return button;
+    }
+    function autoGrow(input, max = 180) {
+      if (!input || !input.style) return;
+      input.style.height = "auto";
+      input.style.height = `${Math.min(input.scrollHeight || 0, max)}px`;
+    }
+    function atBottom(element) {
+      return element.scrollHeight - element.scrollTop - element.clientHeight <= 40;
+    }
+    module2.exports = { clear, create, iconButton, autoGrow, atBottom };
+  }
+});
+
+// src/chat-render.js
+var require_chat_render = __commonJS({
+  "src/chat-render.js"(exports2, module2) {
+    "use strict";
+    var { MarkdownRenderer, MarkdownRenderChild } = require("obsidian");
+    var {
+      groupThreads,
+      pathStem,
+      noteTitle,
+      groupCitations,
+      slashQuery,
+      matchSkills,
+      inputsText,
+      normalizeMath,
+      LIVE_RENDER_MS,
+      metaText,
+      stageLine,
+      SUGGESTED_PROMPTS
+    } = require_chat_text();
+    var { clear, create, iconButton, autoGrow, atBottom } = require_dom();
+    module2.exports = {
+      renderSlash() {
+        const menu = this.el?.slash;
+        if (!menu) return;
+        clear(menu);
+        const hits = matchSkills(this.skills, slashQuery(this.draft));
+        menu.hidden = !hits.length;
+        for (const skill of hits) {
+          const item = create(menu, "button", `slim-slash-item${skill.error ? " is-broken" : ""}`);
+          create(item, "span", "slim-slash-name", `/${skill.name}`);
+          create(item, "small", "slim-slash-about", skill.error ? `Broken: ${skill.error}` : skill.description || "");
+          item.onmousedown = (event) => event.preventDefault();
+          item.onclick = () => this.pickSkill(skill);
+        }
       },
-    });
-    if (markdown) {
-      const rendered = this.renderMarkdown(editor, markdown);
-      // After the async render lands, mark every node whose source the serializer cannot
-      // reconstruct — otherwise the first keystroke deletes it.
-      const stamp = () => stampSourceAtoms(editor, markdown);
-      stamp();
-      if (typeof window !== "undefined" && typeof window.setTimeout === "function") {
-        window.setTimeout(stamp, 0);
-      }
-      // ⚠ The timer is a guess at when the render lands. Stamp when it actually resolves: an
-      // embed rendered after the last pass has no source and is deleted by the first keystroke.
-      if (rendered && typeof rendered.then === "function") rendered.then(stamp);
-    }
-    else {
-      const p = editor.createEl("p");
-      p.createEl("br");
-    }
-    const save = (event) => onChange(event && event.target && typeof event.target.value === "string"
-      ? event.target.value : markdownFromEditable(editor));
-    editor.addEventListener("input", save);
-    editor.addEventListener("keyup", (event) => {
-      if (event.key !== " ") return;
-      const selection = typeof window !== "undefined" && window.getSelection
-        ? window.getSelection() : null;
-      let current = selection && selection.anchorNode;
-      if (current && current.nodeType === 3) current = current.parentElement;
-      while (current && current.parentElement !== editor) current = current.parentElement;
-      if (!current) return;
-      const shortcut = markdownBlockShortcut(current.textContent || "");
-      if (!shortcut || typeof document === "undefined") return;
-      let target;
-      if (shortcut.kind === "list") {
-        target = document.createElement(shortcut.tag);
-        const item = document.createElement("li");
-        item.appendChild(document.createElement("br"));
-        target.appendChild(item);
-        current.replaceWith(target);
-        target = item;
-      } else {
-        target = document.createElement(shortcut.tag);
-        target.appendChild(document.createElement("br"));
-        current.replaceWith(target);
-      }
-      const range = document.createRange();
-      range.selectNodeContents(target);
-      range.collapse(true);
-      selection.removeAllRanges();
-      selection.addRange(range);
-      save();
-    });
-    return editor;
-  }
-
-  async saveDraft() {
-    const view = this.editorLeaf && this.editorLeaf.view;
-    if (view instanceof MarkdownView && typeof view.save === "function") await view.save();
-  }
-
-  resetSession() {
-    if (this.manager) this.manager.releaseCapture(this);
-    this.teardownStream();
-    this.detachEditorObject();
-    this.state = "idle";
-    this.activeTab = "notes";
-    this.noteParts = { summary: "", notes: "", transcript: "" };
-    this.summaryEditing = false;
-    this.processingProgress = null;
-    if (this.stopProgressWatch) this.stopProgressWatch();
-    this.stopProgressWatch = null;
-    this.liveTranscript = "";
-    this.liveCarry = "";
-    this.elapsedCarry = 0;
-    this.liveTranscriptStatus = "Listening…";
-    this.livePcm = [];
-    this.livePcmBytes = 0;
-    this.liveTranscriptActive = false;
-    this.liveTranscriptPaused = false;
-    this.recordingId = "";
-    this.draftRel = "";
-    this.audioRel = "";
-    this.segments = [];
-    // ⚠ Everything a retry or a resume leaves behind. Left set, an in-flight retry on note A
-    // resolved into note B's view — its summary written over B's — because `openExisting`
-    // repoints the view but used to leave `retrying` true.
-    this.appendTo = "";
-    this.resumeReturnState = "";
-    this.retrying = false;
-    this.retryStatus = "";
-    this.retryInstructions = "";
-    this.pausedTranscript = null;
-    this.jobId = "";
-    this.attempt = 0;
-    this.audioAbs = "";
-    this.title = "";
-    this.result = null;
-    this.edited = false;
-    this.filedNotePath = "";
-    this.filingFrom = "";
-    this.filing = false;
-    this.cardTitle = null;
-    this.reviewCloseNotified = false;
-    this.errorText = "";
-    this.freezeEditor(false);
-  }
-
-  async reconcileMissingSessionFiles() {
-    const missingDraft = this.draftRel && !this.app.vault.getAbstractFileByPath(this.draftRel);
-    const missingNote = this.filedNotePath &&
-      !this.app.vault.getAbstractFileByPath(this.filedNotePath);
-    if (!missingDraft && !missingNote) return false;
-    const audio = this.audioRel;
-    this.resetSession();
-    if (audio) {
-      new Notice(`SLIM: the deleted note was released. Its staged audio remains at ${audio}.`);
-    }
-    return true;
-  }
-
-  /* A deletion the server made on this session's behalf is not their instruction to let go:
-   * filing removes the draft before its response arrives, and `apply` unlinks the old path
-   * while it moves the note — Obsidian reports that unlink as a delete, usually mid-request.
-   * Read as their deletion it reset the session under the Approve button: "the deleted note was
-   * released", then "Cannot set properties of null (setting 'note')" (2026-09-04). */
-  expectsDeletion(path) {
-    return this.state === "processing" || this.state === "recording" || path === this.filingFrom;
-  }
-
-  handleVaultDelete(file) {
-    if (!file || (file.path !== this.draftRel && file.path !== this.filedNotePath)) return;
-    if (this.expectsDeletion(file.path)) return;
-    this.reconcileMissingSessionFiles().catch((e) => console.error("[slim] delete reconcile", e));
-  }
-
-  async trashManagedPath(path) {
-    if (!path) return;
-    const file = this.app.vault.getAbstractFileByPath(path);
-    if (!file) return;
-    if (this.app.fileManager && typeof this.app.fileManager.trashFile === "function") {
-      await this.app.fileManager.trashFile(file);
-    } else if (typeof this.app.vault.trash === "function") {
-      await this.app.vault.trash(file, true);
-    } else {
-      await this.app.vault.delete(file);
-    }
-  }
-
-  /* A staged segment and the `<segment>.transcript.json` the server cached beside it go
-   * together. ⚠ NOT THROUGH THE INDEX: the server writes the cache outside the Vault API, often
-   * a moment before the response that leads here, so Obsidian may not hold it yet and
-   * `trashManagedPath` skipped it without a word — eleven orphans by 2026-09-28. */
-  async removeStagedSegment(seg) {
-    await this.trashManagedPath(seg);
-    const cache = `${seg}.transcript.json`;
-    const adapter = this.app.vault.adapter;
-    if (await adapter.exists(cache)) await adapter.remove(cache);
-  }
-
-  async discardSession(restart) {
-    const id = this.recordingId;
-    const draft = this.draftRel;
-    // Every segment of this recording, not just the one that was open — a resumed session
-    // leaves several, and half a deleted recording is the worst of both outcomes.
-    const audios = [...new Set([...(this.segments || []), this.audioRel].filter(Boolean))];
-    const attachmentFolder = id ? `${RECORDER_ATTACHMENTS}/${id}` : "";
-    const draftIsManaged = draft && draft.endsWith(DRAFT_SUFFIX) &&
-      (draft.startsWith("Capture/_unfiled/") || draft.startsWith("Journal/"));
-    const managed = (audio) => Boolean(audio) && Boolean(id) &&
-      audio.startsWith(`${STAGING_DIR}/`) && recordingIdFromStaged(audio) === id;
-    if (draftIsManaged) await this.trashManagedPath(draft);
-    for (const audio of audios) {
-      if (!managed(audio)) continue;
-      await this.removeStagedSegment(audio);
-    }
-    if (attachmentFolder) await this.trashManagedPath(attachmentFolder);
-    this.resetSession();
-    new Notice("SLIM: discarded the failed recording and its draft.");
-    if (restart) {
-      if (this.manager) this.manager.claimCapture(this);
-      await this.open();
-      if (this.manager) this.manager.indexSession(this);
-    }
-  }
-
-  closeSession() {
-    this.resetSession();
-    if (this.manager) this.manager.removeSession(this);
-    new Notice("SLIM: closed the recorder. Saved draft and audio were kept.");
-  }
-
-  async createDraft() {
-    if (!this.recordingId) this.recordingId = recordingId();
-    const digits = this.recordingId.slice(0, 8);
-    const date = `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
-    const folder = this.type === "journal" ? "Journal" : "Capture/_unfiled";
-    await this.ensureVaultDirs(folder);
-    this.draftRel = `${folder}/${date}--recording--${this.recordingId}${DRAFT_SUFFIX}`;
-    await this.app.vault.create(this.draftRel, EMPTY_MEETING_BLOCK);
-    if (this.manager) this.manager.indexSession(this);
-    await this.loadEditorFile(this.draftRel);
-    return this.draftRel;
-  }
-
-  async ensureDraftLocation() {
-    if (!this.draftRel) return this.createDraft();
-    const folder = this.type === "journal" ? "Journal" : "Capture/_unfiled";
-    if (this.draftRel.startsWith(`${folder}/`)) return this.draftRel;
-    const file = this.app.vault.getAbstractFileByPath(this.draftRel);
-    if (!file) { this.draftRel = ""; return this.createDraft(); }
-    await this.ensureVaultDirs(folder);
-    const next = `${folder}/${nodePath.posix.basename(this.draftRel)}`;
-    if (this.app.fileManager && typeof this.app.fileManager.renameFile === "function") {
-      await this.app.fileManager.renameFile(file, next);
-    } else if (typeof this.app.vault.rename === "function") {
-      await this.app.vault.rename(file, next);
-    } else {
-      throw new Error("Obsidian cannot move the setup draft into its privacy-safe folder");
-    }
-    this.draftRel = next;
-    if (this.manager) this.manager.indexSession(this);
-    await this.loadEditorFile(next);
-    return next;
-  }
-
-  async removeUntouchedDraft() {
-    if (!this.draftRel) return false;
-    const draft = this.app.vault.getAbstractFileByPath(this.draftRel);
-    if (!draft) { this.draftRel = ""; return false; }
-    const contents = await this.app.vault.read(draft);
-    if (contents !== "" && contents !== EMPTY_MEETING_BLOCK) return false;
-    await this.app.vault.delete(draft);
-    this.draftRel = "";
-    return true;
-  }
-
-  freezeEditor(frozen) {
-    this.editorFrozen = !!frozen;
-    const view = this.editorLeaf && this.editorLeaf.view;
-    if (view && view.contentEl && typeof view.contentEl.toggleClass === "function") {
-      view.contentEl.toggleClass("slim-recorder-draft-frozen", this.editorFrozen);
-    }
-    if (frozen && typeof document !== "undefined" && document.activeElement &&
-        typeof document.activeElement.blur === "function") document.activeElement.blur();
-  }
-
-  async handleEditorPaste(event, editor) {
-    const files = Array.from((event.clipboardData && event.clipboardData.files) || []);
-    if (!files.length || files.some((f) => !String(f.type || "").startsWith("image/"))) {
-      return false;
-    }
-    const extensions = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp" };
-    if (files.some((f) => !extensions[f.type])) return false;
-
-    event.preventDefault();
-    const folder = `${RECORDER_ATTACHMENTS}/${this.recordingId}`;
-    await this.ensureVaultDirs(folder);
-    const embeds = [];
-    for (const file of files) {
-      let n = 1;
-      let path;
-      do {
-        path = `${folder}/paste-${String(n).padStart(3, "0")}.${extensions[file.type]}`;
-        n += 1;
-      } while (await this.app.vault.adapter.exists(path));
-      await this.app.vault.createBinary(path, await file.arrayBuffer());
-      embeds.push(`![[${path}]]`);
-    }
-    editor.replaceSelection(embeds.join("\n"));
-    return true;
-  }
-
-  // ---- recording -----------------------------------------------------------------------
-
-  /* ⚠ The two inputs want OPPOSITE treatment, and getting this backwards is worse than
-   * leaving it off.
-   *
-   * The microphone is in a room: chair movement, keyboard, fans. Chromium ships real DSP for
-   * exactly that, and unasked-for it is not reliably on. So the mic gets noise suppression,
-   * echo cancellation and auto gain.
-   *
-   * The loopback input is NOT a room — it is a clean digital copy of what the machine is
-   * playing. Noise suppression there chews on the far end's voices, and echo cancellation
-   * would try to remove the speaker audio, which is the entire thing we are recording. So it
-   * is captured raw.
-   */
-  async openMic() {
-    return navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    });
-  }
-
-  /* What the machine is PLAYING, straight from macOS. No virtual device, no routing.
-   *
-   * Electron >= 39 defaults to Apple's Core Audio Tap API for desktop audio capture on
-   * macOS >= 14.2, so `audio: "loopback"` returns a track labelled "System audio" carrying the
-   * real mix. Measured 2026-08-22 against a YouTube lecture: peak 0.0 dBFS, RMS -18.7 dBFS —
-   * within half a decibel of the same lecture captured through BlackHole.
-   *
-   * ⚠ `video` is REQUIRED and must be a WebFrameMain or a DesktopCapturerSource. We hand back
-   * the requesting frame — Obsidian's own window — and stop the track immediately. That is not
-   * a trick to save code: asking desktopCapturer for a SCREEN drags in screen-recording
-   * permission for a feature that only ever wanted audio.
-   *
-   * ⚠ The handler lives on the SHARED default session, so it is installed for exactly one
-   * request and always removed, including when the request throws. Leaving it installed would
-   * silently hijack any other getDisplayMedia call in Obsidian.
-   */
-  async openSystemAudio() {
-    const { session } = require("@electron/remote");
-    session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
-      callback({ video: request.frame, audio: "loopback" });
-    });
-    try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-      stream.getVideoTracks().forEach((track) => track.stop());
-      if (!stream.getAudioTracks().length) throw new Error("no audio track was returned");
-      return stream;
-    } finally {
-      session.defaultSession.setDisplayMediaRequestHandler(null);
-    }
-  }
-
-  /* Both sides of the conversation in ONE file, and kept APART inside it.
-   *
-   * A microphone records the room; on headphones that is only them, and the transcript ends up
-   * a monologue with the other half missing. So the machine's own output is captured too —
-   * directly, via `openSystemAudio`.
-   *
-   * ⚠ THIS USED TO COST THEM A DEVICE SETUP, and that was the whole complaint (2026-08-22):
-   * `getUserMedia` sees only INPUT devices, so reaching system output meant installing
-   * BlackHole to impersonate a microphone and building a Multi-Output Device — a NEW one per
-   * pair of headphones — to fork the sound so they could still hear it. Notion is one click.
-   * Nothing about that was necessary: the Electron Obsidian ships could already ask macOS.
-   * The lesson is the pattern, not the fix — reach for what the HOST can do before reaching
-   * for the universal workaround.
-   *
-   * The two are opened separately and joined here with Web Audio — one to each channel —
-   * rather than depending on a pre-built Aggregate Device having the right channel layout.
-   * It degrades honestly: system audio can fail and you still get the mic, with a Notice
-   * saying so.
-   *
-   * ⚠ LEFT IS THE MICROPHONE, RIGHT IS THE MACHINE — `slim/speakers.py` reads them that way.
-   * They used to be summed, and once summed nobody can say who spoke. Apart, "me or them" is
-   * a fact of the capture, decided on the server with no model. A missing source leaves its
-   * channel silent; it never moves to the other side. The caption tap and the level meter
-   * each ask for ONE channel, so Web Audio downmixes for them — leave them alone. The downmix
-   * is half of each side, so the level bar reads ~6 dB lower than before for the same voice.
-   */
-  async buildStream() {
-    const Ctx = window.AudioContext || window.webkitAudioContext;
-    this.audioCtx = new Ctx();
-    const dest = this.audioCtx.createMediaStreamDestination();
-    const sides = this.audioCtx.createChannelMerger(2);
-    sides.connect(dest);
-    this.streams = [];
-
-    let sources = 0;
-
-    if (this.recordVoice) {
-      const mic = await this.openMic();
-      this.streams.push(mic);
-      this.audioCtx.createMediaStreamSource(mic).connect(sides, 0, MIC_CHANNEL);
-      sources++;
-    }
-
-    try {
-      const sys = await this.openSystemAudio();
-      this.streams.push(sys);
-      this.audioCtx.createMediaStreamSource(sys).connect(sides, 0, SYSTEM_CHANNEL);
-      sources++;
-    } catch (e) {
-      // Losing the far side is bad; losing the recording is worse. Carry on with the mic and
-      // SAY SO — ⚠ degrading silently is how a two-hour loss goes unnoticed. There is
-      // deliberately no fall back to device pickers: that apparatus is what this removed.
-      console.error("[slim] system audio", e);
-      new Notice(this.recordVoice
-        ? "SLIM: could not capture system audio — recording your voice only."
-        : "SLIM: could not capture system audio, and 'Record my voice' is off.");
-    }
-
-    if (!sources) throw new Error("no audio source available — nothing would be recorded");
-    return dest.stream;
-  }
-
-  /* One recording, several audio files. A second MediaRecorder session writes its own
-   * container header, so appending a resumed take to the first file risks a recording nothing
-   * can play; a numbered segment beside it cannot. The server joins their transcripts. */
-  nextSegmentPath() {
-    const n = String((this.segments || []).length + 1).padStart(3, "0");
-    return `${STAGING_DIR}/${this.recordingId}-${n}.webm`;
-  }
-
-  async start() {
-    // Idempotent for the holder; a setup draft whose lease a Resume took over is refused here.
-    if (this.manager) this.manager.claimCapture(this);
-    if (!this.recordingId) this.recordingId = recordingId();
-    // ⚠ A FILED NOTE IS ITS OWN DRAFT. `ensureDraftLocation` creates one whenever `draftRel`
-    // is empty, and it is empty for a filed note — so a resume used to mint an orphan in
-    // Capture/_unfiled, switch the editor to it, and lose everything typed while resuming.
-    if (!this.appendTo) await this.ensureDraftLocation();
-    const mixed = await this.buildStream();
-    if (!this.segments) this.segments = [];
-    this.audioRel = this.nextSegmentPath();
-    this.segments.push(this.audioRel);
-    try {
-      let mime = "audio/webm;codecs=opus";
-      if (typeof MediaRecorder.isTypeSupported === "function" &&
-          !MediaRecorder.isTypeSupported(mime)) {
-        mime = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "";
-      }
-      this.recorder = mime ? new MediaRecorder(mixed, { mimeType: mime })
-                           : new MediaRecorder(mixed);
-      this.chunks = [];
-      this.pending = [];
-      this.writeQueue = Promise.resolve();
-      this.warnedWrite = false;
-      await this.ensureStagingDirs();
-      this.openDiskFile();
-      this.recorder.ondataavailable = (e) => { if (e.data && e.data.size) this.onChunk(e.data); };
-      // A timeslice means the buffer is flushed periodically rather than held whole until stop —
-      // and every flushed chunk is appended to the file on disk immediately. A crash mid-meeting
-      // then costs the last five seconds, not the meeting.
-      this.recorder.start(5000);
-    } catch (e) {
-      try { await this.removeUntouchedDraft(); }
-      catch (cleanupError) { console.error("[slim] draft cleanup", cleanupError); }
-      this.teardownStream();
-      throw e;
-    }
-
-    this.setupMeter(mixed);
-    this.setupSilenceWatch(mixed);
-    this.elapsed = this.elapsedCarry || 0;
-    this.clock = { base: this.elapsed, since: Date.now() };
-    this.timer = window.setInterval(() => this.tick(), 1000);
-    if (typeof this.plugin.registerInterval === "function") this.plugin.registerInterval(this.timer);
-
-    this.state = "recording";
-    this.render();
-    this.startLiveTranscript(mixed);
-  }
-
-  tick() {
-    if (!this.recorder || this.recorder.state !== "recording") return;
-    this.elapsed = clockSeconds(this.clock, Date.now());
-    const el = this.contentEl && this.contentEl.querySelector(".slim-timer");
-    if (el) el.setText(hhmmss(this.elapsed));
-    this.checkSilence();
-  }
-
-  /* One recording's captions and clock, across every segment of it. */
-  shownTranscript() {
-    return [this.liveCarry, this.liveTranscript].filter(Boolean).join("\n\n");
-  }
-
-  /* Fold what is on screen into the carry. Used by a segment boundary AND by a mid-segment
-   * session restart — the restart must NOT touch the clock, which is still running. */
-  carryTranscript() {
-    this.liveCarry = [this.liveCarry, this.liveTranscript].filter(Boolean).join("\n\n");
-    this.liveTranscript = "";
-  }
-
-  carryTranscriptAndClock() {
-    this.carryTranscript();
-    this.elapsedCarry = this.elapsed || 0;
-  }
-
-  /* What the caption pane says. Three states, and they must be distinguishable: PAUSED (they did
-   * that and nothing is wrong), running, and off. "Live transcript · draft" sitting frozen
-   * because captions had quietly died is what sent them looking for a bug in the wrong place. */
-  liveStatusText() {
-    if (!this.liveTranscriptActive) return "Live transcript off — recording continues";
-    if (this.recorder && this.recorder.state === "paused") return "Paused — not listening";
-    return this.liveTranscriptStatus || "Live transcript · draft";
-  }
-
-  /* Fold one caption result into what is on screen.
-   *
-   * ⚠ THE STREAM IS CUMULATIVE, AND IT REVISES ITS OWN PREFIX. That second half is what this
-   * used to get wrong. The rule was "growth replaces, anything else appends", written to guard
-   * against a rolling-window ASR — but parakeet does not roll, it REWRITES: as more audio
-   * arrives, `"...produces stable."` becomes `"...produces stable text we can compare..."` and
-   * `"sixteen kilohertz"` becomes `"16 kHz"`. Every rewrite fails `startsWith`, so the append
-   * branch appended the WHOLE cumulative text to what was already there, and compounded on the
-   * next chunk. Measured 2026-08-27 over 99 s of speech: 19 of 49 chunks revised their prefix,
-   * and the pane showed 37,785 chars of a 1,477-char transcript — 25.6x, which is what the owner
-   * saw as captions spamming repeated words.
-   *
-   * So: REPLACE, always. Server contract, not an assumption — `/api/record/live` returns
-   * `stream.result.text`, the full text for that session, and 0 of those 49 chunks shrank.
-   * A session that RESTARTS does start empty, which is the case the old append branch was
-   * really protecting; that is now handled where it belongs, by folding the words on screen
-   * into `liveCarry` before asking for a new session, so nothing vanishes.
-   */
-  applyLiveTranscript(text) {
-    const next = String(text || "").trim();
-    if (!next) return;
-    this.liveTranscript = next;
-  }
-
-  updateLiveTranscriptUI() {
-    if (!this.contentEl) return;
-    const status = this.contentEl.querySelector(".slim-live-transcript-status");
-    if (status) status.setText(this.liveStatusText());
-    const text = this.contentEl.querySelector(".slim-live-transcript-text");
-    if (text) {
-      text.setText(this.shownTranscript() || "Listening for speech…");
-      if (typeof text.scrollTo === "function") text.scrollTo({ top: text.scrollHeight });
-      else text.scrollTop = text.scrollHeight;
-    }
-  }
-
-  startLiveTranscript(mixed) {
-    this.liveTranscript = "";   // the carry holds the earlier segments; see shownTranscript()
-    this.liveTranscriptStatus = "Starting local captions…";
-    this.livePcm = [];
-    this.livePcmBytes = 0;
-    this.liveTranscriptActive = true;
-    this.liveTranscriptPaused = false;
-    this.updateLiveTranscriptUI();
-    this.liveTranscriptQueue = this.plugin.postLiveTranscript({
-      action: "start", session_id: this.recordingId,
-    }).then(() => {
-      this.liveTranscriptStatus = "Live transcript · draft";
-      this.updateLiveTranscriptUI();
-    }).catch((e) => {
-      console.error("[slim] live transcript start", e);
-      this.liveTranscriptActive = false;
-      this.liveTranscriptStatus = "Live transcript unavailable — recording continues";
-      this.updateLiveTranscriptUI();
-    });
-    try {
-      if (!this.audioCtx || typeof this.audioCtx.createScriptProcessor !== "function") return;
-      const source = this.audioCtx.createMediaStreamSource(mixed);
-      const processor = this.audioCtx.createScriptProcessor(4096, 1, 1);
-      const silent = this.audioCtx.createGain();
-      silent.gain.value = 0;
-      processor.onaudioprocess = (event) => {
-        if (!this.liveTranscriptActive || this.liveTranscriptPaused) return;
-        const channel = event.inputBuffer.getChannelData(0);
-        const pcm = pcm16k(channel, this.audioCtx && this.audioCtx.sampleRate);
-        if (!pcm.length) return;
-        this.livePcm.push(pcm);
-        this.livePcmBytes += pcm.length;
-        if (this.livePcmBytes >= LIVE_FLUSH_BYTES) this.flushLiveTranscript();
-      };
-      source.connect(processor);
-      processor.connect(silent);
-      silent.connect(this.audioCtx.destination);
-      this.liveProcessor = { source, processor, silent };
-    } catch (e) {
-      console.error("[slim] live transcript tap", e);
-    }
-  }
-
-  /* One caption round trip at a time, and the audio waits in the buffer rather than in a
-   * queue of requests.
-   *
-   * ⚠ THIS IS WHY CAPTIONS FELL BEHIND AND NEVER CAUGHT UP. A flush fired every 2 s of audio
-   * and chained onto an unbounded promise queue; one round trip slower than 2 s and every
-   * later flush waited behind it, so the lag compounded for the length of the recording.
-   * Coalescing bounds the lag to a single round trip: a slow machine sends fewer, larger
-   * chunks and the captions jump forward instead of drifting away.
-   */
-  flushLiveTranscript() {
-    if (!this.liveTranscriptActive || !this.livePcmBytes) return this.liveTranscriptQueue;
-    if (this.liveInFlight) return this.liveTranscriptQueue;   // audio keeps accumulating
-    const pcm = Buffer.concat(this.livePcm, this.livePcmBytes);
-    this.livePcm = [];
-    this.livePcmBytes = 0;
-    this.liveInFlight = true;
-    this.liveTranscriptQueue = this.liveTranscriptQueue.then(async () => {
-      if (!this.liveTranscriptActive) return;
-      const result = await this.plugin.postLiveTranscript({
-        action: "chunk", session_id: this.recordingId, pcm16: pcm.toString("base64"),
-      });
-      if (result && typeof result.transcript === "string") {
-        this.applyLiveTranscript(result.transcript);
-        this.liveTranscriptStatus = "Live transcript · draft";
-        this.updateLiveTranscriptUI();
-      }
-    }).catch(async (e) => {
-      // ⚠ NOT EVERY FAILURE IS FATAL. A lost session — a restarted server, an eviction, a
-      // recording that never closed its predecessor — used to switch captions off for the rest
-      // of the meeting behind one line of grey text. Ask for a new session and carry on; the
-      // words already on screen are kept, and the authoritative transcript never depended on
-      // this surface anyway.
-      console.error("[slim] live transcript chunk", e);
-      if (!this.liveTranscriptActive || this.liveRestarting) return;
-      this.liveRestarting = true;
-      // ⚠ CARRY BEFORE RESTARTING. A new session decodes from zero, and `applyLiveTranscript`
-      // replaces — so without this the pane would drop everything said before the restart,
-      // which is the "lost the first half of a lecture" failure, not a new one.
-      this.carryTranscript();
-      try {
-        await this.plugin.postLiveTranscript({ action: "start", session_id: this.recordingId });
-        this.liveTranscriptStatus = "Live transcript · draft";
-      } catch (restartError) {
-        console.error("[slim] live transcript restart", restartError);
-        this.liveTranscriptActive = false;
-      } finally {
-        this.liveRestarting = false;
-        this.updateLiveTranscriptUI();
-      }
-    });
-    // ⚠ ALWAYS cleared, on every path. Left set by a failure, captions stop for the rest of
-    // the recording and the pane simply freezes — no error, no status change.
-    this.liveTranscriptQueue = this.liveTranscriptQueue.finally(() => {
-      this.liveInFlight = false;
-      // A backlog that reached the floor while the request was out goes now — that is the
-      // coalescing, and it bounds the lag to one round trip. Anything smaller waits for the
-      // tap, which flushes at the same floor.
-      //
-      // ⚠ THIS LINE WAS THE COIL WHINE (2026-08-28). It used to send WHATEVER had arrived, so
-      // after the first 2 s chunk the loop ran at one request per round trip — 2.7 requests/s
-      // measured on a real recording, each carrying ~340 ms of audio and each re-encoding 20 s
-      // of context: GPU 60 % busy on silence, pulsing at 3 Hz. Faster machine, more requests.
-      // At the floor: 0.5 requests/s and 9 %.
-      if (this.liveTranscriptActive && this.livePcmBytes >= LIVE_FLUSH_BYTES) {
-        this.flushLiveTranscript();
-      }
-    });
-    return this.liveTranscriptQueue;
-  }
-
-  async stopLiveTranscript() {
-    if (!this.liveTranscriptActive) return;
-    await this.flushLiveTranscript();
-    this.liveTranscriptActive = false;
-    try {
-      const result = await this.plugin.postLiveTranscript({
-        action: "stop", session_id: this.recordingId,
-      });
-      if (result && result.transcript) this.liveTranscript = result.transcript;
-    } catch (e) {
-      console.error("[slim] live transcript stop", e);
-    }
-  }
-
-  setupMeter(mixed) {
-    try {
-      const src = this.audioCtx.createMediaStreamSource(mixed);
-      const analyser = this.audioCtx.createAnalyser();
-      analyser.fftSize = 512;
-      src.connect(analyser);
-      const data = new Uint8Array(analyser.frequencyBinCount);
-      const tick = () => {
-        if (!this.audioCtx || this.state !== "recording") return;
-        analyser.getByteTimeDomainData(data);
-        let peak = 0;
-        for (let i = 0; i < data.length; i++) peak = Math.max(peak, Math.abs(data[i] - 128));
-        const bar = this.contentEl.querySelector(".slim-level-fill");
-        if (bar) bar.style.width = `${Math.min(100, (peak / 128) * 160)}%`;
-        window.requestAnimationFrame(tick);
-      };
-      window.requestAnimationFrame(tick);
-    } catch (e) {
-      console.error("[slim] meter", e);   // a missing level bar must never stop a recording
-    }
-  }
-
-  /* Both channels of the stream MediaRecorder is writing — what the file gets, not what the
-   * devices claim. Read once a second by the clock's timer, not per frame: rAF stops in a hidden
-   * window, and a meeting is exactly when Obsidian is behind the call. The largest analyser
-   * window (32768 samples, ~0.7 s) sees most of each second. 'Record my voice' off leaves the
-   * left side empty on purpose, and system silence alone is never a warning — so there is
-   * nothing to watch. */
-  setupSilenceWatch(mixed) {
-    this.silenceWatch = null;
-    if (!this.recordVoice) return;
-    try {
-      const source = this.audioCtx.createMediaStreamSource(mixed);
-      const split = this.audioCtx.createChannelSplitter(2);
-      const mic = this.audioCtx.createAnalyser();
-      const system = this.audioCtx.createAnalyser();
-      mic.fftSize = 32768;
-      system.fftSize = 32768;
-      source.connect(split);
-      split.connect(mic, MIC_CHANNEL);
-      split.connect(system, SYSTEM_CHANNEL);
-      this.silenceTap = { source, split, mic, system };
-      this.silenceSamples = new Float32Array(mic.fftSize);
-    } catch (e) {
-      console.error("[slim] silence watch", e);   // a missing warning must never stop a recording
-    }
-  }
-
-  checkSilence() {
-    if (!this.silenceTap) return;
-    const peak = (analyser) => {
-      const data = this.silenceSamples;
-      analyser.getFloatTimeDomainData(data);
-      let max = 0;
-      for (let i = 0; i < data.length; i++) max = Math.max(max, Math.abs(data[i]));
-      return max;
-    };
-    const was = this.silenceWatch ? this.silenceWatch.warn : false;
-    this.silenceWatch = captureSilence(this.silenceWatch, {
-      mic: peak(this.silenceTap.mic), system: peak(this.silenceTap.system),
-    });
-    if (this.silenceWatch.warn !== was) this.render();
-  }
-
-  togglePause() {
-    if (!this.recorder) return;
-    if (this.recorder.state === "recording") {
-      this.recorder.pause();
-      this.liveTranscriptPaused = true;
-      if (this.clock) {
-        this.clock = { base: clockSeconds(this.clock, Date.now()), since: null };
-        this.elapsed = this.clock.base;
-      }
-    } else if (this.recorder.state === "paused") {
-      this.recorder.resume();
-      this.liveTranscriptPaused = false;
-      if (this.clock) this.clock.since = Date.now();
-    }
-    this.render();
-  }
-
-  teardownStream() {
-    if (this.timer) { window.clearInterval(this.timer); this.timer = null; }
-    // The last tick can be a throttled minute old; stop the clock at the wall's reading.
-    if (this.clock) { this.elapsed = clockSeconds(this.clock, Date.now()); this.clock = null; }
-    // EVERY input, not just the mic — a live loopback stream keeps the device busy and the
-    // recording indicator on long after the pane is gone.
-    this.streams.forEach((s) => s.getTracks().forEach((t) => t.stop()));
-    this.streams = [];
-    if (this.liveTranscriptActive) {
-      this.liveTranscriptActive = false;
-      this.plugin.postLiveTranscript({ action: "stop", session_id: this.recordingId })
-        .catch((e) => console.debug("[slim] live transcript cleanup", e));
-    }
-    if (this.liveProcessor) {
-      for (const node of Object.values(this.liveProcessor)) {
-        try { if (node) node.disconnect(); } catch (e) { /* already disconnected */ }
-      }
-      this.liveProcessor = null;
-    }
-    if (this.silenceTap) {
-      for (const node of Object.values(this.silenceTap)) {
-        try { node.disconnect(); } catch (e) { /* already disconnected */ }
-      }
-      this.silenceTap = null;
-      this.silenceSamples = null;
-    }
-    if (this.audioCtx) { try { this.audioCtx.close(); } catch (e) { /* already closed */ } }
-    this.audioCtx = null;
-  }
-
-  async stop() {
-    if (!this.recorder) return;
-    const blob = await new Promise((resolve) => {
-      this.recorder.onstop = () => resolve(new Blob(this.chunks, { type: "audio/webm" }));
-      this.recorder.stop();
-    });
-    await this.stopLiveTranscript();
-    this.teardownStream();
-    if (this.manager) this.manager.releaseCapture(this);
-    // This segment is over. Fold its captions and its seconds into the recording's running
-    // totals so a resume continues the same transcript and the same clock.
-    this.carryTranscriptAndClock();
-
-    try {
-      // The last chunk arrives just before `onstop`, so the queue is drained after it, not
-      // before — otherwise the final five seconds are posted without having been written.
-      let rel;
-      if (this.diskWrite) {
-        await this.writeQueue;
-        this.flushPending();
-        rel = this.audioRel;
-        if (this.pending.length) {
-          new Notice("SLIM: the tail of this recording could not be written — the file is " +
-                     "playable but may be missing its last seconds.", 20000);
-        }
-      } else {
-        rel = await this.writeAudio(blob);
-      }
-
-      // Persist both sources before changing the UI or posting either path. In particular, the
-      // in-memory fallback has no audio file until `writeAudio` returns, so a draft-save error
-      // must happen after that commit point rather than discard the only copy of the recording.
-      await this.saveDraft();
-      this.freezeEditor(true);
-      this.state = "processing";
-      this.processingProgress = {
-        stage: "queued", label: "Starting the local pipeline",
-        detail: "Your recording and notes are already safe", steps: [], metrics: {},
-      };
-      this.render();
-      await this.submitRecording(this.segments.length ? this.segments : [rel]);
-    } catch (e) {
-      console.error("[slim] stop", e);
-      this.errorText = String((e && e.message) || e);
-      this.state = "error";
-      this.freezeEditor(false);
-    }
-    this.render();
-  }
-
-  /* Post one staged recording and move to its card.
-   *
-   * Separated from stop() so RETRY runs exactly the same request. ⚠ The server now REFUSES a
-   * recording it could not transcribe rather than filing an empty note and returning 200
-   * (2026-08-23), which makes a retry meaningful: the audio is still in `_incoming`, and the
-   * usual causes — Ollama not up, the model still loading — are fixed in the time it takes to
-   * read the error. Before that change there was nothing to retry, because the server had
-   * already reported success.
-   */
-  async submitRecording(rel) {
-    const rels = Array.isArray(rel) ? rel : [rel];
-    // Resuming a note that already exists is an APPEND, not a second recording: its audio is
-    // archived, its staging cleared, and a new note would split one lecture across two files.
-    if (this.appendTo) return this.submitAppend(rels);
-    const body = { audio: rels.length > 1 ? rels : rels[0],
-                   type: this.type, title: this.title.trim() };
-    if (this.draftRel) {
-      await this.saveDraft();
-      body.draft = this.draftRel;
-    } else {
-      body.notes_md = "";
-    }
-    // ⚠ ONE JOB PER ATTEMPT. Reusing the recording id meant the progress poll could find the
-    // PREVIOUS attempt's record — finished, and marked cancelled — and stop watching at once,
-    // so a perfectly healthy run displayed "Cancelled" from beginning to end.
-    const base = this.recordingId ||
-      nodePath.posix.basename(rels[0], nodePath.posix.extname(rels[0]));
-    this.attempt = (this.attempt || 0) + 1;
-    const jobId = `${base}-${this.attempt}`;
-    this.jobId = jobId;
-    if (typeof this.plugin.watchRecording === "function") {
-      body.job_id = jobId;
-      this.stopProgressWatch = this.plugin.watchRecording(jobId, (progress) => {
-        this.processingProgress = progress;
-        if (this.state === "processing") this.render();
-      });
-    }
-    try {
-      this.result = await this.plugin.postRecording(body);
-    } catch (e) {
-      // ⚠ NEITHER OF THESE IS AN ERROR SCREEN. A cancel is their instruction; a silent take is
-      // an outcome, not a failure. Both leave every file where it was, so both park in
-      // `paused` — the ordinary way forward — instead of asking them to choose between
-      // deleting and keeping their own audio over a recording that simply had nothing in it.
-      if (e && (e.cancelled || e.silent)) {
-        if (e.silent) new Notice(`SLIM: ${e.message}`);
-        this.freezeEditor(false);
-        this.state = "paused";
-        this.pausedTranscript = null;      // re-read; a resume adds words
-        this.errorText = "";
-        this.processingProgress = null;
-        this.render();
-        return;
-      }
-      throw e;
-    } finally {
-      if (this.stopProgressWatch) this.stopProgressWatch();
-      this.stopProgressWatch = null;
-    }
-    this.cardTitle = this.result.title || "";
-    // ⚠ INDEX BEFORE OPENING. `openFile` fires `file-open`, and the handler adopts any recorded
-    // note it cannot find in the index as a NEW session — a second card on the same block,
-    // approved separately, and a "review still pending" notice on close for the one they never
-    // saw (2026-09-05).
-    const fromDraft = Boolean(this.draftRel);
-    this.draftRel = "";
-    this.filedNotePath = this.result.note;
-    if (this.manager) this.manager.indexSession(this);
-    if (fromDraft) await this.loadEditorFile(this.filedNotePath);
-    await this.loadNoteParts();
-    this.result.notes_md = this.noteParts.notes;
-    this.freezeEditor(false);
-    this.activeTab = "summary";
-    this.state = "card";
-  }
-
-  /* Record more into a note that is already filed — from the review card, or from any
-   * finished meeting note. The summary is deliberately NOT re-run (their call): it keeps
-   * describing what it described until they presse Retry summary. */
-  async startAppendRecording() {
-    const back = this.state;
-    this.appendTo = this.filedNotePath;
-    // ⚠ COME BACK WHERE THEY WERE. Resuming from the review card used to file the note on Stop,
-    // skipping the approval step they were standing in.
-    this.resumeReturnState = this.state === "card" ? "card" : "finished";
-    this.recordingId = recordingId();
-    this.segments = [];
-    // The pane shows the RECORDING's transcript, not this segment's: resuming a filed note
-    // with an empty pane made the words already in the note look gone.
-    this.liveCarry = (this.noteParts && this.noteParts.transcript) || "";
-    this.elapsedCarry = 0;
-    this.state = "recording";
-    this.render();
-    try {
-      if (this.manager) this.manager.claimCapture(this);
-      await this.start();
-    } catch (e) {
-      // ⚠ Permission denied or no device leaves a recording UI with no recorder behind it, and
-      // an `appendTo` pointing at a note nothing is going to append to. Put them back.
-      console.error("[slim] resume recording", e);
-      new Notice(`SLIM: could not start recording — ${e.message || e}`);
-      this.appendTo = "";
-      this.resumeReturnState = "";
-      this.segments = [];
-      this.liveCarry = "";
-      this.state = back;
-      if (this.manager) this.manager.releaseCapture(this);
-      this.render();
-    }
-  }
-
-  async submitAppend(rels) {
-    const note = this.appendTo;
-    this.attempt = (this.attempt || 0) + 1;
-    const jobId = `${this.recordingId}-append-${this.attempt}`;
-    this.jobId = jobId;
-    let stop = null;
-    if (typeof this.plugin.watchRecording === "function") {
-      stop = this.plugin.watchRecording(jobId, (progress) => {
-        this.processingProgress = progress;
-        if (this.state === "processing") this.render();
-      });
-    }
-    try {
-      await this.plugin.appendRecording({ note, audio: rels, job_id: jobId });
-    } catch (e) {
-      if (e && (e.cancelled || e.silent)) {
-        // A silent resumed segment adds nothing and costs nothing: say so, and put them back
-        // where they were rather than on a failure screen. ⚠ Its staged file has no words in it,
-        // so it is dropped here — left behind it would sit in _incoming forever, unassociated
-        // with any note, and the next Resume resets `segments` out from under it.
-        if (e.silent) {
-          new Notice(`SLIM: ${e.message}`);
-          for (const seg of this.segments || []) {
-            await this.removeStagedSegment(seg).catch(() => {});
-          }
-          this.segments = [];
-          this.appendTo = "";
-        }
-        this.freezeEditor(false);
-        this.state = e.silent ? (this.resumeReturnState || "finished") : "paused";
-        this.pausedTranscript = null;
-        this.errorText = "";
-        this.render();
-        return;
-      }
-      throw e;
-    } finally {
-      if (stop) stop();
-    }
-    // ⚠ The POST is the commit point: the words are in the note. Everything below is opening
-    // it again, and a failure there is a display problem, not a reason to re-run an append
-    // that already happened.
-    this.appendTo = "";
-    this.segments = [];
-    this.filedNotePath = note;
-    try {
-      await this.loadEditorFile(note);
-      await this.loadNoteParts();
-    } catch (e) {
-      console.error("[slim] reopen after append", e);
-      new Notice(`SLIM: the recording was added to ${note}, but the note could not be opened — `
-                 + `${e.message || e}`);
-    }
-    if (this.result) this.result.notes_md = this.noteParts.notes;
-    this.freezeEditor(false);
-    this.activeTab = "transcript";
-    this.state = this.resumeReturnState || "finished";
-    this.resumeReturnState = "";
-    this.render();
-  }
-
-  async ensureStagingDirs() {
-    await this.ensureVaultDirs(STAGING_DIR);
-  }
-
-  /* Open the file the chunks will be appended to, and prove it is writable BEFORE recording —
-   * discovering a permissions problem five seconds into a meeting is discovering it too late.
-   *
-   * Node's `fs`, not the Vault API, because Obsidian offers only create and overwrite: there is
-   * no appendBinary. `isDesktopOnly: true` in the manifest is precisely the licence for this.
-   * The path is still a vault-relative path resolved against the vault's own base, and the
-   * containment check keeps it that way.
-   */
-  openDiskFile() {
-    try {
-      const fs = require("fs");
-      const adapter = this.app.vault.adapter;
-      if (typeof adapter.getBasePath !== "function") throw new Error("no base path");
-      const base = nodePath.resolve(adapter.getBasePath());
-      const abs = nodePath.resolve(base, this.audioRel);
-      if (abs !== base && !abs.startsWith(base + nodePath.sep)) {
-        throw new Error(`${this.audioRel} resolves outside the vault`);
-      }
-      fs.mkdirSync(nodePath.dirname(abs), { recursive: true });
-      fs.writeFileSync(abs, Buffer.alloc(0));   // create/truncate, so appends start from zero
-      this.fs = fs;
-      this.audioAbs = abs;
-      this.diskWrite = true;
-    } catch (e) {
-      // ⚠ SAY SO. Falling back silently is exactly how a two-hour loss goes unnoticed: the
-      // recording still works, so nothing looks wrong until the day something crashes.
-      console.error("[slim] disk flush unavailable", e);
-      this.diskWrite = false;
-      new Notice(
-        "SLIM: cannot write audio to disk while recording — holding it in memory until you " +
-        "press Stop. A crash or a quit before then loses the whole recording. " +
-        `(${(e && e.message) || e})`, 20000);
-    }
-  }
-
-  onChunk(blob) {
-    if (!this.diskWrite) { this.chunks.push(blob); return; }
-    // Serialized: `Blob.arrayBuffer()` is async and the webm's clusters must land in the order
-    // MediaRecorder produced them, or the container is garbage.
-    // The `.catch` is not decoration: a rejected queue swallows every LATER chunk silently,
-    // because `.then` on a rejected promise never runs.
-    this.writeQueue = this.writeQueue
-      .then(() => this.appendChunk(blob))
-      .catch((e) => { console.error("[slim] write queue", e); });
-  }
-
-  async appendChunk(blob) {
-    try {
-      this.pending.push(Buffer.from(await blob.arrayBuffer()));
-    } catch (e) {
-      console.error("[slim] chunk read", e);
-      return;
-    }
-    this.flushPending();
-  }
-
-  /* Append everything the file is still owed. `pending` normally holds exactly one buffer and
-   * empties immediately; it only grows when a write fails, and the next chunk then retries the
-   * lot in order. That keeps a transient failure (a full disk, an iCloud stall) from tearing a
-   * hole in the middle of the container. */
-  flushPending() {
-    if (!this.pending.length) return;
-    try {
-      this.fs.appendFileSync(this.audioAbs, this.pending.length === 1
-        ? this.pending[0] : Buffer.concat(this.pending));
-      this.pending = [];
-    } catch (e) {
-      console.error("[slim] append", e);
-      if (!this.warnedWrite) {
-        this.warnedWrite = true;
-        new Notice("SLIM: a chunk of audio did not reach disk. Still recording, and the next " +
-                   "chunk retries it — but check free space.", 15000);
-      }
-    }
-  }
-
-  async writeAudio(blob) {
-    // The in-memory fallback, used only when `openDiskFile` failed. Written by Obsidian itself;
-    // the audio never travels over HTTP (the server caps bodies at 1 MB and a meeting is tens
-    // of megabytes). From the moment this returns, the recording exists on disk.
-    await this.ensureStagingDirs();
-    await this.app.vault.createBinary(this.audioRel, await blob.arrayBuffer());
-    return this.audioRel;
-  }
-
-  async applyCard() {
-    // Retitling renames the file, so the server's response carries the new path — keep it, or
-    // "Open note" and any later apply would point at a file that no longer exists.
-    const c = this.result.card;
-    this.filingFrom = this.filedNotePath;
-    let moved;
-    try {
-      moved = await this.plugin.applyCard({
-        note: this.filedNotePath,
-        dest_dir: c.dest_dir,
-        type_tag: c.type_tag,
-        topics: c.topics || [],
-        summary_md: this.result.summary || "",
-        notes_md: this.result.notes_md == null ? this.noteParts.notes : this.result.notes_md,
-        title: this.cardTitle || "",
-      });
-    } finally {
-      this.filingFrom = "";
-    }
-    if (moved && moved.note) {
-      this.filedNotePath = moved.note;
-      this.result.note = moved.note;
-      if (this.manager) this.manager.indexSession(this);
-      // A move is a RENAME, and Obsidian renames in place: the leaf keeps its file object and
-      // the object's path changes, so the note is already on screen. Reopening it reloaded an
-      // editor for nothing — and it was the one step approve-with-edits took that
-      // approve-without did not, when "Cannot set properties of null" surfaced after changing
-      // the suggested location (2026-08-28).
-      const view = this.editorLeaf && this.editorLeaf.view;
-      const shown = view instanceof MarkdownView && view.file && view.file.path === moved.note;
-      if (!shown) {
-        // The server has filed the note by now; that is the fact. A pane that cannot be
-        // refreshed is a console matter — reported as a failed filing, it re-enabled Approve,
-        // left the session at `card`, and the next leaf change announced a pending review
-        // for a note that was done.
-        try { await this.loadEditorFile(this.filedNotePath); }
-        catch (e) { console.error("[slim] refresh after filing", e); }
-      }
-    }
-    this.result.title = this.cardTitle || this.result.title;
-  }
-
-  renderSavedLocation(root) {
-    if (!this.filedNotePath) return;
-    const row = root.createDiv({ cls: "slim-saved-location" });
-    const copy = row.createDiv({ cls: "slim-saved-location-copy" });
-    copy.createSpan({ cls: "slim-saved-location-label", text: "Saved in the vault" });
-    copy.createSpan({ cls: "slim-saved-location-path", text: this.filedNotePath });
-    const reveal = row.createEl("button", { text: "Reveal" });
-    reveal.addEventListener("click", () => {
-      if (typeof this.plugin.revealMeetingPath !== "function") return;
-      this.plugin.revealMeetingPath(this.filedNotePath)
-        .catch((e) => new Notice(`SLIM: could not reveal the note — ${e.message || e}`));
-    });
-  }
-
-  // ---- rendering -----------------------------------------------------------------------
-
-  render() {
-    const root = this.contentEl;
-    if (!root) return;
-    root.empty();
-    root.addClass("slim-recorder");
-    if (typeof root.setAttr === "function") root.setAttr("data-state", this.state);
-    if (this.state === "idle") this.renderIdle(root);
-    else if (this.state === "recording") this.renderRecording(root);
-    else if (this.state === "processing") this.renderProcessing(root);
-    else if (this.state === "paused") this.renderPaused(root);
-    else if (this.state === "card") this.renderCard(root);
-    else if (this.state === "finished") this.renderFinished(root);
-    else this.renderError(root);
-  }
-
-  /* Their notes, written back on their own. NOT `applyCard`: apply rewrites frontmatter, drops
-   * `filed_by` and can MOVE the note. Typing is not a filing decision. */
-  async saveNotes(baseline) {
-    const value = (this.result && this.result.notes_md) || "";
-    if (!this.filedNotePath || value === baseline.text) return;   // every blur is not a write
-    // Closing the note blurs the field AND unloads the block; one edit is still one write.
-    if (value === baseline.saving) return;
-    baseline.saving = value;
-    try {
-      await this.plugin.saveNotes({ note: this.filedNotePath, notes_md: value });
-      baseline.text = value;
-      this.noteParts.notes = value;
-    } catch (e) {
-      console.error("[slim] save notes", e);
-      new Notice(`SLIM: could not save your notes — ${e.message || e}`);
-    } finally {
-      if (baseline.saving === value) baseline.saving = null;
-    }
-  }
-
-  /* Blur never fires when the field is torn down with the caret still in it — the note
-   * closed, the block re-rendered, Obsidian quit. Those paths call this instead. */
-  flushNotes() {
-    return this.notesBaseline ? this.saveNotes(this.notesBaseline) : Promise.resolve();
-  }
-
-  /* Retry the summary against the transcript the note already holds — Notion's button, and
-   * the reason they asked for it: iterate on the summarizer without re-recording a lecture.
-   * The instructions field is the SLIM-safe half of Notion's: nothing tells the model what
-   * KIND of recording this is, they do, in their own words, for this one retry. */
-  renderRetryRow(root) {
-    const row = root.createDiv({ cls: "slim-retry" });
-    const field = row.createDiv({ cls: "slim-field slim-retry-field" });
-    field.createEl("label", { text: "Instructions (optional)" });
-    const input = field.createEl("input", { type: "text", cls: "slim-retry-instructions" });
-    input.value = this.retryInstructions || "";
-    input.setAttr("placeholder", "organise by concept, keep the formulas…");
-    input.addEventListener("input", (e) => { this.retryInstructions = e.target.value; });
-
-    const button = row.createEl("button", { text: "Retry summary" });
-    button.disabled = !!this.retrying;
-    button.addEventListener("click", () => this.retrySummary());
-    // Always present, even empty: the progress ticks update it in place rather than
-    // re-rendering the card, so it has to be there before the first tick arrives.
-    row.createSpan({ cls: "slim-retry-status", text: this.retryStatus || "" });
-    return row;
-  }
-
-  updateRetryStatusUI() {
-    if (!this.contentEl || typeof this.contentEl.querySelector !== "function") return;
-    const el = this.contentEl.querySelector(".slim-retry-status");
-    if (el && typeof el.setText === "function") el.setText(this.retryStatus || "");
-  }
-
-  async retrySummary() {
-    if (this.retrying || !this.filedNotePath) return;
-    this.retrying = true;
-    this.retryStartedAt = Date.now();
-    this.retryStatus = "Re-reading the transcript… 0s";
-    this.render();
-    const jobId = `retry-${this.recordingId || "note"}-${this.retryCount = (this.retryCount || 0) + 1}`;
-    let stop = null;
-    if (typeof this.plugin.watchRecording === "function") {
-      stop = this.plugin.watchRecording(jobId, (progress) => {
-        // The LABEL, not the detail: while the model streams, `detail` is the fixed string
-        // "Live local-model activity", which says nothing. The seconds are what make a
-        // minute-long wait read as progress rather than a stall.
-        const elapsed = Math.round((Date.now() - this.retryStartedAt) / 1000);
-        const label = progress.label || "Rewriting the summary";
-        this.retryStatus = `${label}… ${elapsed}s`;
-        // ⚠ IN PLACE, NEVER render(). This fires every 600 ms while the state is card or
-        // finished — the states whose DOM holds the live notes editor, the summary editor and
-        // the instructions field. A full rebuild every tick tore them out from under the caret
-        // a few hundred times per retry.
-        this.updateRetryStatusUI();
-      });
-    }
-    try {
-      const target = this.filedNotePath;
-      const out = await this.plugin.retrySummary({
-        note: target,
-        instructions: (this.retryInstructions || "").trim(),
-        job_id: jobId,
-      });
-      // ⚠ They may have clicked into another note during the minute this took. The note on disk
-      // is correct either way; what must not happen is A's summary being painted into B's view.
-      if (this.filedNotePath !== target) return;
-      this.result.summary = out.summary;
-      this.noteParts.summary = out.summary;
-      this.activeTab = "summary";
-    } catch (e) {
-      // ⚠ The old summary stays. A retry that blanks a good summary because the model died is
-      // the recorder reporting a loss as progress, which is its worst failure mode.
-      console.error("[slim] retry summary", e);
-      new Notice(`SLIM: the summary was not rewritten — ${e.message || e}`);
-    } finally {
-      if (stop) stop();
-      this.retrying = false;
-      this.retryStatus = "";
-      this.render();
-    }
-  }
-
-  async cancelProcessing() {
-    const jobId = this.jobId || this.recordingId;
-    if (!jobId || typeof this.plugin.cancelRecording !== "function") return;
-    try {
-      const out = await this.plugin.cancelRecording({ job_id: jobId });
-      // ⚠ The click can beat the POST that registers the job, and the server then has nothing
-      // to flag. Announcing success there is a lie that ends with a filed note.
-      if (out && out.cancelling === false) {
-        new Notice("SLIM: could not stop it — the job had not started yet. Try Cancel again in " +
-                   "a moment.");
-        return;
-      }
-      // Cancelling is cooperative: the summary stream stops mid-generation, but transcription
-      // and the filing card are blocking calls that finish their current step first.
-      new Notice("SLIM: stopping after the current step. Nothing is written or deleted.");
-    } catch (e) {
-      console.error("[slim] cancel", e);
-      new Notice(`SLIM: could not cancel — ${e.message || e}`);
-    }
-  }
-
-  async resumeRecording() {
-    try {
-      if (this.manager) this.manager.claimCapture(this);
-      this.state = "recording";
-      this.render();
-      await this.start();
-    } catch (e) {
-      if (this.manager) this.manager.releaseCapture(this);
-      console.error("[slim] resume", e);
-      this.errorText = String((e && e.message) || e);
-      this.state = "error";
-      this.render();
-    }
-  }
-
-  renderPaused(root) {
-    const n = (this.segments || []).length;
-    this.renderObjectHeader(root, "SLIM meeting note", this.title.trim() || "Recording paused",
-                            "Paused");
-    // Its own padded body: the header pads itself, so content hung directly off the root sat
-    // flush against the left edge.
-    const body = root.createDiv({ cls: "slim-object-body slim-paused" });
-    body.createEl("p", { cls: "slim-hint",
-      text: `${n} segment${n === 1 ? "" : "s"} saved, and your notes with them. Carry on ` +
-            "recording into this same note, or finish it now." });
-
-    // "1 segment saved" is a claim they cannot check. Show the words.
-    const pane = body.createDiv({ cls: "slim-live-transcript" });
-    const head = pane.createDiv({ cls: "slim-live-transcript-head" });
-    head.createSpan({ cls: "slim-object-section-label", text: "Transcript so far" });
-    const status = head.createSpan({ cls: "slim-live-transcript-status", text: "Reading…" });
-    const text = pane.createEl("p", { cls: "slim-live-transcript-text",
-                                      text: this.pausedTranscript || "Reading the transcript…" });
-    if (this.pausedTranscript == null && typeof this.plugin.recordTranscript === "function") {
-      this.plugin.recordTranscript({ audio: this.segments || [] }).then((out) => {
-        this.pausedTranscript = out.text || "";
-        status.setText(out.pending
-          ? `${out.words} words · ${out.pending} segment${out.pending === 1 ? "" : "s"} not transcribed yet`
-          : `${out.words} words`);
-        text.setText(this.pausedTranscript || "Nothing was transcribed before you cancelled.");
-      }).catch((e) => {
-        console.error("[slim] paused transcript", e);
-        status.setText("could not read it");
-        text.setText("The audio is safe; the transcript is not available yet.");
-      });
-    } else {
-      status.setText("");
-      text.setText(this.pausedTranscript || "Nothing was transcribed before you cancelled.");
-    }
-
-    const row = body.createDiv({ cls: "slim-row" });
-    const resume = row.createEl("button", { cls: "mod-cta", text: "Resume recording" });
-    resume.addEventListener("click", () => this.resumeRecording());
-    // Always offered: a cancel that left them with no way forward would be a worse trap than
-    // the wait they cancelled.
-    const finish = row.createEl("button", { text: "Finish" });
-    finish.addEventListener("click", async () => {
-      this.freezeEditor(true);
-      this.state = "processing";
-      this.processingProgress = {
-        stage: "queued", label: "Starting the local pipeline",
-        detail: "Your recording and notes are already safe", steps: [], metrics: {},
-      };
-      this.render();
-      try {
-        await this.submitRecording(this.segments);
-      } catch (e) {
-        console.error("[slim] finish", e);
-        this.errorText = String((e && e.message) || e);
-        this.state = "error";
-        this.freezeEditor(false);
-      }
-      this.render();
-    });
-  }
-
-  renderObjectHeader(root, eyebrow, title, status) {
-    const head = root.createDiv({ cls: "slim-object-head" });
-    const copy = head.createDiv({ cls: "slim-object-head-copy" });
-    copy.createDiv({ cls: "slim-object-eyebrow", text: eyebrow });
-    copy.createEl("h3", { text: title });
-    const badge = head.createDiv({ cls: "slim-object-status" });
-    badge.createSpan({ cls: "slim-object-status-dot" });
-    badge.createSpan({ text: status });
-    return head;
-  }
-
-  /* The three tabs, drawn by the shared `renderMeetingTabs` reader. What the recorder adds
-   * over a passively rendered block is the editing: a summary they can click into, and a notes
-   * editor. `editableSummary` gates only the DERIVED half — their notes are editable in every
-   * state, because the meeting block hides them from Obsidian's own editor, so read-only here
-   * meant not editable anywhere and reaching them meant reopening the review.
-   */
-  renderSource(root, editableSummary) {
-    const parts = {
-      summary: this.result ? (this.result.summary || "") : (this.noteParts.summary || ""),
-      notes: this.result && this.result.notes_md != null
-        ? this.result.notes_md : this.noteParts.notes,
-      transcript: this.noteParts.transcript,
-    };
-    return renderMeetingTabs(
-      this.app, root, parts, this.filedNotePath || this.draftRel || "", {
-        editable: true,
-        component: this.plugin,
-        activeTab: this.activeTab,
-        onTab: (value) => {
-          this.summaryEditing = false;
-          this.activeTab = value;
+      imageURL(threadId, imageId) {
+        const port = this.plugin.settings?.port || 7546;
+        return `http://127.0.0.1:${port}/api/copilot/image?thread=${encodeURIComponent(threadId)}&id=${encodeURIComponent(imageId)}`;
+      },
+      // Per-token updates touch two live nodes. A full render() per delta tore the whole view
+      // down ~40 times a second: the transcript's scroll position reset to the top on every
+      // token, the composer lost focus per keystroke, and a hand-expanded group snapped shut.
+      renderDelta() {
+        if (!this.el) {
           this.render();
-        },
-        summaryPane: (body) => this.renderSummaryPane(body, parts.summary, editableSummary),
-        notesPane: (body) => this.renderNotesPane(body, parts.notes),
-      });
-  }
-
-  renderSummaryPane(generated, summary, editableSummary) {
-    if (editableSummary && this.summaryEditing) {
-      const edit = generated.createDiv({ cls: "slim-summary-editing" });
-      const toolbar = edit.createDiv({ cls: "slim-summary-editing-head" });
-      toolbar.createSpan({ text: "Live Markdown" });
-      const done = toolbar.createEl("button", { text: "Done" });
-      const live = this.renderLiveMarkdownEditor(edit, summary, (value) => {
-        this.result.summary = value;
-        this.edited = true;
-      }, "slim-summary slim-summary-editor");
-      const finish = () => {
-        if (!this.summaryEditing) return;
-        this.summaryEditing = false;
-        this.render();
-      };
-      done.addEventListener("click", finish);
-      live.addEventListener("keydown", (e) => {
-        if (e.key === "Escape") finish();
-      });
-      // Defer until the click that moved focus has reached its destination; an immediate
-      // rerender on mousedown would swallow the user's intended filing/tab click.
-      live.addEventListener("blur", () => {
-        if (typeof window !== "undefined" && typeof window.setTimeout === "function") {
-          window.setTimeout(finish, 0);
-        } else finish();
-      });
-      if (typeof window !== "undefined" && typeof window.setTimeout === "function") {
-        window.setTimeout(() => { if (typeof live.focus === "function") live.focus(); }, 0);
-      }
-      return;
-    }
-    const preview = generated.createDiv({
-      cls: `slim-summary-preview${editableSummary ? " is-editable" : ""}`,
-      attr: editableSummary ? { role: "button", tabindex: "0", "aria-label": "Edit AI summary" } : {},
-    });
-    this.renderMarkdown(preview.createDiv({ cls: "slim-rendered-markdown" }), summary);
-    if (editableSummary) {
-      preview.createSpan({ cls: "slim-summary-edit-cue", text: "Edit" });
-      const begin = (e) => {
-        if (e && e.target && typeof e.target.closest === "function" && e.target.closest("a")) return;
-        this.summaryEditing = true;
-        this.render();
-      };
-      preview.addEventListener("click", begin);
-      preview.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); begin(e); }
-      });
-    }
-  }
-
-  // ⚠ SAVED ON BLUR, NOT ON EVERY KEYSTROKE, and that is a constraint rather than a
-  // preference: their notes live INSIDE the meeting block, so writing them re-renders the very
-  // object they are typing into. On blur the caret has already left, so nothing is lost.
-  renderNotesPane(parent, notes) {
-    // A BOX, not a value: `saveNotes` moves it on success. Captured by value, every later
-    // click away re-posted the same notes — a full note rewrite and an index pass each time.
-    const baseline = { text: notes || "" };
-    const editor = this.renderLiveMarkdownEditor(parent, baseline.text, (value) => {
-      this.result.notes_md = value;
-      this.edited = true;
-    }, "slim-notes-editor is-full");
-    editor.setAttr("data-placeholder", "Add the notes you want to keep with this recording…");
-    // In EVERY state that has a filed note behind it. Review was the gap: `Approve & finish`
-    // was the only writer there, so typing in review and walking away lost the keystrokes —
-    // and review is the state they are most likely to walk away from.
-    if (this.filedNotePath) {
-      this.notesBaseline = baseline;
-      editor.addEventListener("blur", () => this.saveNotes(baseline));
-    }
-    return editor;
-  }
-
-  renderProperties(root) {
-    const c = this.result && this.result.card;
-    if (!c) return;
-    const props = root.createDiv({ cls: "slim-object-properties" });
-    const property = (label, value) => {
-      const p = props.createDiv({ cls: "slim-object-property" });
-      p.createSpan({ cls: "slim-object-property-label", text: label });
-      p.createSpan({ cls: "slim-object-property-value", text: value || "—" });
-    };
-    property("Location", c.dest_dir);
-    property("Type", TYPES.find(([value]) => value === c.type_tag)?.[1] || c.type_tag);
-    property("Topics", (c.topics || []).join(", "));
-  }
-
-  renderIdle(root) {
-    this.renderObjectHeader(root, "SLIM meeting note", "Set up this recording", "Saved locally");
-    const setup = root.createDiv({ cls: "slim-object-setup" });
-
-    const t = setup.createDiv({ cls: "slim-field" });
-    t.createEl("label", { text: "Title" });
-    const titleInput = t.createEl("input", { type: "text", placeholder: "What is this?" });
-    titleInput.value = this.title;
-    titleInput.addEventListener("input", (e) => { this.title = e.target.value; });
-
-    const ty = setup.createDiv({ cls: "slim-field" });
-    ty.createEl("label", { text: "Type" });
-    const sel = ty.createEl("select");
-    TYPES.forEach(([value, label]) => {
-      const o = sel.createEl("option", { text: label });
-      o.value = value;
-      if (value === this.type) o.selected = true;
-    });
-    sel.addEventListener("change", (e) => {
-      this.type = e.target.value;
-      this.plugin.settings.lastType = this.type;
-      this.plugin.saveSettings();
-    });
-    ty.createEl("p", { cls: "slim-hint",
-      text: "Chosen before you speak, so nothing has to guess it later." });
-
-    const v = setup.createDiv({ cls: "slim-field slim-toggle" });
-    const box = v.createEl("input", { type: "checkbox" });
-    box.checked = this.recordVoice;
-    v.createEl("label", { text: "Record my voice" });
-    box.addEventListener("change", (e) => {
-      this.recordVoice = e.target.checked;
-      this.plugin.settings.recordVoice = this.recordVoice;
-      this.plugin.saveSettings();
-    });
-    v.createEl("p", { cls: "slim-hint",
-      text: "What the computer is playing is always captured — no device setup, whatever your "
-          + "output is set to. Turn this off for a lecture you are only watching." });
-
-    const btn = setup.createEl("button", { cls: "mod-cta slim-big", text: "Start recording" });
-    btn.addEventListener("click", async () => {
-      btn.disabled = true;
-      try { await this.start(); }
-      catch (e) {
-        console.error("[slim] start", e);
-        new Notice(`SLIM: could not start recording — ${e.message || e}`);
-        btn.disabled = false;
-      }
-    });
-  }
-
-  renderRecording(root) {
-    const paused = this.recorder && this.recorder.state === "paused";
-    this.renderObjectHeader(root, "SLIM meeting note", this.title.trim() || "Untitled recording",
-                            paused ? "Paused" : "Recording");
-    const console = root.createDiv({ cls: "slim-recording-console" });
-    const toolbar = console.createDiv({ cls: "slim-recording-toolbar" });
-    const head = toolbar.createDiv({ cls: "slim-rec-head" });
-    head.createSpan({ cls: `slim-dot ${paused ? "is-paused" : ""}` });
-    head.createSpan({ cls: "slim-timer", text: hhmmss(this.elapsed) });
-    head.createSpan({ cls: "slim-state", text: paused ? "Paused" : "Live" });
-    const row = toolbar.createDiv({ cls: "slim-row slim-recording-actions" });
-    const p = row.createEl("button", { text: paused ? "Resume" : "Pause" });
-    p.addEventListener("click", () => this.togglePause());
-    const s = row.createEl("button", { cls: "mod-cta", text: "Stop" });
-    s.addEventListener("click", async () => {
-      s.disabled = true; p.disabled = true;
-      await this.stop();
-    });
-    if (this.silenceWatch && this.silenceWatch.warn) {
-      console.createDiv({
-        cls: "slim-silence-warning", attr: { role: "alert" },
-        text: "Nothing is being recorded — the microphone and system audio are both silent. " +
-              "Check the input device (System Settings › Sound) and Obsidian's microphone " +
-              "permission (Privacy & Security › Microphone). Recording continues.",
-      });
-    }
-    const level = console.createDiv({ cls: "slim-level" });
-    level.createDiv({ cls: "slim-level-fill" });
-    const transcript = console.createDiv({ cls: "slim-live-transcript" });
-    const transcriptHead = transcript.createDiv({ cls: "slim-live-transcript-head" });
-    transcriptHead.createSpan({ cls: "slim-object-section-label", text: "Live transcript" });
-    transcriptHead.createSpan({ cls: "slim-live-transcript-status",
-      text: this.liveStatusText() });
-    transcript.createEl("p", { cls: "slim-live-transcript-text",
-      text: this.shownTranscript() || "Listening for speech…" });
-    const bridge = console.createDiv({ cls: "slim-editor-bridge" });
-    bridge.createDiv({ cls: "slim-object-section-label", text: "Your notes" });
-    bridge.createEl("p", {
-      text: "Keep writing in the native Markdown editor below. Every keystroke is already saved to this recording.",
-    });
-  }
-
-  renderProcessing(root) {
-    this.renderObjectHeader(root, "SLIM meeting note", this.title.trim() || "Untitled recording",
-                            "Processing locally");
-    const progress = this.processingProgress || {};
-    const w = root.createDiv({ cls: "slim-processing" });
-    const current = w.createDiv({ cls: "slim-processing-current" });
-    current.createDiv({ cls: "slim-spinner" });
-    const copy = current.createDiv();
-    copy.createEl("h3", { text: progress.label || "Working on your note…" });
-    copy.createEl("p", { cls: "slim-hint",
-      text: progress.detail || "Your recording and notes are safe while SLIM finishes locally." });
-    // Stop was hit by accident, 40 minutes into a lecture. Cancelling parks the session with
-    // every segment and their notes intact instead of making them wait out the whole pipeline.
-    const cancel = current.createEl("button", { cls: "slim-cancel", text: "Cancel" });
-    cancel.addEventListener("click", () => this.cancelProcessing());
-
-    const metrics = progress.metrics || {};
-    const facts = [];
-    if (metrics.transcript_words != null) facts.push(`${metrics.transcript_words} words`);
-    if (metrics.transcription_seconds != null) facts.push(`transcribed in ${Number(metrics.transcription_seconds).toFixed(1)}s`);
-    if (metrics.summary_output_tokens != null) facts.push(`${metrics.summary_output_tokens} summary tokens`);
-    if (metrics.summary_decode_tok_s != null) facts.push(`${metrics.summary_decode_tok_s} tok/s`);
-
-    const activity = w.createEl("details", { cls: "slim-thinking" });
-    const activitySummary = activity.createEl("summary");
-    activitySummary.createSpan({ cls: "slim-thinking-spark" });
-    activitySummary.createSpan({ text: metrics.model_activity_events ? "Thinking locally" : "What SLIM is doing" });
-    activitySummary.createSpan({ cls: "slim-thinking-stage", text: progress.label || "Starting" });
-    activity.createEl("p", { cls: "slim-hint",
-      text: metrics.model_activity_events
-        ? "The local model is working. Its private reasoning is not shown."
-        : "Stage and performance updates appear here as the local pipeline runs." });
-    if (facts.length) activity.createDiv({ cls: "slim-thinking-meta", text: facts.join(" · ") });
-  }
-
-  renderError(root) {
-    this.renderObjectHeader(root, "SLIM meeting note",
-                            this.title.trim() || this.recordingId || "Untitled recording",
-                            "Processing stopped · sources preserved");
-    root.createEl("h3", { text: "That did not work" });
-    root.createEl("p", { text: this.errorText || "Unknown error." });
-    root.createEl("p", { cls: "slim-hint",
-      text: "The audio is at " + ((this.segments || []).join(", ") || this.audioRel || STAGING_DIR) +
-            (this.draftRel ? " and your notes are at " + this.draftRel : "") +
-            ". Nothing is lost. " +
-            "If the server is the problem, check the plugin's repo and uv settings — it is " +
-            "started from here, on port " + this.plugin.settings.port + "." });
-    const row = root.createDiv({ cls: "slim-row slim-error-actions" });
-    const again = row.createEl("button", { cls: "mod-cta", text: "Try again" });
-    again.addEventListener("click", async () => {
-      // ⚠ EVERY segment, not the one that happens to be current. Posting `this.audioRel` would
-      // re-file the last segment of a resumed recording and silently drop the earlier ones,
-      // under a screen that says nothing is lost.
-      const all = (this.segments || []).length ? this.segments
-                : (this.audioRel ? [this.audioRel] : []);
-      if (!all.length) return;
-      try {
-        await this.saveDraft();
-        this.freezeEditor(true);
-        this.state = "processing";
-        this.processingProgress = {
-          stage: "queued", label: "Retrying the local pipeline",
-          detail: "Using the same saved audio and notes", steps: [], metrics: {},
+          return;
+        }
+        if (!this.el.liveText) return;
+        const transcript = this.el.transcript;
+        const follow = atBottom(transcript);
+        this.el.liveText.textContent = this.streamingText;
+        if (follow) transcript.scrollTop = transcript.scrollHeight;
+        this.scheduleLiveRender();
+      },
+      // Markdown while it streams: plain text shows until the first rendered swap, then a detached
+      // render replaces the visible node at most every LIVE_RENDER_MS. The version guard drops a
+      // slow render that resolves after a newer one; the turn event's full render is the final word.
+      scheduleLiveRender() {
+        if (this.liveRenderTimer || !this.el?.liveText) return;
+        const wait = Math.max(0, LIVE_RENDER_MS - (Date.now() - this.liveRenderedAt));
+        this.liveRenderTimer = setTimeout(() => {
+          this.liveRenderTimer = null;
+          this.renderLive();
+        }, wait);
+      },
+      stopLiveRender() {
+        if (this.liveRenderTimer) clearTimeout(this.liveRenderTimer);
+        this.liveRenderTimer = null;
+        this.liveRenderVersion += 1;
+        for (const host of this.liveHosts || []) this.removeChild?.(host);
+        this.liveHosts = /* @__PURE__ */ new Set();
+      },
+      // Each live pass renders under its own child component, dropped with its buffer: a Deep
+      // answer is ~170 passes, and post-processor children registered on the shared mdHost would
+      // otherwise pile up until the turn's full render.
+      liveHost(buffer) {
+        if (!MarkdownRenderChild || typeof this.addChild !== "function") return void 0;
+        const host = this.addChild(new MarkdownRenderChild(buffer));
+        (this.liveHosts ||= /* @__PURE__ */ new Set()).add(host);
+        return host;
+      },
+      dropLive(buffer, host) {
+        buffer?.remove?.();
+        if (host) {
+          this.removeChild?.(host);
+          this.liveHosts?.delete(host);
+        }
+      },
+      renderLive() {
+        const el = this.el;
+        if (!el?.live || !this.sending) return;
+        const version = ++this.liveRenderVersion;
+        this.liveRenderedAt = Date.now();
+        const buffer = create(el.live, "div", "slim-message-text slim-rendered-markdown");
+        buffer.hidden = true;
+        const host = this.liveHost(buffer);
+        return this.renderMarkdown(buffer, this.streamingText, host).then(() => {
+          if (version !== this.liveRenderVersion || this.el !== el || !this.sending) {
+            this.dropLive(buffer, host);
+            return;
+          }
+          const follow = atBottom(el.transcript);
+          this.dropLive(el.liveRendered, el.liveHost);
+          el.liveRendered = buffer;
+          el.liveHost = host;
+          buffer.hidden = false;
+          el.liveText.hidden = true;
+          if (follow) el.transcript.scrollTop = el.transcript.scrollHeight;
+        }).catch((e) => console.error("[slim] live render", e));
+      },
+      renderStage() {
+        if (!this.el) {
+          this.render();
+          return;
+        }
+        if (!this.el.stage) return;
+        this.el.stage.textContent = stageLine(this.stage, this.stageSince, Date.now());
+      },
+      renderMarkdown(el, markdown, host = this.mdHost || this) {
+        const text = normalizeMath(markdown);
+        if (MarkdownRenderer && typeof MarkdownRenderer.render === "function") {
+          return MarkdownRenderer.render(
+            this.app,
+            text,
+            el,
+            this.context?.source?.path || "",
+            host
+          ).catch((e) => {
+            console.error("[slim] render answer", e);
+            el.setText?.(text);
+          });
+        }
+        el.textContent = text;
+        return Promise.resolve();
+      },
+      render() {
+        const root = this.contentEl;
+        if (!root || !root.createEl) return;
+        const focused = this.composerFocused;
+        clear(root);
+        this.el = {};
+        if (this.mdHost) {
+          this.removeChild(this.mdHost);
+          this.mdHost = null;
+        }
+        if (MarkdownRenderChild && typeof this.addChild === "function") {
+          this.mdHost = this.addChild(new MarkdownRenderChild(root));
+        }
+        root.addClass?.("slim-copilot");
+        const header = create(root, "header", "slim-copilot-head");
+        const headRow = create(header, "div", "slim-copilot-head-row");
+        create(headRow, "div", "slim-copilot-eyebrow", "SLIM");
+        const tools = create(headRow, "div", "slim-copilot-tools");
+        const history = iconButton(
+          tools,
+          "history",
+          this.showThreads ? "Back to the chat" : "Chats",
+          this.showThreads ? "clickable-icon slim-history is-active" : "clickable-icon slim-history"
+        );
+        history.onclick = () => {
+          this.showThreads = !this.showThreads;
+          this.render();
         };
-        this.render();
-        await this.submitRecording(all);
-      } catch (e) {
-        console.error("[slim] retry", e);
-        this.errorText = String((e && e.message) || e);
-        this.state = "error";
-        this.freezeEditor(false);
+        const add = iconButton(tools, "plus", "New chat");
+        add.onclick = () => this.newThread();
+        if (this.loading) {
+          create(root, "p", "slim-copilot-status", "Indexing this note...");
+          return;
+        }
+        if (this.error && !this.context) {
+          create(root, "p", "slim-copilot-error", this.error);
+          return;
+        }
+        if (!this.context) {
+          create(root, "p", "slim-copilot-status", "Open a Markdown note.");
+          return;
+        }
+        const sourcePath = this.context.source.path;
+        const sourceTitle = this.context.source.title || pathStem(sourcePath);
+        const related = this.context.related || [];
+        if (related.length) {
+          const context = create(header, "details", "slim-copilot-context");
+          context.open = this.nearbyOpen;
+          const summary = create(context, "summary", "slim-copilot-context-summary");
+          summary.onclick = () => {
+            this.nearbyOpen = !context.open;
+          };
+          const note = create(summary, "span", "slim-copilot-note", sourceTitle);
+          note.setAttribute("title", sourcePath);
+          create(summary, "small", "slim-copilot-nearby-count", `${related.length} nearby`);
+          for (const item of related) {
+            const button = create(context, "button", "slim-related-note");
+            button.setAttribute("title", item.path);
+            create(button, "span", "", item.title || pathStem(item.path));
+            create(button, "small", "", item.scope || "");
+            button.onclick = () => this.openNote(item.path);
+          }
+        } else {
+          const note = create(header, "div", "slim-copilot-note", sourceTitle);
+          note.setAttribute("title", sourcePath);
+        }
+        if (this.showThreads) this.renderThreadList(root, sourceTitle);
+        else this.renderTranscript(root);
+        const composer = create(root, "footer", "slim-copilot-composer");
+        if (this.pendingImages.length) {
+          const previews = create(composer, "div", "slim-copilot-image-previews");
+          this.pendingImages.forEach((attachment, index) => {
+            const item = create(previews, "div", "slim-copilot-image-preview");
+            const image = create(item, "img", "");
+            image.src = attachment.preview || (attachment.id && this.activeThread ? this.imageURL(this.activeThread.id, attachment.id) : "");
+            image.alt = attachment.name;
+            const remove = iconButton(item, "x", `Remove ${attachment.name}`);
+            remove.onclick = () => {
+              this.pendingImages.splice(index, 1);
+              this.render();
+            };
+          });
+        }
+        const slash = create(composer, "div", "slim-slash-menu");
+        this.el.slash = slash;
+        const modes = create(composer, "select", "slim-mode-select");
+        for (const value of ["quick", "deep"]) {
+          const option = create(modes, "option", "", value[0].toUpperCase() + value.slice(1));
+          option.value = value;
+          option.selected = value === this.mode;
+        }
+        modes.onchange = () => {
+          this.mode = modes.value;
+        };
+        const input = create(composer, "textarea", "slim-copilot-input");
+        input.placeholder = "Ask SLIM, or / for skills";
+        input.value = this.draft;
+        input.rows = 1;
+        autoGrow(input);
+        input.oninput = () => {
+          this.draft = input.value;
+          autoGrow(input);
+          if (input.value === "/") this.loadSkills();
+          else this.renderSlash();
+        };
+        input.onfocus = () => {
+          this.composerFocused = true;
+        };
+        input.onblur = () => {
+          this.composerFocused = false;
+        };
+        this.el.input = input;
+        input.onkeydown = (event) => {
+          const hits = matchSkills(this.skills, slashQuery(this.draft));
+          if (hits.length && (event.key === "Tab" || event.key === "Enter" && !event.shiftKey && this.draft.length > 1 && !hits.some((h) => `/${h.name}` === this.draft))) {
+            event.preventDefault();
+            this.pickSkill(hits[0]);
+            return;
+          }
+          if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
+            this.send();
+          }
+          if ((event.key === "Backspace" || event.key === "Delete") && !event.metaKey && !event.altKey && !event.ctrlKey) {
+            let start = Number.isInteger(input.selectionStart) ? input.selectionStart : input.value.length;
+            let end = Number.isInteger(input.selectionEnd) ? input.selectionEnd : start;
+            if (start === end && event.key === "Backspace" && start > 0) start -= 1;
+            if (start === end && event.key === "Delete" && end < input.value.length) end += 1;
+            if (start !== end) {
+              event.preventDefault();
+              input.value = `${input.value.slice(0, start)}${input.value.slice(end)}`;
+              input.selectionStart = input.selectionEnd = start;
+              this.draft = input.value;
+              this.renderSlash();
+            }
+          }
+        };
+        input.onpaste = (event) => {
+          const files = [...event.clipboardData?.files || []];
+          if (files.some((file) => String(file.type || "").startsWith("image/"))) {
+            event.preventDefault();
+            this.addImages(files);
+            return;
+          }
+          const text = event.clipboardData?.getData?.("text/plain");
+          if (typeof text !== "string") return;
+          event.preventDefault();
+          const start = Number.isInteger(input.selectionStart) ? input.selectionStart : input.value.length;
+          const end = Number.isInteger(input.selectionEnd) ? input.selectionEnd : start;
+          input.value = `${input.value.slice(0, start)}${text}${input.value.slice(end)}`;
+          input.selectionStart = input.selectionEnd = start + text.length;
+          this.draft = input.value;
+          autoGrow(input);
+          this.renderSlash();
+        };
+        const picker = create(composer, "input", "slim-copilot-image-picker");
+        picker.type = "file";
+        picker.accept = "image/png,image/jpeg,image/webp";
+        picker.multiple = true;
+        picker.onchange = () => {
+          this.addImages(picker.files);
+          picker.value = "";
+        };
+        const attach = iconButton(composer, "image-plus", "Attach images", "clickable-icon slim-attach");
+        attach.onclick = () => picker.click();
+        composer.ondragover = (event) => {
+          if ([...event.dataTransfer?.items || []].some((item) => item.kind === "file")) event.preventDefault();
+        };
+        composer.ondrop = (event) => {
+          const files = [...event.dataTransfer?.files || []];
+          if (files.some((file) => String(file.type || "").startsWith("image/"))) {
+            event.preventDefault();
+            this.addImages(files);
+          }
+        };
+        const send = iconButton(
+          composer,
+          this.sending ? "square" : "send",
+          this.sending ? "Stop response" : "Send",
+          "mod-cta slim-send"
+        );
+        send.onclick = () => this.sending ? this.cancel() : this.send();
+        this.renderSlash();
+        if (focused && typeof input.focus === "function") {
+          input.focus();
+          input.selectionStart = input.selectionEnd = input.value.length;
+        }
+      },
+      renderThreadList(root, sourceTitle) {
+        const list = create(root, "nav", "slim-copilot-threads");
+        if (!this.threads.length) {
+          create(list, "p", "slim-copilot-status", "No chats yet.");
+          return;
+        }
+        for (const group of groupThreads(this.threads, this.context.source.id)) {
+          const details = create(list, "details", "slim-note-group");
+          details.open = this.groupOpen.has(group.sourceId) ? this.groupOpen.get(group.sourceId) : group.expanded;
+          const label = group.sourceId === this.context.source.id ? sourceTitle : noteTitle(this.app, group.path);
+          const summary = create(details, "summary", "", label);
+          summary.setAttribute("title", group.path);
+          summary.onclick = () => {
+            this.groupOpen.set(group.sourceId, !details.open);
+          };
+          for (const thread of group.threads) {
+            const row = create(details, "div", `slim-chat-row${thread.id === this.activeThread?.id ? " is-active" : ""}`);
+            const open = create(row, "button", "slim-chat-open", thread.title || "Conversation");
+            open.onclick = () => this.openThread(thread.id);
+            const rename = iconButton(row, "pencil", `Rename ${thread.title}`);
+            rename.onclick = () => this.renameThread(thread.id);
+            const armed = this.deleteArmed === thread.id;
+            const remove = iconButton(
+              row,
+              armed ? "check" : "trash-2",
+              armed ? `Confirm delete ${thread.title}` : `Delete ${thread.title}`,
+              armed ? "clickable-icon is-armed" : "clickable-icon"
+            );
+            remove.onclick = () => this.deleteThread(thread.id);
+          }
+        }
+      },
+      renderTranscript(root) {
+        const transcript = create(root, "section", "slim-copilot-transcript");
+        this.el.transcript = transcript;
+        const pending = [];
+        for (const turn of this.turns) {
+          const message = create(transcript, "article", `slim-message is-${turn.role}`);
+          const run = turn.role === "slim" ? turn.turn?.edit_run : null;
+          if (run) {
+            this.renderEditRun(message, run, pending);
+          } else if (turn.role === "slim") {
+            const body = create(message, "div", "slim-message-text slim-rendered-markdown");
+            pending.push(this.renderMarkdown(body, turn.text).catch((e) => console.error("[slim] render answer", e)));
+          } else {
+            create(message, "div", "slim-message-text", turn.text);
+          }
+          if (turn.attachments?.length) this.renderAttachments(message, turn.attachments);
+          const sources = groupCitations(turn.turn?.citations);
+          if (sources.length) {
+            const list = create(message, "div", "slim-sources");
+            create(list, "span", "slim-copilot-label", "From your notes");
+            for (const source of sources) {
+              const chip = create(list, "button", "slim-source", source.title);
+              chip.setAttribute("title", source.path);
+              chip.onclick = () => this.openNote(source.path);
+            }
+          }
+          const read = inputsText(turn.turn?.inputs);
+          if (read) create(message, "small", "slim-inputs", read);
+          if (turn.turn?.verification?.truncated && !run) {
+            create(message, "small", "slim-verification", "Cut off at the length limit \u2014 ask for the rest.");
+          }
+          if (run) this.renderEditMeta(message, run, turn);
+          else if (turn.role === "slim" && turn.turn) this.renderActions(message, turn);
+        }
+        const streamingHere = this.sending && this.turns === this.streamingTurns;
+        if (streamingHere) {
+          const live = create(transcript, "article", "slim-message is-slim is-streaming");
+          this.el.live = live;
+          if (this.editRun) {
+            this.el.liveEdit = live;
+            this.drawLiveEdit(live);
+          } else {
+            this.el.liveText = create(live, "div", "slim-message-text", this.streamingText);
+          }
+          this.el.stage = create(transcript, "div", "slim-copilot-stage", stageLine(this.stage, this.stageSince, Date.now()));
+        }
+        if (this.error) {
+          const error = create(transcript, "div", "slim-copilot-error", this.error);
+          if (this.retryQuestion) {
+            const retry = iconButton(error, "rotate-ccw", "Retry response");
+            retry.onclick = () => this.retry();
+          }
+        }
+        if (!this.turns.length && !streamingHere && !this.error) {
+          const suggestions = create(transcript, "div", "slim-suggestions");
+          for (const prompt of SUGGESTED_PROMPTS) {
+            const button = create(suggestions, "button", "slim-suggest", prompt);
+            button.onclick = () => this.send(prompt);
+          }
+        }
+        transcript.scrollTop = transcript.scrollHeight;
+        if (pending.length) {
+          const anchor = transcript.scrollTop;
+          Promise.all(pending).then(() => {
+            if (this.el.transcript === transcript && transcript.scrollTop === anchor) {
+              transcript.scrollTop = transcript.scrollHeight;
+            }
+          }).catch((e) => console.error("[slim] render turns", e));
+        }
+      },
+      // A sent image stays a thumbnail: the server serves the stored bytes back. A pending image
+      // has its own preview; a ref that fails to load falls back to the name chip.
+      renderAttachments(message, attachments) {
+        const gallery = create(message, "div", "slim-message-images");
+        const threadId = this.activeThread?.id;
+        for (const attachment of attachments) {
+          const name = attachment.name || "Attached image";
+          const src = attachment.preview || (attachment.id && threadId ? this.imageURL(threadId, attachment.id) : "");
+          if (!src) {
+            create(gallery, "span", "slim-image-chip", name);
+            continue;
+          }
+          const image = create(gallery, "img", "slim-message-image");
+          image.src = src;
+          image.alt = name;
+          image.onerror = () => {
+            image.remove?.();
+            create(gallery, "span", "slim-image-chip", name);
+          };
+        }
+      },
+      // Under an answer: copy, regenerate (last answer only, while idle), and how it was made.
+      renderActions(message, turn) {
+        const actions = create(message, "div", "slim-message-actions");
+        const copy = iconButton(actions, "copy", "Copy answer");
+        copy.onclick = () => {
+          if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) navigator.clipboard.writeText(turn.text);
+        };
+        if (turn === this.turns.at(-1) && !this.sending) {
+          const again = iconButton(actions, "refresh-cw", "Regenerate");
+          again.onclick = () => this.regenerate();
+        }
+        create(actions, "small", "slim-message-meta", metaText(turn.turn));
+      },
+      renderSoon() {
+        if (this.renderQueued) return;
+        this.renderQueued = true;
+        queueMicrotask(() => {
+          this.renderQueued = false;
+          this.render();
+        });
       }
-      this.render();
-    });
-    const discard = row.createEl("button", { cls: "mod-warning", text: "Delete & start over" });
-    discard.addEventListener("click", async () => {
-      again.disabled = true; discard.disabled = true;
-      try { await this.discardSession(true); }
-      catch (e) {
-        console.error("[slim] discard", e);
-        new Notice(`SLIM: could not discard the recording — ${e.message || e}`);
-        again.disabled = false; discard.disabled = false;
-      }
-    });
-    const close = row.createEl("button", { text: "Keep files & close" });
-    close.addEventListener("click", () => this.closeSession());
+    };
   }
+});
 
-  renderCard(root) {
-    const c = this.result.card;
-    this.renderObjectHeader(root, "AI review", this.result.title || "Review this meeting note",
-                            "Ready for approval");
-    this.renderSavedLocation(root);
-    this.renderProperties(root);
-    this.renderSource(root, true);
-    this.renderRetryRow(root);
-    const moreRow = root.createDiv({ cls: "slim-row slim-resume-row" });
-    const moreBtn = moreRow.createEl("button", { text: "Resume recording" });
-    moreBtn.addEventListener("click", () => this.startAppendRecording());
-    const details = root.createEl("details", { cls: "slim-review-details" });
-    details.createEl("summary", { text: "Review filing details" });
-    root = details.createDiv({ cls: "slim-review-controls" });
-    root.createEl("p", { cls: "slim-hint",
-      text: "The note is already saved. Adjust any suggestion, then approve the final result." });
-
-    // The title the server settled on — their if they typed one, otherwise written from the
-    // transcript. Editable, because a generated title is a suggestion like everything else
-    // here, and this is the one field that also names the FILE.
-    if (this.cardTitle == null) this.cardTitle = this.result.title || "";
-    const ti = root.createDiv({ cls: "slim-field" });
-    ti.createEl("label", { text: "Title" });
-    const tin = ti.createEl("input", { type: "text" });
-    tin.value = this.cardTitle;
-    tin.addEventListener("input", (e) => {
-      this.cardTitle = e.target.value;
-      this.edited = true;
-    });
-
-    // --- destination. EVERY segment is a control: confidence sets the default, never a lock.
-    const dest = root.createDiv({ cls: "slim-field" });
-    dest.createEl("label", { text: "Filing to" });
-    const pathRow = dest.createDiv({ cls: "slim-path" });
-    const renderPath = () => {
-      pathRow.empty();
-      const segs = c.dest_dir.split("/");
-      segs.forEach((seg, i) => {
-        if (i) pathRow.createSpan({ cls: "slim-sep", text: "/" });
-        const cls = i >= (c.confident_depth || 0) ? "slim-seg slim-seg-open" : "slim-seg";
-        pathRow.createSpan({ cls, text: seg });
-      });
+// src/chat-edit-run.js
+var require_chat_edit_run = __commonJS({
+  "src/chat-edit-run.js"(exports2, module2) {
+    "use strict";
+    var { Notice } = require("obsidian");
+    var { sha256Hex, metaText, runCounts, editOutcome } = require_chat_text();
+    var { clear, create, atBottom } = require_dom();
+    module2.exports = {
+      // ---- an editing run, as it lands ------------------------------------------------------------
+      // A change to the note goes in through its editor; a new note is created at once. Either way
+      // the chat keeps its id, label and what became of it, never its text.
+      landChange(run, change) {
+        const entry = {
+          id: String(change.id),
+          step: change.step,
+          op: change.op,
+          label: change.label || "",
+          needs: change.needs || [],
+          ...change.part_of != null ? { part_of: String(change.part_of) } : {}
+        };
+        run.changes.push(entry);
+        if (change.op === "create") {
+          entry.path = change.path;
+          entry.state = "creating";
+          run.pending.push(this.createNote(change).then((made) => {
+            Object.assign(entry, made);
+            this.renderEdit();
+          }));
+        } else if (this.inView(run)) {
+          entry.state = "skipped";
+          if (change.draft != null) this.plugin.live.endDraft?.(run.view, String(change.draft));
+          entry.state = this.plugin.live.applyChange(run.view, run.ref, change);
+        } else {
+          entry.state = "skipped";
+          this.cancel();
+        }
+        this.renderEdit();
+      },
+      // The run's editor is still open and still shows its note.
+      inView(run) {
+        const live = this.plugin.live;
+        if (!run.view || !live || this.plugin.liveViews && !this.plugin.liveViews.has(run.view)) return false;
+        const shows = live.pathOf(run.view);
+        return shows === null || shows === run.path;
+      },
+      // {state: "created"}, or {state: "failed", reason} in words the owner can act on.
+      async createNote(change) {
+        const vault = this.app.vault;
+        try {
+          if (vault.getAbstractFileByPath(change.path) || await vault.adapter?.exists?.(change.path)) {
+            return { state: "failed", reason: "a note is already there" };
+          }
+          await vault.create(change.path, change.text);
+        } catch (error) {
+          console.error("[slim] create note", change.path, error);
+          return { state: "failed", reason: String(error?.message || error).split("\n")[0].slice(0, 200) };
+        }
+        this.plugin.postJSON("/api/copilot/context", { path: change.path, related: false }).catch((e) => console.warn("[slim] index new note", change.path, e.message));
+        return { state: "created" };
+      },
+      async trashCreated(turn, entry) {
+        const file = this.app.vault.getAbstractFileByPath(entry.path);
+        try {
+          if (file) await this.app.vault.trash(file, false);
+          entry.state = "trashed";
+        } catch (error) {
+          this.error = error.message || String(error);
+        }
+        const found = this.findRunTurn(turn.turn.edit_run.before_ref);
+        if (found) this.saveRun(found.thread, found.turns);
+        this.render();
+      },
+      // What the turn keeps of a run: the plan, how each step and change went, and the hashes and
+      // copy that See before and Restore need. `hash_after` is the editor's own: a change skipped
+      // because the owner typed there never reached the server's draft.
+      async settleRun(run, server) {
+        await Promise.all(run.pending);
+        const live = run.view && this.plugin.live?.state(run.view, run.ref);
+        const states = new Map((live?.changes || []).map((change) => [change.id, change.state]));
+        const doc = run.view?.state?.doc?.toString();
+        return {
+          plan: run.plan || server.plan || { intro: "", steps: [] },
+          steps_done: server.steps_done ?? run.steps.filter((state) => state && state !== "doing").length,
+          step_states: run.steps.map((state) => state || null),
+          changes: run.changes.map(({ id, step, op, label, needs, part_of, path, state, reason }) => ({
+            id,
+            step,
+            op,
+            label,
+            needs,
+            ...part_of ? { part_of } : {},
+            ...path ? { path } : {},
+            state: states.get(id) || state,
+            ...reason ? { reason } : {}
+          })),
+          stopped: server.stopped ?? null,
+          outline_met: server.outline_met ?? null,
+          summary: server.summary || "",
+          before_ref: run.ref,
+          hash_before: run.hash_before,
+          hash_after: doc === void 0 ? server.hash_after || null : sha256Hex(doc),
+          typed: Boolean(live?.touched)
+        };
+      },
+      async partialTurn(run, stopped) {
+        const edit_run = await this.settleRun(run, { stopped });
+        const text = run.plan?.intro || "";
+        return { role: "slim", text, turn: {
+          answer: text,
+          mode: this.mode,
+          citations: [],
+          timing: { total_ms: Date.now() - run.started },
+          edit_run
+        } };
+      },
+      // The run is over: ↺ appears in the note, and the note is saved and re-indexed once.
+      finishRun(run) {
+        clearInterval(this.editClock);
+        this.editClock = null;
+        if (this.editRun === run) this.editRun = null;
+        if (run.view) this.plugin.live?.endRun(run.view, run.ref);
+        this.runTurns.set(run.ref, { thread: run.thread, turns: run.turns });
+        if (run.changes.some((change) => change.state === "applied")) {
+          this.saveOpenCopies(run.path).then(() => this.plugin.postJSON("/api/copilot/context", { path: run.path, related: false })).catch((e) => console.warn("[slim] index after edit", run.path, e.message));
+        }
+      },
+      startEditClock() {
+        clearInterval(this.editClock);
+        this.editClock = setInterval(() => {
+          if (this.el?.liveEdit) this.renderEdit();
+        }, 1e3);
+        this.editClock.unref?.();
+      },
+      // ---- an edit turn in the chat: the intro, a line per step, what came of it ---------------
+      // The run streaming now, redrawn in place on each event: the transcript is not rebuilt.
+      renderEdit() {
+        if (!this.el?.liveEdit) {
+          this.renderSoon();
+          return;
+        }
+        const follow = atBottom(this.el.transcript);
+        clear(this.el.liveEdit);
+        this.drawLiveEdit(this.el.liveEdit);
+        if (follow) this.el.transcript.scrollTop = this.el.transcript.scrollHeight;
+      },
+      drawLiveEdit(parent) {
+        const run = this.editRun;
+        if (!run) return;
+        this.renderEditRun(parent, { plan: run.plan, step_states: run.steps, changes: run.changes }, null);
+        const meta = create(parent, "div", "slim-edit-meta");
+        create(meta, "span", "", `${this.mode === "deep" ? "Deep" : "Quick"} \xB7 ${Math.max(0, Math.round((Date.now() - run.started) / 1e3))} s`);
+      },
+      renderEditRun(message, run, pending) {
+        const box = create(message, "div", "slim-edit");
+        const intro = run.plan?.intro || "";
+        if (intro) {
+          const el = create(box, "div", "slim-edit-intro slim-rendered-markdown");
+          if (pending) pending.push(this.renderMarkdown(el, intro).catch((e) => console.error("[slim] render intro", e)));
+          else el.textContent = intro;
+        }
+        const steps = run.plan?.steps || [];
+        const states = run.step_states || [];
+        const shown = steps.map((text, i) => [text, states[i] || (i < (run.steps_done || 0) ? "done" : null)]).filter(([, state]) => state);
+        if (shown.length) {
+          const list = create(box, "ul", "slim-steps");
+          for (const [text, state] of shown) {
+            const item = create(list, "li", `slim-step is-${state}`);
+            create(item, "span", "slim-step-icon", { doing: "", done: "\u2713", partial: "\u25D0", skipped: "\u2013" }[state] ?? "");
+            create(item, "span", state === "doing" ? "slim-step-text slim-shimmer" : "slim-step-text", text);
+          }
+        }
+        if (pending && "stopped" in run) create(box, "p", "slim-edit-outcome", editOutcome(run));
+        for (const change of run.changes || []) {
+          if (change.state === "skipped" && !change.part_of) {
+            create(box, "small", "slim-edit-note", `Skipped \u201C${change.label || change.id}\u201D: you edited this here.`);
+          }
+          if (change.op !== "create") continue;
+          const row = create(box, "div", "slim-edit-note slim-edit-created");
+          const what = {
+            creating: "Creating",
+            created: "Created",
+            trashed: "Moved to trash:",
+            failed: `Not created (${change.reason || "it failed"}):`
+          }[change.state] || "";
+          create(row, "span", "", `${what} `);
+          const name = create(row, "button", "slim-link", change.path);
+          name.onclick = () => this.openNote(change.path);
+          if (change.state === "created" && pending) {
+            create(row, "span", "", " \xB7 ");
+            const undo = create(row, "button", "slim-link", "Undo");
+            const turn = this.turns.find((t) => t.turn?.edit_run === run);
+            undo.onclick = () => turn && this.trashCreated(turn, change);
+          }
+        }
+      },
+      // N changes · Undo all · Redo · See before · Hide marks · Quick · T s, while the note's editor
+      // holds the run; once it has closed, or after a reload: N changes · See before · Restore.
+      renderEditMeta(message, run, turn) {
+        const meta = create(message, "div", "slim-edit-meta");
+        const ref = run.before_ref;
+        const parts = [];
+        const text = (value) => parts.push(["span", value]);
+        const link = (label, act, disabled = false) => parts.push(["button", label, act, disabled]);
+        const { landed, undone } = runCounts(run);
+        const inNote = landed.some((change) => change.op !== "create");
+        const view = ref && this.plugin.liveRunView?.(ref);
+        const live = view && this.plugin.live?.state(view, ref);
+        if (this.restoreRefused?.ref === ref) {
+          create(meta, "div", "slim-edit-warning", this.restoreRefused.message).setAttribute("role", "alert");
+        }
+        if (this.restoreArmed === ref) {
+          const warning = create(
+            meta,
+            "div",
+            "slim-edit-warning",
+            "You've edited this note since this change; restoring would discard those edits."
+          );
+          warning.setAttribute("role", "alert");
+          link("Restore anyway", () => this.restore(turn, true));
+          link("Cancel", () => {
+            this.restoreArmed = null;
+            this.render();
+          });
+        } else if (run.restored) {
+          text("Restored the version from before this edit");
+          if (this.restoredFrom.has(ref)) link("Undo", () => this.unrestore(turn));
+        } else {
+          if (landed.length) text(`${landed.length} change${landed.length === 1 ? "" : "s"}${undone ? `, ${undone} undone` : ""}`);
+          const shownIn = view || this.plugin.liveViewFor?.(this.context?.source?.path);
+          const showing = Boolean(ref && shownIn && this.plugin.live?.showing(shownIn) === ref);
+          if (live) {
+            link("Undo all", () => this.undoAllRun(ref), !live.changes.some((change) => change.state === "applied"));
+            if (live.redoable) link("Redo", () => this.redoRun(ref));
+            link(showing ? "Back to now" : "See before", () => this.toggleBefore(turn, !showing));
+            link(live.marks ? "Hide marks" : "Show marks", () => this.plugin.live.setMarks(view, ref, !live.marks));
+          } else if (inNote && ref) {
+            link(showing ? "Back to now" : "See before", () => this.toggleBefore(turn, !showing));
+            link("Restore", () => this.restore(turn));
+          }
+        }
+        if (turn?.turn) text(metaText(turn.turn));
+        parts.forEach(([tag, label, act, disabled], i) => {
+          if (i) create(meta, "span", "slim-edit-sep", "\xB7");
+          const el = create(meta, tag, tag === "button" ? "slim-link" : "", label);
+          if (tag !== "button") return;
+          el.disabled = Boolean(disabled);
+          el.onclick = async () => {
+            try {
+              await act();
+            } catch (error) {
+              this.error = error.message || String(error);
+            }
+            this.render();
+          };
+        });
+      },
+      // The note's editor moved a run's changes (↺, Cmd-Z, Undo all): the turn follows and is saved,
+      // with the hash Restore compares against.
+      runChanged(view, runId) {
+        const live = this.plugin.live?.state(view, runId);
+        if (this.editRun?.ref === runId) {
+          for (const change of this.editRun.changes) {
+            const now = live?.changes.find((item) => item.id === change.id);
+            if (now && change.op !== "create") change.state = now.state;
+          }
+          this.renderEdit();
+          return;
+        }
+        const found = this.findRunTurn(runId);
+        if (found && live) {
+          const run = found.turn.turn.edit_run;
+          for (const change of run.changes || []) {
+            const now = live.changes.find((item) => item.id === change.id);
+            if (now && change.op !== "create") change.state = now.state;
+          }
+          run.hash_after = sha256Hex(view.state.doc.toString());
+          if (live.touched) run.typed = true;
+          this.saveRun(found.thread, found.turns);
+        }
+        this.renderSoon();
+      },
+      // The turn a run belongs to, in the chat on screen or in the one it was asked in.
+      findRunTurn(ref) {
+        const at = (turns) => turns?.find((turn2) => turn2.role === "slim" && turn2.turn?.edit_run?.before_ref === ref);
+        if (at(this.turns)) return { thread: this.activeThread, turns: this.turns, turn: at(this.turns) };
+        const kept = this.runTurns.get(ref);
+        const turn = at(kept?.turns);
+        if (!turn) return null;
+        if (this.activeThread?.id === kept.thread.id) return null;
+        return { ...kept, turn };
+      },
+      // A question still waiting for its answer is not saved with it: the answer's save brings it.
+      saveRun(thread, turns) {
+        if (!thread || this.deletedThreads.has(thread.id)) return this.savingRuns;
+        const settled = this.sending && turns === this.streamingTurns && turns.at(-1)?.role === "you" ? turns.slice(0, -1) : turns;
+        this.savingRuns = (this.savingRuns || Promise.resolve()).then(() => this.saveRecord(thread, settled)).catch((error) => {
+          this.error = error.message || String(error);
+          this.render();
+        });
+        return this.savingRuns;
+      },
+      async beforeText(ref) {
+        if (!this.beforeTexts.has(ref)) {
+          const data = await this.plugin.getJSON(`/api/copilot/before?thread=${encodeURIComponent(this.activeThread.id)}&ref=${encodeURIComponent(ref)}`);
+          this.beforeTexts.set(ref, String(data.text ?? ""));
+        }
+        return this.beforeTexts.get(ref);
+      },
+      async undoAllRun(ref) {
+        const view = this.plugin.liveRunView?.(ref);
+        if (!view) return;
+        const { kept } = this.plugin.live.undoAll(view, ref);
+        if (kept) new Notice(`SLIM: ${kept} change${kept === 1 ? "" : "s"} you've edited since stay as they are.`);
+      },
+      redoRun(ref) {
+        const view = this.plugin.liveRunView?.(ref);
+        if (view && this.plugin.live.redo(view, ref) === "refused") {
+          new Notice("SLIM: you've edited that part of the note since, so it stays as it is.");
+        }
+      },
+      // The note as it was before the run, over the note, read-only; the file is not touched.
+      async toggleBefore(turn, on) {
+        const run = turn.turn.edit_run;
+        const view = this.plugin.liveRunView?.(run.before_ref) || await this.plugin.noteView?.(this.context.source.path);
+        if (!view) throw new Error("Open the note in an editor to see it as it was.");
+        this.plugin.live.showBefore(view, run.before_ref, on ? await this.beforeText(run.before_ref) : "", on);
+      },
+      // The note as it was before the run, as one editor change (Cmd-Z takes it back). If the note
+      // has been edited since, it says so first and waits for a second click. The server says what
+      // may be put back: never a recording's frontmatter, block or transcript as they were, which a
+      // Resume may have added to since; then it refuses, and the chat says why.
+      async restore(turn, force = false) {
+        const run = turn.turn.edit_run;
+        const ref = run.before_ref;
+        const view = await this.plugin.noteView?.(this.context.source.path);
+        if (!view || !this.plugin.live) throw new Error("Open the note in an editor to restore it.");
+        const doc = view.state.doc.toString();
+        this.restoreRefused = null;
+        if (!force && (run.typed || sha256Hex(doc) !== run.hash_after)) {
+          this.restoreArmed = ref;
+          this.render();
+          return;
+        }
+        this.restoreArmed = null;
+        const answer = await this.plugin.postJSON("/api/copilot/restore", { thread_id: this.activeThread.id, ref, doc });
+        if (answer?.refused || typeof answer?.text !== "string") {
+          this.restoreRefused = { ref, message: answer?.refused || "SLIM could not restore this note." };
+          this.render();
+          return;
+        }
+        this.restoredFrom.set(ref, doc);
+        this.plugin.live.restore(view, answer.text);
+        Object.assign(run, { restored: true, typed: false, hash_after: sha256Hex(view.state.doc.toString()) });
+        this.saveRun(this.activeThread, this.turns);
+        this.reindex(this.context.source.path);
+        this.render();
+      },
+      // Undo of a Restore, while the note is still exactly the restored copy.
+      async unrestore(turn) {
+        const run = turn.turn.edit_run;
+        const was = this.restoredFrom.get(run.before_ref);
+        const view = this.plugin.liveViewFor?.(this.context.source.path);
+        if (was === void 0 || !view) return;
+        if (sha256Hex(view.state.doc.toString()) !== run.hash_after) {
+          throw new Error("The note has changed since it was restored; use Cmd-Z in the note.");
+        }
+        this.plugin.live.restore(view, was);
+        this.restoredFrom.delete(run.before_ref);
+        Object.assign(run, { restored: false, hash_after: sha256Hex(view.state.doc.toString()) });
+        this.saveRun(this.activeThread, this.turns);
+        this.reindex(this.context.source.path);
+      }
     };
-    renderPath();
+  }
+});
 
-    const det = dest.createEl("details", { cls: "slim-tree-wrap" });
-    det.createEl("summary", { text: "browse the vault" });
-    const tree = det.createDiv({ cls: "slim-tree" });
-
-    // The tree is the WHOLE vault now, so it has to collapse. A flat list was tolerable only
-    // while a depth cap was hiding most of it — which was the bug, not the reason it was flat.
-    // Everything starts collapsed except the ancestors of the suggested destination, so the
-    // first thing they see is where SLIM wants to put it, in context.
-    const roots = [];
-    const byPath = new Map();
-    (c.folders || []).slice().sort((a, b) => a.path.localeCompare(b.path)).forEach((f) => {
-      const node = { path: f.path, count: f.count, name: f.path.split("/").pop(), children: [] };
-      byPath.set(f.path, node);
-      const parentPath = f.path.split("/").slice(0, -1).join("/");
-      const parent = parentPath && byPath.get(parentPath);
-      (parent ? parent.children : roots).push(node);
-    });
-
-    const expanded = new Set();
-    (c.dest_dir || "").split("/").reduce((acc, seg) => {
-      const p = acc ? `${acc}/${seg}` : seg;
-      expanded.add(p);
-      return p;
-    }, "");
-
-    const select = (path, isNew) => {
-      c.dest_dir = path;
-      this.edited = true;
-      renderPath();
-      drawTree();
-      if (mi) mi.value = path;
-      if (isNew) new Notice(`SLIM: will create ${path}`);
+// src/chat-view.js
+var require_chat_view = __commonJS({
+  "src/chat-view.js"(exports2, module2) {
+    "use strict";
+    var { ItemView, Modal } = require("obsidian");
+    var { MAX_COPILOT_IMAGES, resizeCopilotImage } = require_chat_images();
+    var {
+      sha256Hex,
+      editorSelection,
+      MAX_EDIT_CHARS,
+      quickOrDeep,
+      titleFromQuestion,
+      threadId,
+      cancelledError,
+      historyText
+    } = require_chat_text();
+    var { clear, create } = require_dom();
+    var VIEW_TYPE_COPILOT = "slim-copilot";
+    var RenameModal = class extends Modal {
+      constructor(app, current, onSubmit) {
+        super(app);
+        this.current = current;
+        this.onSubmit = onSubmit;
+        this.done = false;
+      }
+      finish(value) {
+        if (this.done) return;
+        this.done = true;
+        this.onSubmit(value);
+      }
+      onOpen() {
+        const root = this.contentEl;
+        create(root, "h3", "", "Rename chat");
+        const input = create(root, "input", "slim-rename-input");
+        input.type = "text";
+        input.value = this.current;
+        input.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            submit();
+          }
+        });
+        const row = create(root, "div", "slim-row");
+        const cancel = create(row, "button", "", "Cancel");
+        cancel.onclick = () => this.close();
+        const ok = create(row, "button", "mod-cta", "Rename");
+        const submit = () => {
+          const title = String(input.value || "").trim();
+          if (title) this.finish(title);
+          this.close();
+        };
+        ok.onclick = submit;
+        if (typeof input.focus === "function") {
+          input.focus();
+          input.select?.();
+        }
+      }
+      onClose() {
+        clear(this.contentEl);
+        this.finish(null);
+      }
     };
+    var CopilotView = class extends ItemView {
+      constructor(leaf, plugin) {
+        super(leaf);
+        this.plugin = plugin;
+        this.app = plugin.app;
+        this.context = null;
+        this.threads = [];
+        this.activeThread = null;
+        this.turns = [];
+        this.mode = "quick";
+        this.stage = "";
+        this.draft = "";
+        this.error = "";
+        this.loading = false;
+        this.sending = false;
+        this.streamingText = "";
+        this.abort = null;
+        this.requestVersion = 0;
+        this.pendingThreadId = null;
+        this.deleteArmed = null;
+        this.retryQuestion = "";
+        this.pendingImages = [];
+        this.retryImages = [];
+        this.loadingPath = null;
+        this.streamingThread = null;
+        this.streamingTurns = null;
+        this.el = null;
+        this.composerFocused = false;
+        this.groupOpen = /* @__PURE__ */ new Map();
+        this.showThreads = false;
+        this.nearbyOpen = false;
+        this.liveRenderTimer = null;
+        this.liveRenderVersion = 0;
+        this.liveRenderedAt = 0;
+        this.skills = [];
+        this.deletedThreads = /* @__PURE__ */ new Set();
+        this.editRun = null;
+        this.editClock = null;
+        this.stageSince = 0;
+        this.stageClock = null;
+        this.runTurns = /* @__PURE__ */ new Map();
+        this.savingRuns = null;
+        this.beforeTexts = /* @__PURE__ */ new Map();
+        this.restoreArmed = null;
+        this.restoreRefused = null;
+        this.restoredFrom = /* @__PURE__ */ new Map();
+      }
+      // Re-read whenever they start a command: a skill saved in `Skills/` a moment ago is there.
+      async loadSkills() {
+        try {
+          this.skills = (await this.plugin.getJSON("/api/copilot/skills")).skills || [];
+        } catch (error) {
+          console.error("[slim] skills", error);
+        }
+        this.renderSlash();
+      }
+      pickSkill(skill) {
+        this.draft = `/${skill.name} `;
+        this.composerFocused = true;
+        this.render();
+      }
+      getViewType() {
+        return VIEW_TYPE_COPILOT;
+      }
+      getDisplayText() {
+        return "SLIM Copilot";
+      }
+      getIcon() {
+        return "message-square-text";
+      }
+      async onOpen() {
+        const root = this.contentEl;
+        if (typeof this.registerDomEvent === "function") {
+          this.registerDomEvent(root, "click", (event) => this.onLinkClick(event));
+        } else if (root && typeof root.addEventListener === "function") {
+          root.addEventListener("click", (event) => this.onLinkClick(event));
+        }
+        const file = this.app.workspace.getActiveFile ? this.app.workspace.getActiveFile() : null;
+        this.loadSkills();
+        await this.setActiveFile(file);
+      }
+      async onClose() {
+        this.cancel();
+      }
+      // MarkdownRenderer turns an answer's [[wikilink]] into <a class="internal-link">, but Obsidian
+      // wires clicks on those only inside its own note views; in this sidebar they were dead.
+      // ⚠ Resolve BEFORE opening: openLinkText creates a missing target (see openNote), and the
+      // model can name a note that does not exist.
+      onLinkClick(event) {
+        const link = event?.target?.closest?.("a.internal-link");
+        if (!link) return;
+        event.preventDefault();
+        const target = link.getAttribute("data-href") || link.getAttribute("href") || "";
+        const source = this.context?.source?.path || "";
+        const linkpath = target.split("#")[0].split("|")[0].trim();
+        const file = this.app.metadataCache?.getFirstLinkpathDest?.(linkpath, source);
+        if (!file) {
+          this.error = `Note not found: ${linkpath}`;
+          this.render();
+          return;
+        }
+        this.app.workspace.openLinkText(target, source, Boolean(event.metaKey || event.ctrlKey));
+      }
+      async setActiveFile(file) {
+        const path = file && String(file.extension || "").toLowerCase() === "md" ? file.path : null;
+        if (path && (this.context?.source.path === path || this.loadingPath === path)) return;
+        const version = ++this.requestVersion;
+        this.cancel();
+        this.error = "";
+        this.context = null;
+        this.activeThread = null;
+        this.turns = [];
+        this.retryQuestion = "";
+        this.pendingImages = [];
+        this.retryImages = [];
+        if (!file || String(file.extension || "").toLowerCase() !== "md") {
+          this.error = "Open a saved Markdown note to use SLIM Copilot.";
+          this.render();
+          return;
+        }
+        this.loading = true;
+        this.loadingPath = path;
+        this.render();
+        try {
+          if (typeof this.plugin.saveActiveNote === "function") {
+            await this.plugin.saveActiveNote(file);
+          }
+          if (version !== this.requestVersion) return;
+          const [context, listing] = await Promise.all([
+            this.plugin.postJSON("/api/copilot/context", { path: file.path }),
+            this.plugin.getJSON("/api/copilot/threads")
+          ]);
+          if (version !== this.requestVersion) return;
+          this.context = context;
+          this.threads = listing.threads || [];
+          const wanted = (this.pendingThreadId ? this.threads.find((item) => item.id === this.pendingThreadId && item.source_id === context.source.id) : null) || this.threads.find((item) => item.source_id === context.source.id);
+          if (wanted) {
+            this.pendingThreadId = null;
+            await this.openThread(wanted.id, version, true);
+          }
+        } catch (error) {
+          if (version === this.requestVersion) {
+            this.error = error.status === 400 && error.detail || error.message || String(error);
+          }
+        } finally {
+          if (version === this.requestVersion) {
+            this.loading = false;
+            this.loadingPath = null;
+            this.render();
+          }
+        }
+      }
+      // The note as it is NOW: save the editor, re-sync the row (ingest_note is hash-keyed, so an
+      // unchanged note costs one stat), skip the nearby-notes search. Called by send(), so every
+      // question is answered from what they have typed, not from the version indexed at open.
+      async refreshNote() {
+        if (!this.context) return;
+        const path = this.context.source.path;
+        const file = this.app.workspace.getActiveFile ? this.app.workspace.getActiveFile() : null;
+        if (file && file.path === path && typeof this.plugin.saveActiveNote === "function") {
+          await this.plugin.saveActiveNote(file);
+        }
+        await this.saveOpenCopies(path);
+        const fresh = await this.plugin.postJSON("/api/copilot/context", { path, related: false });
+        this.context = { ...this.context, source: fresh.source };
+      }
+      newThread() {
+        if (!this.context) return;
+        this.activeThread = {
+          id: threadId(),
+          title: "New chat",
+          source_id: this.context.source.id,
+          source_path: this.context.source.path,
+          reasoning_mode: this.mode
+        };
+        this.turns = [];
+        this.stage = "";
+        this.error = "";
+        this.retryQuestion = "";
+        this.pendingImages = [];
+        this.retryImages = [];
+        this.showThreads = false;
+        this.render();
+      }
+      async openThread(id, version = this.requestVersion, afterNavigation = false) {
+        const data = await this.plugin.getJSON(`/api/copilot/thread?id=${encodeURIComponent(id)}`);
+        if (version !== this.requestVersion) return;
+        if (!afterNavigation && this.context && data.source_id !== this.context.source.id) {
+          this.pendingThreadId = id;
+          this.activeThread = null;
+          this.turns = [];
+          this.openNote(data.source_path);
+          return;
+        }
+        this.activeThread = data;
+        this.turns = data.turns || [];
+        this.pendingImages = [];
+        this.retryImages = [];
+        this.mode = quickOrDeep(data.reasoning_mode);
+        this.showThreads = false;
+        this.render();
+      }
+      async saveRecord(thread, turns) {
+        const body = {
+          id: thread.id,
+          title: thread.title,
+          // A question's images by the refs the server stored them under. One pasted for a question
+          // that failed before a run began was never stored: it has no id, and is not saved.
+          turns: turns.map(({ attachments, ...turn }) => {
+            const refs = (attachments || []).filter((image) => image.id).map(({ id, name, mime, bytes }) => ({ id, name, mime, bytes }));
+            return refs.length ? { ...turn, attachments: refs } : turn;
+          }),
+          source_id: thread.source_id,
+          source_path: thread.source_path,
+          // ⚠ Normalized HERE, not at the point a thread is opened: `renameThread` fetches a
+          // thread it never opened and hands it straight to this method, so a pre-2026-09-03
+          // conversation would post "auto" and be refused with nothing catching it.
+          reasoning_mode: quickOrDeep(thread.reasoning_mode || this.mode)
+        };
+        const saved = await this.plugin.postJSON("/api/copilot/thread/save", body);
+        Object.assign(thread, saved);
+        const index = this.threads.findIndex((item) => item.id === thread.id);
+        if (index >= 0) this.threads[index] = { ...thread };
+        else this.threads.unshift({ ...thread });
+        return saved;
+      }
+      async addImages(files) {
+        if (this.sending) return;
+        const images = [...files || []].filter((file) => String(file?.type || "").startsWith("image/"));
+        if (!images.length) return;
+        if (this.pendingImages.length + images.length > MAX_COPILOT_IMAGES) {
+          this.error = `Attach at most ${MAX_COPILOT_IMAGES} images to one message.`;
+          this.render();
+          return;
+        }
+        try {
+          for (const file of images) this.pendingImages.push(await resizeCopilotImage(file));
+          this.error = "";
+        } catch (error) {
+          this.error = error.message || String(error);
+        }
+        this.render();
+      }
+      async send(text = this.draft) {
+        const outgoingImages = this.pendingImages;
+        const question = String(text || "").trim() || (outgoingImages.length ? "Explain this image." : "");
+        if (!question || !this.context || this.sending) return;
+        if (!this.activeThread) this.newThread();
+        const failed = this.turns.at(-1);
+        if (this.retryQuestion && failed?.role === "you" && failed.text === this.retryQuestion) this.turns.pop();
+        this.retryQuestion = "";
+        this.retryImages = [];
+        const thread = this.activeThread;
+        const turns = this.turns;
+        const path = this.context.source.path;
+        if (!turns.length) thread.title = titleFromQuestion(question);
+        const asked = {
+          role: "you",
+          text: question,
+          ...outgoingImages.length ? { attachments: outgoingImages } : {}
+        };
+        turns.push(asked);
+        this.draft = "";
+        this.pendingImages = [];
+        this.showThreads = false;
+        this.sending = true;
+        this.stage = "Starting";
+        this.stageStarted();
+        this.error = "";
+        let streamed = "";
+        this.streamingText = "";
+        this.streamingThread = thread;
+        this.streamingTurns = turns;
+        let completed = null;
+        let run = null;
+        let local = null, tracked = null;
+        const started = Date.now();
+        const abort = new AbortController();
+        this.abort = abort;
+        const on = (handle) => (data) => {
+          if (abort.signal.aborted) return;
+          try {
+            handle(data);
+          } catch (error) {
+            console.error("[slim] edit event", error);
+          }
+        };
+        const drafting = () => run ? this.inView(run) ? [run.view, run.ref] : [] : local ? [tracked, local] : [];
+        this.render();
+        try {
+          await this.refreshNote();
+          if (abort.signal.aborted) throw cancelledError();
+          const shown = this.plugin.liveViewFor?.(path) || null;
+          const text2 = shown ? shown.state.doc.toString() : null;
+          const doc = text2 !== null && text2.length <= MAX_EDIT_CHARS ? text2 : null;
+          const view = doc === null ? null : shown;
+          if (view && this.plugin.live) {
+            local = `send-${threadId()}`;
+            tracked = view;
+            this.plugin.live.startRun(view, { id: local, base: doc, pending: true });
+          }
+          const picked = question.startsWith("/") ? editorSelection(this.app, path) : { text: "" };
+          await this.plugin.streamCopilot({
+            thread_id: thread.id,
+            source_id: this.context.source.id,
+            question,
+            // Role, text and small image refs only, every turn whole: the server fits the
+            // conversation to the model's window (copilot.fit_window). Slim turns also carry
+            // evidence and stats; re-uploading those on every question grew with the square of the
+            // thread. Image bytes stay server-side. A question with no answer after it (a chat
+            // saved before a failed one came off) is not history.
+            history: turns.slice(0, -1).filter((turn, i, all) => turn.role !== "you" || all[i + 1]?.role === "slim").map((turn) => ({ ...turn, text: historyText(turn) })).map(({ role, text: text3, attachments }) => ({
+              role,
+              text: text3,
+              ...attachments?.length ? { attachments: attachments.map(
+                ({ id, name, mime, bytes }) => ({ id, name, mime, bytes })
+              ) } : {}
+            })),
+            // A regenerated question re-sends its stored refs; the server has the bytes.
+            images: outgoingImages.map(({ id, name, mime, data, bytes }) => data ? { name, mime, data } : { id, name, mime, bytes }),
+            reasoning_mode: this.mode,
+            ...doc === null ? {} : { doc, doc_hash: sha256Hex(doc) },
+            selection: picked.text,
+            ...picked.from === void 0 ? {} : { selection_from: picked.from }
+          }, {
+            stage: (data) => this.setStage(data.stage),
+            delta: (data) => {
+              streamed += data.text || "";
+              this.streamingText = streamed;
+              this.renderDelta();
+            },
+            draft: on((data) => {
+              const [view2, id] = drafting();
+              if (view2) this.plugin.live?.startDraft?.(view2, id, data);
+            }),
+            draft_text: on((data) => {
+              const [view2] = drafting();
+              if (view2) this.plugin.live?.growDraft?.(view2, String(data.id), String(data.text || ""));
+            }),
+            draft_end: on((data) => {
+              const [view2] = drafting();
+              if (view2) this.plugin.live?.endDraft?.(view2, String(data.id));
+            }),
+            edit: on((data) => {
+              if (Array.isArray(data.attachments) && data.attachments.length) asked.attachments = data.attachments;
+              const ref = String(data.before_ref || "");
+              const claimed = Boolean(local && this.plugin.live?.claimRun(tracked, local, ref));
+              local = null;
+              run = {
+                ref,
+                hash_before: data.hash_before,
+                plan: null,
+                steps: [],
+                changes: [],
+                pending: [],
+                view: claimed ? tracked : null,
+                path,
+                started,
+                thread,
+                turns
+              };
+              this.editRun = run;
+              Promise.resolve(this.plugin.showEditing?.(path)).catch((e) => console.warn("[slim] editing view", e));
+              this.startEditClock();
+              this.renderEdit();
+            }),
+            plan: on((data) => {
+              if (!run) return;
+              run.plan = { intro: String(data.intro || ""), steps: (data.steps || []).map(String) };
+              this.renderEdit();
+            }),
+            step: on((data) => {
+              if (data.state === "doing") this.stageStarted();
+              if (!run || !(data.index >= 1)) return;
+              run.steps[data.index - 1] = data.state;
+              this.renderEdit();
+            }),
+            change: on((data) => run && this.landChange(run, data)),
+            turn: (data) => {
+              completed = data;
+            },
+            error: (data) => {
+              throw new Error(data.error || "Copilot failed");
+            }
+          }, abort.signal);
+          if (!completed) throw new Error("The server ended without a completed turn.");
+          asked.attachments = completed.attachments || [];
+          delete completed.attachments;
+          if (run) completed.edit_run = await this.settleRun(run, completed.edit_run || {});
+          turns.push({ role: "slim", text: completed.answer || streamed, turn: completed });
+          this.retryQuestion = "";
+          this.retryImages = [];
+          thread.reasoning_mode = this.mode;
+          await this.saveRecord(thread, turns);
+        } catch (error) {
+          const stopped = error.name === "AbortError";
+          if (run && turns.at(-1) === asked) {
+            turns.push(await this.partialTurn(run, stopped ? "stopped" : `error: ${error.message || error}`));
+            if (!stopped) this.error = error.message || String(error);
+            thread.reasoning_mode = this.mode;
+            if (!this.deletedThreads.has(thread.id)) {
+              await this.saveRecord(thread, turns).catch((e) => {
+                this.error = e.message || String(e);
+              });
+            }
+          } else if (stopped) {
+            if (turns.at(-1) === asked) {
+              turns.pop();
+              this.draft = question;
+              this.pendingImages = outgoingImages;
+            }
+          } else if (turns.at(-1) === asked) {
+            this.error = error.message || String(error);
+            this.retryQuestion = question;
+            this.retryImages = outgoingImages;
+          } else {
+            this.error = error.message || String(error);
+          }
+        } finally {
+          if (local) this.plugin.live?.dropRun(tracked, local);
+          if (run) this.finishRun(run);
+          clearInterval(this.stageClock);
+          this.stageClock = null;
+          this.abort = null;
+          this.sending = false;
+          this.stopLiveRender();
+          this.streamingText = "";
+          this.streamingThread = null;
+          this.streamingTurns = null;
+          this.stage = "";
+          this.render();
+        }
+      }
+      // A call started: its seconds count from now, ticking on the second.
+      stageStarted() {
+        this.stageSince = Date.now();
+        clearInterval(this.stageClock);
+        this.stageClock = setInterval(() => {
+          if (this.el?.stage) this.renderStage();
+        }, 1e3);
+        this.stageClock.unref?.();
+      }
+      // The server names a stage as each model call starts. The same one again is that call still
+      // running (Deep's heartbeat while it thinks); a new one, or a new step, starts the count again.
+      setStage(name) {
+        const stage = name || "Working";
+        if (stage !== this.stage) {
+          this.stage = stage;
+          this.stageStarted();
+        }
+        this.renderStage();
+      }
+      cancel() {
+        if (this.abort) this.abort.abort();
+        this.abort = null;
+        this.sending = false;
+        this.stopLiveRender();
+        this.streamingText = "";
+        this.stage = "";
+      }
+      // Ask the last question again: the pair comes off the thread and the question goes back
+      // through send() with the image refs it had, so the answer lands where the first one did.
+      async regenerate() {
+        if (this.sending || !this.activeThread) return;
+        const answer = this.turns.at(-1);
+        const asked = this.turns.at(-2);
+        if (answer?.role !== "slim" || asked?.role !== "you") return;
+        if (answer.turn?.edit_run) return;
+        this.turns.splice(-2, 2);
+        this.pendingImages = (asked.attachments || []).map((ref) => ({ ...ref }));
+        await this.send(asked.text);
+      }
+      async retry() {
+        const question = this.retryQuestion;
+        if (!question || this.sending) return;
+        const last = this.turns.at(-1);
+        if (last?.role === "you" && last.text === question) this.turns.pop();
+        this.retryQuestion = "";
+        this.pendingImages = this.retryImages;
+        this.retryImages = [];
+        await this.send(question);
+      }
+      async deleteThread(id) {
+        if (this.deleteArmed !== id) {
+          this.deleteArmed = id;
+          this.render();
+          return;
+        }
+        this.deletedThreads.add(id);
+        if (this.sending && this.streamingThread?.id === id) this.cancel();
+        await this.plugin.postJSON("/api/copilot/thread/delete", { id });
+        this.threads = this.threads.filter((item) => item.id !== id);
+        if (this.activeThread?.id === id) this.newThread();
+        this.deleteArmed = null;
+        this.render();
+      }
+      async renameThread(id) {
+        let thread = this.activeThread?.id === id ? this.activeThread : null;
+        let turns = this.activeThread?.id === id ? this.turns : null;
+        if (!thread) {
+          thread = await this.plugin.getJSON(`/api/copilot/thread?id=${encodeURIComponent(id)}`);
+          turns = thread.turns || [];
+        }
+        const title = await this.promptTitle(thread.title);
+        if (!title) return;
+        thread.title = title.slice(0, 120);
+        if (this.activeThread?.id === id) this.activeThread.title = thread.title;
+        await this.saveRecord(thread, turns);
+        this.render();
+      }
+      // Guarded like the recorder's "Open note" button: openLinkText CREATES a missing target,
+      // and citation / thread paths are only as fresh as the last ingest — a note dragged since
+      // then would become an empty phantom, which the next active-leaf-change indexes and embeds.
+      promptTitle(current) {
+        return new Promise((resolve) => new RenameModal(this.app, current, resolve).open());
+      }
+      async openNote(path) {
+        const file = this.app.vault && typeof this.app.vault.getAbstractFileByPath === "function" ? this.app.vault.getAbstractFileByPath(path) : null;
+        if (!file) {
+          this.error = `Note not found: ${path} \u2014 it may have moved since the last index.`;
+          this.render();
+          return;
+        }
+        await this.app.workspace.getLeaf(false).openFile(file);
+      }
+      reindex(path) {
+        this.saveOpenCopies(path).then(() => this.plugin.postJSON("/api/copilot/context", { path, related: false })).catch((e) => console.warn("[slim] index after restore", path, e.message));
+      }
+      // Every pane showing the note writes its buffer first, so what reads the file next (a sync,
+      // an index) sees what the owner typed, not the copy from before Obsidian's autosave.
+      async saveOpenCopies(path) {
+        for (const leaf of this.app.workspace?.getLeavesOfType?.("markdown") || []) {
+          if (leaf.view?.file?.path === path && typeof leaf.view.save === "function") await leaf.view.save();
+        }
+      }
+    };
+    Object.assign(
+      CopilotView.prototype,
+      require_chat_render(),
+      require_chat_edit_run()
+    );
+    module2.exports = { VIEW_TYPE_COPILOT, RenameModal, CopilotView };
+  }
+});
 
-    const drawNode = (node, depth, parentEl) => {
-      const row = parentEl.createDiv({
-        cls: "slim-tree-row" + (node.path === c.dest_dir ? " is-sel" : ""),
+// src/clock.js
+var require_clock = __commonJS({
+  "src/clock.js"(exports2, module2) {
+    "use strict";
+    function pad(n) {
+      return String(n).padStart(2, "0");
+    }
+    function clockSeconds(clock, now) {
+      if (!clock) return 0;
+      return Math.floor(clock.base + (clock.since == null ? 0 : (now - clock.since) / 1e3));
+    }
+    function hhmmss(totalSeconds) {
+      const s = Math.floor(totalSeconds);
+      return `${pad(Math.floor(s / 3600))}:${pad(Math.floor(s % 3600 / 60))}:${pad(s % 60)}`;
+    }
+    module2.exports = { pad, clockSeconds, hhmmss };
+  }
+});
+
+// src/editable-markdown.js
+var require_editable_markdown = __commonJS({
+  "src/editable-markdown.js"(exports2, module2) {
+    "use strict";
+    function markdownBlockShortcut(text) {
+      const heading = String(text || "").match(/^(#{1,6})\s$/);
+      if (heading) return { tag: `h${heading[1].length}`, kind: "block" };
+      if (/^[-*+]\s$/.test(text || "")) return { tag: "ul", kind: "list" };
+      if (/^\d+\.\s$/.test(text || "")) return { tag: "ol", kind: "list" };
+      if (/^>\s$/.test(text || "")) return { tag: "blockquote", kind: "block" };
+      return null;
+    }
+    var SOURCE_ATOM = /(!?\[\[[^\]]+\]\]|!\[[^\]]*\]\([^)]*\)|\$\$[^$]+\$\$|\$[^$\n]+\$)/g;
+    function stampSourceAtoms(root, markdown) {
+      if (!root || typeof root.querySelectorAll !== "function") return;
+      const atoms = String(markdown || "").match(SOURCE_ATOM) || [];
+      if (!atoms.length) return;
+      const matched = Array.from(
+        root.querySelectorAll("img, .internal-embed, a.internal-link, mjx-container, .math")
+      );
+      const inside = new Set(matched);
+      const nodes = matched.filter((node) => {
+        for (let up = node.parentElement; up; up = up.parentElement) if (inside.has(up)) return false;
+        return true;
       });
-      row.style.paddingLeft = `${6 + depth * 14}px`;
-      const hasKids = node.children.length > 0;
-      const tw = row.createSpan({ cls: "slim-tw" + (hasKids ? "" : " is-leaf") });
-      tw.setText(hasKids ? (expanded.has(node.path) ? "▾" : "▸") : "·");
-      if (hasKids) {
-        tw.addEventListener("click", (e) => {
-          e.stopPropagation();
-          if (expanded.has(node.path)) expanded.delete(node.path);
-          else expanded.add(node.path);
+      for (let i = 0; i < nodes.length && i < atoms.length; i += 1) {
+        if (typeof nodes[i].setAttribute === "function") {
+          nodes[i].setAttribute("data-slim-src", atoms[i]);
+        }
+      }
+    }
+    function inlineMarkdown(node) {
+      if (!node) return "";
+      if (node.nodeType === 3) return node.nodeValue || "";
+      const stamped = typeof node.getAttribute === "function" ? node.getAttribute("data-slim-src") : null;
+      if (stamped) return stamped;
+      const tag = String(node.tagName || "").toLowerCase();
+      if (tag === "br") return "\n";
+      const inner = Array.from(node.childNodes || [], inlineMarkdown).join("");
+      if (tag === "strong" || tag === "b") return `**${inner}**`;
+      if (tag === "em" || tag === "i") return `*${inner}*`;
+      if (tag === "code") return `\`${inner}\``;
+      if (tag === "a") return `[${inner}](${node.getAttribute("href") || ""})`;
+      return inner;
+    }
+    function markdownFromEditable(root) {
+      const list = (node, depth) => {
+        const ordered = String(node.tagName || "").toLowerCase() === "ol";
+        return Array.from(node.children || []).map((li, i) => {
+          const own = [], inner = [];
+          for (const child of li.childNodes || []) {
+            const tag = String(child.tagName || "").toLowerCase();
+            if (tag === "ul" || tag === "ol") inner.push(list(child, depth + 1));
+            else own.push(inlineMarkdown(child));
+          }
+          const marker = ordered ? `${i + 1}.` : "-";
+          return [`${"	".repeat(depth)}${marker} ${own.join("").trim()}`, ...inner].join("\n");
+        }).join("\n");
+      };
+      const block = (node) => {
+        const tag = String(node.tagName || "").toLowerCase();
+        if (/^h[1-6]$/.test(tag)) return `${"#".repeat(Number(tag[1]))} ${inlineMarkdown(node).trim()}`;
+        if (tag === "ul" || tag === "ol") return list(node, 0);
+        if (tag === "blockquote") {
+          return inlineMarkdown(node).split("\n").map((line) => `> ${line}`).join("\n").trim();
+        }
+        if (tag === "pre") return `\`\`\`
+${node.textContent || ""}
+\`\`\``;
+        if (tag === "hr") return "---";
+        return inlineMarkdown(node).trimEnd();
+      };
+      return Array.from(root && root.children || []).map(block).filter((part) => part.trim()).join("\n\n").trim();
+    }
+    module2.exports = {
+      markdownBlockShortcut,
+      SOURCE_ATOM,
+      stampSourceAtoms,
+      inlineMarkdown,
+      markdownFromEditable
+    };
+  }
+});
+
+// src/live-diff.js
+var require_live_diff = __commonJS({
+  "src/live-diff.js"(exports2, module2) {
+    "use strict";
+    function wordTokens(text) {
+      const s = String(text || "");
+      const out = [];
+      let i = 0;
+      while (i < s.length) {
+        let j = i;
+        while (j < s.length && !/\s/.test(s[j])) {
+          let close = 0;
+          if (s[j] === "$") close = s.indexOf("$", j + 1) + 1;
+          else if (s.startsWith("**", j)) close = s.indexOf("**", j + 2) + 2;
+          else if (s[j] === "`") close = s.indexOf("`", j + 1) + 1;
+          else if (s.startsWith("[[", j)) close = s.indexOf("]]", j + 2) + 2;
+          j = close > j + 1 ? close : j + 1;
+        }
+        while (j < s.length && /\s/.test(s[j])) j += 1;
+        out.push(s.slice(i, j));
+        i = j;
+      }
+      return out;
+    }
+    function wordOps(before, after) {
+      const a = wordTokens(before), b = wordTokens(after);
+      const n = a.length, m = b.length;
+      const same = (i2, j2) => a[i2].trimEnd() === b[j2].trimEnd();
+      const t = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+      for (let i2 = n - 1; i2 >= 0; i2 -= 1) {
+        for (let j2 = m - 1; j2 >= 0; j2 -= 1) {
+          t[i2][j2] = same(i2, j2) ? t[i2 + 1][j2 + 1] + 1 : Math.max(t[i2 + 1][j2], t[i2][j2 + 1]);
+        }
+      }
+      const ops = [];
+      let i = 0, j = 0;
+      while (i < n || j < m) {
+        if (i < n && j < m && same(i, j)) {
+          ops.push(["=", a[i], b[j]]);
+          i += 1;
+          j += 1;
+        } else if (j >= m || i < n && t[i + 1][j] >= t[i][j + 1]) {
+          ops.push(["-", a[i]]);
+          i += 1;
+        } else {
+          ops.push(["+", b[j]]);
+          j += 1;
+        }
+      }
+      return ops;
+    }
+    var MARKER = /^\s*(?:#{1,6}\s+|(?:[-*+]|\d+[.)])\s+|>\s?)?/;
+    var UNMARKABLE = /^\s*(?:\$\$|```|~~~|\|)/;
+    var MAX_WORD_CELLS = 25e4;
+    function formatChange(before, after) {
+      if (!before || !after) return "";
+      const words = (text) => String(text).split(/\s+/).filter(Boolean).join(" ");
+      const plain = (text) => words(String(text).replace(/^[ \t]*(?:#{1,6}[ \t]+|>[ \t]?|(?:[-*+]|\d+[.)])[ \t]+)/gm, "").replace(/\*\*|__|~~|==|`/g, ""));
+      if (plain(before) !== plain(after)) return "";
+      const lines = (text) => String(text).split("\n").filter((line) => line.trim());
+      if (words(before) === words(after)) {
+        const indents = (text) => lines(text).map((line) => /^\s*/.exec(line)[0].length).join();
+        return indents(before) === indents(after) ? "Spacing only" : "Indentation changed";
+      }
+      const what = [];
+      const level = (line) => (/^(#{1,6})\s/.exec(line) || ["", ""])[1].length;
+      const b = lines(after);
+      lines(before).forEach((line, k) => {
+        const from = level(line), to = level(b[k] || "");
+        if (from && to && from !== to) what.push(`Heading level ${from} \u2192 ${to}`);
+      });
+      const bold = (text) => (String(text).match(/\*\*|__/g) || []).length;
+      if (bold(after) > bold(before)) what.push("Bold added");
+      if (bold(after) < bold(before)) what.push("Bold removed");
+      return [...new Set(what)].join(" \xB7 ") || "Formatting only";
+    }
+    function markable(before, after, half = true) {
+      const lines = (text) => String(text || "").split("\n").filter((line) => line.trim());
+      const a = lines(before), b = lines(after);
+      if (!a.length || a.length !== b.length) return false;
+      const kept = Boolean(formatChange(before, after));
+      return a.every((line, k) => {
+        const other = b[k];
+        if (UNMARKABLE.test(line) || UNMARKABLE.test(other)) return false;
+        const ma = MARKER.exec(line)[0], mb = MARKER.exec(other)[0];
+        if (ma.trim() !== mb.trim()) return false;
+        const x = line.slice(ma.length), y = other.slice(mb.length);
+        const xs = wordTokens(x).length, ys = wordTokens(y).length;
+        if (!(xs + ys) || xs * ys > MAX_WORD_CELLS) return false;
+        return !half || kept || 2 * wordOps(x, y).filter((op) => op[0] === "=").length / (xs + ys) >= 0.5;
+      });
+    }
+    function changeMarks(op, pieces) {
+      return pieces.map(({ old, now }) => {
+        const out = { rail: now ? [0, now.length] : null, ins: [], dels: [], formats: [], fold: null };
+        if (!old) return out;
+        if (!now) {
+          out.fold = { text: old, moved: op === "move" };
+          return out;
+        }
+        const lines = [];
+        let pos = 0;
+        for (const line of now.split("\n")) {
+          if (line.trim()) lines.push([pos, line]);
+          pos += line.length + 1;
+        }
+        const renamed = lines.length === 1 && /^\s*#{1,6}\s/.test(now);
+        if (formatChange(old, now)) {
+          for (const [start, line] of lines) out.formats.push([start, start + line.length]);
+        } else if (markable(old, now, op !== "edit_text" && !renamed)) {
+          const olds = old.split("\n").filter((line) => line.trim());
+          lines.forEach(([start, line], k) => {
+            const other = olds[k];
+            const ma = MARKER.exec(other)[0], mb = MARKER.exec(line)[0];
+            let at = start + mb.length, gone = "", goneAt = at, from = -1, to = -1;
+            const flushGone = () => {
+              if (gone.trim()) out.dels.push([goneAt, gone.trimEnd()]);
+              gone = "";
+            };
+            const flushAdded = () => {
+              if (from >= 0) out.ins.push([from, to]);
+              from = -1;
+            };
+            for (const [kind, word, kept] of wordOps(other.slice(ma.length), line.slice(mb.length))) {
+              if (kind === "-") {
+                if (!gone) goneAt = at;
+                gone += word;
+                continue;
+              }
+              flushGone();
+              if (kind === "+") {
+                if (from < 0) from = at;
+                to = at + word.trimEnd().length;
+                at += word.length;
+                continue;
+              }
+              flushAdded();
+              at += kept.length;
+            }
+            flushGone();
+            flushAdded();
+          });
+        } else {
+          out.fold = { text: old, moved: false };
+        }
+        return out;
+      });
+    }
+    function textDiff(before, after) {
+      const a = String(before), b = String(after);
+      const max = Math.min(a.length, b.length);
+      let start = 0;
+      while (start < max && a.charCodeAt(start) === b.charCodeAt(start)) start += 1;
+      let end = 0;
+      while (end < max - start && a.charCodeAt(a.length - 1 - end) === b.charCodeAt(b.length - 1 - end)) end += 1;
+      if (start === a.length && start === b.length) return [];
+      return [{ from: start, to: a.length - end, insert: b.slice(start, b.length - end) }];
+    }
+    function excerpt(markdown) {
+      const line = String(markdown || "").split("\n").find((text) => text.trim()) || "";
+      return line.replace(/^\s*(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s?)/, "").replace(/\*\*|__|`/g, "").trim();
+    }
+    function noteBlocks(text) {
+      const out = [];
+      let lines = [], fence = null;
+      for (const line of String(text || "").split("\n")) {
+        const trimmed = line.trim();
+        if (fence) {
+          lines.push(line);
+          if (trimmed.startsWith(fence) || fence === "$$" && trimmed.endsWith("$$")) fence = null;
+          continue;
+        }
+        if (!trimmed) {
+          if (lines.length) out.push(lines.join("\n"));
+          lines = [];
+          continue;
+        }
+        lines.push(line);
+        const open = /^(`{3,}|~{3,}|\$\$)/.exec(trimmed);
+        if (open && !(open[1] === "$$" && trimmed.length > 2 && trimmed.endsWith("$$"))) fence = open[1];
+      }
+      if (lines.length) out.push(lines.join("\n"));
+      return out;
+    }
+    function struckWords(before, after) {
+      const others = String(after).split("\n").filter((line) => line.trim());
+      let k = 0;
+      return String(before).split("\n").map((line) => {
+        if (!line.trim()) return line;
+        const other = others[k++] || "";
+        const ma = MARKER.exec(line)[0], mb = MARKER.exec(other)[0];
+        let out = ma, gone = "";
+        const flush = () => {
+          if (!gone) return;
+          const word = gone.trimEnd();
+          out += `~~${word}~~${gone.slice(word.length)}`;
+          gone = "";
+        };
+        for (const [kind, word] of wordOps(line.slice(ma.length), other.slice(mb.length))) {
+          if (kind === "-") gone += word;
+          else if (kind === "=") {
+            flush();
+            out += word;
+          }
+        }
+        flush();
+        return out;
+      }).join("\n");
+    }
+    function beforeBlocks(before, now) {
+      const a = noteBlocks(before), b = noteBlocks(now);
+      const key = (text) => text.trim();
+      const n = a.length, m = b.length;
+      const t = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+      for (let i2 = n - 1; i2 >= 0; i2 -= 1) {
+        for (let j2 = m - 1; j2 >= 0; j2 -= 1) {
+          t[i2][j2] = key(a[i2]) === key(b[j2]) ? t[i2 + 1][j2 + 1] + 1 : Math.max(t[i2 + 1][j2], t[i2][j2 + 1]);
+        }
+      }
+      const runs = [];
+      let gone = [], added = [];
+      const flush = () => {
+        if (gone.length || added.length) runs.push({ gone, added });
+        gone = [];
+        added = [];
+      };
+      let i = 0, j = 0;
+      while (i < n || j < m) {
+        if (i < n && j < m && key(a[i]) === key(b[j])) {
+          flush();
+          runs.push({ same: a[i] });
+          i += 1;
+          j += 1;
+        } else if (j >= m || i < n && t[i + 1][j] >= t[i][j + 1]) gone.push(a[i++]);
+        else added.push(b[j++]);
+      }
+      flush();
+      const count = (field) => {
+        const out2 = /* @__PURE__ */ new Map();
+        for (const run of runs) for (const text of run[field] || []) out2.set(key(text), (out2.get(key(text)) || 0) + 1);
+        return out2;
+      };
+      const goneCount = count("gone"), addedCount = count("added");
+      const movesOut = /* @__PURE__ */ new Map(), movesIn = /* @__PURE__ */ new Map();
+      for (const [k, n2] of goneCount) {
+        const moves = Math.min(n2, addedCount.get(k) || 0);
+        if (moves) {
+          movesOut.set(k, moves);
+          movesIn.set(k, moves);
+        }
+      }
+      const take = (moves, text) => {
+        const left = moves.get(key(text)) || 0;
+        if (left) moves.set(key(text), left - 1);
+        return left > 0;
+      };
+      const out = [];
+      for (const run of runs) {
+        if (run.same !== void 0) {
+          out.push({ kind: "same", markdown: run.same });
+          continue;
+        }
+        const fresh = run.added.filter((text) => !take(movesIn, text));
+        let k = 0;
+        for (const text of run.gone) {
+          if (take(movesOut, text)) {
+            out.push({ kind: "moved", markdown: text });
+            continue;
+          }
+          const other = fresh[k];
+          if (other !== void 0 && markable(text, other)) {
+            out.push({ kind: "changed", markdown: struckWords(text, other) });
+            k += 1;
+          } else out.push({ kind: "removed", markdown: text });
+        }
+        const left = fresh.slice(k);
+        if (left.length) out.push({ kind: "added", markdown: excerpt(left[0]), count: left.length });
+      }
+      return out;
+    }
+    module2.exports = {
+      wordTokens,
+      wordOps,
+      MARKER,
+      UNMARKABLE,
+      MAX_WORD_CELLS,
+      formatChange,
+      markable,
+      changeMarks,
+      textDiff,
+      excerpt,
+      noteBlocks,
+      struckWords,
+      beforeBlocks
+    };
+  }
+});
+
+// src/live-runs.js
+var require_live_runs = __commonJS({
+  "src/live-runs.js"(exports2, module2) {
+    "use strict";
+    var inside = (changes, from, to) => {
+      let hit = false;
+      changes.iterChangedRanges((a, b) => {
+        if (!hit) hit = a === b ? from < a && a < to : a < to && b > from;
+      });
+      return hit;
+    };
+    var clashes = (owner, delta) => {
+      let hit = false;
+      delta.iterChangedRanges((from, to) => {
+        if (!hit && from < to) hit = inside(owner, from, to);
+      });
+      return hit;
+    };
+    var starts = (splices, toDoc) => {
+      const out = [];
+      let shift = 0;
+      for (const { from, to, insert } of splices) {
+        const a = toDoc.mapPos(from, 1), b = from === to ? a : Math.max(a, toDoc.mapPos(to, -1));
+        out.push(a + shift);
+        shift += insert.length - (b - a);
+      }
+      return out;
+    };
+    var place = (rel, at) => {
+      const out = { rails: [], ins: [], dels: [], formats: [], folds: [] };
+      rel.forEach((piece, i) => {
+        const s = at[i];
+        if (piece.rail) out.rails.push([s + piece.rail[0], s + piece.rail[1]]);
+        for (const [f, t] of piece.ins) out.ins.push([s + f, s + t]);
+        for (const [p, text] of piece.dels) out.dels.push([s + p, text]);
+        for (const [f, t] of piece.formats) out.formats.push([s + f, s + t]);
+        if (piece.fold) out.folds.push([s, piece.fold.text, piece.fold.moved]);
+      });
+      return out;
+    };
+    var mapMarks = (at, changes) => {
+      const range = ([f, t]) => {
+        const a = changes.mapPos(f, 1);
+        return [a, Math.max(a, changes.mapPos(t, -1))];
+      };
+      const point = ([p, ...rest]) => [changes.mapPos(p, -1), ...rest];
+      return {
+        rails: at.rails.map(range),
+        ins: at.ins.map(range),
+        dels: at.dels.map(point),
+        formats: at.formats.map(range),
+        folds: at.folds.map(point)
+      };
+    };
+    function replay(ChangeSet, run, kept) {
+      let agent = run.base, toDoc = ChangeSet.empty(run.base.length);
+      const marks = /* @__PURE__ */ new Map();
+      for (const step of run.steps) {
+        if (kept.has(step.id)) {
+          const onDoc = step.changes.map(toDoc);
+          for (const [id, m] of marks) marks.set(id, mapMarks(m, onDoc));
+          marks.set(step.id, place(step.rel, starts(step.splices, toDoc)));
+          toDoc = toDoc.map(step.changes, true);
+        } else {
+          toDoc = step.changes.invert(agent).compose(toDoc);
+        }
+        agent = step.changes.apply(agent);
+      }
+      return { toDoc, marks };
+    }
+    function between(ChangeSet, run, toDoc) {
+      const specs = [];
+      const lines = (text) => text.match(/[^\n]*\n|[^\n]+$/g) || [];
+      run.toDoc.invert(run.agent).compose(toDoc).iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+        const a = lines(run.doc.sliceString(fromA, toA)), b = lines(inserted.toString());
+        let i = 0, j = 0;
+        while (i < a.length && i < b.length && a[i] === b[i]) i += 1;
+        while (j < a.length - i && j < b.length - i && a[a.length - 1 - j] === b[b.length - 1 - j]) j += 1;
+        if (i === a.length && i === b.length) return;
+        const size = (list) => list.reduce((n, line) => n + line.length, 0);
+        specs.push({
+          from: fromA + size(a.slice(0, i)),
+          to: toA - size(a.slice(a.length - j)),
+          insert: b.slice(i, b.length - j).join("")
+        });
+      });
+      return ChangeSet.of(specs, run.doc.length);
+    }
+    var dependents = (run, ids) => {
+      const out = new Set(ids);
+      for (let grew = true; grew; ) {
+        grew = false;
+        for (const step of run.steps) {
+          if (!out.has(step.id) && step.needs.some((id) => out.has(id))) {
+            out.add(step.id);
+            grew = true;
+          }
+        }
+      }
+      return out;
+    };
+    var holdable = (run, ids) => {
+      const byId = new Map(run.steps.map((step) => [step.id, step]));
+      const blocked = new Set(run.steps.filter((step) => step.skipped).map((step) => step.id));
+      for (let grew = true; grew; ) {
+        grew = false;
+        for (const step of run.steps) {
+          if (!blocked.has(step.id) && step.needs.some((id) => blocked.has(id))) {
+            blocked.add(step.id);
+            grew = true;
+          }
+        }
+      }
+      const out = /* @__PURE__ */ new Set();
+      const add = (id) => {
+        if (out.has(id) || blocked.has(id) || !byId.has(id)) return;
+        out.add(id);
+        for (const need of byId.get(id).needs) add(need);
+      };
+      for (const id of ids) add(id);
+      return out;
+    };
+    var same = (a, b) => a.size === b.size && [...a].every((id) => b.has(id));
+    function moved(ChangeSet, run, kept, push) {
+      const w = replay(ChangeSet, run, kept);
+      const delta = between(ChangeSet, run, w.toDoc);
+      if (clashes(run.owner, delta)) return null;
+      const redo = (push ? [...run.redo, push] : run.redo).filter((group) => group.some((id) => !kept.has(id)));
+      return {
+        changes: delta.map(run.owner),
+        run: {
+          ...run,
+          kept,
+          doc: delta.apply(run.doc),
+          toDoc: w.toDoc,
+          owner: run.owner.map(delta, true),
+          marks: w.marks,
+          redo,
+          latest: null,
+          version: run.version + 1
+        }
+      };
+    }
+    function fromHistory(ChangeSet, run, tr) {
+      const tries = [...run.redo].reverse().map((group) => ({ kept: holdable(run, [...run.kept, ...group]) }));
+      for (const step of [...run.steps].reverse()) {
+        if (step.skipped) continue;
+        if (run.kept.has(step.id)) {
+          const gone = dependents(run, [step.id]);
+          tries.push({
+            kept: new Set([...run.kept].filter((id) => !gone.has(id))),
+            push: [...gone].filter((id) => run.kept.has(id))
+          });
+        } else {
+          tries.push({ kept: holdable(run, [...run.kept, step.id]) });
+        }
+      }
+      for (const { kept, push } of tries) {
+        if (same(kept, run.kept)) continue;
+        const next = moved(ChangeSet, run, kept, push);
+        if (next && next.changes.apply(tr.startState.doc).eq(tr.newDoc)) return next.run;
+      }
+      return null;
+    }
+    var tipFor = (run, step) => {
+      const parts = new Set(run.steps.filter((other) => other.partOf).map((other) => other.id));
+      const inside2 = [...dependents(run, [step.id])].filter((id) => id !== step.id && run.kept.has(id) && !parts.has(id)).length;
+      return `${step.label || step.id}${inside2 ? ` \xB7 also undoes ${inside2} inside it` : ""}`;
+    };
+    module2.exports = {
+      inside,
+      clashes,
+      starts,
+      place,
+      mapMarks,
+      replay,
+      between,
+      dependents,
+      holdable,
+      same,
+      moved,
+      fromHistory,
+      tipFor
+    };
+  }
+});
+
+// src/live-widgets.js
+var require_live_widgets = __commonJS({
+  "src/live-widgets.js"(exports2, module2) {
+    "use strict";
+    var { excerpt, beforeBlocks } = require_live_diff();
+    var DRAFT_RENDER_MS = 250;
+    function makeWidgets(WidgetType, host, ui) {
+      class Gone extends WidgetType {
+        constructor(text, raw, path) {
+          super();
+          this.text = text;
+          this.raw = raw;
+          this.path = path;
+        }
+        eq(other) {
+          return other.text === this.text && other.raw === this.raw;
+        }
+        toDOM() {
+          const span = document.createElement("span");
+          span.className = "slim-del";
+          span.textContent = this.text;
+          if (!this.raw) {
+            const holder = document.createElement("div");
+            Promise.resolve(host.render(holder, this.text, this.path)).then(() => {
+              const p = holder.querySelector("p") || holder;
+              if (p.childNodes.length) span.replaceChildren(...p.childNodes);
+            }).catch(() => {
+            });
+          }
+          return span;
+        }
+      }
+      const undoButton = (view, runId, id, tip) => {
+        const button = document.createElement("button");
+        button.className = "slim-undo";
+        button.setAttribute("aria-label", `Undo: ${tip}`);
+        if (host.icon) host.icon(button, "undo-2");
+        if (!button.childNodes.length) button.textContent = "\u21BA";
+        const label = button.appendChild(document.createElement("span"));
+        label.className = "slim-undo-tip";
+        label.textContent = `Undo \xB7 ${tip}`;
+        button.onmousedown = (event) => event.preventDefault();
+        button.onmouseenter = () => ui.showHover(view, runId, id);
+        button.onmouseleave = () => ui.leaveHover(view);
+        button.onclick = (event) => {
+          event.preventDefault();
+          const done = ui.undo(view, runId, [id]);
+          if (done === "refused") host.refused?.(view, runId, id);
+        };
+        return button;
+      };
+      class Undo extends WidgetType {
+        constructor(runId, id, tip, shown) {
+          super();
+          this.runId = runId;
+          this.id = id;
+          this.tip = tip;
+          this.shown = shown;
+        }
+        eq(other) {
+          return other.runId === this.runId && other.id === this.id && other.tip === this.tip && other.shown === this.shown;
+        }
+        toDOM(view) {
+          const holder = document.createElement("span");
+          holder.className = `slim-undo-holder${this.shown ? " is-shown" : ""}`;
+          holder.dataset.key = `${this.runId}
+${this.id}
+${this.tip}`;
+          holder.appendChild(undoButton(view, this.runId, this.id, this.tip));
+          return holder;
+        }
+        // Hovering only shows or hides it: the button under the pointer stays the same element.
+        updateDOM(dom) {
+          if (dom.dataset.key !== `${this.runId}
+${this.id}
+${this.tip}`) return false;
+          dom.classList.toggle("is-shown", this.shown);
+          return true;
+        }
+        ignoreEvent() {
+          return true;
+        }
+      }
+      class Folded extends WidgetType {
+        constructor(opts) {
+          super();
+          Object.assign(this, opts);
+        }
+        eq(other) {
+          return other.key === this.key && other.hovered === this.hovered;
+        }
+        get key() {
+          return JSON.stringify(["runId", "id", "text", "moved", "open", "undo", "path"].map((k) => this[k]));
+        }
+        toDOM(view) {
+          const box = document.createElement("div");
+          box.className = `slim-removed slim-change${this.hovered ? " is-hovered" : ""}`;
+          box.dataset.slimRun = this.runId;
+          box.dataset.slimChange = this.id;
+          box.dataset.key = this.key;
+          box.onmouseenter = () => ui.showHover(view, this.runId, this.id);
+          box.onmouseleave = () => ui.leaveHover(view);
+          const line = box.appendChild(document.createElement("button"));
+          line.className = "slim-removed-line";
+          line.setAttribute("aria-expanded", String(Boolean(this.open)));
+          const struck = line.appendChild(document.createElement("s"));
+          struck.textContent = excerpt(this.text) || "(blank lines)";
+          if (this.moved) line.appendChild(document.createTextNode(" \xB7 moved"));
+          line.title = this.moved ? "Show where it went" : this.open ? "Fold" : "Show what was removed";
+          line.onmousedown = (event) => event.preventDefault();
+          line.onclick = (event) => {
+            event.preventDefault();
+            if (this.moved) ui.reveal(view, this.runId, this.id);
+            else ui.toggleOpen(view, this.runId, this.id);
+          };
+          if (this.open && !this.moved) {
+            const full = box.appendChild(document.createElement("div"));
+            full.className = "slim-removed-full";
+            Promise.resolve(host.render(full, this.text, this.path)).catch(() => {
+              full.textContent = this.text;
+            });
+          }
+          if (this.undo) {
+            const holder = box.appendChild(document.createElement("span"));
+            holder.className = `slim-undo-holder${this.hovered ? " is-shown" : ""}`;
+            holder.appendChild(undoButton(view, this.runId, this.id, this.undo));
+          }
+          return box;
+        }
+        // Hovering only marks it: the box under the pointer stays the same element.
+        updateDOM(dom) {
+          if (dom.dataset.key !== this.key) return false;
+          dom.classList.toggle("is-hovered", Boolean(this.hovered));
+          dom.querySelector(".slim-undo-holder")?.classList.toggle("is-shown", Boolean(this.hovered));
+          return true;
+        }
+        ignoreEvent() {
+          return true;
+        }
+      }
+      class Before extends WidgetType {
+        constructor(runId, text, path) {
+          super();
+          this.runId = runId;
+          this.text = text;
+          this.path = path;
+        }
+        eq(other) {
+          return other.runId === this.runId && other.text === this.text;
+        }
+        toDOM(view) {
+          const root = document.createElement("div");
+          root.className = "slim-before";
+          const bar = root.appendChild(document.createElement("div"));
+          bar.className = "slim-before-bar";
+          const title = bar.appendChild(document.createElement("b"));
+          title.textContent = "Before SLIM's edits";
+          const note = bar.appendChild(document.createElement("span"));
+          note.textContent = "read-only";
+          const back = bar.appendChild(document.createElement("button"));
+          back.className = "slim-link";
+          back.textContent = "Back to now";
+          back.onmousedown = (event) => event.preventDefault();
+          back.onclick = (event) => {
+            event.preventDefault();
+            ui.showBefore(view, this.runId, this.text, false);
+          };
+          for (const block of beforeBlocks(this.text, view.state.doc.toString())) {
+            const el = root.appendChild(document.createElement("div"));
+            if (block.kind === "added") {
+              el.className = "slim-before-marker is-added";
+              el.textContent = `+ added here: ${block.markdown}${block.count > 1 ? ` (and ${block.count - 1} more)` : ""}`;
+              continue;
+            }
+            el.className = `slim-before-block${block.kind === "same" ? "" : ` slim-change is-${block.kind}`}`;
+            Promise.resolve(host.render(el, block.markdown, this.path)).catch(() => {
+              el.textContent = block.markdown;
+            });
+            if (block.kind === "moved") {
+              const marker = root.appendChild(document.createElement("div"));
+              marker.className = "slim-before-marker is-moved";
+              marker.textContent = "moved";
+            }
+          }
+          return root;
+        }
+        ignoreEvent() {
+          return true;
+        }
+      }
+      const paintDraft = (view, box, text, path) => {
+        box.slimText = text;
+        if (box.slimTimer) return;
+        box.slimTimer = setTimeout(() => {
+          box.slimTimer = null;
+          box.slimAt = Date.now();
+          const order = box.slimBegun = (box.slimBegun || 0) + 1;
+          const shown = box.slimText, holder = document.createElement("div");
+          const drawn = host.renderFor ? host.renderFor(holder, shown, path) : Promise.resolve(host.render(holder, shown, path)).then(() => null);
+          Promise.resolve(drawn).then((drop) => {
+            if (box.slimGone || order < (box.slimShown || 0)) {
+              drop?.();
+              return;
+            }
+            box.slimShown = order;
+            box.slimDrop?.();
+            box.slimDrop = drop;
+            box.replaceChildren(...holder.childNodes);
+            view.requestMeasure();
+          }).catch(() => {
+            if (!box.slimGone && order >= (box.slimShown || 0)) box.textContent = shown;
+          });
+        }, Math.max(0, DRAFT_RENDER_MS - (Date.now() - (box.slimAt || 0))));
+      };
+      class Draft extends WidgetType {
+        constructor(id, text, path) {
+          super();
+          this.id = id;
+          this.text = text;
+          this.path = path;
+        }
+        eq(other) {
+          return other.id === this.id && other.text === this.text;
+        }
+        toDOM(view) {
+          const box = document.createElement("div");
+          box.className = "slim-draft";
+          box.dataset.draft = this.id;
+          box.textContent = this.text;
+          paintDraft(view, box, this.text, this.path);
+          return box;
+        }
+        updateDOM(dom, view) {
+          if (dom.dataset.draft !== this.id) return false;
+          paintDraft(view, dom, this.text, this.path);
+          return true;
+        }
+        destroy(dom) {
+          dom.slimGone = true;
+          clearTimeout(dom.slimTimer);
+          dom.slimDrop?.();
+        }
+        ignoreEvent() {
+          return true;
+        }
+      }
+      return { Gone, Undo, Folded, Before, Draft };
+    }
+    module2.exports = { DRAFT_RENDER_MS, makeWidgets };
+  }
+});
+
+// src/live-editor.js
+var require_live_editor = __commonJS({
+  "src/live-editor.js"(exports2, module2) {
+    "use strict";
+    var { changeMarks, textDiff } = require_live_diff();
+    var {
+      inside,
+      starts,
+      place,
+      mapMarks,
+      dependents,
+      holdable,
+      same,
+      moved,
+      fromHistory,
+      tipFor
+    } = require_live_runs();
+    var { makeWidgets } = require_live_widgets();
+    function makeLiveEditor(cm, host) {
+      const { StateField, StateEffect, ChangeSet, Text, Compartment, EditorState } = cm.state;
+      const { EditorView, Decoration, WidgetType, ViewPlugin } = cm.view;
+      const isolate = cm.commands?.isolateHistory;
+      const AGENT = "slim.agent", UNDO = "slim.undo", REDO = "slim.redo", RESTORE = "slim.restore";
+      const setRun = StateEffect.define();
+      const clearRuns = StateEffect.define();
+      const showBefore = StateEffect.define();
+      const setDraft = StateEffect.define();
+      const lock = new Compartment();
+      const focused = /* @__PURE__ */ new WeakMap();
+      const leaving = /* @__PURE__ */ new WeakMap();
+      const LEAVE_MS = 500;
+      const pathOf = (state) => host.infoField && state.field(host.infoField, false)?.file?.path || null;
+      const livePreview = (state) => !host.livePreviewField || state.field(host.livePreviewField, false) !== false;
+      const own = (spec) => ({ ...spec, annotations: isolate ? isolate.of("full") : void 0 });
+      const runsField = StateField.define({
+        create: () => /* @__PURE__ */ new Map(),
+        update(runs, tr) {
+          const mine = /* @__PURE__ */ new Map();
+          for (const effect of tr.effects) {
+            if (effect.is(clearRuns)) return /* @__PURE__ */ new Map();
+            if (effect.is(setRun)) mine.set(effect.value.id, effect.value.run);
+          }
+          if (!mine.size && !tr.docChanged) return runs;
+          const path = pathOf(tr.state);
+          const history = tr.isUserEvent("undo") || tr.isUserEvent("redo");
+          const next = /* @__PURE__ */ new Map();
+          for (const [id, run] of runs) {
+            if (mine.has(id)) continue;
+            if (!tr.docChanged) {
+              next.set(id, run);
+              continue;
+            }
+            if (run.path && path && run.path !== path) continue;
+            next.set(id, history && fromHistory(ChangeSet, run, tr) || { ...run, owner: run.owner.compose(tr.changes) });
+          }
+          for (const [id, run] of mine) if (run) next.set(id, run);
+          return next;
+        }
+      });
+      const beforeField = StateField.define({
+        create: () => null,
+        update(value, tr) {
+          for (const effect of tr.effects) if (effect.is(showBefore)) value = effect.value;
+          return value;
+        }
+      });
+      const runOf = (state, runId) => state.field(runsField, false)?.get(runId) || null;
+      const { Gone, Undo, Folded, Before, Draft } = makeWidgets(WidgetType, host, {
+        showHover: (view, runId, id) => showHover(view, runId, id),
+        leaveHover: (view) => leaveHover(view),
+        undo: (view, runId, ids) => api.undo(view, runId, ids),
+        reveal: (view, runId, id) => api.reveal(view, runId, id),
+        toggleOpen: (view, runId, id) => api.toggleOpen(view, runId, id),
+        showBefore: (view, runId, text, on) => api.showBefore(view, runId, text, on)
+      });
+      function draw(state) {
+        const runs = state.field(runsField, false);
+        if (!runs?.size) return Decoration.none;
+        const { doc } = state;
+        const raw = !livePreview(state);
+        const path = pathOf(state) || "";
+        const clamp = (pos) => Math.max(0, Math.min(doc.length, pos));
+        const ranges = [];
+        for (const run of runs.values()) {
+          if (!run.marks || !run.display.marks || run.owner.newLength !== doc.length) continue;
+          const settled = !run.active;
+          const drawn = [], lines = /* @__PURE__ */ new Map();
+          for (const step of run.steps) {
+            const root = step.partOf || step.id;
+            if (!run.kept.has(step.id) || !run.kept.has(root) || !run.marks.has(step.id)) continue;
+            const at = mapMarks(run.marks.get(step.id), run.owner);
+            drawn.push({ step, root, at });
+            if (!lines.has(root)) lines.set(root, /* @__PURE__ */ new Set());
+            for (const [f, t] of at.rails) {
+              if (t <= f) continue;
+              let end = t;
+              while (end > f + 1 && doc.sliceString(end - 1, end) === "\n") end -= 1;
+              for (let pos = clamp(f); pos <= clamp(end - 1) && pos < doc.length + 1; ) {
+                const line = doc.lineAt(pos);
+                lines.get(root).add(line.from);
+                if (line.to >= doc.length) break;
+                pos = line.to + 1;
+              }
+            }
+          }
+          const byId = new Map(run.steps.map((step) => [step.id, step]));
+          for (const [root, starts2] of lines) {
+            const hovered = run.display.hover === root;
+            const cls = `slim-change${hovered ? " is-hovered" : ""}${run.latest === root ? " slim-arrive" : ""}`;
+            const attributes = { "data-slim-run": run.id, "data-slim-change": root };
+            for (const from of starts2) ranges.push(Decoration.line({ class: cls, attributes }).range(from));
+            if (settled && starts2.size) {
+              const widget = new Undo(run.id, root, tipFor(run, byId.get(root)), hovered);
+              ranges.push(Decoration.widget({ widget, side: -1 }).range(Math.min(...starts2)));
+            }
+          }
+          for (const { step, root, at } of drawn) {
+            if (step.id !== root) continue;
+            for (const [f, t] of at.ins) if (t > f) ranges.push(Decoration.mark({ class: "slim-ins" }).range(clamp(f), clamp(t)));
+            for (const [f, t] of at.formats) if (t > f) ranges.push(Decoration.mark({ class: "slim-format" }).range(clamp(f), clamp(t)));
+            for (const [p, text] of at.dels) {
+              ranges.push(Decoration.widget({ widget: new Gone(text, raw, path), side: -1 }).range(clamp(p)));
+            }
+            at.folds.forEach(([p, text, isMove], k) => {
+              const widget = new Folded({
+                runId: run.id,
+                id: root,
+                text,
+                moved: isMove,
+                path,
+                open: run.display.open.has(root),
+                hovered: run.display.hover === root,
+                undo: settled && !lines.get(root).size && k === 0 ? tipFor(run, step) : null
+              });
+              ranges.push(Decoration.widget({ widget, block: true, side: -1 }).range(doc.lineAt(clamp(p)).from));
+            });
+          }
+        }
+        return Decoration.set(ranges, true);
+      }
+      const marksField = StateField.define({
+        create: draw,
+        update(value, tr) {
+          const was = tr.startState, now = tr.state;
+          if (tr.docChanged || was.field(runsField, false) !== now.field(runsField, false) || livePreview(was) !== livePreview(now)) return draw(now);
+          return value;
+        },
+        provide: (field) => EditorView.decorations.from(field)
+      });
+      const beforeMarks = StateField.define({
+        create: () => Decoration.none,
+        update(value, tr) {
+          const shown = tr.state.field(beforeField, false);
+          if (!shown) return Decoration.none;
+          if (!tr.docChanged && shown === tr.startState.field(beforeField, false)) return value;
+          const widget = new Before(shown.runId, shown.text, pathOf(tr.state) || "");
+          return Decoration.set([Decoration.replace({ widget, block: true }).range(0, tr.state.doc.length)]);
+        },
+        provide: (field) => EditorView.decorations.from(field)
+      });
+      const draftsField = StateField.define({
+        create: () => /* @__PURE__ */ new Map(),
+        update(drafts, tr) {
+          let next = drafts;
+          const path = pathOf(tr.state);
+          if (drafts.size && (tr.docChanged || path !== pathOf(tr.startState))) {
+            next = new Map([...drafts].filter(([, d]) => !(d.path && path && d.path !== path)).map(([id, d]) => {
+              if (!tr.docChanged) return [id, d];
+              if (d.from === d.to) {
+                const at = tr.changes.mapPos(d.from, -1);
+                return [id, { ...d, from: at, to: at }];
+              }
+              const from = tr.changes.mapPos(d.from, 1);
+              return [id, { ...d, from, to: Math.max(from, tr.changes.mapPos(d.to, -1)) }];
+            }));
+          }
+          for (const effect of tr.effects) {
+            if (!effect.is(setDraft)) continue;
+            const { start, grow, end, endRun, rename } = effect.value;
+            next = new Map(next);
+            if (start) next.set(start.id, start);
+            if (grow && next.has(grow.id)) next.set(grow.id, { ...next.get(grow.id), text: next.get(grow.id).text + grow.text });
+            if (end != null) next.delete(end);
+            for (const [id, d] of next) {
+              if (endRun != null && d.runId === endRun) next.delete(id);
+              if (rename && d.runId === rename.from) next.set(id, { ...d, runId: rename.to });
+            }
+          }
+          return next;
+        }
+      });
+      const draftsOf = (state, runId) => [...state.field(draftsField, false)?.values() || []].some((d) => d.runId === runId);
+      const draftMarks = StateField.define({
+        create: () => Decoration.none,
+        update(value, tr) {
+          const drafts = tr.state.field(draftsField, false);
+          if (drafts === tr.startState.field(draftsField, false) && !tr.docChanged) return value;
+          if (!drafts?.size) return Decoration.none;
+          const { doc } = tr.state;
+          const path = pathOf(tr.state) || "";
+          const ranges = [];
+          for (const d of drafts.values()) {
+            const from = Math.min(d.from, doc.length), to = Math.min(Math.max(d.to, from), doc.length);
+            for (let pos = from; pos < to; ) {
+              const line2 = doc.lineAt(pos);
+              ranges.push(Decoration.line({ class: "slim-drafting" }).range(line2.from));
+              if (line2.to >= doc.length) break;
+              pos = line2.to + 1;
+            }
+            const line = doc.lineAt(to), widget = new Draft(d.id, d.text, path);
+            ranges.push(to === line.from ? Decoration.widget({ widget, block: true, side: -1 }).range(to) : Decoration.widget({ widget, block: true, side: 1 }).range(line.to));
+          }
+          return Decoration.set(ranges, true);
+        },
+        provide: (field) => EditorView.decorations.from(field)
+      });
+      const tracker = ViewPlugin.fromClass(class {
+        constructor(view) {
+          this.view = view;
+          host.views.add(view);
+          focused.set(view, view.hasFocus ? Date.now() : 0);
+        }
+        update(update) {
+          if (update.focusChanged && update.view.hasFocus) focused.set(update.view, Date.now());
+          const was = update.startState.field(runsField, false), now = update.state.field(runsField, false);
+          const told = /* @__PURE__ */ new Set();
+          if (was !== now) {
+            for (const [id, run] of was) if (!run.pending && now.get(id)?.version !== run.version) told.add(id);
+            for (const [id, run] of now) if (!run.pending && !was.has(id)) told.add(id);
+          }
+          const before = update.startState.field(beforeField, false), after = update.state.field(beforeField, false);
+          if (before !== after) {
+            for (const shown of [before, after]) if (shown) told.add(shown.runId);
+          }
+          if (told.size) queueMicrotask(() => {
+            for (const id of told) host.changed?.(update.view, id);
+          });
+        }
+        destroy() {
+          host.views.delete(this.view);
+          clearTimeout(leaving.get(this.view));
+          leaving.delete(this.view);
+        }
+      });
+      const showHover = (view, runId, id) => {
+        clearTimeout(leaving.get(view));
+        leaving.delete(view);
+        const runs = view.state.field(runsField, false);
+        if (!runs) return;
+        const effects = [];
+        for (const run of runs.values()) {
+          const want = run.id === runId ? id : null;
+          if (run.display.hover !== want) {
+            effects.push(setRun.of({ id: run.id, run: { ...run, display: { ...run.display, hover: want } } }));
+          }
+        }
+        if (effects.length) view.dispatch({ effects });
+      };
+      const leaveHover = (view) => {
+        const runs = view.state.field(runsField, false);
+        if (leaving.has(view) || ![...runs?.values() || []].some((run) => run.display.hover)) return;
+        leaving.set(view, setTimeout(() => {
+          leaving.delete(view);
+          showHover(view, null, null);
+        }, LEAVE_MS));
+      };
+      const hover = (view, target) => {
+        const el = target?.closest?.("[data-slim-change]");
+        if (el) showHover(view, el.dataset.slimRun, el.dataset.slimChange);
+        else leaveHover(view);
+        return false;
+      };
+      const api = {
+        extension: [
+          runsField,
+          marksField,
+          beforeField,
+          beforeMarks,
+          draftsField,
+          draftMarks,
+          tracker,
+          lock.of([]),
+          EditorView.domEventHandlers({
+            mouseover: (event, view) => hover(view, event.target),
+            mouseleave: (_event, view) => hover(view, null)
+          })
+        ],
+        pathOf: (view) => pathOf(view.state),
+        focusedAt: (view) => focused.get(view) || 0,
+        // A run starts on the text that was sent, at Send: every keystroke from then on is the
+        // owner's, mapped exactly (anything already typed counts as one replace). Until the server
+        // names the run it is `pending`, under the chat's own name, and the chat is not told of it.
+        startRun(view, { id, base, pending = false }) {
+          const sent = Text.of(String(base).split("\n"));
+          const now = view.state.doc.toString();
+          const run = {
+            id,
+            path: pathOf(view.state),
+            base: sent,
+            agent: sent,
+            doc: sent,
+            steps: [],
+            kept: /* @__PURE__ */ new Set(),
+            toDoc: ChangeSet.empty(sent.length),
+            owner: ChangeSet.of(textDiff(String(base), now), sent.length),
+            marks: /* @__PURE__ */ new Map(),
+            redo: [],
+            active: true,
+            latest: null,
+            version: 1,
+            pending,
+            display: { marks: true, hover: null, open: /* @__PURE__ */ new Set() }
+          };
+          view.dispatch({ effects: setRun.of({ id, run }) });
+        },
+        // The server's name for a run started at Send; false when the editor no longer has it.
+        claimRun(view, from, to) {
+          const run = runOf(view.state, from);
+          if (!run) return false;
+          view.dispatch({ effects: [
+            setRun.of({ id: from, run: null }),
+            setDraft.of({ rename: { from, to } }),
+            setRun.of({ id: to, run: { ...run, id: to, pending: false, version: run.version + 1 } })
+          ] });
+          return true;
+        },
+        // A question answered, or a request that never became a run: nothing to keep.
+        dropRun(view, id) {
+          const effects = draftsOf(view.state, id) ? [setDraft.of({ endRun: id })] : [];
+          if (runOf(view.state, id)) effects.push(setRun.of({ id, run: null }));
+          if (effects.length) view.dispatch({ effects });
+        },
+        // A change's text while the model writes it, at its place in the server's copy (UTF-16 units
+        // of that copy, as splices are), shown where that place is now. False when the editor has no
+        // such run or the place is not in its copy.
+        startDraft(view, runId, { id, from, to, text = "" }) {
+          const run = runOf(view.state, runId), path = pathOf(view.state);
+          if (!run || !Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from || to > run.agent.length) return false;
+          if (run.path && path && run.path !== path) return false;
+          const point = (pos, side) => run.owner.mapPos(run.toDoc.mapPos(pos, side), side);
+          const a = point(from, from === to ? -1 : 1), b = from === to ? a : Math.max(a, point(to, -1));
+          const effects = [setDraft.of({ start: { id: String(id), runId, path: run.path, from: a, to: b, text: String(text) } })];
+          if (!view.hasFocus) effects.push(EditorView.scrollIntoView(b, { y: "nearest", yMargin: 80 }));
+          view.dispatch({ effects });
+          return true;
+        },
+        growDraft(view, id, text) {
+          if (text && view.state.field(draftsField, false)?.has(id)) view.dispatch({ effects: setDraft.of({ grow: { id, text } }) });
+        },
+        endDraft(view, id) {
+          if (view.state.field(draftsField, false)?.has(id)) view.dispatch({ effects: setDraft.of({ end: id }) });
+        },
+        // One change as the server made it: splices on its copy, in order. It lands where those
+        // splices sit now, unless the owner has edited there (or undone what it changes), or a change
+        // it needs is not in the note: then it is skipped, and later changes still land where they
+        // belong.
+        applyChange(view, runId, change) {
+          const run = runOf(view.state, runId);
+          if (!run || !run.active) return "skipped";
+          const splices = (change.splices || []).map(({ from, to, insert }) => ({ from, to, insert: String(insert ?? "") }));
+          let end = 0;
+          for (const s of splices) {
+            if (!Number.isInteger(s.from) || !Number.isInteger(s.to) || s.from < end || s.to < s.from || s.to > run.agent.length) {
+              return "skipped";
+            }
+            end = s.to;
+          }
+          const changes = ChangeSet.of(splices, run.agent.length);
+          const pieces = splices.map((s) => ({ old: run.agent.sliceString(s.from, s.to), now: s.insert }));
+          const needs = new Set((change.needs || []).map(String));
+          for (const earlier of run.steps) {
+            const cut = earlier.regions.some(([a, b]) => splices.some(({ from, to }) => from < to ? from < b && to > a : a < from && from < b));
+            if (cut) needs.add(earlier.id);
+          }
+          const named = change.part_of == null ? null : run.steps.find((earlier) => earlier.id === String(change.part_of));
+          const partOf = named ? named.partOf || named.id : null;
+          if (partOf) needs.add(partOf);
+          let shift = 0;
+          const regions = [];
+          for (const { from, to, insert } of splices) {
+            if (insert) regions.push([from + shift, from + shift + insert.length]);
+            shift += insert.length - (to - from);
+          }
+          const remap = (step2) => ({ ...step2, regions: step2.regions.map(([a, b]) => {
+            const f = changes.mapPos(a, 1);
+            return [f, Math.max(f, changes.mapPos(b, -1))];
+          }) });
+          const step = {
+            id: String(change.id),
+            label: change.label || "",
+            op: change.op || "",
+            step: change.step,
+            partOf,
+            needs: [...needs],
+            splices,
+            changes,
+            regions,
+            rel: changeMarks(change.op, pieces)
+          };
+          const at = splices.map(({ from, to }) => {
+            const a = run.toDoc.mapPos(from, 1);
+            return [a, from === to ? a : Math.max(a, run.toDoc.mapPos(to, -1))];
+          });
+          const touched = run.steps.some((earlier) => needs.has(earlier.id) && !run.kept.has(earlier.id)) || splices.some(({ from, to }) => run.toDoc.touchesRange(from, to)) || at.some(([from, to]) => run.owner.touchesRange(from, to));
+          const agent = changes.apply(run.agent);
+          const steps = run.steps.map(remap);
+          if (touched) {
+            const next2 = {
+              ...run,
+              steps: [...steps, { ...step, skipped: true }],
+              agent,
+              toDoc: changes.invert(run.agent).compose(run.toDoc),
+              version: run.version + 1
+            };
+            view.dispatch({ effects: setRun.of({ id: runId, run: next2 }) });
+            return "skipped";
+          }
+          const onDoc = changes.map(run.toDoc);
+          const marks = new Map([...run.marks].map(([id, m]) => [id, mapMarks(m, onDoc)]));
+          marks.set(step.id, place(step.rel, starts(splices, run.toDoc)));
+          const next = {
+            ...run,
+            steps: [...steps, step],
+            agent,
+            kept: /* @__PURE__ */ new Set([...run.kept, step.id]),
+            doc: onDoc.apply(run.doc),
+            toDoc: run.toDoc.map(changes, true),
+            owner: run.owner.map(onDoc, true),
+            marks,
+            latest: partOf || step.id,
+            version: run.version + 1
+          };
+          const landing = onDoc.map(run.owner);
+          const effects = [setRun.of({ id: runId, run: next })];
+          if (!view.hasFocus) {
+            let first = null;
+            landing.iterChangedRanges((_fromA, _toA, fromB) => {
+              if (first === null) first = fromB;
+            });
+            if (first !== null) effects.push(EditorView.scrollIntoView(first, { y: "nearest", yMargin: 80 }));
+          }
+          view.dispatch(own({ changes: landing, effects, userEvent: AGENT }));
+          return "applied";
+        },
+        // The run is over: no more changes come, and ↺ appears.
+        endRun(view, runId) {
+          const run = runOf(view.state, runId);
+          const effects = draftsOf(view.state, runId) ? [setDraft.of({ endRun: runId })] : [];
+          if (run?.active) effects.push(setRun.of({ id: runId, run: { ...run, active: false, latest: null, version: run.version + 1 } }));
+          if (effects.length) view.dispatch({ effects });
+        },
+        // ↺: these changes and everything made inside them, as one step. Refused, not forced, when
+        // the owner has edited that text since.
+        undo(view, runId, ids) {
+          const run = runOf(view.state, runId);
+          if (!run) return "gone";
+          const gone = dependents(run, ids);
+          const kept = new Set([...run.kept].filter((id) => !gone.has(id)));
+          if (same(kept, run.kept)) return "nothing";
+          const next = moved(ChangeSet, run, kept, [...run.kept].filter((id) => gone.has(id)));
+          if (!next) return "refused";
+          view.dispatch(own({ changes: next.changes, effects: setRun.of({ id: runId, run: next.run }), userEvent: UNDO }));
+          return "undone";
+        },
+        // Puts back what the last ↺ (or Undo all) took out.
+        redo(view, runId) {
+          const run = runOf(view.state, runId);
+          const group = run?.redo.at(-1);
+          if (!group) return "nothing";
+          const kept = holdable(run, [...run.kept, ...group]);
+          const next = moved(ChangeSet, run, kept, null);
+          if (!next) return "refused";
+          next.run.redo = run.redo.slice(0, -1).filter((g) => g.some((id) => !kept.has(id)));
+          view.dispatch(own({ changes: next.changes, effects: setRun.of({ id: runId, run: next.run }), userEvent: REDO }));
+          return "redone";
+        },
+        // Every change the owner has not edited since, and what those need, comes out as one step.
+        // A change and those `part_of` it go or stay together, and are counted once.
+        undoAll(view, runId) {
+          const run = runOf(view.state, runId);
+          if (!run || !run.kept.size) return { undone: 0, kept: 0 };
+          const rootOf = new Map(run.steps.map((step) => [step.id, step.partOf || step.id]));
+          const edited = new Set([...run.kept].filter((id) => (run.marks.get(id)?.rails || []).some(([f, t]) => inside(run.owner, f, t))).map((id) => rootOf.get(id)));
+          let kept = new Set([...run.kept].filter((id) => edited.has(rootOf.get(id))));
+          for (let size = -1; size !== kept.size; ) {
+            size = kept.size;
+            kept = holdable(run, kept);
+            for (const id of run.kept) if (kept.has(rootOf.get(id))) kept.add(id);
+          }
+          const gone = [...run.kept].filter((id) => !kept.has(id));
+          const roots = (ids) => [...ids].filter((id) => rootOf.get(id) === id).length;
+          const next = gone.length ? moved(ChangeSet, run, kept, gone) : null;
+          if (!next) return { undone: 0, kept: roots(run.kept) };
+          view.dispatch(own({ changes: next.changes, effects: setRun.of({ id: runId, run: next.run }), userEvent: UNDO }));
+          return { undone: roots(gone), kept: roots(kept) };
+        },
+        setMarks(view, runId, on) {
+          const run = runOf(view.state, runId);
+          if (run && run.display.marks !== on) {
+            view.dispatch({ effects: setRun.of({ id: runId, run: { ...run, display: { ...run.display, marks: on }, version: run.version + 1 } }) });
+          }
+        },
+        toggleOpen(view, runId, id) {
+          const run = runOf(view.state, runId);
+          if (!run) return;
+          const open = new Set(run.display.open);
+          if (open.has(id)) open.delete(id);
+          else open.add(id);
+          view.dispatch({ effects: setRun.of({ id: runId, run: { ...run, display: { ...run.display, open } } }) });
+        },
+        // A moved block: show where it went.
+        reveal(view, runId, id) {
+          const run = runOf(view.state, runId);
+          const at = run?.marks.get(id) && mapMarks(run.marks.get(id), run.owner);
+          const pos = at?.rails[0]?.[0] ?? at?.folds[0]?.[0];
+          if (pos != null && pos <= view.state.doc.length) {
+            view.dispatch({ effects: EditorView.scrollIntoView(pos, { y: "center" }) });
+          }
+        },
+        // The note as it was before the run, drawn over the note: read-only, the file untouched.
+        showBefore(view, runId, beforeText, on) {
+          const shown = view.state.field(beforeField, false);
+          if (!on && shown?.runId !== runId) return;
+          view.dispatch({
+            effects: [
+              showBefore.of(on ? { runId, text: String(beforeText) } : null),
+              lock.reconfigure(on ? [EditorView.editable.of(false), EditorState.readOnly.of(true)] : [])
+            ]
+          });
+        },
+        showing: (view) => view.state.field(beforeField, false)?.runId || null,
+        // The note as it was before the run, as one editor change: Cmd-Z takes it back. The runs'
+        // marks go with it.
+        restore(view, beforeText) {
+          view.dispatch(own({
+            changes: textDiff(view.state.doc.toString(), String(beforeText)),
+            effects: [clearRuns.of(null), showBefore.of(null), lock.reconfigure([])],
+            userEvent: RESTORE
+          }));
+        },
+        state(view, runId) {
+          const run = runOf(view.state, runId);
+          if (!run) return null;
+          const changes = run.steps.map((step) => ({
+            id: step.id,
+            label: step.label,
+            state: step.skipped ? "skipped" : run.kept.has(step.id) ? "applied" : "undone"
+          }));
+          return {
+            changes,
+            undone: changes.filter((change) => change.state === "undone").length,
+            redoable: run.redo.length > 0,
+            active: run.active,
+            marks: run.display.marks,
+            before: api.showing(view) === runId,
+            touched: !run.owner.empty
+          };
+        }
+      };
+      return api;
+    }
+    module2.exports = { makeLiveEditor };
+  }
+});
+
+// src/meeting-note.js
+var require_meeting_note = __commonJS({
+  "src/meeting-note.js"(exports2, module2) {
+    "use strict";
+    var { MarkdownRenderer } = require("obsidian");
+    var { randomUUID } = require("crypto");
+    var nodePath = require("path");
+    var { pad } = require_clock();
+    var STAGING_DIR = "Attachments/_incoming";
+    var RECORDER_ATTACHMENTS = "Attachments/Recorder";
+    var DRAFT_SUFFIX = ".slim-draft.md";
+    var EMPTY_MEETING_BLOCK = "````slim-meeting\n\n````\n\n";
+    var TYPES = [
+      ["meeting-note", "Meeting"],
+      ["lecture", "Lecture"],
+      ["idea", "Idea"],
+      ["journal", "Journal"],
+      ["note", "Note"]
+    ];
+    function recordingIdFromStaged(filePath) {
+      return nodePath.posix.basename(filePath, ".webm").replace(/-\d{3}$/, "");
+    }
+    function localDay(d = /* @__PURE__ */ new Date()) {
+      return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`;
+    }
+    function recordingId() {
+      const d = /* @__PURE__ */ new Date();
+      const date = localDay(d);
+      const time = `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+      return `${date}T${time}-${randomUUID().slice(0, 8)}`;
+    }
+    function splitMeetingNote(text) {
+      const source = String(text || "");
+      let frontmatter = "";
+      let body = source;
+      if (source.startsWith("---\n")) {
+        const end = source.indexOf("\n---", 4);
+        if (end >= 0) {
+          const after = end + 4;
+          frontmatter = source.slice(0, after);
+          body = source.slice(after).replace(/^\r?\n/, "");
+        }
+      }
+      let managed = body;
+      let tail = "";
+      const blockOpen = body.match(/^(`{3,})slim-meeting[^\n]*\n/m);
+      if (blockOpen) {
+        const fence = blockOpen[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const afterOpen = body.slice(blockOpen.index + blockOpen[0].length);
+        const close = afterOpen.match(new RegExp(`^${fence}[ \\t]*(?:\\r?\\n|$)`, "m"));
+        if (close) {
+          managed = afterOpen.slice(0, close.index);
+          tail = afterOpen.slice(close.index + close[0].length);
+        }
+      }
+      const summaryMatch = managed.match(/<!-- slim:summary[^\n]*-->\s*\n## Summary\s*\n([\s\S]*?)\n<!-- \/slim:summary -->/);
+      const notesMatch = managed.match(/(?:^|\n)## Notes\s*\n([\s\S]*?)(?=\n## Transcript\s*(?:\n|$))/);
+      const transcriptMatch = managed.match(/(?:^|\n)## Transcript\s*\n([\s\S]*)$/);
+      return {
+        frontmatter,
+        summary: summaryMatch ? summaryMatch[1].trim() : "",
+        notes: notesMatch ? notesMatch[1].replace(/^\r?\n/, "").replace(/\s+$/, "") : "",
+        transcript: transcriptMatch ? transcriptMatch[1].trim() : "",
+        tail
+      };
+    }
+    function frontmatterScalar(text, key) {
+      const frontmatter = splitMeetingNote(text).frontmatter;
+      if (!frontmatter) return "";
+      const escaped = String(key).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const match = frontmatter.match(new RegExp(`^${escaped}:\\s*(.*?)\\s*$`, "m"));
+      if (!match) return "";
+      return match[1].trim().replace(/^(["'])(.*)\1$/, "$2");
+    }
+    function hasMeetingBlock(text) {
+      return /^`{3,}slim-meeting[^\n]*$/m.test(String(text || ""));
+    }
+    function embedLegacyMeetingBlock(text) {
+      const source = String(text || "");
+      if (hasMeetingBlock(source)) return source;
+      let split = 0;
+      if (source.startsWith("---\n")) {
+        const end = source.indexOf("\n---", 4);
+        if (end >= 0) split = end + 4;
+      }
+      const before = source.slice(0, split);
+      const body = source.slice(split).replace(/^\r?\n+/, "").replace(/\s+$/, "");
+      const longest = Math.max(0, ...Array.from(body.matchAll(/`+/g), (m) => m[0].length));
+      const fence = "`".repeat(Math.max(4, longest + 1));
+      return `${before}${before ? "\n\n" : ""}${fence}slim-meeting
+${body}
+${fence}
+
+`;
+    }
+    function renderMeetingTabs(app, el, parts, sourcePath, {
+      editable = false,
+      component = null,
+      activeTab = "summary",
+      onTab = null,
+      summaryPane = null,
+      notesPane = null
+    } = {}) {
+      const renderMarkdown = (target, markdown) => {
+        if (!markdown) {
+          target.createEl("p", { cls: "slim-empty", text: "Nothing was captured here." });
+          return;
+        }
+        if (MarkdownRenderer && typeof MarkdownRenderer.render === "function") {
+          MarkdownRenderer.render(app, markdown, target, sourcePath || "", component).catch((e) => {
+            console.error("[slim] render meeting", e);
+            target.setText(markdown);
+          });
+        } else target.setText(markdown);
+      };
+      const tabs = el.createDiv({ cls: "slim-object-tabs", attr: { role: "tablist" } });
+      [["summary", "AI summary"], ["notes", "My notes"], ["transcript", "Transcript"]].forEach(([value, label]) => {
+        const tab = tabs.createEl("button", {
+          cls: `slim-object-tab${activeTab === value ? " is-active" : ""}`,
+          text: label,
+          attr: { role: "tab", "aria-selected": String(activeTab === value) }
+        });
+        tab.addEventListener("click", () => {
+          if (onTab) onTab(value);
+        });
+      });
+      const body = el.createDiv({ cls: `slim-object-body is-${activeTab}` });
+      if (activeTab === "summary") {
+        body.createDiv({ cls: "slim-object-section-label", text: "Generated summary" });
+        if (editable && summaryPane) summaryPane(body);
+        else renderMarkdown(body.createDiv({ cls: "slim-rendered-markdown" }), parts.summary);
+      } else if (activeTab === "notes") {
+        body.createDiv({ cls: "slim-object-section-label", text: "Your notes" });
+        if (editable && notesPane) notesPane(body);
+        else renderMarkdown(body.createDiv({ cls: "slim-rendered-markdown" }), parts.notes);
+      } else {
+        body.createDiv({ cls: "slim-object-section-label", text: "Raw transcript \u2014 read only" });
+        renderMarkdown(
+          body.createDiv({ cls: "slim-rendered-markdown slim-transcript" }),
+          parts.transcript
+        );
+      }
+      return body;
+    }
+    function renderPassiveMeetingBlock(app, plugin, el, source, sourcePath) {
+      const body = String(source || "");
+      const longestFence = Math.max(0, ...Array.from(body.matchAll(/`+/g), (m) => m[0].length));
+      const fence = "`".repeat(Math.max(4, longestFence + 1));
+      const parts = splitMeetingNote(`${fence}slim-meeting
+${body}
+${fence}`);
+      let activeTab = "summary";
+      const draw = () => {
+        el.empty();
+        el.addClass("slim-meeting-object");
+        el.addClass("slim-passive-meeting");
+        const head = el.createDiv({ cls: "slim-object-head" });
+        const copy = head.createDiv({ cls: "slim-object-head-copy" });
+        copy.createDiv({ cls: "slim-object-eyebrow", text: "SLIM meeting note" });
+        copy.createEl("h3", { text: "Meeting note" });
+        const badge = head.createDiv({ cls: "slim-object-status" });
+        badge.createSpan({ cls: "slim-object-status-dot" });
+        badge.createSpan({ text: "Saved" });
+        renderMeetingTabs(app, el, parts, sourcePath, {
+          editable: false,
+          component: plugin,
+          activeTab,
+          onTab: (value) => {
+            activeTab = value;
+            draw();
+          }
+        });
+      };
+      draw();
+    }
+    module2.exports = {
+      STAGING_DIR,
+      RECORDER_ATTACHMENTS,
+      DRAFT_SUFFIX,
+      EMPTY_MEETING_BLOCK,
+      TYPES,
+      recordingIdFromStaged,
+      localDay,
+      recordingId,
+      splitMeetingNote,
+      frontmatterScalar,
+      hasMeetingBlock,
+      embedLegacyMeetingBlock,
+      renderMeetingTabs,
+      renderPassiveMeetingBlock
+    };
+  }
+});
+
+// src/recorder-capture.js
+var require_recorder_capture = __commonJS({
+  "src/recorder-capture.js"(exports2, module2) {
+    "use strict";
+    var { Notice } = require("obsidian");
+    var nodePath = require("path");
+    var { MIC_CHANNEL, SYSTEM_CHANNEL, captureSilence } = require_audio();
+    var { clockSeconds, hhmmss } = require_clock();
+    var { STAGING_DIR, recordingId } = require_meeting_note();
+    module2.exports = {
+      // ---- recording -----------------------------------------------------------------------
+      /* ⚠ The two inputs want OPPOSITE treatment, and getting this backwards is worse than
+       * leaving it off.
+       *
+       * The microphone is in a room: chair movement, keyboard, fans. Chromium ships real DSP for
+       * exactly that, and unasked-for it is not reliably on. So the mic gets noise suppression,
+       * echo cancellation and auto gain.
+       *
+       * The loopback input is NOT a room — it is a clean digital copy of what the machine is
+       * playing. Noise suppression there chews on the far end's voices, and echo cancellation
+       * would try to remove the speaker audio, which is the entire thing we are recording. So it
+       * is captured raw.
+       */
+      async openMic() {
+        return navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+        });
+      },
+      /* What the machine is PLAYING, straight from macOS. No virtual device, no routing.
+       *
+       * Electron >= 39 defaults to Apple's Core Audio Tap API for desktop audio capture on
+       * macOS >= 14.2, so `audio: "loopback"` returns a track labelled "System audio" carrying the
+       * real mix. Measured 2026-08-22 against a YouTube lecture: peak 0.0 dBFS, RMS -18.7 dBFS —
+       * within half a decibel of the same lecture captured through BlackHole.
+       *
+       * ⚠ `video` is REQUIRED and must be a WebFrameMain or a DesktopCapturerSource. We hand back
+       * the requesting frame — Obsidian's own window — and stop the track immediately. That is not
+       * a trick to save code: asking desktopCapturer for a SCREEN drags in screen-recording
+       * permission for a feature that only ever wanted audio.
+       *
+       * ⚠ The handler lives on the SHARED default session, so it is installed for exactly one
+       * request and always removed, including when the request throws. Leaving it installed would
+       * silently hijack any other getDisplayMedia call in Obsidian.
+       */
+      async openSystemAudio() {
+        const { session } = require("@electron/remote");
+        session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
+          callback({ video: request.frame, audio: "loopback" });
+        });
+        try {
+          const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+          stream.getVideoTracks().forEach((track) => track.stop());
+          if (!stream.getAudioTracks().length) throw new Error("no audio track was returned");
+          return stream;
+        } finally {
+          session.defaultSession.setDisplayMediaRequestHandler(null);
+        }
+      },
+      /* Both sides of the conversation in ONE file, and kept APART inside it.
+       *
+       * A microphone records the room; on headphones that is only them, and the transcript ends up
+       * a monologue with the other half missing. So the machine's own output is captured too —
+       * directly, via `openSystemAudio`.
+       *
+       * ⚠ THIS USED TO COST THEM A DEVICE SETUP, and that was the whole complaint (2026-08-22):
+       * `getUserMedia` sees only INPUT devices, so reaching system output meant installing
+       * BlackHole to impersonate a microphone and building a Multi-Output Device — a NEW one per
+       * pair of headphones — to fork the sound so they could still hear it. Notion is one click.
+       * Nothing about that was necessary: the Electron Obsidian ships could already ask macOS.
+       * The lesson is the pattern, not the fix — reach for what the HOST can do before reaching
+       * for the universal workaround.
+       *
+       * The two are opened separately and joined here with Web Audio — one to each channel —
+       * rather than depending on a pre-built Aggregate Device having the right channel layout.
+       * It degrades honestly: system audio can fail and you still get the mic, with a Notice
+       * saying so.
+       *
+       * ⚠ LEFT IS THE MICROPHONE, RIGHT IS THE MACHINE — `slim/speakers.py` reads them that way.
+       * They used to be summed, and once summed nobody can say who spoke. Apart, "me or them" is
+       * a fact of the capture, decided on the server with no model. A missing source leaves its
+       * channel silent; it never moves to the other side. The caption tap and the level meter
+       * each ask for ONE channel, so Web Audio downmixes for them — leave them alone. The downmix
+       * is half of each side, so the level bar reads ~6 dB lower than before for the same voice.
+       */
+      async buildStream() {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        this.audioCtx = new Ctx();
+        const dest = this.audioCtx.createMediaStreamDestination();
+        const sides = this.audioCtx.createChannelMerger(2);
+        sides.connect(dest);
+        this.streams = [];
+        let sources = 0;
+        if (this.recordVoice) {
+          const mic = await this.openMic();
+          this.streams.push(mic);
+          this.audioCtx.createMediaStreamSource(mic).connect(sides, 0, MIC_CHANNEL);
+          sources++;
+        }
+        try {
+          const sys = await this.openSystemAudio();
+          this.streams.push(sys);
+          this.audioCtx.createMediaStreamSource(sys).connect(sides, 0, SYSTEM_CHANNEL);
+          sources++;
+        } catch (e) {
+          console.error("[slim] system audio", e);
+          new Notice(this.recordVoice ? "SLIM: could not capture system audio \u2014 recording your voice only." : "SLIM: could not capture system audio, and 'Record my voice' is off.");
+        }
+        if (!sources) throw new Error("no audio source available \u2014 nothing would be recorded");
+        return dest.stream;
+      },
+      /* One recording, several audio files. A second MediaRecorder session writes its own
+       * container header, so appending a resumed take to the first file risks a recording nothing
+       * can play; a numbered segment beside it cannot. The server joins their transcripts. */
+      nextSegmentPath() {
+        const n = String((this.segments || []).length + 1).padStart(3, "0");
+        return `${STAGING_DIR}/${this.recordingId}-${n}.webm`;
+      },
+      async start() {
+        if (this.manager) this.manager.claimCapture(this);
+        if (!this.recordingId) this.recordingId = recordingId();
+        if (!this.appendTo) await this.ensureDraftLocation();
+        const mixed = await this.buildStream();
+        if (!this.segments) this.segments = [];
+        this.audioRel = this.nextSegmentPath();
+        this.segments.push(this.audioRel);
+        try {
+          let mime = "audio/webm;codecs=opus";
+          if (typeof MediaRecorder.isTypeSupported === "function" && !MediaRecorder.isTypeSupported(mime)) {
+            mime = MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : "";
+          }
+          this.recorder = mime ? new MediaRecorder(mixed, { mimeType: mime }) : new MediaRecorder(mixed);
+          this.chunks = [];
+          this.pending = [];
+          this.writeQueue = Promise.resolve();
+          this.warnedWrite = false;
+          await this.ensureStagingDirs();
+          this.openDiskFile();
+          this.recorder.ondataavailable = (e) => {
+            if (e.data && e.data.size) this.onChunk(e.data);
+          };
+          this.recorder.start(5e3);
+        } catch (e) {
+          try {
+            await this.removeUntouchedDraft();
+          } catch (cleanupError) {
+            console.error("[slim] draft cleanup", cleanupError);
+          }
+          this.teardownStream();
+          throw e;
+        }
+        this.setupMeter(mixed);
+        this.setupSilenceWatch(mixed);
+        this.elapsed = this.elapsedCarry || 0;
+        this.clock = { base: this.elapsed, since: Date.now() };
+        this.timer = window.setInterval(() => this.tick(), 1e3);
+        if (typeof this.plugin.registerInterval === "function") this.plugin.registerInterval(this.timer);
+        this.state = "recording";
+        this.render();
+        this.startLiveTranscript(mixed);
+      },
+      tick() {
+        if (!this.recorder || this.recorder.state !== "recording") return;
+        this.elapsed = clockSeconds(this.clock, Date.now());
+        const el = this.contentEl && this.contentEl.querySelector(".slim-timer");
+        if (el) el.setText(hhmmss(this.elapsed));
+        this.checkSilence();
+      },
+      setupMeter(mixed) {
+        try {
+          const src = this.audioCtx.createMediaStreamSource(mixed);
+          const analyser = this.audioCtx.createAnalyser();
+          analyser.fftSize = 512;
+          src.connect(analyser);
+          const data = new Uint8Array(analyser.frequencyBinCount);
+          const tick = () => {
+            if (!this.audioCtx || this.state !== "recording") return;
+            analyser.getByteTimeDomainData(data);
+            let peak = 0;
+            for (let i = 0; i < data.length; i++) peak = Math.max(peak, Math.abs(data[i] - 128));
+            const bar = this.contentEl.querySelector(".slim-level-fill");
+            if (bar) bar.style.width = `${Math.min(100, peak / 128 * 160)}%`;
+            window.requestAnimationFrame(tick);
+          };
+          window.requestAnimationFrame(tick);
+        } catch (e) {
+          console.error("[slim] meter", e);
+        }
+      },
+      /* Both channels of the stream MediaRecorder is writing — what the file gets, not what the
+       * devices claim. Read once a second by the clock's timer, not per frame: rAF stops in a hidden
+       * window, and a meeting is exactly when Obsidian is behind the call. The largest analyser
+       * window (32768 samples, ~0.7 s) sees most of each second. 'Record my voice' off leaves the
+       * left side empty on purpose, and system silence alone is never a warning — so there is
+       * nothing to watch. */
+      setupSilenceWatch(mixed) {
+        this.silenceWatch = null;
+        if (!this.recordVoice) return;
+        try {
+          const source = this.audioCtx.createMediaStreamSource(mixed);
+          const split = this.audioCtx.createChannelSplitter(2);
+          const mic = this.audioCtx.createAnalyser();
+          const system = this.audioCtx.createAnalyser();
+          mic.fftSize = 32768;
+          system.fftSize = 32768;
+          source.connect(split);
+          split.connect(mic, MIC_CHANNEL);
+          split.connect(system, SYSTEM_CHANNEL);
+          this.silenceTap = { source, split, mic, system };
+          this.silenceSamples = new Float32Array(mic.fftSize);
+        } catch (e) {
+          console.error("[slim] silence watch", e);
+        }
+      },
+      checkSilence() {
+        if (!this.silenceTap) return;
+        const peak = (analyser) => {
+          const data = this.silenceSamples;
+          analyser.getFloatTimeDomainData(data);
+          let max = 0;
+          for (let i = 0; i < data.length; i++) max = Math.max(max, Math.abs(data[i]));
+          return max;
+        };
+        const was = this.silenceWatch ? this.silenceWatch.warn : false;
+        this.silenceWatch = captureSilence(this.silenceWatch, {
+          mic: peak(this.silenceTap.mic),
+          system: peak(this.silenceTap.system)
+        });
+        if (this.silenceWatch.warn !== was) this.render();
+      },
+      togglePause() {
+        if (!this.recorder) return;
+        if (this.recorder.state === "recording") {
+          this.recorder.pause();
+          this.liveTranscriptPaused = true;
+          if (this.clock) {
+            this.clock = { base: clockSeconds(this.clock, Date.now()), since: null };
+            this.elapsed = this.clock.base;
+          }
+        } else if (this.recorder.state === "paused") {
+          this.recorder.resume();
+          this.liveTranscriptPaused = false;
+          if (this.clock) this.clock.since = Date.now();
+        }
+        this.render();
+      },
+      teardownStream() {
+        if (this.timer) {
+          window.clearInterval(this.timer);
+          this.timer = null;
+        }
+        if (this.clock) {
+          this.elapsed = clockSeconds(this.clock, Date.now());
+          this.clock = null;
+        }
+        this.streams.forEach((s) => s.getTracks().forEach((t) => t.stop()));
+        this.streams = [];
+        if (this.liveTranscriptActive) {
+          this.liveTranscriptActive = false;
+          this.plugin.postLiveTranscript({ action: "stop", session_id: this.recordingId }).catch((e) => console.debug("[slim] live transcript cleanup", e));
+        }
+        if (this.liveProcessor) {
+          for (const node of Object.values(this.liveProcessor)) {
+            try {
+              if (node) node.disconnect();
+            } catch (e) {
+            }
+          }
+          this.liveProcessor = null;
+        }
+        if (this.silenceTap) {
+          for (const node of Object.values(this.silenceTap)) {
+            try {
+              node.disconnect();
+            } catch (e) {
+            }
+          }
+          this.silenceTap = null;
+          this.silenceSamples = null;
+        }
+        if (this.audioCtx) {
+          try {
+            this.audioCtx.close();
+          } catch (e) {
+          }
+        }
+        this.audioCtx = null;
+      },
+      async ensureStagingDirs() {
+        await this.ensureVaultDirs(STAGING_DIR);
+      },
+      /* Open the file the chunks will be appended to, and prove it is writable BEFORE recording —
+       * discovering a permissions problem five seconds into a meeting is discovering it too late.
+       *
+       * Node's `fs`, not the Vault API, because Obsidian offers only create and overwrite: there is
+       * no appendBinary. `isDesktopOnly: true` in the manifest is precisely the licence for this.
+       * The path is still a vault-relative path resolved against the vault's own base, and the
+       * containment check keeps it that way.
+       */
+      openDiskFile() {
+        try {
+          const fs = require("fs");
+          const adapter = this.app.vault.adapter;
+          if (typeof adapter.getBasePath !== "function") throw new Error("no base path");
+          const base = nodePath.resolve(adapter.getBasePath());
+          const abs = nodePath.resolve(base, this.audioRel);
+          if (abs !== base && !abs.startsWith(base + nodePath.sep)) {
+            throw new Error(`${this.audioRel} resolves outside the vault`);
+          }
+          fs.mkdirSync(nodePath.dirname(abs), { recursive: true });
+          fs.writeFileSync(abs, Buffer.alloc(0));
+          this.fs = fs;
+          this.audioAbs = abs;
+          this.diskWrite = true;
+        } catch (e) {
+          console.error("[slim] disk flush unavailable", e);
+          this.diskWrite = false;
+          new Notice(
+            `SLIM: cannot write audio to disk while recording \u2014 holding it in memory until you press Stop. A crash or a quit before then loses the whole recording. (${e && e.message || e})`,
+            2e4
+          );
+        }
+      },
+      onChunk(blob) {
+        if (!this.diskWrite) {
+          this.chunks.push(blob);
+          return;
+        }
+        this.writeQueue = this.writeQueue.then(() => this.appendChunk(blob)).catch((e) => {
+          console.error("[slim] write queue", e);
+        });
+      },
+      async appendChunk(blob) {
+        try {
+          this.pending.push(Buffer.from(await blob.arrayBuffer()));
+        } catch (e) {
+          console.error("[slim] chunk read", e);
+          return;
+        }
+        this.flushPending();
+      },
+      /* Append everything the file is still owed. `pending` normally holds exactly one buffer and
+       * empties immediately; it only grows when a write fails, and the next chunk then retries the
+       * lot in order. That keeps a transient failure (a full disk, an iCloud stall) from tearing a
+       * hole in the middle of the container. */
+      flushPending() {
+        if (!this.pending.length) return;
+        try {
+          this.fs.appendFileSync(this.audioAbs, this.pending.length === 1 ? this.pending[0] : Buffer.concat(this.pending));
+          this.pending = [];
+        } catch (e) {
+          console.error("[slim] append", e);
+          if (!this.warnedWrite) {
+            this.warnedWrite = true;
+            new Notice("SLIM: a chunk of audio did not reach disk. Still recording, and the next chunk retries it \u2014 but check free space.", 15e3);
+          }
+        }
+      },
+      async writeAudio(blob) {
+        await this.ensureStagingDirs();
+        await this.app.vault.createBinary(this.audioRel, await blob.arrayBuffer());
+        return this.audioRel;
+      }
+    };
+  }
+});
+
+// src/recorder-live.js
+var require_recorder_live = __commonJS({
+  "src/recorder-live.js"(exports2, module2) {
+    "use strict";
+    var { LIVE_FLUSH_BYTES, pcm16k } = require_audio();
+    module2.exports = {
+      /* One recording's captions and clock, across every segment of it. */
+      shownTranscript() {
+        return [this.liveCarry, this.liveTranscript].filter(Boolean).join("\n\n");
+      },
+      /* Fold what is on screen into the carry. Used by a segment boundary AND by a mid-segment
+       * session restart — the restart must NOT touch the clock, which is still running. */
+      carryTranscript() {
+        this.liveCarry = [this.liveCarry, this.liveTranscript].filter(Boolean).join("\n\n");
+        this.liveTranscript = "";
+      },
+      carryTranscriptAndClock() {
+        this.carryTranscript();
+        this.elapsedCarry = this.elapsed || 0;
+      },
+      /* What the caption pane says. Three states, and they must be distinguishable: PAUSED (they did
+       * that and nothing is wrong), running, and off. "Live transcript · draft" sitting frozen
+       * because captions had quietly died is what sent them looking for a bug in the wrong place. */
+      liveStatusText() {
+        if (!this.liveTranscriptActive) return "Live transcript off \u2014 recording continues";
+        if (this.recorder && this.recorder.state === "paused") return "Paused \u2014 not listening";
+        return this.liveTranscriptStatus || "Live transcript \xB7 draft";
+      },
+      /* Fold one caption result into what is on screen.
+       *
+       * ⚠ THE STREAM IS CUMULATIVE, AND IT REVISES ITS OWN PREFIX. That second half is what this
+       * used to get wrong. The rule was "growth replaces, anything else appends", written to guard
+       * against a rolling-window ASR — but parakeet does not roll, it REWRITES: as more audio
+       * arrives, `"...produces stable."` becomes `"...produces stable text we can compare..."` and
+       * `"sixteen kilohertz"` becomes `"16 kHz"`. Every rewrite fails `startsWith`, so the append
+       * branch appended the WHOLE cumulative text to what was already there, and compounded on the
+       * next chunk. Measured 2026-08-27 over 99 s of speech: 19 of 49 chunks revised their prefix,
+       * and the pane showed 37,785 chars of a 1,477-char transcript — 25.6x, which is what the owner
+       * saw as captions spamming repeated words.
+       *
+       * So: REPLACE, always. Server contract, not an assumption — `/api/record/live` returns
+       * `stream.result.text`, the full text for that session, and 0 of those 49 chunks shrank.
+       * A session that RESTARTS does start empty, which is the case the old append branch was
+       * really protecting; that is now handled where it belongs, by folding the words on screen
+       * into `liveCarry` before asking for a new session, so nothing vanishes.
+       */
+      applyLiveTranscript(text) {
+        const next = String(text || "").trim();
+        if (!next) return;
+        this.liveTranscript = next;
+      },
+      updateLiveTranscriptUI() {
+        if (!this.contentEl) return;
+        const status = this.contentEl.querySelector(".slim-live-transcript-status");
+        if (status) status.setText(this.liveStatusText());
+        const text = this.contentEl.querySelector(".slim-live-transcript-text");
+        if (text) {
+          text.setText(this.shownTranscript() || "Listening for speech\u2026");
+          if (typeof text.scrollTo === "function") text.scrollTo({ top: text.scrollHeight });
+          else text.scrollTop = text.scrollHeight;
+        }
+      },
+      startLiveTranscript(mixed) {
+        this.liveTranscript = "";
+        this.liveTranscriptStatus = "Starting local captions\u2026";
+        this.livePcm = [];
+        this.livePcmBytes = 0;
+        this.liveTranscriptActive = true;
+        this.liveTranscriptPaused = false;
+        this.updateLiveTranscriptUI();
+        this.liveTranscriptQueue = this.plugin.postLiveTranscript({
+          action: "start",
+          session_id: this.recordingId
+        }).then(() => {
+          this.liveTranscriptStatus = "Live transcript \xB7 draft";
+          this.updateLiveTranscriptUI();
+        }).catch((e) => {
+          console.error("[slim] live transcript start", e);
+          this.liveTranscriptActive = false;
+          this.liveTranscriptStatus = "Live transcript unavailable \u2014 recording continues";
+          this.updateLiveTranscriptUI();
+        });
+        try {
+          if (!this.audioCtx || typeof this.audioCtx.createScriptProcessor !== "function") return;
+          const source = this.audioCtx.createMediaStreamSource(mixed);
+          const processor = this.audioCtx.createScriptProcessor(4096, 1, 1);
+          const silent = this.audioCtx.createGain();
+          silent.gain.value = 0;
+          processor.onaudioprocess = (event) => {
+            if (!this.liveTranscriptActive || this.liveTranscriptPaused) return;
+            const channel = event.inputBuffer.getChannelData(0);
+            const pcm = pcm16k(channel, this.audioCtx && this.audioCtx.sampleRate);
+            if (!pcm.length) return;
+            this.livePcm.push(pcm);
+            this.livePcmBytes += pcm.length;
+            if (this.livePcmBytes >= LIVE_FLUSH_BYTES) this.flushLiveTranscript();
+          };
+          source.connect(processor);
+          processor.connect(silent);
+          silent.connect(this.audioCtx.destination);
+          this.liveProcessor = { source, processor, silent };
+        } catch (e) {
+          console.error("[slim] live transcript tap", e);
+        }
+      },
+      /* One caption round trip at a time, and the audio waits in the buffer rather than in a
+       * queue of requests.
+       *
+       * ⚠ THIS IS WHY CAPTIONS FELL BEHIND AND NEVER CAUGHT UP. A flush fired every 2 s of audio
+       * and chained onto an unbounded promise queue; one round trip slower than 2 s and every
+       * later flush waited behind it, so the lag compounded for the length of the recording.
+       * Coalescing bounds the lag to a single round trip: a slow machine sends fewer, larger
+       * chunks and the captions jump forward instead of drifting away.
+       */
+      flushLiveTranscript() {
+        if (!this.liveTranscriptActive || !this.livePcmBytes) return this.liveTranscriptQueue;
+        if (this.liveInFlight) return this.liveTranscriptQueue;
+        const pcm = Buffer.concat(this.livePcm, this.livePcmBytes);
+        this.livePcm = [];
+        this.livePcmBytes = 0;
+        this.liveInFlight = true;
+        this.liveTranscriptQueue = this.liveTranscriptQueue.then(async () => {
+          if (!this.liveTranscriptActive) return;
+          const result = await this.plugin.postLiveTranscript({
+            action: "chunk",
+            session_id: this.recordingId,
+            pcm16: pcm.toString("base64")
+          });
+          if (result && typeof result.transcript === "string") {
+            this.applyLiveTranscript(result.transcript);
+            this.liveTranscriptStatus = "Live transcript \xB7 draft";
+            this.updateLiveTranscriptUI();
+          }
+        }).catch(async (e) => {
+          console.error("[slim] live transcript chunk", e);
+          if (!this.liveTranscriptActive || this.liveRestarting) return;
+          this.liveRestarting = true;
+          this.carryTranscript();
+          try {
+            await this.plugin.postLiveTranscript({ action: "start", session_id: this.recordingId });
+            this.liveTranscriptStatus = "Live transcript \xB7 draft";
+          } catch (restartError) {
+            console.error("[slim] live transcript restart", restartError);
+            this.liveTranscriptActive = false;
+          } finally {
+            this.liveRestarting = false;
+            this.updateLiveTranscriptUI();
+          }
+        });
+        this.liveTranscriptQueue = this.liveTranscriptQueue.finally(() => {
+          this.liveInFlight = false;
+          if (this.liveTranscriptActive && this.livePcmBytes >= LIVE_FLUSH_BYTES) {
+            this.flushLiveTranscript();
+          }
+        });
+        return this.liveTranscriptQueue;
+      },
+      async stopLiveTranscript() {
+        if (!this.liveTranscriptActive) return;
+        await this.flushLiveTranscript();
+        this.liveTranscriptActive = false;
+        try {
+          const result = await this.plugin.postLiveTranscript({
+            action: "stop",
+            session_id: this.recordingId
+          });
+          if (result && result.transcript) this.liveTranscript = result.transcript;
+        } catch (e) {
+          console.error("[slim] live transcript stop", e);
+        }
+      }
+    };
+  }
+});
+
+// src/recorder-filing.js
+var require_recorder_filing = __commonJS({
+  "src/recorder-filing.js"(exports2, module2) {
+    "use strict";
+    var { MarkdownView, Notice } = require("obsidian");
+    var nodePath = require("path");
+    var { recordingId } = require_meeting_note();
+    module2.exports = {
+      async stop() {
+        if (!this.recorder) return;
+        const blob = await new Promise((resolve) => {
+          this.recorder.onstop = () => resolve(new Blob(this.chunks, { type: "audio/webm" }));
+          this.recorder.stop();
+        });
+        await this.stopLiveTranscript();
+        this.teardownStream();
+        if (this.manager) this.manager.releaseCapture(this);
+        this.carryTranscriptAndClock();
+        try {
+          let rel;
+          if (this.diskWrite) {
+            await this.writeQueue;
+            this.flushPending();
+            rel = this.audioRel;
+            if (this.pending.length) {
+              new Notice("SLIM: the tail of this recording could not be written \u2014 the file is playable but may be missing its last seconds.", 2e4);
+            }
+          } else {
+            rel = await this.writeAudio(blob);
+          }
+          await this.saveDraft();
+          this.freezeEditor(true);
+          this.state = "processing";
+          this.processingProgress = {
+            stage: "queued",
+            label: "Starting the local pipeline",
+            detail: "Your recording and notes are already safe",
+            steps: [],
+            metrics: {}
+          };
+          this.render();
+          await this.submitRecording(this.segments.length ? this.segments : [rel]);
+        } catch (e) {
+          console.error("[slim] stop", e);
+          this.errorText = String(e && e.message || e);
+          this.state = "error";
+          this.freezeEditor(false);
+        }
+        this.render();
+      },
+      /* Post one staged recording and move to its card.
+       *
+       * Separated from stop() so RETRY runs exactly the same request. ⚠ The server now REFUSES a
+       * recording it could not transcribe rather than filing an empty note and returning 200
+       * (2026-08-23), which makes a retry meaningful: the audio is still in `_incoming`, and the
+       * usual causes — Ollama not up, the model still loading — are fixed in the time it takes to
+       * read the error. Before that change there was nothing to retry, because the server had
+       * already reported success.
+       */
+      async submitRecording(rel) {
+        const rels = Array.isArray(rel) ? rel : [rel];
+        if (this.appendTo) return this.submitAppend(rels);
+        const body = {
+          audio: rels.length > 1 ? rels : rels[0],
+          type: this.type,
+          title: this.title.trim()
+        };
+        if (this.draftRel) {
+          await this.saveDraft();
+          body.draft = this.draftRel;
+        } else {
+          body.notes_md = "";
+        }
+        const base = this.recordingId || nodePath.posix.basename(rels[0], nodePath.posix.extname(rels[0]));
+        this.attempt = (this.attempt || 0) + 1;
+        const jobId = `${base}-${this.attempt}`;
+        this.jobId = jobId;
+        if (typeof this.plugin.watchRecording === "function") {
+          body.job_id = jobId;
+          this.stopProgressWatch = this.plugin.watchRecording(jobId, (progress) => {
+            this.processingProgress = progress;
+            if (this.state === "processing") this.render();
+          });
+        }
+        try {
+          this.result = await this.plugin.postRecording(body);
+        } catch (e) {
+          if (e && (e.cancelled || e.silent)) {
+            if (e.silent) new Notice(`SLIM: ${e.message}`);
+            this.freezeEditor(false);
+            this.state = "paused";
+            this.pausedTranscript = null;
+            this.errorText = "";
+            this.processingProgress = null;
+            this.render();
+            return;
+          }
+          throw e;
+        } finally {
+          if (this.stopProgressWatch) this.stopProgressWatch();
+          this.stopProgressWatch = null;
+        }
+        this.cardTitle = this.result.title || "";
+        const fromDraft = Boolean(this.draftRel);
+        this.draftRel = "";
+        this.filedNotePath = this.result.note;
+        if (this.manager) this.manager.indexSession(this);
+        if (fromDraft) await this.loadEditorFile(this.filedNotePath);
+        await this.loadNoteParts();
+        this.result.notes_md = this.noteParts.notes;
+        this.freezeEditor(false);
+        this.activeTab = "summary";
+        this.state = "card";
+      },
+      /* Record more into a note that is already filed — from the review card, or from any
+       * finished meeting note. The summary is deliberately NOT re-run (their call): it keeps
+       * describing what it described until they presse Retry summary. */
+      async startAppendRecording() {
+        const back = this.state;
+        this.appendTo = this.filedNotePath;
+        this.resumeReturnState = this.state === "card" ? "card" : "finished";
+        this.recordingId = recordingId();
+        this.segments = [];
+        this.liveCarry = this.noteParts && this.noteParts.transcript || "";
+        this.elapsedCarry = 0;
+        this.state = "recording";
+        this.render();
+        try {
+          if (this.manager) this.manager.claimCapture(this);
+          await this.start();
+        } catch (e) {
+          console.error("[slim] resume recording", e);
+          new Notice(`SLIM: could not start recording \u2014 ${e.message || e}`);
+          this.appendTo = "";
+          this.resumeReturnState = "";
+          this.segments = [];
+          this.liveCarry = "";
+          this.state = back;
+          if (this.manager) this.manager.releaseCapture(this);
+          this.render();
+        }
+      },
+      async submitAppend(rels) {
+        const note = this.appendTo;
+        this.attempt = (this.attempt || 0) + 1;
+        const jobId = `${this.recordingId}-append-${this.attempt}`;
+        this.jobId = jobId;
+        let stop = null;
+        if (typeof this.plugin.watchRecording === "function") {
+          stop = this.plugin.watchRecording(jobId, (progress) => {
+            this.processingProgress = progress;
+            if (this.state === "processing") this.render();
+          });
+        }
+        try {
+          await this.plugin.appendRecording({ note, audio: rels, job_id: jobId });
+        } catch (e) {
+          if (e && (e.cancelled || e.silent)) {
+            if (e.silent) {
+              new Notice(`SLIM: ${e.message}`);
+              for (const seg of this.segments || []) {
+                await this.removeStagedSegment(seg).catch(() => {
+                });
+              }
+              this.segments = [];
+              this.appendTo = "";
+            }
+            this.freezeEditor(false);
+            this.state = e.silent ? this.resumeReturnState || "finished" : "paused";
+            this.pausedTranscript = null;
+            this.errorText = "";
+            this.render();
+            return;
+          }
+          throw e;
+        } finally {
+          if (stop) stop();
+        }
+        this.appendTo = "";
+        this.segments = [];
+        this.filedNotePath = note;
+        try {
+          await this.loadEditorFile(note);
+          await this.loadNoteParts();
+        } catch (e) {
+          console.error("[slim] reopen after append", e);
+          new Notice(`SLIM: the recording was added to ${note}, but the note could not be opened \u2014 ${e.message || e}`);
+        }
+        if (this.result) this.result.notes_md = this.noteParts.notes;
+        this.freezeEditor(false);
+        this.activeTab = "transcript";
+        this.state = this.resumeReturnState || "finished";
+        this.resumeReturnState = "";
+        this.render();
+      },
+      async applyCard() {
+        const c = this.result.card;
+        this.filingFrom = this.filedNotePath;
+        let moved;
+        try {
+          moved = await this.plugin.applyCard({
+            note: this.filedNotePath,
+            dest_dir: c.dest_dir,
+            type_tag: c.type_tag,
+            topics: c.topics || [],
+            summary_md: this.result.summary || "",
+            notes_md: this.result.notes_md == null ? this.noteParts.notes : this.result.notes_md,
+            title: this.cardTitle || ""
+          });
+        } finally {
+          this.filingFrom = "";
+        }
+        if (moved && moved.note) {
+          this.filedNotePath = moved.note;
+          this.result.note = moved.note;
+          if (this.manager) this.manager.indexSession(this);
+          const view = this.editorLeaf && this.editorLeaf.view;
+          const shown = view instanceof MarkdownView && view.file && view.file.path === moved.note;
+          if (!shown) {
+            try {
+              await this.loadEditorFile(this.filedNotePath);
+            } catch (e) {
+              console.error("[slim] refresh after filing", e);
+            }
+          }
+        }
+        this.result.title = this.cardTitle || this.result.title;
+      },
+      /* Their notes, written back on their own. NOT `applyCard`: apply rewrites frontmatter, drops
+       * `filed_by` and can MOVE the note. Typing is not a filing decision. */
+      async saveNotes(baseline) {
+        const value = this.result && this.result.notes_md || "";
+        if (!this.filedNotePath || value === baseline.text) return;
+        if (value === baseline.saving) return;
+        baseline.saving = value;
+        try {
+          await this.plugin.saveNotes({ note: this.filedNotePath, notes_md: value });
+          baseline.text = value;
+          this.noteParts.notes = value;
+        } catch (e) {
+          console.error("[slim] save notes", e);
+          new Notice(`SLIM: could not save your notes \u2014 ${e.message || e}`);
+        } finally {
+          if (baseline.saving === value) baseline.saving = null;
+        }
+      },
+      /* Blur never fires when the field is torn down with the caret still in it — the note
+       * closed, the block re-rendered, Obsidian quit. Those paths call this instead. */
+      flushNotes() {
+        return this.notesBaseline ? this.saveNotes(this.notesBaseline) : Promise.resolve();
+      },
+      updateRetryStatusUI() {
+        if (!this.contentEl || typeof this.contentEl.querySelector !== "function") return;
+        const el = this.contentEl.querySelector(".slim-retry-status");
+        if (el && typeof el.setText === "function") el.setText(this.retryStatus || "");
+      },
+      async retrySummary() {
+        if (this.retrying || !this.filedNotePath) return;
+        this.retrying = true;
+        this.retryStartedAt = Date.now();
+        this.retryStatus = "Re-reading the transcript\u2026 0s";
+        this.render();
+        const jobId = `retry-${this.recordingId || "note"}-${this.retryCount = (this.retryCount || 0) + 1}`;
+        let stop = null;
+        if (typeof this.plugin.watchRecording === "function") {
+          stop = this.plugin.watchRecording(jobId, (progress) => {
+            const elapsed = Math.round((Date.now() - this.retryStartedAt) / 1e3);
+            const label = progress.label || "Rewriting the summary";
+            this.retryStatus = `${label}\u2026 ${elapsed}s`;
+            this.updateRetryStatusUI();
+          });
+        }
+        try {
+          const target = this.filedNotePath;
+          const out = await this.plugin.retrySummary({
+            note: target,
+            instructions: (this.retryInstructions || "").trim(),
+            job_id: jobId
+          });
+          if (this.filedNotePath !== target) return;
+          this.result.summary = out.summary;
+          this.noteParts.summary = out.summary;
+          this.activeTab = "summary";
+        } catch (e) {
+          console.error("[slim] retry summary", e);
+          new Notice(`SLIM: the summary was not rewritten \u2014 ${e.message || e}`);
+        } finally {
+          if (stop) stop();
+          this.retrying = false;
+          this.retryStatus = "";
+          this.render();
+        }
+      },
+      async cancelProcessing() {
+        const jobId = this.jobId || this.recordingId;
+        if (!jobId || typeof this.plugin.cancelRecording !== "function") return;
+        try {
+          const out = await this.plugin.cancelRecording({ job_id: jobId });
+          if (out && out.cancelling === false) {
+            new Notice("SLIM: could not stop it \u2014 the job had not started yet. Try Cancel again in a moment.");
+            return;
+          }
+          new Notice("SLIM: stopping after the current step. Nothing is written or deleted.");
+        } catch (e) {
+          console.error("[slim] cancel", e);
+          new Notice(`SLIM: could not cancel \u2014 ${e.message || e}`);
+        }
+      },
+      async resumeRecording() {
+        try {
+          if (this.manager) this.manager.claimCapture(this);
+          this.state = "recording";
+          this.render();
+          await this.start();
+        } catch (e) {
+          if (this.manager) this.manager.releaseCapture(this);
+          console.error("[slim] resume", e);
+          this.errorText = String(e && e.message || e);
+          this.state = "error";
+          this.render();
+        }
+      }
+    };
+  }
+});
+
+// src/recorder-render.js
+var require_recorder_render = __commonJS({
+  "src/recorder-render.js"(exports2, module2) {
+    "use strict";
+    var { Notice } = require("obsidian");
+    var { hhmmss } = require_clock();
+    var { STAGING_DIR, TYPES } = require_meeting_note();
+    module2.exports = {
+      renderSavedLocation(root) {
+        if (!this.filedNotePath) return;
+        const row = root.createDiv({ cls: "slim-saved-location" });
+        const copy = row.createDiv({ cls: "slim-saved-location-copy" });
+        copy.createSpan({ cls: "slim-saved-location-label", text: "Saved in the vault" });
+        copy.createSpan({ cls: "slim-saved-location-path", text: this.filedNotePath });
+        const reveal = row.createEl("button", { text: "Reveal" });
+        reveal.addEventListener("click", () => {
+          if (typeof this.plugin.revealMeetingPath !== "function") return;
+          this.plugin.revealMeetingPath(this.filedNotePath).catch((e) => new Notice(`SLIM: could not reveal the note \u2014 ${e.message || e}`));
+        });
+      },
+      /* Retry the summary against the transcript the note already holds — Notion's button, and
+       * the reason they asked for it: iterate on the summarizer without re-recording a lecture.
+       * The instructions field is the SLIM-safe half of Notion's: nothing tells the model what
+       * KIND of recording this is, they do, in their own words, for this one retry. */
+      renderRetryRow(root) {
+        const row = root.createDiv({ cls: "slim-retry" });
+        const field = row.createDiv({ cls: "slim-field slim-retry-field" });
+        field.createEl("label", { text: "Instructions (optional)" });
+        const input = field.createEl("input", { type: "text", cls: "slim-retry-instructions" });
+        input.value = this.retryInstructions || "";
+        input.setAttr("placeholder", "organise by concept, keep the formulas\u2026");
+        input.addEventListener("input", (e) => {
+          this.retryInstructions = e.target.value;
+        });
+        const button = row.createEl("button", { text: "Retry summary" });
+        button.disabled = !!this.retrying;
+        button.addEventListener("click", () => this.retrySummary());
+        row.createSpan({ cls: "slim-retry-status", text: this.retryStatus || "" });
+        return row;
+      },
+      renderPaused(root) {
+        const n = (this.segments || []).length;
+        this.renderObjectHeader(
+          root,
+          "SLIM meeting note",
+          this.title.trim() || "Recording paused",
+          "Paused"
+        );
+        const body = root.createDiv({ cls: "slim-object-body slim-paused" });
+        body.createEl("p", {
+          cls: "slim-hint",
+          text: `${n} segment${n === 1 ? "" : "s"} saved, and your notes with them. Carry on recording into this same note, or finish it now.`
+        });
+        const pane = body.createDiv({ cls: "slim-live-transcript" });
+        const head = pane.createDiv({ cls: "slim-live-transcript-head" });
+        head.createSpan({ cls: "slim-object-section-label", text: "Transcript so far" });
+        const status = head.createSpan({ cls: "slim-live-transcript-status", text: "Reading\u2026" });
+        const text = pane.createEl("p", {
+          cls: "slim-live-transcript-text",
+          text: this.pausedTranscript || "Reading the transcript\u2026"
+        });
+        if (this.pausedTranscript == null && typeof this.plugin.recordTranscript === "function") {
+          this.plugin.recordTranscript({ audio: this.segments || [] }).then((out) => {
+            this.pausedTranscript = out.text || "";
+            status.setText(out.pending ? `${out.words} words \xB7 ${out.pending} segment${out.pending === 1 ? "" : "s"} not transcribed yet` : `${out.words} words`);
+            text.setText(this.pausedTranscript || "Nothing was transcribed before you cancelled.");
+          }).catch((e) => {
+            console.error("[slim] paused transcript", e);
+            status.setText("could not read it");
+            text.setText("The audio is safe; the transcript is not available yet.");
+          });
+        } else {
+          status.setText("");
+          text.setText(this.pausedTranscript || "Nothing was transcribed before you cancelled.");
+        }
+        const row = body.createDiv({ cls: "slim-row" });
+        const resume = row.createEl("button", { cls: "mod-cta", text: "Resume recording" });
+        resume.addEventListener("click", () => this.resumeRecording());
+        const finish = row.createEl("button", { text: "Finish" });
+        finish.addEventListener("click", async () => {
+          this.freezeEditor(true);
+          this.state = "processing";
+          this.processingProgress = {
+            stage: "queued",
+            label: "Starting the local pipeline",
+            detail: "Your recording and notes are already safe",
+            steps: [],
+            metrics: {}
+          };
+          this.render();
+          try {
+            await this.submitRecording(this.segments);
+          } catch (e) {
+            console.error("[slim] finish", e);
+            this.errorText = String(e && e.message || e);
+            this.state = "error";
+            this.freezeEditor(false);
+          }
+          this.render();
+        });
+      },
+      renderObjectHeader(root, eyebrow, title, status) {
+        const head = root.createDiv({ cls: "slim-object-head" });
+        const copy = head.createDiv({ cls: "slim-object-head-copy" });
+        copy.createDiv({ cls: "slim-object-eyebrow", text: eyebrow });
+        copy.createEl("h3", { text: title });
+        const badge = head.createDiv({ cls: "slim-object-status" });
+        badge.createSpan({ cls: "slim-object-status-dot" });
+        badge.createSpan({ text: status });
+        return head;
+      },
+      renderProperties(root) {
+        const c = this.result && this.result.card;
+        if (!c) return;
+        const props = root.createDiv({ cls: "slim-object-properties" });
+        const property = (label, value) => {
+          const p = props.createDiv({ cls: "slim-object-property" });
+          p.createSpan({ cls: "slim-object-property-label", text: label });
+          p.createSpan({ cls: "slim-object-property-value", text: value || "\u2014" });
+        };
+        property("Location", c.dest_dir);
+        property("Type", TYPES.find(([value]) => value === c.type_tag)?.[1] || c.type_tag);
+        property("Topics", (c.topics || []).join(", "));
+      },
+      renderIdle(root) {
+        this.renderObjectHeader(root, "SLIM meeting note", "Set up this recording", "Saved locally");
+        const setup = root.createDiv({ cls: "slim-object-setup" });
+        const t = setup.createDiv({ cls: "slim-field" });
+        t.createEl("label", { text: "Title" });
+        const titleInput = t.createEl("input", { type: "text", placeholder: "What is this?" });
+        titleInput.value = this.title;
+        titleInput.addEventListener("input", (e) => {
+          this.title = e.target.value;
+        });
+        const ty = setup.createDiv({ cls: "slim-field" });
+        ty.createEl("label", { text: "Type" });
+        const sel = ty.createEl("select");
+        TYPES.forEach(([value, label]) => {
+          const o = sel.createEl("option", { text: label });
+          o.value = value;
+          if (value === this.type) o.selected = true;
+        });
+        sel.addEventListener("change", (e) => {
+          this.type = e.target.value;
+          this.plugin.settings.lastType = this.type;
+          this.plugin.saveSettings();
+        });
+        ty.createEl("p", {
+          cls: "slim-hint",
+          text: "Chosen before you speak, so nothing has to guess it later."
+        });
+        const v = setup.createDiv({ cls: "slim-field slim-toggle" });
+        const box = v.createEl("input", { type: "checkbox" });
+        box.checked = this.recordVoice;
+        v.createEl("label", { text: "Record my voice" });
+        box.addEventListener("change", (e) => {
+          this.recordVoice = e.target.checked;
+          this.plugin.settings.recordVoice = this.recordVoice;
+          this.plugin.saveSettings();
+        });
+        v.createEl("p", {
+          cls: "slim-hint",
+          text: "What the computer is playing is always captured \u2014 no device setup, whatever your output is set to. Turn this off for a lecture you are only watching."
+        });
+        const btn = setup.createEl("button", { cls: "mod-cta slim-big", text: "Start recording" });
+        btn.addEventListener("click", async () => {
+          btn.disabled = true;
+          try {
+            await this.start();
+          } catch (e) {
+            console.error("[slim] start", e);
+            new Notice(`SLIM: could not start recording \u2014 ${e.message || e}`);
+            btn.disabled = false;
+          }
+        });
+      },
+      renderRecording(root) {
+        const paused = this.recorder && this.recorder.state === "paused";
+        this.renderObjectHeader(
+          root,
+          "SLIM meeting note",
+          this.title.trim() || "Untitled recording",
+          paused ? "Paused" : "Recording"
+        );
+        const console2 = root.createDiv({ cls: "slim-recording-console" });
+        const toolbar = console2.createDiv({ cls: "slim-recording-toolbar" });
+        const head = toolbar.createDiv({ cls: "slim-rec-head" });
+        head.createSpan({ cls: `slim-dot ${paused ? "is-paused" : ""}` });
+        head.createSpan({ cls: "slim-timer", text: hhmmss(this.elapsed) });
+        head.createSpan({ cls: "slim-state", text: paused ? "Paused" : "Live" });
+        const row = toolbar.createDiv({ cls: "slim-row slim-recording-actions" });
+        const p = row.createEl("button", { text: paused ? "Resume" : "Pause" });
+        p.addEventListener("click", () => this.togglePause());
+        const s = row.createEl("button", { cls: "mod-cta", text: "Stop" });
+        s.addEventListener("click", async () => {
+          s.disabled = true;
+          p.disabled = true;
+          await this.stop();
+        });
+        if (this.silenceWatch && this.silenceWatch.warn) {
+          console2.createDiv({
+            cls: "slim-silence-warning",
+            attr: { role: "alert" },
+            text: "Nothing is being recorded \u2014 the microphone and system audio are both silent. Check the input device (System Settings \u203A Sound) and Obsidian's microphone permission (Privacy & Security \u203A Microphone). Recording continues."
+          });
+        }
+        const level = console2.createDiv({ cls: "slim-level" });
+        level.createDiv({ cls: "slim-level-fill" });
+        const transcript = console2.createDiv({ cls: "slim-live-transcript" });
+        const transcriptHead = transcript.createDiv({ cls: "slim-live-transcript-head" });
+        transcriptHead.createSpan({ cls: "slim-object-section-label", text: "Live transcript" });
+        transcriptHead.createSpan({
+          cls: "slim-live-transcript-status",
+          text: this.liveStatusText()
+        });
+        transcript.createEl("p", {
+          cls: "slim-live-transcript-text",
+          text: this.shownTranscript() || "Listening for speech\u2026"
+        });
+        const bridge = console2.createDiv({ cls: "slim-editor-bridge" });
+        bridge.createDiv({ cls: "slim-object-section-label", text: "Your notes" });
+        bridge.createEl("p", {
+          text: "Keep writing in the native Markdown editor below. Every keystroke is already saved to this recording."
+        });
+      },
+      renderProcessing(root) {
+        this.renderObjectHeader(
+          root,
+          "SLIM meeting note",
+          this.title.trim() || "Untitled recording",
+          "Processing locally"
+        );
+        const progress = this.processingProgress || {};
+        const w = root.createDiv({ cls: "slim-processing" });
+        const current = w.createDiv({ cls: "slim-processing-current" });
+        current.createDiv({ cls: "slim-spinner" });
+        const copy = current.createDiv();
+        copy.createEl("h3", { text: progress.label || "Working on your note\u2026" });
+        copy.createEl("p", {
+          cls: "slim-hint",
+          text: progress.detail || "Your recording and notes are safe while SLIM finishes locally."
+        });
+        const cancel = current.createEl("button", { cls: "slim-cancel", text: "Cancel" });
+        cancel.addEventListener("click", () => this.cancelProcessing());
+        const metrics = progress.metrics || {};
+        const facts = [];
+        if (metrics.transcript_words != null) facts.push(`${metrics.transcript_words} words`);
+        if (metrics.transcription_seconds != null) facts.push(`transcribed in ${Number(metrics.transcription_seconds).toFixed(1)}s`);
+        if (metrics.summary_output_tokens != null) facts.push(`${metrics.summary_output_tokens} summary tokens`);
+        if (metrics.summary_decode_tok_s != null) facts.push(`${metrics.summary_decode_tok_s} tok/s`);
+        const activity = w.createEl("details", { cls: "slim-thinking" });
+        const activitySummary = activity.createEl("summary");
+        activitySummary.createSpan({ cls: "slim-thinking-spark" });
+        activitySummary.createSpan({ text: metrics.model_activity_events ? "Thinking locally" : "What SLIM is doing" });
+        activitySummary.createSpan({ cls: "slim-thinking-stage", text: progress.label || "Starting" });
+        activity.createEl("p", {
+          cls: "slim-hint",
+          text: metrics.model_activity_events ? "The local model is working. Its private reasoning is not shown." : "Stage and performance updates appear here as the local pipeline runs."
+        });
+        if (facts.length) activity.createDiv({ cls: "slim-thinking-meta", text: facts.join(" \xB7 ") });
+      },
+      renderError(root) {
+        this.renderObjectHeader(
+          root,
+          "SLIM meeting note",
+          this.title.trim() || this.recordingId || "Untitled recording",
+          "Processing stopped \xB7 sources preserved"
+        );
+        root.createEl("h3", { text: "That did not work" });
+        root.createEl("p", { text: this.errorText || "Unknown error." });
+        root.createEl("p", {
+          cls: "slim-hint",
+          text: "The audio is at " + ((this.segments || []).join(", ") || this.audioRel || STAGING_DIR) + (this.draftRel ? " and your notes are at " + this.draftRel : "") + ". Nothing is lost. If the server is the problem, check the plugin's repo and uv settings \u2014 it is started from here, on port " + this.plugin.settings.port + "."
+        });
+        const row = root.createDiv({ cls: "slim-row slim-error-actions" });
+        const again = row.createEl("button", { cls: "mod-cta", text: "Try again" });
+        again.addEventListener("click", async () => {
+          const all = (this.segments || []).length ? this.segments : this.audioRel ? [this.audioRel] : [];
+          if (!all.length) return;
+          try {
+            await this.saveDraft();
+            this.freezeEditor(true);
+            this.state = "processing";
+            this.processingProgress = {
+              stage: "queued",
+              label: "Retrying the local pipeline",
+              detail: "Using the same saved audio and notes",
+              steps: [],
+              metrics: {}
+            };
+            this.render();
+            await this.submitRecording(all);
+          } catch (e) {
+            console.error("[slim] retry", e);
+            this.errorText = String(e && e.message || e);
+            this.state = "error";
+            this.freezeEditor(false);
+          }
+          this.render();
+        });
+        const discard = row.createEl("button", { cls: "mod-warning", text: "Delete & start over" });
+        discard.addEventListener("click", async () => {
+          again.disabled = true;
+          discard.disabled = true;
+          try {
+            await this.discardSession(true);
+          } catch (e) {
+            console.error("[slim] discard", e);
+            new Notice(`SLIM: could not discard the recording \u2014 ${e.message || e}`);
+            again.disabled = false;
+            discard.disabled = false;
+          }
+        });
+        const close = row.createEl("button", { text: "Keep files & close" });
+        close.addEventListener("click", () => this.closeSession());
+      },
+      renderFinished(root) {
+        const title = this.result && this.result.title || this.cardTitle || "Meeting note";
+        this.renderObjectHeader(root, "SLIM meeting note", title, "Finished");
+        this.renderSavedLocation(root);
+        this.renderProperties(root);
+        this.renderSource(root, false);
+        this.renderRetryRow(root);
+        const row = root.createDiv({ cls: "slim-row slim-finished-actions" });
+        const more = row.createEl("button", { text: "Resume recording" });
+        more.addEventListener("click", () => this.startAppendRecording());
+        if (this.result && this.result.card) {
+          const edit = row.createEl("button", { text: "Edit review details" });
+          edit.addEventListener("click", async () => {
+            try {
+              await this.saveDraft();
+              await this.loadNoteParts();
+              this.result.summary = this.noteParts.summary;
+              this.result.notes_md = this.noteParts.notes;
+              this.summaryEditing = false;
+              this.state = "card";
+              this.render();
+            } catch (e) {
+              console.error("[slim] reopen review", e);
+              new Notice(`SLIM: could not reopen the review \u2014 ${e.message || e}`);
+            }
+          });
+        }
+        root.createEl("p", {
+          cls: "slim-native-editor-hint",
+          text: "This block is part of the note. Keep writing normally before or after it."
+        });
+      }
+    };
+  }
+});
+
+// src/recorder-review.js
+var require_recorder_review = __commonJS({
+  "src/recorder-review.js"(exports2, module2) {
+    "use strict";
+    var { MarkdownRenderer, Notice } = require("obsidian");
+    var { markdownBlockShortcut, stampSourceAtoms, markdownFromEditable } = require_editable_markdown();
+    var { TYPES, renderMeetingTabs } = require_meeting_note();
+    module2.exports = {
+      /* Returns the render promise when there is one, so a caller can act when the DOM is
+       * actually there; a synchronous fallback returns undefined. */
+      renderMarkdown(el, markdown) {
+        if (!markdown) {
+          el.createEl("p", { cls: "slim-empty", text: "Nothing was captured here." });
+          return void 0;
+        }
+        if (MarkdownRenderer && typeof MarkdownRenderer.render === "function") {
+          return MarkdownRenderer.render(
+            this.app,
+            markdown,
+            el,
+            this.filedNotePath || this.draftRel || "",
+            this.plugin
+          ).catch((e) => {
+            console.error("[slim] render markdown", e);
+            el.setText(markdown);
+          });
+        }
+        el.setText(markdown);
+        return void 0;
+      },
+      renderLiveMarkdownEditor(parent, markdown, onChange, cls = "") {
+        const editor = parent.createDiv({
+          cls: `slim-live-markdown-editor ${cls}`.trim(),
+          attr: {
+            contenteditable: "true",
+            spellcheck: "true",
+            role: "textbox",
+            "aria-multiline": "true",
+            "data-placeholder": "Write Markdown\u2026"
+          }
+        });
+        if (markdown) {
+          const rendered = this.renderMarkdown(editor, markdown);
+          const stamp = () => stampSourceAtoms(editor, markdown);
+          stamp();
+          if (typeof window !== "undefined" && typeof window.setTimeout === "function") {
+            window.setTimeout(stamp, 0);
+          }
+          if (rendered && typeof rendered.then === "function") rendered.then(stamp);
+        } else {
+          const p = editor.createEl("p");
+          p.createEl("br");
+        }
+        const save = (event) => onChange(event && event.target && typeof event.target.value === "string" ? event.target.value : markdownFromEditable(editor));
+        editor.addEventListener("input", save);
+        editor.addEventListener("keyup", (event) => {
+          if (event.key !== " ") return;
+          const selection = typeof window !== "undefined" && window.getSelection ? window.getSelection() : null;
+          let current = selection && selection.anchorNode;
+          if (current && current.nodeType === 3) current = current.parentElement;
+          while (current && current.parentElement !== editor) current = current.parentElement;
+          if (!current) return;
+          const shortcut = markdownBlockShortcut(current.textContent || "");
+          if (!shortcut || typeof document === "undefined") return;
+          let target;
+          if (shortcut.kind === "list") {
+            target = document.createElement(shortcut.tag);
+            const item = document.createElement("li");
+            item.appendChild(document.createElement("br"));
+            target.appendChild(item);
+            current.replaceWith(target);
+            target = item;
+          } else {
+            target = document.createElement(shortcut.tag);
+            target.appendChild(document.createElement("br"));
+            current.replaceWith(target);
+          }
+          const range = document.createRange();
+          range.selectNodeContents(target);
+          range.collapse(true);
+          selection.removeAllRanges();
+          selection.addRange(range);
+          save();
+        });
+        return editor;
+      },
+      /* The three tabs, drawn by the shared `renderMeetingTabs` reader. What the recorder adds
+       * over a passively rendered block is the editing: a summary they can click into, and a notes
+       * editor. `editableSummary` gates only the DERIVED half — their notes are editable in every
+       * state, because the meeting block hides them from Obsidian's own editor, so read-only here
+       * meant not editable anywhere and reaching them meant reopening the review.
+       */
+      renderSource(root, editableSummary) {
+        const parts = {
+          summary: this.result ? this.result.summary || "" : this.noteParts.summary || "",
+          notes: this.result && this.result.notes_md != null ? this.result.notes_md : this.noteParts.notes,
+          transcript: this.noteParts.transcript
+        };
+        return renderMeetingTabs(
+          this.app,
+          root,
+          parts,
+          this.filedNotePath || this.draftRel || "",
+          {
+            editable: true,
+            component: this.plugin,
+            activeTab: this.activeTab,
+            onTab: (value) => {
+              this.summaryEditing = false;
+              this.activeTab = value;
+              this.render();
+            },
+            summaryPane: (body) => this.renderSummaryPane(body, parts.summary, editableSummary),
+            notesPane: (body) => this.renderNotesPane(body, parts.notes)
+          }
+        );
+      },
+      renderSummaryPane(generated, summary, editableSummary) {
+        if (editableSummary && this.summaryEditing) {
+          const edit = generated.createDiv({ cls: "slim-summary-editing" });
+          const toolbar = edit.createDiv({ cls: "slim-summary-editing-head" });
+          toolbar.createSpan({ text: "Live Markdown" });
+          const done = toolbar.createEl("button", { text: "Done" });
+          const live = this.renderLiveMarkdownEditor(edit, summary, (value) => {
+            this.result.summary = value;
+            this.edited = true;
+          }, "slim-summary slim-summary-editor");
+          const finish = () => {
+            if (!this.summaryEditing) return;
+            this.summaryEditing = false;
+            this.render();
+          };
+          done.addEventListener("click", finish);
+          live.addEventListener("keydown", (e) => {
+            if (e.key === "Escape") finish();
+          });
+          live.addEventListener("blur", () => {
+            if (typeof window !== "undefined" && typeof window.setTimeout === "function") {
+              window.setTimeout(finish, 0);
+            } else finish();
+          });
+          if (typeof window !== "undefined" && typeof window.setTimeout === "function") {
+            window.setTimeout(() => {
+              if (typeof live.focus === "function") live.focus();
+            }, 0);
+          }
+          return;
+        }
+        const preview = generated.createDiv({
+          cls: `slim-summary-preview${editableSummary ? " is-editable" : ""}`,
+          attr: editableSummary ? { role: "button", tabindex: "0", "aria-label": "Edit AI summary" } : {}
+        });
+        this.renderMarkdown(preview.createDiv({ cls: "slim-rendered-markdown" }), summary);
+        if (editableSummary) {
+          preview.createSpan({ cls: "slim-summary-edit-cue", text: "Edit" });
+          const begin = (e) => {
+            if (e && e.target && typeof e.target.closest === "function" && e.target.closest("a")) return;
+            this.summaryEditing = true;
+            this.render();
+          };
+          preview.addEventListener("click", begin);
+          preview.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              begin(e);
+            }
+          });
+        }
+      },
+      // ⚠ SAVED ON BLUR, NOT ON EVERY KEYSTROKE, and that is a constraint rather than a
+      // preference: their notes live INSIDE the meeting block, so writing them re-renders the very
+      // object they are typing into. On blur the caret has already left, so nothing is lost.
+      renderNotesPane(parent, notes) {
+        const baseline = { text: notes || "" };
+        const editor = this.renderLiveMarkdownEditor(parent, baseline.text, (value) => {
+          this.result.notes_md = value;
+          this.edited = true;
+        }, "slim-notes-editor is-full");
+        editor.setAttr("data-placeholder", "Add the notes you want to keep with this recording\u2026");
+        if (this.filedNotePath) {
+          this.notesBaseline = baseline;
+          editor.addEventListener("blur", () => this.saveNotes(baseline));
+        }
+        return editor;
+      },
+      renderCard(root) {
+        const c = this.result.card;
+        this.renderObjectHeader(
+          root,
+          "AI review",
+          this.result.title || "Review this meeting note",
+          "Ready for approval"
+        );
+        this.renderSavedLocation(root);
+        this.renderProperties(root);
+        this.renderSource(root, true);
+        this.renderRetryRow(root);
+        const moreRow = root.createDiv({ cls: "slim-row slim-resume-row" });
+        const moreBtn = moreRow.createEl("button", { text: "Resume recording" });
+        moreBtn.addEventListener("click", () => this.startAppendRecording());
+        const details = root.createEl("details", { cls: "slim-review-details" });
+        details.createEl("summary", { text: "Review filing details" });
+        root = details.createDiv({ cls: "slim-review-controls" });
+        root.createEl("p", {
+          cls: "slim-hint",
+          text: "The note is already saved. Adjust any suggestion, then approve the final result."
+        });
+        if (this.cardTitle == null) this.cardTitle = this.result.title || "";
+        const ti = root.createDiv({ cls: "slim-field" });
+        ti.createEl("label", { text: "Title" });
+        const tin = ti.createEl("input", { type: "text" });
+        tin.value = this.cardTitle;
+        tin.addEventListener("input", (e) => {
+          this.cardTitle = e.target.value;
+          this.edited = true;
+        });
+        const dest = root.createDiv({ cls: "slim-field" });
+        dest.createEl("label", { text: "Filing to" });
+        const pathRow = dest.createDiv({ cls: "slim-path" });
+        const renderPath = () => {
+          pathRow.empty();
+          const segs = c.dest_dir.split("/");
+          segs.forEach((seg, i) => {
+            if (i) pathRow.createSpan({ cls: "slim-sep", text: "/" });
+            const cls = i >= (c.confident_depth || 0) ? "slim-seg slim-seg-open" : "slim-seg";
+            pathRow.createSpan({ cls, text: seg });
+          });
+        };
+        renderPath();
+        const det = dest.createEl("details", { cls: "slim-tree-wrap" });
+        det.createEl("summary", { text: "browse the vault" });
+        const tree = det.createDiv({ cls: "slim-tree" });
+        const roots = [];
+        const byPath = /* @__PURE__ */ new Map();
+        (c.folders || []).slice().sort((a, b) => a.path.localeCompare(b.path)).forEach((f) => {
+          const node = { path: f.path, count: f.count, name: f.path.split("/").pop(), children: [] };
+          byPath.set(f.path, node);
+          const parentPath = f.path.split("/").slice(0, -1).join("/");
+          const parent = parentPath && byPath.get(parentPath);
+          (parent ? parent.children : roots).push(node);
+        });
+        const expanded = /* @__PURE__ */ new Set();
+        (c.dest_dir || "").split("/").reduce((acc, seg) => {
+          const p = acc ? `${acc}/${seg}` : seg;
+          expanded.add(p);
+          return p;
+        }, "");
+        const select = (path, isNew) => {
+          c.dest_dir = path;
+          this.edited = true;
+          renderPath();
+          drawTree();
+          if (mi) mi.value = path;
+          if (isNew) new Notice(`SLIM: will create ${path}`);
+        };
+        const drawNode = (node, depth, parentEl) => {
+          const row2 = parentEl.createDiv({
+            cls: "slim-tree-row" + (node.path === c.dest_dir ? " is-sel" : "")
+          });
+          row2.style.paddingLeft = `${6 + depth * 14}px`;
+          const hasKids = node.children.length > 0;
+          const tw = row2.createSpan({ cls: "slim-tw" + (hasKids ? "" : " is-leaf") });
+          tw.setText(hasKids ? expanded.has(node.path) ? "\u25BE" : "\u25B8" : "\xB7");
+          if (hasKids) {
+            tw.addEventListener("click", (e) => {
+              e.stopPropagation();
+              if (expanded.has(node.path)) expanded.delete(node.path);
+              else expanded.add(node.path);
+              drawTree();
+            });
+          }
+          row2.createSpan({ cls: "slim-tree-name", text: node.name });
+          if (node.isNew) row2.createSpan({ cls: "slim-tree-new", text: "new" });
+          else row2.createSpan({ cls: "slim-tree-count", text: String(node.count) });
+          const plus = row2.createSpan({ cls: "slim-tree-plus", text: "+" });
+          plus.setAttr("aria-label", `New folder in ${node.path}`);
+          plus.addEventListener("click", (e) => {
+            e.stopPropagation();
+            newFolderUnder(node);
+          });
+          row2.addEventListener("click", () => select(node.path, !!node.isNew));
+          if (hasKids && expanded.has(node.path)) {
+            node.children.forEach((k) => drawNode(k, depth + 1, parentEl));
+          }
+        };
+        const newFolderUnder = (node) => {
+          const row2 = tree.createDiv({ cls: "slim-tree-row is-newrow" });
+          row2.createSpan({ cls: "slim-tw is-leaf", text: "+" });
+          const input = row2.createEl("input", {
+            type: "text",
+            cls: "slim-newfolder",
+            placeholder: `new folder in ${node.path}`
+          });
+          input.focus();
+          const commit = () => {
+            const name = input.value.trim().replace(/^\/+|\/+$/g, "");
+            if (!name) {
+              drawTree();
+              return;
+            }
+            const path = `${node.path}/${name}`;
+            const fresh = { path, count: 0, name, children: [], isNew: true };
+            node.children.push(fresh);
+            byPath.set(path, fresh);
+            expanded.add(node.path);
+            select(path, true);
+          };
+          input.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") commit();
+            if (e.key === "Escape") drawTree();
+          });
+          input.addEventListener("blur", commit);
+        };
+        const drawTree = () => {
+          tree.empty();
+          roots.forEach((r) => drawNode(r, 0, tree));
+        };
+        drawTree();
+        const manual = det.createDiv({ cls: "slim-field" });
+        manual.createEl("label", { text: "or type a path" });
+        const mi = manual.createEl("input", { type: "text" });
+        mi.value = c.dest_dir;
+        mi.addEventListener("change", (e) => {
+          c.dest_dir = e.target.value.replace(/^\/+|\/+$/g, "");
+          this.edited = true;
+          renderPath();
           drawTree();
         });
+        manual.createEl("p", {
+          cls: "slim-hint",
+          text: "A folder that does not exist yet is created when the note is filed."
+        });
+        const ty = root.createDiv({ cls: "slim-field" });
+        ty.createEl("label", { text: "Type" });
+        const tsel = ty.createEl("select");
+        TYPES.forEach(([value, label]) => {
+          const o = tsel.createEl("option", { text: label });
+          o.value = value;
+          if (value === c.type_tag) o.selected = true;
+        });
+        tsel.addEventListener("change", (e) => {
+          c.type_tag = e.target.value;
+          this.edited = true;
+        });
+        const tg = root.createDiv({ cls: "slim-field" });
+        tg.createEl("label", { text: "Topics" });
+        const chips = tg.createDiv({ cls: "slim-chips" });
+        const counts = c.tag_counts || {};
+        const drawChips = () => {
+          chips.empty();
+          (c.topics || []).forEach((t, i) => {
+            const n = counts[String(t).toLowerCase()] || 0;
+            const chip = chips.createSpan({ cls: "slim-chip" + (n ? "" : " is-new") });
+            chip.createSpan({ text: String(t) });
+            chip.createSpan({ cls: "slim-chip-count", text: n ? String(n) : "new" });
+            const x = chip.createSpan({ cls: "slim-chip-x", text: "\xD7" });
+            x.addEventListener("click", () => {
+              c.topics.splice(i, 1);
+              this.edited = true;
+              drawChips();
+            });
+          });
+          const add = chips.createEl("input", {
+            type: "text",
+            cls: "slim-chip-add",
+            placeholder: "+ add tag"
+          });
+          add.addEventListener("keydown", (e) => {
+            if (e.key !== "Enter") return;
+            const v = add.value.trim().replace(/^#/, "");
+            if (!v) return;
+            c.topics = c.topics || [];
+            c.topics.push(v);
+            this.edited = true;
+            drawChips();
+          });
+        };
+        drawChips();
+        const row = root.createDiv({ cls: "slim-row" });
+        const file = row.createEl("button", { cls: "mod-cta", text: "Approve & finish" });
+        file.addEventListener("click", async () => {
+          file.disabled = true;
+          this.filing = true;
+          try {
+            if (this.edited) await this.applyCard();
+            else await this.plugin.completeReview({ note: this.filedNotePath });
+            await this.loadNoteParts();
+            new Notice("SLIM: meeting note finished.");
+            this.state = "finished";
+            this.activeTab = "summary";
+            this.edited = false;
+            this.freezeEditor(false);
+            this.render();
+          } catch (e) {
+            console.error("[slim] file", e);
+            new Notice(`SLIM: ${e.message || e}`);
+            file.disabled = false;
+          } finally {
+            this.filing = false;
+          }
+        });
       }
-      row.createSpan({ cls: "slim-tree-name", text: node.name });
-      if (node.isNew) row.createSpan({ cls: "slim-tree-new", text: "new" });
-      else row.createSpan({ cls: "slim-tree-count", text: String(node.count) });
+    };
+  }
+});
 
-      const plus = row.createSpan({ cls: "slim-tree-plus", text: "+" });
-      plus.setAttr("aria-label", `New folder in ${node.path}`);
-      plus.addEventListener("click", (e) => {
-        e.stopPropagation();
-        newFolderUnder(node);
-      });
-
-      row.addEventListener("click", () => select(node.path, !!node.isNew));
-
-      if (hasKids && expanded.has(node.path)) {
-        node.children.forEach((k) => drawNode(k, depth + 1, parentEl));
+// src/recorder-view.js
+var require_recorder_view = __commonJS({
+  "src/recorder-view.js"(exports2, module2) {
+    "use strict";
+    var { MarkdownView, Notice } = require("obsidian");
+    var nodePath = require("path");
+    var {
+      STAGING_DIR,
+      RECORDER_ATTACHMENTS,
+      DRAFT_SUFFIX,
+      EMPTY_MEETING_BLOCK,
+      recordingIdFromStaged,
+      recordingId,
+      splitMeetingNote,
+      frontmatterScalar,
+      hasMeetingBlock,
+      embedLegacyMeetingBlock
+    } = require_meeting_note();
+    var RecorderView = class {
+      constructor(leaf, plugin) {
+        this.leaf = leaf || null;
+        this.plugin = plugin;
+        this.app = leaf && leaf.app || plugin.app;
+        this.contentEl = null;
+        this.editorView = null;
+        this.activeTab = "notes";
+        this.noteParts = { summary: "", notes: "", transcript: "" };
+        this.summaryEditing = false;
+        this.processingProgress = null;
+        this.stopProgressWatch = null;
+        this.liveTranscript = "";
+        this.liveCarry = "";
+        this.elapsedCarry = 0;
+        this.liveTranscriptStatus = "Listening\u2026";
+        this.liveTranscriptQueue = Promise.resolve();
+        this.livePcm = [];
+        this.livePcmBytes = 0;
+        this.liveProcessor = null;
+        this.silenceTap = null;
+        this.silenceSamples = null;
+        this.silenceWatch = null;
+        this.liveTranscriptActive = false;
+        this.liveTranscriptPaused = false;
+        this.state = "idle";
+        this.chunks = [];
+        this.pending = [];
+        this.writeQueue = Promise.resolve();
+        this.diskWrite = false;
+        this.audioRel = "";
+        this.audioAbs = "";
+        this.recorder = null;
+        this.streams = [];
+        this.audioCtx = null;
+        this.elapsed = 0;
+        this.timer = null;
+        this.clock = null;
+        this.recordingId = "";
+        this.draftRel = "";
+        this.editorFrozen = false;
+        this.editorLeaf = null;
+        this.title = "";
+        this.type = plugin.settings.lastType || "meeting-note";
+        this.recordVoice = plugin.settings.recordVoice !== false;
+        this.result = null;
+        this.edited = false;
+        this.filedNotePath = "";
+        this.filingFrom = "";
+        this.filing = false;
+        this.cardTitle = null;
+        this.reviewCloseNotified = false;
+      }
+      async onOpen() {
+        this.attachEditorObject();
+        this.render();
+      }
+      async onClose() {
+        this.teardownStream();
+        if (this.stopProgressWatch) this.stopProgressWatch();
+        this.detachEditorObject();
+      }
+      ownsEditor(info) {
+        return info === (this.editorLeaf && this.editorLeaf.view) && !this.editorFrozen && !!this.draftRel && !!info.file && info.file.path === this.draftRel;
+      }
+      async open() {
+        if (this.state === "idle" && !this.draftRel) {
+          this.recordingId = recordingId();
+          await this.createDraft();
+        } else if (this.filedNotePath) {
+          await this.loadEditorFile(this.filedNotePath);
+        } else if (this.draftRel) {
+          await this.loadEditorFile(this.draftRel);
+        }
+        this.attachEditorObject();
+        this.render();
+      }
+      attachEditorObject() {
+        const view = this.editorLeaf && this.editorLeaf.view;
+        if (!(view instanceof MarkdownView) || !view.file) return false;
+        const object = typeof this.plugin.meetingBlockFor === "function" ? this.plugin.meetingBlockFor(view.file.path) : null;
+        if (!object) return false;
+        if (this.editorView === view && this.contentEl && this.contentEl.isConnected !== false) {
+          return true;
+        }
+        this.detachEditorObject();
+        this.editorView = view;
+        object.empty();
+        object.addClass("slim-meeting-object");
+        object.addClass("slim-recorder");
+        this.contentEl = object;
+        return true;
+      }
+      detachEditorObject() {
+        if (this.editorView && this.editorView.contentEl) {
+          this.editorView.contentEl.removeClass("slim-recorder-draft-frozen");
+        }
+        if (this.contentEl && typeof this.contentEl.empty === "function") this.contentEl.empty();
+        this.contentEl = null;
+        this.editorView = null;
+      }
+      async ensureVaultDirs(path) {
+        const parts = path.split("/").filter(Boolean);
+        let current = "";
+        for (const part of parts) {
+          current = current ? `${current}/${part}` : part;
+          if (!await this.app.vault.adapter.exists(current)) {
+            try {
+              await this.app.vault.createFolder(current);
+            } catch (e) {
+            }
+          }
+        }
+      }
+      async loadEditorFile(path) {
+        const file = this.app.vault.getAbstractFileByPath(path);
+        if (!file) throw new Error(`no note at ${path}`);
+        if (!this.isOpenMarkdownLeaf(this.editorLeaf)) {
+          this.detachEditorObject();
+          const prior = this.plugin.editorLeaf;
+          const priorOwner = this.manager && typeof this.manager.sessionForLeaf === "function" ? this.manager.sessionForLeaf(prior) : null;
+          this.editorLeaf = this.isOpenMarkdownLeaf(prior) && (!priorOwner || priorOwner === this) ? prior : this.app.workspace.getLeaf("split");
+        }
+        await this.editorLeaf.openFile(file, { active: true, state: { mode: "source", source: false } });
+        this.plugin.editorLeaf = this.editorLeaf;
+        if (path === this.draftRel && this.state === "idle") {
+          const editor = this.editorLeaf.view && this.editorLeaf.view.editor;
+          if (editor && typeof editor.lastLine === "function" && typeof editor.setCursor === "function") {
+            const moveBelowObject = () => {
+              editor.setCursor({ line: editor.lastLine(), ch: 0 });
+              if (typeof editor.focus === "function") editor.focus();
+            };
+            moveBelowObject();
+            if (typeof requestAnimationFrame === "function") {
+              await new Promise((resolve) => requestAnimationFrame(() => {
+                moveBelowObject();
+                resolve();
+              }));
+            }
+          }
+        }
+        this.attachEditorObject();
+      }
+      isOpenMarkdownLeaf(leaf) {
+        if (!leaf || !(leaf.view instanceof MarkdownView)) return false;
+        const workspace = this.app && this.app.workspace;
+        if (!workspace || typeof workspace.getLeavesOfType !== "function") return true;
+        return workspace.getLeavesOfType("markdown").includes(leaf);
+      }
+      async loadNoteParts() {
+        if (!this.filedNotePath || !this.app || !this.app.vault) return this.noteParts;
+        const file = this.app.vault.getAbstractFileByPath(this.filedNotePath);
+        if (!file) return this.noteParts;
+        const text = await this.app.vault.read(file);
+        this.noteParts = splitMeetingNote(text);
+        return this.noteParts;
+      }
+      /* A cancelled recording parks its segments, their caches and the draft on DISK, but the
+       * session lives only in this view. After an Obsidian restart the draft rendered as a passive
+       * block: no Resume, no Finish, and no way back to the audio except by hand.
+       * Adopting it turns the draft back into the paused object it was. */
+      async adoptPausedDraft(draftPath) {
+        const name = nodePath.posix.basename(draftPath);
+        if (!name.endsWith(DRAFT_SUFFIX) || !name.includes("--recording--")) return false;
+        const id = name.slice(0, -DRAFT_SUFFIX.length).split("--recording--").pop();
+        if (!id) return false;
+        const adapter = this.app && this.app.vault && this.app.vault.adapter;
+        if (!adapter || typeof adapter.list !== "function") return false;
+        let listing;
+        try {
+          listing = await adapter.list(STAGING_DIR);
+        } catch (e) {
+          return false;
+        }
+        const segments = (listing.files || []).filter((f) => f.toLowerCase().endsWith(".webm") && recordingIdFromStaged(f) === id).sort();
+        if (!segments.length) return false;
+        this.resetSession();
+        this.recordingId = id;
+        this.draftRel = draftPath;
+        this.segments = segments;
+        this.audioRel = segments[segments.length - 1];
+        this.type = draftPath.startsWith("Journal/") ? "journal" : this.type;
+        this.pausedTranscript = null;
+        this.state = "paused";
+        return true;
+      }
+      async openExisting(file, leaf) {
+        if (!file || !leaf || !(leaf.view instanceof MarkdownView)) return false;
+        const cache = this.app.metadataCache && this.app.metadataCache.getFileCache(file);
+        const fm = cache && cache.frontmatter;
+        if (!fm || fm.origin !== "recorded") return false;
+        let text = await this.app.vault.read(file);
+        if (!hasMeetingBlock(text)) {
+          text = embedLegacyMeetingBlock(text);
+          await this.app.vault.modify(file, text);
+        }
+        const parts = splitMeetingNote(text);
+        if (!parts.transcript) return false;
+        this.resetSession();
+        this.editorLeaf = leaf;
+        this.filedNotePath = file.path;
+        this.noteParts = parts;
+        const parent = file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/")) : "";
+        const topics = Array.isArray(fm.topics) ? fm.topics.slice() : [];
+        const type = String(fm.type || "meeting-note");
+        this.result = {
+          note: file.path,
+          title: String(fm.title || file.basename || "Meeting note"),
+          summary: parts.summary,
+          notes_md: parts.notes,
+          card: { dest_dir: parent, type_tag: type, topics, folders: [] }
+        };
+        this.cardTitle = this.result.title;
+        this.state = frontmatterScalar(text, "review_status") === "pending" ? "card" : "finished";
+        this.activeTab = "summary";
+        this.attachEditorObject();
+        this.render();
+        const card = this.result.card;
+        this.cardListsLoad = Promise.resolve().then(() => this.plugin.getJSON("/api/record/folders")).then((lists) => {
+          if (!this.result || this.result.card !== card) return;
+          card.folders = lists.folders || [];
+          card.tag_counts = lists.tag_counts || {};
+          this.render();
+        }).catch((e) => console.error("[slim] card folders", e));
+        return true;
+      }
+      async saveDraft() {
+        const view = this.editorLeaf && this.editorLeaf.view;
+        if (view instanceof MarkdownView && typeof view.save === "function") await view.save();
+      }
+      resetSession() {
+        if (this.manager) this.manager.releaseCapture(this);
+        this.teardownStream();
+        this.detachEditorObject();
+        this.state = "idle";
+        this.activeTab = "notes";
+        this.noteParts = { summary: "", notes: "", transcript: "" };
+        this.summaryEditing = false;
+        this.processingProgress = null;
+        if (this.stopProgressWatch) this.stopProgressWatch();
+        this.stopProgressWatch = null;
+        this.liveTranscript = "";
+        this.liveCarry = "";
+        this.elapsedCarry = 0;
+        this.liveTranscriptStatus = "Listening\u2026";
+        this.livePcm = [];
+        this.livePcmBytes = 0;
+        this.liveTranscriptActive = false;
+        this.liveTranscriptPaused = false;
+        this.recordingId = "";
+        this.draftRel = "";
+        this.audioRel = "";
+        this.segments = [];
+        this.appendTo = "";
+        this.resumeReturnState = "";
+        this.retrying = false;
+        this.retryStatus = "";
+        this.retryInstructions = "";
+        this.pausedTranscript = null;
+        this.jobId = "";
+        this.attempt = 0;
+        this.audioAbs = "";
+        this.title = "";
+        this.result = null;
+        this.edited = false;
+        this.filedNotePath = "";
+        this.filingFrom = "";
+        this.filing = false;
+        this.cardTitle = null;
+        this.reviewCloseNotified = false;
+        this.errorText = "";
+        this.freezeEditor(false);
+      }
+      async reconcileMissingSessionFiles() {
+        const missingDraft = this.draftRel && !this.app.vault.getAbstractFileByPath(this.draftRel);
+        const missingNote = this.filedNotePath && !this.app.vault.getAbstractFileByPath(this.filedNotePath);
+        if (!missingDraft && !missingNote) return false;
+        const audio = this.audioRel;
+        this.resetSession();
+        if (audio) {
+          new Notice(`SLIM: the deleted note was released. Its staged audio remains at ${audio}.`);
+        }
+        return true;
+      }
+      /* A deletion the server made on this session's behalf is not their instruction to let go:
+       * filing removes the draft before its response arrives, and `apply` unlinks the old path
+       * while it moves the note — Obsidian reports that unlink as a delete, usually mid-request.
+       * Read as their deletion it reset the session under the Approve button: "the deleted note was
+       * released", then "Cannot set properties of null (setting 'note')" (2026-09-04). */
+      expectsDeletion(path) {
+        return this.state === "processing" || this.state === "recording" || path === this.filingFrom;
+      }
+      handleVaultDelete(file) {
+        if (!file || file.path !== this.draftRel && file.path !== this.filedNotePath) return;
+        if (this.expectsDeletion(file.path)) return;
+        this.reconcileMissingSessionFiles().catch((e) => console.error("[slim] delete reconcile", e));
+      }
+      async trashManagedPath(path) {
+        if (!path) return;
+        const file = this.app.vault.getAbstractFileByPath(path);
+        if (!file) return;
+        if (this.app.fileManager && typeof this.app.fileManager.trashFile === "function") {
+          await this.app.fileManager.trashFile(file);
+        } else if (typeof this.app.vault.trash === "function") {
+          await this.app.vault.trash(file, true);
+        } else {
+          await this.app.vault.delete(file);
+        }
+      }
+      /* A staged segment and the `<segment>.transcript.json` the server cached beside it go
+       * together. ⚠ NOT THROUGH THE INDEX: the server writes the cache outside the Vault API, often
+       * a moment before the response that leads here, so Obsidian may not hold it yet and
+       * `trashManagedPath` skipped it without a word — eleven orphans by 2026-09-28. */
+      async removeStagedSegment(seg) {
+        await this.trashManagedPath(seg);
+        const cache = `${seg}.transcript.json`;
+        const adapter = this.app.vault.adapter;
+        if (await adapter.exists(cache)) await adapter.remove(cache);
+      }
+      async discardSession(restart) {
+        const id = this.recordingId;
+        const draft = this.draftRel;
+        const audios = [...new Set([...this.segments || [], this.audioRel].filter(Boolean))];
+        const attachmentFolder = id ? `${RECORDER_ATTACHMENTS}/${id}` : "";
+        const draftIsManaged = draft && draft.endsWith(DRAFT_SUFFIX) && (draft.startsWith("Capture/_unfiled/") || draft.startsWith("Journal/"));
+        const managed = (audio) => Boolean(audio) && Boolean(id) && audio.startsWith(`${STAGING_DIR}/`) && recordingIdFromStaged(audio) === id;
+        if (draftIsManaged) await this.trashManagedPath(draft);
+        for (const audio of audios) {
+          if (!managed(audio)) continue;
+          await this.removeStagedSegment(audio);
+        }
+        if (attachmentFolder) await this.trashManagedPath(attachmentFolder);
+        this.resetSession();
+        new Notice("SLIM: discarded the failed recording and its draft.");
+        if (restart) {
+          if (this.manager) this.manager.claimCapture(this);
+          await this.open();
+          if (this.manager) this.manager.indexSession(this);
+        }
+      }
+      closeSession() {
+        this.resetSession();
+        if (this.manager) this.manager.removeSession(this);
+        new Notice("SLIM: closed the recorder. Saved draft and audio were kept.");
+      }
+      async createDraft() {
+        if (!this.recordingId) this.recordingId = recordingId();
+        const digits = this.recordingId.slice(0, 8);
+        const date = `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
+        const folder = this.type === "journal" ? "Journal" : "Capture/_unfiled";
+        await this.ensureVaultDirs(folder);
+        this.draftRel = `${folder}/${date}--recording--${this.recordingId}${DRAFT_SUFFIX}`;
+        await this.app.vault.create(this.draftRel, EMPTY_MEETING_BLOCK);
+        if (this.manager) this.manager.indexSession(this);
+        await this.loadEditorFile(this.draftRel);
+        return this.draftRel;
+      }
+      async ensureDraftLocation() {
+        if (!this.draftRel) return this.createDraft();
+        const folder = this.type === "journal" ? "Journal" : "Capture/_unfiled";
+        if (this.draftRel.startsWith(`${folder}/`)) return this.draftRel;
+        const file = this.app.vault.getAbstractFileByPath(this.draftRel);
+        if (!file) {
+          this.draftRel = "";
+          return this.createDraft();
+        }
+        await this.ensureVaultDirs(folder);
+        const next = `${folder}/${nodePath.posix.basename(this.draftRel)}`;
+        if (this.app.fileManager && typeof this.app.fileManager.renameFile === "function") {
+          await this.app.fileManager.renameFile(file, next);
+        } else if (typeof this.app.vault.rename === "function") {
+          await this.app.vault.rename(file, next);
+        } else {
+          throw new Error("Obsidian cannot move the setup draft into its privacy-safe folder");
+        }
+        this.draftRel = next;
+        if (this.manager) this.manager.indexSession(this);
+        await this.loadEditorFile(next);
+        return next;
+      }
+      async removeUntouchedDraft() {
+        if (!this.draftRel) return false;
+        const draft = this.app.vault.getAbstractFileByPath(this.draftRel);
+        if (!draft) {
+          this.draftRel = "";
+          return false;
+        }
+        const contents = await this.app.vault.read(draft);
+        if (contents !== "" && contents !== EMPTY_MEETING_BLOCK) return false;
+        await this.app.vault.delete(draft);
+        this.draftRel = "";
+        return true;
+      }
+      freezeEditor(frozen) {
+        this.editorFrozen = !!frozen;
+        const view = this.editorLeaf && this.editorLeaf.view;
+        if (view && view.contentEl && typeof view.contentEl.toggleClass === "function") {
+          view.contentEl.toggleClass("slim-recorder-draft-frozen", this.editorFrozen);
+        }
+        if (frozen && typeof document !== "undefined" && document.activeElement && typeof document.activeElement.blur === "function") document.activeElement.blur();
+      }
+      async handleEditorPaste(event, editor) {
+        const files = Array.from(event.clipboardData && event.clipboardData.files || []);
+        if (!files.length || files.some((f) => !String(f.type || "").startsWith("image/"))) {
+          return false;
+        }
+        const extensions = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp" };
+        if (files.some((f) => !extensions[f.type])) return false;
+        event.preventDefault();
+        const folder = `${RECORDER_ATTACHMENTS}/${this.recordingId}`;
+        await this.ensureVaultDirs(folder);
+        const embeds = [];
+        for (const file of files) {
+          let n = 1;
+          let path;
+          do {
+            path = `${folder}/paste-${String(n).padStart(3, "0")}.${extensions[file.type]}`;
+            n += 1;
+          } while (await this.app.vault.adapter.exists(path));
+          await this.app.vault.createBinary(path, await file.arrayBuffer());
+          embeds.push(`![[${path}]]`);
+        }
+        editor.replaceSelection(embeds.join("\n"));
+        return true;
+      }
+      // ---- rendering -----------------------------------------------------------------------
+      render() {
+        const root = this.contentEl;
+        if (!root) return;
+        root.empty();
+        root.addClass("slim-recorder");
+        if (typeof root.setAttr === "function") root.setAttr("data-state", this.state);
+        if (this.state === "idle") this.renderIdle(root);
+        else if (this.state === "recording") this.renderRecording(root);
+        else if (this.state === "processing") this.renderProcessing(root);
+        else if (this.state === "paused") this.renderPaused(root);
+        else if (this.state === "card") this.renderCard(root);
+        else if (this.state === "finished") this.renderFinished(root);
+        else this.renderError(root);
       }
     };
+    Object.assign(
+      RecorderView.prototype,
+      require_recorder_capture(),
+      require_recorder_live(),
+      require_recorder_filing(),
+      require_recorder_render(),
+      require_recorder_review()
+    );
+    module2.exports = { RecorderView };
+  }
+});
 
-    const newFolderUnder = (node) => {
-      const row = tree.createDiv({ cls: "slim-tree-row is-newrow" });
-      row.createSpan({ cls: "slim-tw is-leaf", text: "+" });
-      const input = row.createEl("input", { type: "text", cls: "slim-newfolder",
-                                            placeholder: `new folder in ${node.path}` });
-      input.focus();
-      const commit = () => {
-        const name = input.value.trim().replace(/^\/+|\/+$/g, "");
-        if (!name) { drawTree(); return; }
-        const path = `${node.path}/${name}`;
-        // Not created on disk here: the apply endpoint makes parents when the note moves, so
-        // abandoning the card leaves no empty folder behind.
-        const fresh = { path, count: 0, name, children: [], isNew: true };
-        node.children.push(fresh);
-        byPath.set(path, fresh);
-        expanded.add(node.path);
-        select(path, true);
-      };
-      input.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") commit();
-        if (e.key === "Escape") drawTree();
-      });
-      input.addEventListener("blur", commit);
-    };
-
-    const drawTree = () => {
-      tree.empty();
-      roots.forEach((r) => drawNode(r, 0, tree));
-    };
-    drawTree();
-
-    const manual = det.createDiv({ cls: "slim-field" });
-    manual.createEl("label", { text: "or type a path" });
-    const mi = manual.createEl("input", { type: "text" });
-    mi.value = c.dest_dir;
-    mi.addEventListener("change", (e) => {
-      c.dest_dir = e.target.value.replace(/^\/+|\/+$/g, "");
-      this.edited = true;
-      renderPath();
-      drawTree();
-    });
-    manual.createEl("p", { cls: "slim-hint",
-      text: "A folder that does not exist yet is created when the note is filed." });
-
-    // --- type
-    const ty = root.createDiv({ cls: "slim-field" });
-    ty.createEl("label", { text: "Type" });
-    const tsel = ty.createEl("select");
-    TYPES.forEach(([value, label]) => {
-      const o = tsel.createEl("option", { text: label });
-      o.value = value;
-      if (value === c.type_tag) o.selected = true;
-    });
-    tsel.addEventListener("change", (e) => { c.type_tag = e.target.value; this.edited = true; });
-
-    // --- topics. Creating is visibly heavier than reusing: an existing topic shows how often
-    //     it has been used, a brand-new one says so. Informational, never blocking — and it
-    //     applies to one THEY type too, since they are the likeliest source of a one-off.
-    //
-    // ⚠ THIS SAID "Tags" AND WROTE `topics:`, and `tags:` in the note is a DIFFERENT FIELD —
-    // it carries the TYPE, for Obsidian's tag pane. So the card's "Tags" and the note's `tags:`
-    // named two unrelated things and they had to hold both in their head (2026-08-23). The label
-    // now matches the field it edits. The `#` went with it: `topics:` are not Obsidian tags,
-    // and a `#` promises a clickable one.
-    const tg = root.createDiv({ cls: "slim-field" });
-    tg.createEl("label", { text: "Topics" });
-    const chips = tg.createDiv({ cls: "slim-chips" });
-    const counts = c.tag_counts || {};
-    const drawChips = () => {
-      chips.empty();
-      (c.topics || []).forEach((t, i) => {
-        const n = counts[String(t).toLowerCase()] || 0;
-        const chip = chips.createSpan({ cls: "slim-chip" + (n ? "" : " is-new") });
-        chip.createSpan({ text: String(t) });
-        chip.createSpan({ cls: "slim-chip-count", text: n ? String(n) : "new" });
-        const x = chip.createSpan({ cls: "slim-chip-x", text: "×" });
-        x.addEventListener("click", () => {
-          c.topics.splice(i, 1); this.edited = true; drawChips();
+// src/server.js
+var require_server = __commonJS({
+  "src/server.js"(exports2, module2) {
+    "use strict";
+    var { Notice, requestUrl } = require("obsidian");
+    var { spawn } = require("child_process");
+    var net = require("net");
+    var nodePath = require("path");
+    function serverArgv(settings, parentPid = process.pid) {
+      return [
+        "--directory",
+        settings.repoPath,
+        "run",
+        "slim",
+        "chat",
+        "--port",
+        String(settings.port),
+        "--parent-pid",
+        String(parentPid)
+      ];
+    }
+    function serverEnv(vaultBase, env = process.env) {
+      return Object.assign({}, env, { SLIM_VAULT: vaultBase });
+    }
+    function portOpen(port) {
+      return new Promise((resolve) => {
+        const sock = net.connect({ port, host: "127.0.0.1" }, () => {
+          sock.end();
+          resolve(true);
+        });
+        sock.on("error", () => resolve(false));
+        sock.setTimeout(1e3, () => {
+          sock.destroy();
+          resolve(false);
         });
       });
-      const add = chips.createEl("input", { type: "text", cls: "slim-chip-add",
-                                            placeholder: "+ add tag" });
-      add.addEventListener("keydown", (e) => {
-        if (e.key !== "Enter") return;
-        const v = add.value.trim().replace(/^#/, "");
-        if (!v) return;
-        c.topics = c.topics || [];
-        c.topics.push(v);
-        this.edited = true;
-        drawChips();
-      });
-    };
-    drawChips();
-
-    const row = root.createDiv({ cls: "slim-row" });
-    const file = row.createEl("button", { cls: "mod-cta", text: "Approve & finish" });
-    file.addEventListener("click", async () => {
-      file.disabled = true;
-      // ⚠ `filing` covers the whole request. A move drops the old file from its leaf, and
-      // that layout change ran the pending-review notice while Approve was still out — state
-      // `card`, pane empty, the path from before the move (2026-09-09).
-      this.filing = true;
-      try {
-        if (this.edited) await this.applyCard();
-        else await this.plugin.completeReview({ note: this.filedNotePath });
-        await this.loadNoteParts();
-        new Notice("SLIM: meeting note finished.");
-        this.state = "finished";
-        this.activeTab = "summary";
-        this.edited = false;
-        this.freezeEditor(false);
-        this.render();
-      } catch (e) {
-        console.error("[slim] file", e);
-        new Notice(`SLIM: ${e.message || e}`);
-        file.disabled = false;
-      } finally {
-        this.filing = false;
-      }
-    });
-  }
-
-  renderFinished(root) {
-    const title = (this.result && this.result.title) || this.cardTitle || "Meeting note";
-    this.renderObjectHeader(root, "SLIM meeting note", title, "Finished");
-    this.renderSavedLocation(root);
-    this.renderProperties(root);
-    this.renderSource(root, false);
-    this.renderRetryRow(root);
-    const row = root.createDiv({ cls: "slim-row slim-finished-actions" });
-    const more = row.createEl("button", { text: "Resume recording" });
-    more.addEventListener("click", () => this.startAppendRecording());
-    if (this.result && this.result.card) {
-      const edit = row.createEl("button", { text: "Edit review details" });
-      edit.addEventListener("click", async () => {
-        try {
-          await this.saveDraft();
-          await this.loadNoteParts();
-          this.result.summary = this.noteParts.summary;
-          this.result.notes_md = this.noteParts.notes;
-          this.summaryEditing = false;
-          this.state = "card";
-          this.render();
-        } catch (e) {
-          console.error("[slim] reopen review", e);
-          new Notice(`SLIM: could not reopen the review — ${e.message || e}`);
-        }
-      });
     }
-    root.createEl("p", { cls: "slim-native-editor-hint",
-      text: "This block is part of the note. Keep writing normally before or after it." });
+    async function waitForPort(port, timeoutMs) {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (await portOpen(port)) return true;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      return false;
+    }
+    var serverMethods = {
+      // ---- the server's lifecycle ------------------------------------------------------------
+      /* Nothing else starts `slim chat`: there is no launchd agent, and the Electron shell that
+       * used to do it was cut on 2026-08-27. Without this, recording with the server down fails
+       * at the POST — the audio survives in the staging folder but recovery is by hand.
+       *
+       * Not a memory decision: measured 2026-08-06, the server is 31 MB and holds NO model. Ollama
+       * loads weights on demand and evicts on its own keep_alive.
+       */
+      ensureServer() {
+        if (!this._ensuring) {
+          this._ensuring = this._ensureServer().finally(() => {
+            this._ensuring = null;
+          });
+        }
+        return this._ensuring;
+      },
+      async _ensureServer() {
+        const port = this.settings.port;
+        if (await waitForPort(port, 3e3)) {
+          this.warnIfStale();
+          return "reused";
+        }
+        try {
+          const argv = serverArgv(this.settings);
+          const base = this.vaultBasePath();
+          this.server = spawn(
+            this.settings.uvPath,
+            argv,
+            {
+              stdio: "ignore",
+              detached: true,
+              env: base ? serverEnv(base) : process.env
+            }
+          );
+        } catch (e) {
+          this.server = null;
+          new Notice(
+            `SLIM: could not launch ${this.settings.uvPath} \u2014 ${e && e.message || e}`,
+            2e4
+          );
+          return "failed";
+        }
+        const child = this.server;
+        child.on("error", (e) => {
+          if (this.server === child) this.server = null;
+          console.error("[slim] server spawn", e);
+          new Notice(`SLIM: the server did not start \u2014 check the repo and uv paths in settings. (${e && e.message || e})`, 2e4);
+        });
+        child.on("exit", () => {
+          if (this.server === child) this.server = null;
+        });
+        if (await waitForPort(port, 3e4)) return "started";
+        new Notice(`SLIM: the server did not come up on 127.0.0.1:${port} within 30s. Check that Ollama is running and that \`uv run slim chat\` works from the repo.`, 2e4);
+        return "timeout";
+      },
+      /* ⚠ A REUSED SERVER CAN BE OLDER THAN THE CODE, and nothing about it looks wrong.
+       *
+       * Reuse is deliberate — it is what stops this plugin killing a terminal `slim chat --reload`.
+       * But `uv run` reads Python from disk at spawn time and never hot-reloads, and "the plugin
+       * owns the lifecycle" turned out not to hold: Obsidian does not reliably call `onunload` when
+       * the whole APP quits, so a server started the previous afternoon survived a Cmd+Q and a
+       * relaunch, was reused, and failed two recordings against a bug already fixed on disk
+       * (2026-08-23). In July the same trap cost a full day of debugging.
+       *
+       * It WARNS rather than restarting: the server on the port might be their, with a reloader
+       * attached, and killing that out from under them is its own surprise. ONCE PER SERVER: the
+       * check runs on every request that reuses the server, and saying it each time stacked a
+       * column of 30 s notices over the sidebar (2026-09-29).
+       */
+      /* This vault's own base path, or null on a mobile adapter that has none. `openDiskFile()`
+       * already resolves audio against it; the server has to agree on the same directory. */
+      vaultBasePath() {
+        try {
+          const adapter = this.app.vault.adapter;
+          if (typeof adapter.getBasePath !== "function") return null;
+          return nodePath.resolve(adapter.getBasePath());
+        } catch (e) {
+          console.error("[slim] no vault base path", e);
+          return null;
+        }
+      },
+      async warnIfStale() {
+        const res = await requestUrl({
+          url: `http://127.0.0.1:${this.settings.port}/api/health`,
+          method: "GET",
+          throw: false
+        }).catch(() => null);
+        if (!res || res.status === 404) {
+          this.sayOnce(
+            "predates-health",
+            `SLIM: the running server predates /api/health, so it is serving OLD code. Restart it:
+
+lsof -tiTCP:${this.settings.port} -sTCP:LISTEN | xargs kill`
+          );
+          return;
+        }
+        const health = res.json;
+        if (!health) return;
+        const base = this.vaultBasePath();
+        const fs = require("fs");
+        let resolvedBase = base;
+        try {
+          if (base) resolvedBase = fs.realpathSync(base);
+        } catch {
+        }
+        const killCmd = `lsof -tiTCP:${this.settings.port} -sTCP:LISTEN | xargs kill`;
+        if (resolvedBase && health.vault && health.vault !== resolvedBase) {
+          this.sayOnce(
+            `vault:${health.pid}:${health.started_at}`,
+            `SLIM: the server on port ${this.settings.port} is using the vault ${health.vault}, but this vault is ${base}. Recordings would be filed in the wrong one. Restart it:
+
+${killCmd}`
+          );
+          return;
+        }
+        if (!health.stale) return;
+        this.sayOnce(
+          `stale:${health.pid}:${health.started_at}`,
+          `SLIM: the running server started ${health.started_at} but ${health.newest_file} changed ${health.newest_source}. It is serving OLD code. Restart it:
+
+` + killCmd
+        );
+      },
+      sayOnce(key, text) {
+        if (this.staleSaid === key) return;
+        this.staleSaid = key;
+        new Notice(text, 3e4);
+      },
+      stopServer() {
+        const child = this.server;
+        this.server = null;
+        if (!child || child.pid == null) return;
+        try {
+          process.kill(-child.pid, "SIGTERM");
+        } catch (e) {
+          try {
+            child.kill();
+          } catch (e2) {
+          }
+        }
+      }
+    };
+    module2.exports = { serverArgv, serverEnv, portOpen, waitForPort, serverMethods };
   }
-}
+});
 
-class SlimSettingTab extends PluginSettingTab {
-  constructor(app, plugin) { super(app, plugin); this.plugin = plugin; }
-  display() {
-    const { containerEl } = this;
-    containerEl.empty();
-    new Setting(containerEl)
-      .setName("Server port")
-      .setDesc("Where `slim chat` listens on 127.0.0.1. A server already on this port is " +
-               "reused, never duplicated.")
-      .addText((t) => t
-        .setValue(String(this.plugin.settings.port))
-        .onChange(async (v) => {
+// src/sessions.js
+var require_sessions = __commonJS({
+  "src/sessions.js"(exports2, module2) {
+    "use strict";
+    var { DRAFT_SUFFIX, localDay, recordingId } = require_meeting_note();
+    var { RecorderView } = require_recorder_view();
+    var MeetingSessionManager = class {
+      constructor(plugin, sessionFactory = null) {
+        this.plugin = plugin;
+        this.sessionFactory = sessionFactory || ((leaf) => new RecorderView(leaf, plugin));
+        this.sessions = /* @__PURE__ */ new Map();
+        this.paths = /* @__PURE__ */ new Map();
+        this.activeCaptureId = null;
+      }
+      createSession(leaf = null) {
+        const session = this.sessionFactory(leaf);
+        session.sessionId = session.sessionId || recordingId();
+        if (!session.recordingId) session.recordingId = session.sessionId;
+        session.manager = this;
+        this.sessions.set(session.sessionId, session);
+        this.indexSession(session);
+        return session;
+      }
+      indexSession(session) {
+        if (!session) return null;
+        for (const [path, owner] of this.paths) {
+          if (owner === session && path !== session.draftRel && path !== session.filedNotePath) {
+            this.paths.delete(path);
+          }
+        }
+        for (const path of [session.draftRel, session.filedNotePath]) {
+          if (path) this.paths.set(path, session);
+        }
+        return session;
+      }
+      sessionForPath(path) {
+        return path && this.paths.get(path) || null;
+      }
+      sessionForLeaf(leaf) {
+        if (!leaf) return null;
+        for (const session of this.sessions.values()) {
+          if (session.editorLeaf === leaf) return session;
+        }
+        return null;
+      }
+      claimCapture(session) {
+        if (!session || !session.sessionId) throw new Error("meeting session has no identity");
+        const holder = this.activeCapture();
+        if (holder && holder !== session && holder.state === "recording") {
+          throw new Error("another meeting capture is already active");
+        }
+        this.activeCaptureId = session.sessionId;
+        return session;
+      }
+      /* A setup draft that was never started keeps the lease for as long as Obsidian stays open, so
+       * a click days later reopened it under the name of the day it was made (2026-09-17). An
+       * untouched one from an earlier day is deleted and replaced; one with their input is kept. */
+      async releaseStaleSetupDraft(session) {
+        if (session.state !== "idle" || session.segments && session.segments.length) return false;
+        if (String(session.recordingId || "").slice(0, 8) === localDay()) return false;
+        if (typeof session.removeUntouchedDraft !== "function") return false;
+        if (!await session.removeUntouchedDraft()) return false;
+        this.removeSession(session);
+        return true;
+      }
+      releaseCapture(session) {
+        if (session && this.activeCaptureId === session.sessionId) this.activeCaptureId = null;
+      }
+      activeCapture() {
+        const session = this.activeCaptureId && this.sessions.get(this.activeCaptureId);
+        if (!session && this.activeCaptureId) this.activeCaptureId = null;
+        return session || null;
+      }
+      async activate(leaf = null) {
+        let session = this.activeCapture();
+        if (session && await this.releaseStaleSetupDraft(session)) session = null;
+        if (!session) {
+          const availableLeaf = this.sessionForLeaf(leaf) ? null : leaf;
+          session = this.createSession(availableLeaf);
+          this.claimCapture(session);
+        }
+        await session.open();
+        this.indexSession(session);
+        return session;
+      }
+      async openPath(path, leaf = null) {
+        const session = this.sessionForPath(path);
+        if (!session) return null;
+        if (leaf) session.editorLeaf = leaf;
+        await session.open();
+        this.indexSession(session);
+        return session;
+      }
+      async adoptFile(file, leaf = null) {
+        if (!file || !file.path) return null;
+        const existing = this.sessionForPath(file.path);
+        if (existing) {
+          if (leaf) existing.editorLeaf = leaf;
+          return existing;
+        }
+        const session = this.createSession(leaf);
+        let adopted = false;
+        if (file.path.endsWith(DRAFT_SUFFIX) && typeof session.adoptPausedDraft === "function") {
+          adopted = await session.adoptPausedDraft(file.path);
+          if (adopted) session.editorLeaf = leaf;
+        } else if (typeof session.openExisting === "function") {
+          adopted = await session.openExisting(file, leaf);
+        }
+        if (!adopted) {
+          this.removeSession(session);
+          return null;
+        }
+        this.indexSession(session);
+        if (typeof session.attachEditorObject === "function") session.attachEditorObject();
+        if (typeof session.render === "function") session.render();
+        return session;
+      }
+      removeSession(session) {
+        if (!session) return;
+        this.releaseCapture(session);
+        for (const [path, owner] of this.paths) {
+          if (owner === session) this.paths.delete(path);
+        }
+        this.sessions.delete(session.sessionId);
+      }
+      ownsEditor(info) {
+        for (const session of this.sessions.values()) {
+          if (typeof session.ownsEditor === "function" && session.ownsEditor(info)) return session;
+        }
+        return null;
+      }
+      handleVaultDelete(file) {
+        const session = file && this.sessionForPath(file.path);
+        if (!session) return;
+        if (session.expectsDeletion(file.path)) return;
+        if (typeof session.handleVaultDelete === "function") session.handleVaultDelete(file);
+        this.removeSession(session);
+      }
+      handleVaultRename(file, oldPath) {
+        const session = this.sessionForPath(oldPath);
+        if (!session || !file || !file.path) return;
+        if (session.draftRel === oldPath) session.draftRel = file.path;
+        if (session.filedNotePath === oldPath) {
+          session.filedNotePath = file.path;
+          if (session.result) session.result.note = file.path;
+        }
+        this.indexSession(session);
+      }
+      flushNotes() {
+        return Promise.all([...this.sessions.values()].map((session) => typeof session.flushNotes === "function" ? session.flushNotes() : null));
+      }
+      onClose() {
+        for (const session of this.sessions.values()) {
+          if (typeof session.onClose === "function") session.onClose();
+        }
+        this.sessions.clear();
+        this.paths.clear();
+        this.activeCaptureId = null;
+      }
+    };
+    module2.exports = { MeetingSessionManager };
+  }
+});
+
+// src/settings-tab.js
+var require_settings_tab = __commonJS({
+  "src/settings-tab.js"(exports2, module2) {
+    "use strict";
+    var { PluginSettingTab, Setting } = require("obsidian");
+    var os = require("os");
+    var DEFAULTS = {
+      port: 7546,
+      repoPath: `${os.homedir()}/Programming/Personal/slim-public`,
+      uvPath: `${os.homedir()}/.local/bin/uv`,
+      recordVoice: true,
+      lastType: "meeting-note"
+    };
+    var SlimSettingTab = class extends PluginSettingTab {
+      constructor(app, plugin) {
+        super(app, plugin);
+        this.plugin = plugin;
+      }
+      display() {
+        const { containerEl } = this;
+        containerEl.empty();
+        new Setting(containerEl).setName("Server port").setDesc("Where `slim chat` listens on 127.0.0.1. A server already on this port is reused, never duplicated.").addText((t) => t.setValue(String(this.plugin.settings.port)).onChange(async (v) => {
           const n = parseInt(v, 10);
-          if (!isNaN(n)) { this.plugin.settings.port = n; await this.plugin.saveSettings(); }
+          if (!isNaN(n)) {
+            this.plugin.settings.port = n;
+            await this.plugin.saveSettings();
+          }
         }));
-
-    new Setting(containerEl)
-      .setName("SLIM repo")
-      .setDesc("The checkout `uv run slim chat` is started from.")
-      .addText((t) => t
-        .setValue(this.plugin.settings.repoPath)
-        .onChange(async (v) => {
+        new Setting(containerEl).setName("SLIM repo").setDesc("The checkout `uv run slim chat` is started from.").addText((t) => t.setValue(this.plugin.settings.repoPath).onChange(async (v) => {
           this.plugin.settings.repoPath = v.trim();
           await this.plugin.saveSettings();
         }));
-
-    new Setting(containerEl)
-      .setName("uv binary")
-      .setDesc("Full path — Obsidian launches with a bare PATH, so a bare `uv` will not resolve.")
-      .addText((t) => t
-        .setValue(this.plugin.settings.uvPath)
-        .onChange(async (v) => {
+        new Setting(containerEl).setName("uv binary").setDesc("Full path \u2014 Obsidian launches with a bare PATH, so a bare `uv` will not resolve.").addText((t) => t.setValue(this.plugin.settings.uvPath).onChange(async (v) => {
           this.plugin.settings.uvPath = v.trim();
           await this.plugin.saveSettings();
         }));
-
-    containerEl.createEl("p", { cls: "slim-hint",
-      text: "Changes take effect the next time the server is started — disable and re-enable " +
-            "the plugin to restart it now." });
-  }
-}
-
-// ===========================================================================================
-// Open-note copilot (sidebar). ⚠ Lives in THIS file on purpose: Obsidian evals main.js with a
-// shim `require` that serves `obsidian` and CodeMirror and hands everything else to the
-// renderer's global require — bound to Obsidian's bundle, not the plugin folder — so a
-// relative require of `./copilot` throws before the plugin class exists and takes the
-// recorder down with it. `node --test` resolves relative paths and cannot see that. One
-// file, no build step.
-// ===========================================================================================
-
-const VIEW_TYPE_COPILOT = "slim-copilot";
-
-class SSEParser {
-  constructor() { this.buffer = ""; }
-  push(chunk) {
-    this.buffer += chunk;
-    const events = [];
-    while (true) {
-      const boundary = this.buffer.indexOf("\n\n");
-      if (boundary < 0) break;
-      const block = this.buffer.slice(0, boundary);
-      this.buffer = this.buffer.slice(boundary + 2);
-      let event = "message";
-      const data = [];
-      for (const line of block.split("\n")) {
-        if (line.startsWith("event:")) event = line.slice(6).trim();
-        if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
-      }
-      if (!data.length) continue;
-      try { events.push({ event, data: JSON.parse(data.join("\n")) }); }
-      catch (_error) { events.push({ event: "error", data: { error: "Malformed server event" } }); }
-    }
-    return events;
-  }
-}
-
-function groupThreads(threads, activeSourceId) {
-  const grouped = new Map();
-  for (const thread of threads || []) {
-    if (!thread.source_id || !thread.source_path) continue;
-    if (!grouped.has(thread.source_id)) grouped.set(thread.source_id, {
-      sourceId: thread.source_id, path: thread.source_path, threads: [], expanded: false,
-    });
-    const group = grouped.get(thread.source_id);
-    group.threads.push(thread);
-    if (thread.source_path) group.path = thread.source_path;
-  }
-  const groups = [...grouped.values()];
-  for (const group of groups) {
-    group.threads.sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
-    group.updatedAt = group.threads[0]?.updated_at || "";
-    group.expanded = group.sourceId === activeSourceId;
-  }
-  groups.sort((a, b) => {
-    if (a.sourceId === activeSourceId) return -1;
-    if (b.sourceId === activeSourceId) return 1;
-    return b.updatedAt.localeCompare(a.updatedAt);
-  });
-  return groups;
-}
-
-// --- what the sidebar shows instead of paths ------------------------------------------------
-
-function pathStem(path) {
-  const name = String(path || "").split("/").pop() || "";
-  return name.replace(/\.md$/i, "");
-}
-
-// Frontmatter title, then the file name, then the path's last segment. The server already
-// sends titles with the source, the citations and the nearby notes; only a thread group
-// carries a bare path, frozen when the thread was created, so it may be stale.
-function noteTitle(app, path) {
-  const file = app?.vault?.getAbstractFileByPath?.(path);
-  if (file && file.extension) {
-    const title = app.metadataCache?.getFileCache?.(file)?.frontmatter?.title;
-    return (typeof title === "string" && title.trim()) || file.basename || pathStem(path);
-  }
-  return pathStem(path);
-}
-
-// One row per NOTE, in order of first appearance: [1]–[7] were one note, seven fragments.
-function groupCitations(citations) {
-  const groups = new Map();
-  for (const citation of citations || []) {
-    const key = citation.source_id || citation.path;
-    if (!groups.has(key)) {
-      groups.set(key, { source_id: citation.source_id, path: citation.path,
-                        title: citation.title || pathStem(citation.path), ns: [] });
-    }
-    groups.get(key).ns.push(citation.n);
-  }
-  return [...groups.values()];
-}
-
-/* ---- copilot skills and editing runs -------------------------------------------------------
- * The server never writes a note from the copilot. One chat answers or edits: a question gets an
- * answer; a request to change the note gets a plan, then changes that land in the note's editor
- * as they stream (`makeLiveEditor`). A new note from a skill is created here, through the Vault
- * API. The note as it was before a run is kept with the chat, outside the vault.
- */
-function sha256Hex(text) {
-  return require("crypto").createHash("sha256").update(String(text), "utf8").digest("hex");
-}
-
-// "/con" → "con" while the first word is still being typed; null once there is a space.
-function slashQuery(draft) {
-  const match = /^\/([a-z0-9-]*)$/.exec(String(draft || ""));
-  return match ? match[1] : null;
-}
-
-function matchSkills(skills, query) {
-  if (query === null || query === undefined) return [];
-  return (skills || []).filter((skill) => skill.name.startsWith(query)).slice(0, 8);
-}
-
-// One line under a skill or edit answer: what code actually handed the model.
-function inputsText(inputs) {
-  if (!inputs) return "";
-  const parts = [];
-  const used = inputs.used?.length || 0;
-  if (used) parts.push(`Read ${used} note${used === 1 ? "" : "s"}${inputs.selection ? " and your selection" : ""}`);
-  else if (inputs.selection) parts.push("Read your selection");
-  if (inputs.dropped?.length) parts.push(`${inputs.dropped.length} left out (too long together)`);
-  if (inputs.cut?.length) parts.push(`${inputs.cut.length} cut to fit`);
-  if (inputs.skipped?.length) parts.push(`${inputs.skipped.length} without that section`);
-  for (const name of inputs.missing || []) parts.push(`[[${name}]] not found`);
-  return parts.join(" · ");
-}
-
-// The open note's editor selection, from whichever pane shows it: the sidebar has focus when
-// they press Send, so "the active editor" is not the question. Its text, and where it starts as
-// the editor counts (UTF-16 units): the same words can be in the note twice.
-function editorSelection(app, path) {
-  const recent = app?.workspace?.getMostRecentLeaf?.();
-  const leaves = app?.workspace?.getLeavesOfType?.("markdown") || [];
-  for (const leaf of recent && leaves.includes(recent) ? [recent, ...leaves] : leaves) {
-    const view = leaf.view;
-    // Reading mode keeps CodeMirror's last selection, which the owner can no longer see.
-    if (view?.file?.path !== path || view.getMode?.() === "preview") continue;
-    if (typeof view.editor?.getSelection !== "function") continue;
-    const text = view.editor.getSelection();
-    if (!text) continue;
-    const at = view.editor.getCursor?.("from");
-    const from = at ? view.editor.posToOffset?.(at) : undefined;
-    return { text: text.slice(0, MAX_SELECTION_CHARS), ...(Number.isInteger(from) ? { from } : {}) };
-  }
-  return { text: "" };
-}
-
-// Mirrors copilot.py MAX_SELECTION_CHARS.
-const MAX_SELECTION_CHARS = 20_000;
-// Mirrors edits.MAX_EDIT_CHARS: a longer note is still asked about, from the file, but not edited.
-const MAX_EDIT_CHARS = 400_000;
-
-// qwen writes \( \) and \[ \] as often as $ $; Obsidian's renderer only knows the dollar
-// forms, and Markdown eats the escaped brackets, so an equation rendered as nothing. Display
-// only: the stored answer is what the model wrote. Code spans and fences are left alone.
-// Only content that reads as math converts: a TeX command, an operator, or a lone symbol.
-// `\[1, 3\]`, `arr\[0\]`, `\[here\](url)` and an empty `\( \)` are Markdown-escaped
-// brackets and stay as they are.
-function looksLikeMath(inner) {
-  const text = inner.trim();
-  return text.length > 0 && (/\\[A-Za-z]|[=^_+{}<>]|\d\s*[*/-]\s*\d/.test(text) || /^[A-Za-z]$/.test(text));
-}
-
-function normalizeMath(markdown) {
-  const parts = String(markdown || "").split(/(```[\s\S]*?```|`[^`\n]*`)/);
-  return parts.map((part, index) => index % 2 ? part : part
-    .replace(/\\\[([\s\S]*?)\\\](?!\()/g, (match, inner) => looksLikeMath(inner) ? `$$${inner}$$` : match)
-    .replace(/\\\((.*?)\\\)(?!\()/g, (match, inner) => looksLikeMath(inner) ? `$${inner}$` : match)).join("");
-}
-
-// Live Markdown cadence: a detached render swapped in at most this often. Per-token rendering
-// is async and tore scroll and focus (2026-08-26); 350 ms reads as live and costs nothing.
-const LIVE_RENDER_MS = 350;
-
-/* ⚠ A thread saved before 2026-09-03 can say "auto" on disk, and the server refuses that word
- * now (threads.save_copilot). Coerce rather than refuse, in the ONE place every save passes
- * through: an old conversation must still open, still rename and still take a new turn. Quick
- * is what Auto resolved to nearly every time, so it is the honest fallback.
- */
-function quickOrDeep(value) {
-  return value === "deep" ? "deep" : "quick";
-}
-
-function metaText(turn) {
-  const mode = turn?.mode === "deep" ? "Deep" : "Quick";
-  const ms = Number(turn?.timing?.total_ms);
-  return Number.isFinite(ms) && ms > 0 ? `${mode} · ${Math.max(1, Math.round(ms / 1000))} s` : mode;
-}
-
-// The line under a turn while a model call runs: what it is doing and, from its first second, for
-// how long. A call writes for 10 to 30 s before anything else shows.
-function stageLine(stage, since, now) {
-  const seconds = since ? Math.floor((now - since) / 1000) : 0;
-  return `${stage || "Working"}…${seconds >= 1 ? ` ${seconds} s` : ""}`;
-}
-
-const SUGGESTED_PROMPTS = [
-  "Explain this note like I'm new to it",
-  "Quiz me on this note",
-  "What is unclear or missing here?",
-];
-
-function streamRequest(port, path, body, handlers, signal) {
-  return new Promise((resolve, reject) => {
-    const encoded = Buffer.from(JSON.stringify(body));
-    const request = http.request({
-      hostname: "127.0.0.1", port, path, method: "POST",
-      headers: { "Content-Type": "application/json", "Content-Length": encoded.length },
-    }, (response) => {
-      if (response.statusCode !== 200) {
-        const parts = [];
-        response.on("data", (chunk) => parts.push(chunk));
-        response.on("end", () => reject(new Error(
-          `${path} returned ${response.statusCode}: ${Buffer.concat(parts).toString("utf8")}`)));
-        return;
-      }
-      const parser = new SSEParser();
-      response.setEncoding("utf8");
-      response.on("data", (chunk) => {
-        try {
-          for (const item of parser.push(chunk)) {
-            const handler = handlers[item.event];
-            if (handler) handler(item.data);
-          }
-        } catch (error) {
-          response.destroy();
-          request.destroy();
-          reject(error);
-        }
-      });
-      response.on("end", resolve);
-      response.on("error", reject);
-    });
-    request.on("error", reject);
-    if (signal) signal.addEventListener("abort", () => {
-      const error = new Error("Cancelled");
-      error.name = "AbortError";
-      request.destroy(error);
-    }, { once: true });
-    request.end(encoded);
-  });
-}
-
-function clear(element) {
-  if (element.empty) element.empty();
-  else while (element.firstChild) element.removeChild(element.firstChild);
-}
-
-function create(parent, tag, cls, text) {
-  const options = {};
-  if (cls) options.cls = cls;
-  if (text !== undefined) options.text = text;
-  if (parent.createEl) return parent.createEl(tag, options);
-  const node = document.createElement(tag);
-  if (cls) node.className = cls;
-  if (text !== undefined) node.textContent = text;
-  parent.appendChild(node);
-  return node;
-}
-
-function iconButton(parent, icon, label, cls = "clickable-icon") {
-  const button = create(parent, "button", cls);
-  button.setAttribute("aria-label", label);
-  button.setAttribute("title", label);
-  if (typeof setIcon === "function") setIcon(button, icon);
-  else button.textContent = label;
-  return button;
-}
-
-// One line until they type more; capped so a long paste does not push the chat off-screen.
-function autoGrow(input, max = 180) {
-  if (!input || !input.style) return;
-  input.style.height = "auto";
-  input.style.height = `${Math.min(input.scrollHeight || 0, max)}px`;
-}
-
-function titleFromQuestion(question) {
-  const title = question.trim().replace(/\s+/g, " ");
-  return title.length > 60 ? `${title.slice(0, 57)}...` : title || "Conversation";
-}
-
-function threadId() {
-  return `chat-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
-}
-
-function atBottom(element) {
-  return element.scrollHeight - element.scrollTop - element.clientHeight <= 40;
-}
-
-function cancelledError() {
-  const error = new Error("Cancelled");
-  error.name = "AbortError";
-  return error;
-}
-
-const MAX_COPILOT_IMAGES = 3;
-const MAX_COPILOT_IMAGE_BYTES = 2_000_000;
-const MAX_COPILOT_IMAGE_INPUT_BYTES = 20_000_000;
-const MAX_COPILOT_IMAGE_EDGE = 1600;
-const COPILOT_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
-
-function imageBytes(data) {
-  return Buffer.byteLength(String(data || ""), "base64");
-}
-
-function imageName(name, mime) {
-  const safe = String(name || "image").replace(/\\/g, "/").split("/").pop().slice(0, 120);
-  const ext = mime === "image/png" ? "png" : mime === "image/webp" ? "webp" : "jpg";
-  return `${safe.replace(/\.[^.]+$/, "") || "image"}.${ext}`;
-}
-
-function loadBrowserImage(source) {
-  return new Promise((resolve, reject) => {
-    const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error("This image could not be decoded."));
-    image.src = source;
-  });
-}
-
-async function resizeCopilotImage(file) {
-  const mime = String(file?.type || "").toLowerCase();
-  if (!COPILOT_IMAGE_TYPES.has(mime)) throw new Error("Use a PNG, JPEG, or WebP image.");
-  if (!Number.isFinite(file.size) || file.size <= 0) throw new Error("This image is empty.");
-  if (file.size > MAX_COPILOT_IMAGE_INPUT_BYTES) throw new Error("Images must be 20 MB or smaller before resizing.");
-  const buffer = Buffer.from(await file.arrayBuffer());
-  const original = `data:${mime};base64,${buffer.toString("base64")}`;
-  const image = await loadBrowserImage(original);
-  if (Math.max(image.naturalWidth, image.naturalHeight) <= MAX_COPILOT_IMAGE_EDGE
-      && buffer.length <= MAX_COPILOT_IMAGE_BYTES) {
-    return { name: imageName(file.name, mime), mime, data: original.split(",")[1],
-             preview: original, bytes: buffer.length };
-  }
-  let scale = Math.min(1, MAX_COPILOT_IMAGE_EDGE / Math.max(image.naturalWidth, image.naturalHeight));
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
-    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
-    const context = canvas.getContext("2d");
-    context.fillStyle = "#fff";              // transparent textbook captures stay legible
-    context.fillRect(0, 0, canvas.width, canvas.height);
-    context.drawImage(image, 0, 0, canvas.width, canvas.height);
-    const quality = Math.max(0.65, 0.9 - attempt * 0.07);
-    const resized = canvas.toDataURL("image/jpeg", quality);
-    const data = resized.split(",")[1];
-    const bytes = imageBytes(data);
-    if (bytes <= MAX_COPILOT_IMAGE_BYTES) {
-      return { name: imageName(file.name, "image/jpeg"), mime: "image/jpeg", data,
-               preview: resized, bytes };
-    }
-    scale *= 0.8;
-  }
-  throw new Error("The image is still over 2 MB after resizing. Crop it and try again.");
-}
-
-// window.prompt is not an option: Electron defines it as a function that THROWS
-// ("prompt() is not supported."), so a `!window.prompt` guard passes and the click rejects
-// silently. `onSubmit` receives the trimmed title, or null when the modal is dismissed.
-class RenameModal extends Modal {
-  constructor(app, current, onSubmit) {
-    super(app);
-    this.current = current;
-    this.onSubmit = onSubmit;
-    this.done = false;
-  }
-
-  finish(value) {
-    if (this.done) return;
-    this.done = true;
-    this.onSubmit(value);
-  }
-
-  onOpen() {
-    const root = this.contentEl;
-    create(root, "h3", "", "Rename chat");
-    const input = create(root, "input", "slim-rename-input");
-    input.type = "text";
-    input.value = this.current;
-    input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") { event.preventDefault(); submit(); }
-    });
-    const row = create(root, "div", "slim-row");
-    const cancel = create(row, "button", "", "Cancel");
-    cancel.onclick = () => this.close();
-    const ok = create(row, "button", "mod-cta", "Rename");
-    const submit = () => {
-      const title = String(input.value || "").trim();
-      if (title) this.finish(title);
-      this.close();
-    };
-    ok.onclick = submit;
-    if (typeof input.focus === "function") { input.focus(); input.select?.(); }
-  }
-
-  onClose() {
-    clear(this.contentEl);
-    this.finish(null);
-  }
-}
-
-class CopilotView extends ItemView {
-  constructor(leaf, plugin) {
-    super(leaf);
-    this.plugin = plugin;
-    this.app = plugin.app;
-    this.context = null;
-    this.threads = [];
-    this.activeThread = null;
-    this.turns = [];
-    this.mode = "quick";
-    this.stage = "";
-    this.draft = "";
-    this.error = "";
-    this.loading = false;
-    this.sending = false;
-    this.streamingText = "";
-    this.abort = null;
-    this.requestVersion = 0;
-    this.pendingThreadId = null;
-    this.deleteArmed = null;
-    this.retryQuestion = "";
-    this.pendingImages = [];
-    this.retryImages = [];
-    this.loadingPath = null;
-    this.streamingThread = null;
-    this.streamingTurns = null;
-    this.el = null;                 // live handles from the last full render()
-    this.composerFocused = false;
-    this.groupOpen = new Map();     // sourceId -> open, where they toggled a group by hand
-    this.showThreads = false;       // the history button: the chat list in the conversation's slot
-    this.nearbyOpen = false;        // the context chip under the title
-    this.liveRenderTimer = null;    // the throttled Markdown render of the streaming answer
-    this.liveRenderVersion = 0;
-    this.liveRenderedAt = 0;
-    this.skills = [];               // /commands, from GET /api/copilot/skills
-    this.deletedThreads = new Set(); // a late save must not resurrect these
-    this.editRun = null;            // the editing run streaming now: its plan, steps and changes
-    this.editClock = null;          // its seconds, in the chat while it runs
-    this.stageSince = 0;            // when the call running now started, by the stage it named
-    this.stageClock = null;         // the stage line's seconds, while a turn runs
-    this.runTurns = new Map();      // before_ref -> the thread and turns its turn lives in
-    this.savingRuns = null;         // a run's turn saves one save after another
-    this.beforeTexts = new Map();   // before_ref -> the note as it was before that run
-    this.restoreArmed = null;       // the before_ref whose Restore waits for "Restore anyway"
-    this.restoreRefused = null;     // {ref, message}: why the server would not restore that run
-    this.restoredFrom = new Map();  // before_ref -> the note as it was just before Restore
-  }
-
-  // Re-read whenever they start a command: a skill saved in `Skills/` a moment ago is there.
-  async loadSkills() {
-    try {
-      this.skills = (await this.plugin.getJSON("/api/copilot/skills")).skills || [];
-    } catch (error) {
-      console.error("[slim] skills", error);
-    }
-    this.renderSlash();
-  }
-
-  pickSkill(skill) {
-    this.draft = `/${skill.name} `;
-    this.composerFocused = true;
-    this.render();
-  }
-
-  renderSlash() {
-    const menu = this.el?.slash;
-    if (!menu) return;
-    clear(menu);
-    const hits = matchSkills(this.skills, slashQuery(this.draft));
-    menu.hidden = !hits.length;
-    for (const skill of hits) {
-      const item = create(menu, "button", `slim-slash-item${skill.error ? " is-broken" : ""}`);
-      create(item, "span", "slim-slash-name", `/${skill.name}`);
-      create(item, "small", "slim-slash-about", skill.error ? `Broken: ${skill.error}` : skill.description || "");
-      item.onmousedown = (event) => event.preventDefault();     // keep the composer focused
-      item.onclick = () => this.pickSkill(skill);
-    }
-  }
-
-  imageURL(threadId, imageId) {
-    const port = this.plugin.settings?.port || 7546;
-    return `http://127.0.0.1:${port}/api/copilot/image?thread=${encodeURIComponent(threadId)}`
-      + `&id=${encodeURIComponent(imageId)}`;
-  }
-
-  getViewType() { return VIEW_TYPE_COPILOT; }
-  getDisplayText() { return "SLIM Copilot"; }
-  getIcon() { return "message-square-text"; }
-
-  async onOpen() {
-    // On the root, which outlives every render(): answers are rebuilt, the listener is not.
-    const root = this.contentEl;
-    if (typeof this.registerDomEvent === "function") {
-      this.registerDomEvent(root, "click", (event) => this.onLinkClick(event));
-    } else if (root && typeof root.addEventListener === "function") {
-      root.addEventListener("click", (event) => this.onLinkClick(event));
-    }
-    const file = this.app.workspace.getActiveFile ? this.app.workspace.getActiveFile() : null;
-    this.loadSkills();
-    await this.setActiveFile(file);
-  }
-
-  async onClose() { this.cancel(); }
-
-  // MarkdownRenderer turns an answer's [[wikilink]] into <a class="internal-link">, but Obsidian
-  // wires clicks on those only inside its own note views; in this sidebar they were dead.
-  // ⚠ Resolve BEFORE opening: openLinkText creates a missing target (see openNote), and the
-  // model can name a note that does not exist.
-  onLinkClick(event) {
-    const link = event?.target?.closest?.("a.internal-link");
-    if (!link) return;
-    event.preventDefault();
-    const target = link.getAttribute("data-href") || link.getAttribute("href") || "";
-    const source = this.context?.source?.path || "";
-    const linkpath = target.split("#")[0].split("|")[0].trim();
-    const file = this.app.metadataCache?.getFirstLinkpathDest?.(linkpath, source);
-    if (!file) {
-      this.error = `Note not found: ${linkpath}`;
-      this.render();
-      return;
-    }
-    this.app.workspace.openLinkText(target, source, Boolean(event.metaKey || event.ctrlKey));
-  }
-
-  async setActiveFile(file) {
-    const path = file && String(file.extension || "").toLowerCase() === "md" ? file.path : null;
-    // Same note, loaded or loading: nothing to do. Focus moving between the editor and this
-    // sidebar fires active-leaf-change with the SAME file; re-syncing here cancelled the
-    // answer, erased the question, and — with onOpen, the event and activateCopilot all
-    // racing — ran ingest_note twice into an IntegrityError. Edits since the open are picked
-    // up by send() (refreshNote), not by focus changes.
-    if (path && (this.context?.source.path === path || this.loadingPath === path)) return;
-    const version = ++this.requestVersion;
-    this.cancel();
-    this.error = "";
-    this.context = null;
-    this.activeThread = null;
-    this.turns = [];
-    this.retryQuestion = "";
-    this.pendingImages = [];
-    this.retryImages = [];
-    if (!file || String(file.extension || "").toLowerCase() !== "md") {
-      this.error = "Open a saved Markdown note to use SLIM Copilot.";
-      this.render();
-      return;
-    }
-    this.loading = true;
-    this.loadingPath = path;
-    this.render();
-    try {
-      if (typeof this.plugin.saveActiveNote === "function") {
-        await this.plugin.saveActiveNote(file);
-      }
-      if (version !== this.requestVersion) return;
-      const [context, listing] = await Promise.all([
-        this.plugin.postJSON("/api/copilot/context", { path: file.path }),
-        this.plugin.getJSON("/api/copilot/threads"),
-      ]);
-      if (version !== this.requestVersion) return;
-      this.context = context;
-      this.threads = listing.threads || [];
-      const wanted = (this.pendingThreadId
-        ? this.threads.find((item) => item.id === this.pendingThreadId
-          && item.source_id === context.source.id)
-        : null) || this.threads.find((item) => item.source_id === context.source.id);
-      if (wanted) {
-        this.pendingThreadId = null;
-        await this.openThread(wanted.id, version, true);
-      }
-    } catch (error) {
-      // A 400 is the server refusing THIS note in a sentence meant for them; the route and
-      // status in front of it are for a debugger.
-      if (version === this.requestVersion) {
-        this.error = (error.status === 400 && error.detail) || error.message || String(error);
-      }
-    } finally {
-      if (version === this.requestVersion) {
-        this.loading = false;
-        this.loadingPath = null;
-        this.render();
-      }
-    }
-  }
-
-  // The note as it is NOW: save the editor, re-sync the row (ingest_note is hash-keyed, so an
-  // unchanged note costs one stat), skip the nearby-notes search. Called by send(), so every
-  // question is answered from what they have typed, not from the version indexed at open.
-  async refreshNote() {
-    if (!this.context) return;
-    const path = this.context.source.path;
-    const file = this.app.workspace.getActiveFile ? this.app.workspace.getActiveFile() : null;
-    if (file && file.path === path && typeof this.plugin.saveActiveNote === "function") {
-      await this.plugin.saveActiveNote(file);
-    }
-    await this.saveOpenCopies(path);
-    const fresh = await this.plugin.postJSON("/api/copilot/context", { path, related: false });
-    this.context = { ...this.context, source: fresh.source };
-  }
-
-  newThread() {
-    if (!this.context) return;
-    this.activeThread = {
-      id: threadId(), title: "New chat", source_id: this.context.source.id,
-      source_path: this.context.source.path, reasoning_mode: this.mode,
-    };
-    this.turns = [];
-    this.stage = "";
-    this.error = "";
-    this.retryQuestion = "";
-    this.pendingImages = [];
-    this.retryImages = [];
-    this.showThreads = false;
-    this.render();
-  }
-
-  async openThread(id, version = this.requestVersion, afterNavigation = false) {
-    const data = await this.plugin.getJSON(`/api/copilot/thread?id=${encodeURIComponent(id)}`);
-    if (version !== this.requestVersion) return;
-    if (!afterNavigation && this.context && data.source_id !== this.context.source.id) {
-      this.pendingThreadId = id;
-      this.activeThread = null;
-      this.turns = [];
-      this.openNote(data.source_path);
-      return;
-    }
-    this.activeThread = data;
-    this.turns = data.turns || [];
-    this.pendingImages = [];
-    this.retryImages = [];
-    // A legacy "auto" on disk must not reach the mode selector; `saveRecord` normalizes the
-    // record itself, so nothing has to correct `data` here.
-    this.mode = quickOrDeep(data.reasoning_mode);
-    this.showThreads = false;
-    this.render();
-  }
-
-  async saveRecord(thread, turns) {
-    const body = {
-      id: thread.id, title: thread.title,
-      // A question's images by the refs the server stored them under. One pasted for a question
-      // that failed before a run began was never stored: it has no id, and is not saved.
-      turns: turns.map(({ attachments, ...turn }) => {
-        const refs = (attachments || []).filter((image) => image.id)
-          .map(({ id, name, mime, bytes }) => ({ id, name, mime, bytes }));
-        return refs.length ? { ...turn, attachments: refs } : turn;
-      }),
-      source_id: thread.source_id, source_path: thread.source_path,
-      // ⚠ Normalized HERE, not at the point a thread is opened: `renameThread` fetches a
-      // thread it never opened and hands it straight to this method, so a pre-2026-09-03
-      // conversation would post "auto" and be refused with nothing catching it.
-      reasoning_mode: quickOrDeep(thread.reasoning_mode || this.mode),
-    };
-    const saved = await this.plugin.postJSON("/api/copilot/thread/save", body);
-    Object.assign(thread, saved);
-    const index = this.threads.findIndex((item) => item.id === thread.id);
-    if (index >= 0) this.threads[index] = { ...thread };
-    else this.threads.unshift({ ...thread });
-    return saved;
-  }
-
-  async addImages(files) {
-    if (this.sending) return;
-    const images = [...(files || [])].filter((file) => String(file?.type || "").startsWith("image/"));
-    if (!images.length) return;
-    if (this.pendingImages.length + images.length > MAX_COPILOT_IMAGES) {
-      this.error = `Attach at most ${MAX_COPILOT_IMAGES} images to one message.`;
-      this.render();
-      return;
-    }
-    try {
-      for (const file of images) this.pendingImages.push(await resizeCopilotImage(file));
-      this.error = "";
-    } catch (error) {
-      this.error = error.message || String(error);
-    }
-    this.render();
-  }
-
-  async send(text = this.draft) {
-    const outgoingImages = this.pendingImages;
-    const question = String(text || "").trim() || (outgoingImages.length ? "Explain this image." : "");
-    if (!question || !this.context || this.sending) return;
-    if (!this.activeThread) this.newThread();
-    // A failed question waits under its error for Try again. Asking something else instead
-    // takes it off the thread: it would be saved with the next answer and sent as history, and
-    // a refused /command is sent as its whole skill prompt.
-    const failed = this.turns.at(-1);
-    if (this.retryQuestion && failed?.role === "you" && failed.text === this.retryQuestion) this.turns.pop();
-    this.retryQuestion = "";
-    this.retryImages = [];
-    // Snapshot the thread that ASKED. openThread/newThread/deleteThread stay clickable while
-    // an answer streams, and the answer belongs to this thread whatever is active when it
-    // lands — otherwise B was saved with A's answer and A's question was never saved.
-    const thread = this.activeThread;
-    const turns = this.turns;
-    const path = this.context.source.path;
-    if (!turns.length) thread.title = titleFromQuestion(question);
-    const asked = { role: "you", text: question,
-      ...(outgoingImages.length ? { attachments: outgoingImages } : {}) };
-    turns.push(asked);
-    this.draft = "";
-    this.pendingImages = [];
-    this.showThreads = false;
-    this.sending = true;
-    this.stage = "Starting";
-    this.stageStarted();
-    this.error = "";
-    let streamed = "";
-    this.streamingText = "";
-    this.streamingThread = thread;
-    this.streamingTurns = turns;
-    let completed = null;
-    let run = null;                       // an editing run, from its `edit` event on
-    let local = null, tracked = null;     // the editor tracking it from Send, and its name there
-    const started = Date.now();
-    const abort = new AbortController();
-    this.abort = abort;
-    // An editing run's events land in the note. One that throws must not end the stream (the
-    // changes before it are in the note already), and one that arrives after Stop is dropped.
-    const on = (handle) => (data) => {
-      if (abort.signal.aborted) return;
-      try { handle(data); } catch (error) { console.error("[slim] edit event", error); }
-    };
-    // A change's text while the model writes it is a draft in the note: on the editor tracking
-    // this question until the server names the run, then on the run's, while it shows the note.
-    const drafting = () => (run ? (this.inView(run) ? [run.view, run.ref] : []) : local ? [tracked, local] : []);
-    this.render();
-    try {
-      await this.refreshNote();
-      if (abort.signal.aborted) throw cancelledError();
-      // The editor's text, not the file: Obsidian saves a moment after typing, and an editing
-      // run works on exactly what the owner sees. The editor tracks the owner's typing from
-      // here, under a name of the chat's own until the server names the run.
-      const shown = this.plugin.liveViewFor?.(path) || null;
-      const text = shown ? shown.state.doc.toString() : null;
-      const doc = text !== null && text.length <= MAX_EDIT_CHARS ? text : null;
-      const view = doc === null ? null : shown;
-      if (view && this.plugin.live) {
-        local = `send-${threadId()}`;
-        tracked = view;
-        this.plugin.live.startRun(view, { id: local, base: doc, pending: true });
-      }
-      // Only where it is visibly the input: a /command. A selection left in the note rode
-      // along with every question, unseen (review, 2026-09-23).
-      const picked = question.startsWith("/") ? editorSelection(this.app, path) : { text: "" };
-      await this.plugin.streamCopilot({
-        thread_id: thread.id, source_id: this.context.source.id, question,
-        // Role, text and small image refs only, every turn whole: the server fits the
-        // conversation to the model's window (copilot.fit_window). Slim turns also carry
-        // evidence and stats; re-uploading those on every question grew with the square of the
-        // thread. Image bytes stay server-side. A question with no answer after it (a chat
-        // saved before a failed one came off) is not history.
-        history: turns.slice(0, -1).filter((turn, i, all) => turn.role !== "you" || all[i + 1]?.role === "slim")
-          .map((turn) => ({ ...turn, text: historyText(turn) }))
-          .map(({ role, text, attachments }) => ({ role, text,
-            ...(attachments?.length ? { attachments: attachments.map(
-              ({ id, name, mime, bytes }) => ({ id, name, mime, bytes })) } : {}) })),
-        // A regenerated question re-sends its stored refs; the server has the bytes.
-        images: outgoingImages.map(({ id, name, mime, data, bytes }) =>
-          data ? { name, mime, data } : { id, name, mime, bytes }),
-        reasoning_mode: this.mode,
-        ...(doc === null ? {} : { doc, doc_hash: sha256Hex(doc) }),
-        selection: picked.text,
-        ...(picked.from === undefined ? {} : { selection_from: picked.from }),
-      }, {
-        stage: (data) => this.setStage(data.stage),
-        delta: (data) => {
-          streamed += data.text || "";
-          this.streamingText = streamed;
-          this.renderDelta();
-        },
-        draft: on((data) => {
-          const [view, id] = drafting();
-          if (view) this.plugin.live?.startDraft?.(view, id, data);
-        }),
-        draft_text: on((data) => {
-          const [view] = drafting();
-          if (view) this.plugin.live?.growDraft?.(view, String(data.id), String(data.text || ""));
-        }),
-        draft_end: on((data) => {
-          const [view] = drafting();
-          if (view) this.plugin.live?.endDraft?.(view, String(data.id));
-        }),
-        edit: on((data) => {
-          // A run's turn is kept however it ends, and one that stops or fails never gets the
-          // `turn` with its question's image refs: the run's start names them.
-          if (Array.isArray(data.attachments) && data.attachments.length) asked.attachments = data.attachments;
-          const ref = String(data.before_ref || "");
-          const claimed = Boolean(local && this.plugin.live?.claimRun(tracked, local, ref));
-          local = null;
-          run = { ref, hash_before: data.hash_before, plan: null, steps: [], changes: [], pending: [],
-                  view: claimed ? tracked : null, path, started, thread, turns };
-          this.editRun = run;
-          Promise.resolve(this.plugin.showEditing?.(path)).catch((e) => console.warn("[slim] editing view", e));
-          this.startEditClock();
-          this.renderEdit();
-        }),
-        plan: on((data) => {
-          if (!run) return;
-          run.plan = { intro: String(data.intro || ""), steps: (data.steps || []).map(String) };
-          this.renderEdit();
-        }),
-        step: on((data) => {
-          if (data.state === "doing") this.stageStarted();      // a step is a call of its own
-          if (!run || !(data.index >= 1)) return;
-          run.steps[data.index - 1] = data.state;
-          this.renderEdit();
-        }),
-        change: on((data) => run && this.landChange(run, data)),
-        turn: (data) => { completed = data; },
-        error: (data) => { throw new Error(data.error || "Copilot failed"); },
-      }, abort.signal);
-      if (!completed) throw new Error("The server ended without a completed turn.");
-      asked.attachments = completed.attachments || [];
-      delete completed.attachments;          // refs belong to the user turn, not the answer
-      if (run) completed.edit_run = await this.settleRun(run, completed.edit_run || {});
-      turns.push({ role: "slim", text: completed.answer || streamed, turn: completed });
-      this.retryQuestion = "";
-      this.retryImages = [];
-      thread.reasoning_mode = this.mode;
-      await this.saveRecord(thread, turns);
-    } catch (error) {
-      const stopped = error.name === "AbortError";
-      if (run && turns.at(-1) === asked) {
-        // What landed is in the note: it stays, and the turn keeps how far the run got and the
-        // copy from before, so See before and Restore work after a reload too.
-        turns.push(await this.partialTurn(run, stopped ? "stopped" : `error: ${error.message || error}`));
-        if (!stopped) this.error = error.message || String(error);
-        thread.reasoning_mode = this.mode;
-        if (!this.deletedThreads.has(thread.id)) {
-          await this.saveRecord(thread, turns).catch((e) => { this.error = e.message || String(e); });
-        }
-      } else if (stopped) {
-        // Stopped before an answer: the question is theirs — hand it back rather than leave a
-        // dangling "you" turn to ride along as history and be persisted with the next answer.
-        if (turns.at(-1) === asked) {
-          turns.pop(); this.draft = question; this.pendingImages = outgoingImages;
-        }
-      } else if (turns.at(-1) === asked) {
-        // The model never answered: show the error under the question and offer a retry.
-        this.error = error.message || String(error);
-        this.retryQuestion = question;
-        this.retryImages = outgoingImages;
-      } else {
-        // Answered but not saved (e.g. the thread is over its cap): the answer stays visible
-        // with the reason. No retry — it would append a second you/slim pair every click.
-        this.error = error.message || String(error);
-      }
-    } finally {
-      if (local) this.plugin.live?.dropRun(tracked, local);
-      if (run) this.finishRun(run);
-      clearInterval(this.stageClock);
-      this.stageClock = null;
-      this.abort = null;
-      this.sending = false;
-      this.stopLiveRender();
-      this.streamingText = "";
-      this.streamingThread = null;
-      this.streamingTurns = null;
-      this.stage = "";
-      this.render();
-    }
-  }
-
-  // ---- an editing run, as it lands ------------------------------------------------------------
-
-  // A change to the note goes in through its editor; a new note is created at once. Either way
-  // the chat keeps its id, label and what became of it, never its text.
-  landChange(run, change) {
-    const entry = { id: String(change.id), step: change.step, op: change.op, label: change.label || "",
-                    needs: change.needs || [], ...(change.part_of != null ? { part_of: String(change.part_of) } : {}) };
-    run.changes.push(entry);
-    if (change.op === "create") {
-      entry.path = change.path;
-      entry.state = "creating";
-      run.pending.push(this.createNote(change).then((made) => { Object.assign(entry, made); this.renderEdit(); }));
-    } else if (this.inView(run)) {
-      entry.state = "skipped";            // if the editor throws, the change did not land
-      if (change.draft != null) this.plugin.live.endDraft?.(run.view, String(change.draft));   // it takes the draft's place
-      entry.state = this.plugin.live.applyChange(run.view, run.ref, change);
-    } else {
-      // The note's editor is gone or shows another note: only the note in view is edited.
-      entry.state = "skipped";
-      this.cancel();
-    }
-    this.renderEdit();
-  }
-
-  // The run's editor is still open and still shows its note.
-  inView(run) {
-    const live = this.plugin.live;
-    if (!run.view || !live || (this.plugin.liveViews && !this.plugin.liveViews.has(run.view))) return false;
-    const shows = live.pathOf(run.view);
-    return shows === null || shows === run.path;
-  }
-
-  // {state: "created"}, or {state: "failed", reason} in words the owner can act on.
-  async createNote(change) {
-    const vault = this.app.vault;
-    try {
-      // The adapter's check is the filesystem's, case-insensitive on macOS: `summary.md` must
-      // not be written over an existing `Summary.md` that the path index spells differently.
-      if (vault.getAbstractFileByPath(change.path) || await vault.adapter?.exists?.(change.path)) {
-        return { state: "failed", reason: "a note is already there" };
-      }
-      await vault.create(change.path, change.text);
-    } catch (error) {
-      console.error("[slim] create note", change.path, error);
-      return { state: "failed", reason: String(error?.message || error).split("\n")[0].slice(0, 200) };
-    }
-    // A note is not findable until it is indexed.
-    this.plugin.postJSON("/api/copilot/context", { path: change.path, related: false })
-      .catch((e) => console.warn("[slim] index new note", change.path, e.message));
-    return { state: "created" };
-  }
-
-  async trashCreated(turn, entry) {
-    const file = this.app.vault.getAbstractFileByPath(entry.path);
-    try {
-      if (file) await this.app.vault.trash(file, false);
-      entry.state = "trashed";
-    } catch (error) {
-      this.error = error.message || String(error);
-    }
-    const found = this.findRunTurn(turn.turn.edit_run.before_ref);
-    if (found) this.saveRun(found.thread, found.turns);
-    this.render();
-  }
-
-  // What the turn keeps of a run: the plan, how each step and change went, and the hashes and
-  // copy that See before and Restore need. `hash_after` is the editor's own: a change skipped
-  // because the owner typed there never reached the server's draft.
-  async settleRun(run, server) {
-    await Promise.all(run.pending);
-    const live = run.view && this.plugin.live?.state(run.view, run.ref);
-    const states = new Map((live?.changes || []).map((change) => [change.id, change.state]));
-    const doc = run.view?.state?.doc?.toString();
-    return {
-      plan: run.plan || server.plan || { intro: "", steps: [] },
-      steps_done: server.steps_done ?? run.steps.filter((state) => state && state !== "doing").length,
-      step_states: run.steps.map((state) => state || null),
-      changes: run.changes.map(({ id, step, op, label, needs, part_of, path, state, reason }) => ({
-        id, step, op, label, needs, ...(part_of ? { part_of } : {}), ...(path ? { path } : {}),
-        state: states.get(id) || state, ...(reason ? { reason } : {}) })),
-      stopped: server.stopped ?? null,
-      outline_met: server.outline_met ?? null,
-      summary: server.summary || "",
-      before_ref: run.ref,
-      hash_before: run.hash_before,
-      hash_after: doc === undefined ? server.hash_after || null : sha256Hex(doc),
-      typed: Boolean(live?.touched),
-    };
-  }
-
-  async partialTurn(run, stopped) {
-    const edit_run = await this.settleRun(run, { stopped });
-    const text = run.plan?.intro || "";
-    return { role: "slim", text, turn: { answer: text, mode: this.mode, citations: [],
-                                         timing: { total_ms: Date.now() - run.started }, edit_run } };
-  }
-
-  // The run is over: ↺ appears in the note, and the note is saved and re-indexed once.
-  finishRun(run) {
-    clearInterval(this.editClock);
-    this.editClock = null;
-    if (this.editRun === run) this.editRun = null;
-    if (run.view) this.plugin.live?.endRun(run.view, run.ref);
-    this.runTurns.set(run.ref, { thread: run.thread, turns: run.turns });
-    if (run.changes.some((change) => change.state === "applied")) {
-      this.saveOpenCopies(run.path)
-        .then(() => this.plugin.postJSON("/api/copilot/context", { path: run.path, related: false }))
-        .catch((e) => console.warn("[slim] index after edit", run.path, e.message));
-    }
-  }
-
-  startEditClock() {
-    clearInterval(this.editClock);
-    this.editClock = setInterval(() => { if (this.el?.liveEdit) this.renderEdit(); }, 1000);
-    this.editClock.unref?.();
-  }
-
-  // A call started: its seconds count from now, ticking on the second.
-  stageStarted() {
-    this.stageSince = Date.now();
-    clearInterval(this.stageClock);
-    this.stageClock = setInterval(() => { if (this.el?.stage) this.renderStage(); }, 1000);
-    this.stageClock.unref?.();
-  }
-
-  // The server names a stage as each model call starts. The same one again is that call still
-  // running (Deep's heartbeat while it thinks); a new one, or a new step, starts the count again.
-  setStage(name) {
-    const stage = name || "Working";
-    if (stage !== this.stage) {
-      this.stage = stage;
-      this.stageStarted();
-    }
-    this.renderStage();
-  }
-
-  cancel() {
-    if (this.abort) this.abort.abort();
-    this.abort = null;
-    this.sending = false;
-    this.stopLiveRender();
-    this.streamingText = "";
-    this.stage = "";
-  }
-
-  // Ask the last question again: the pair comes off the thread and the question goes back
-  // through send() with the image refs it had, so the answer lands where the first one did.
-  async regenerate() {
-    if (this.sending || !this.activeThread) return;
-    const answer = this.turns.at(-1);
-    const asked = this.turns.at(-2);
-    if (answer?.role !== "slim" || asked?.role !== "you") return;
-    // Asking again after an edit would apply its changes a second time.
-    if (answer.turn?.edit_run) return;
-    this.turns.splice(-2, 2);
-    this.pendingImages = (asked.attachments || []).map((ref) => ({ ...ref }));
-    await this.send(asked.text);
-  }
-
-  async retry() {
-    const question = this.retryQuestion;
-    if (!question || this.sending) return;
-    const last = this.turns.at(-1);
-    if (last?.role === "you" && last.text === question) this.turns.pop();
-    this.retryQuestion = "";
-    this.pendingImages = this.retryImages;
-    this.retryImages = [];
-    await this.send(question);
-  }
-
-  async deleteThread(id) {
-    if (this.deleteArmed !== id) {
-      this.deleteArmed = id;
-      this.render();
-      return;
-    }
-    this.deletedThreads.add(id);
-    // A late answer would save into — and so resurrect — the thread being deleted.
-    if (this.sending && this.streamingThread?.id === id) this.cancel();
-    await this.plugin.postJSON("/api/copilot/thread/delete", { id });
-    this.threads = this.threads.filter((item) => item.id !== id);
-    if (this.activeThread?.id === id) this.newThread();
-    this.deleteArmed = null;
-    this.render();
-  }
-
-  async renameThread(id) {
-    let thread = this.activeThread?.id === id ? this.activeThread : null;
-    let turns = this.activeThread?.id === id ? this.turns : null;
-    if (!thread) {
-      thread = await this.plugin.getJSON(`/api/copilot/thread?id=${encodeURIComponent(id)}`);
-      turns = thread.turns || [];
-    }
-    const title = await this.promptTitle(thread.title);
-    if (!title) return;
-    thread.title = title.slice(0, 120);
-    if (this.activeThread?.id === id) this.activeThread.title = thread.title;
-    await this.saveRecord(thread, turns);
-    this.render();
-  }
-
-  // Guarded like the recorder's "Open note" button: openLinkText CREATES a missing target,
-  // and citation / thread paths are only as fresh as the last ingest — a note dragged since
-  // then would become an empty phantom, which the next active-leaf-change indexes and embeds.
-  promptTitle(current) {
-    return new Promise((resolve) => new RenameModal(this.app, current, resolve).open());
-  }
-
-  async openNote(path) {
-    const file = this.app.vault && typeof this.app.vault.getAbstractFileByPath === "function"
-      ? this.app.vault.getAbstractFileByPath(path) : null;
-    if (!file) {
-      this.error = `Note not found: ${path} — it may have moved since the last index.`;
-      this.render();
-      return;
-    }
-    await this.app.workspace.getLeaf(false).openFile(file);
-  }
-
-  // Per-token updates touch two live nodes. A full render() per delta tore the whole view
-  // down ~40 times a second: the transcript's scroll position reset to the top on every
-  // token, the composer lost focus per keystroke, and a hand-expanded group snapped shut.
-  renderDelta() {
-    if (!this.el) { this.render(); return; }
-    if (!this.el.liveText) return;          // the chat list is showing; the next render catches up
-    const transcript = this.el.transcript;
-    const follow = atBottom(transcript);      // decided BEFORE the text grows the pane
-    this.el.liveText.textContent = this.streamingText;
-    if (follow) transcript.scrollTop = transcript.scrollHeight;
-    this.scheduleLiveRender();
-  }
-
-  // Markdown while it streams: plain text shows until the first rendered swap, then a detached
-  // render replaces the visible node at most every LIVE_RENDER_MS. The version guard drops a
-  // slow render that resolves after a newer one; the turn event's full render is the final word.
-  scheduleLiveRender() {
-    if (this.liveRenderTimer || !this.el?.liveText) return;
-    const wait = Math.max(0, LIVE_RENDER_MS - (Date.now() - this.liveRenderedAt));
-    this.liveRenderTimer = setTimeout(() => { this.liveRenderTimer = null; this.renderLive(); }, wait);
-  }
-
-  stopLiveRender() {
-    if (this.liveRenderTimer) clearTimeout(this.liveRenderTimer);
-    this.liveRenderTimer = null;
-    this.liveRenderVersion += 1;            // an in-flight render must not land on the next view
-    for (const host of this.liveHosts || []) this.removeChild?.(host);
-    this.liveHosts = new Set();
-  }
-
-  // Each live pass renders under its own child component, dropped with its buffer: a Deep
-  // answer is ~170 passes, and post-processor children registered on the shared mdHost would
-  // otherwise pile up until the turn's full render.
-  liveHost(buffer) {
-    if (!MarkdownRenderChild || typeof this.addChild !== "function") return undefined;
-    const host = this.addChild(new MarkdownRenderChild(buffer));
-    (this.liveHosts ||= new Set()).add(host);
-    return host;
-  }
-
-  dropLive(buffer, host) {
-    buffer?.remove?.();
-    if (host) { this.removeChild?.(host); this.liveHosts?.delete(host); }
-  }
-
-  renderLive() {
-    const el = this.el;
-    if (!el?.live || !this.sending) return;
-    const version = ++this.liveRenderVersion;
-    this.liveRenderedAt = Date.now();
-    const buffer = create(el.live, "div", "slim-message-text slim-rendered-markdown");
-    buffer.hidden = true;
-    const host = this.liveHost(buffer);
-    return this.renderMarkdown(buffer, this.streamingText, host).then(() => {
-      if (version !== this.liveRenderVersion || this.el !== el || !this.sending) { this.dropLive(buffer, host); return; }
-      const follow = atBottom(el.transcript);
-      this.dropLive(el.liveRendered, el.liveHost);
-      el.liveRendered = buffer;
-      el.liveHost = host;
-      buffer.hidden = false;
-      el.liveText.hidden = true;
-      if (follow) el.transcript.scrollTop = el.transcript.scrollHeight;
-    }).catch((e) => console.error("[slim] live render", e));
-  }
-
-  renderStage() {
-    if (!this.el) { this.render(); return; }
-    if (!this.el.stage) return;
-    this.el.stage.textContent = stageLine(this.stage, this.stageSince, Date.now());
-  }
-
-  renderMarkdown(el, markdown, host = this.mdHost || this) {
-    const text = normalizeMath(markdown);
-    if (MarkdownRenderer && typeof MarkdownRenderer.render === "function") {
-      return MarkdownRenderer.render(this.app, text, el, this.context?.source?.path || "",
-                                     host).catch((e) => {
-        console.error("[slim] render answer", e);
-        el.setText?.(text);
-      });
-    }
-    el.textContent = text;
-    return Promise.resolve();
-  }
-
-  render() {
-    const root = this.contentEl;
-    if (!root || !root.createEl) return;
-    const focused = this.composerFocused;
-    clear(root);
-    this.el = {};
-    // Rendered Markdown attaches child components (embeds, callouts) to the component it is
-    // given. One host per render, replaced by the next, so they do not pile up on the view.
-    if (this.mdHost) { this.removeChild(this.mdHost); this.mdHost = null; }
-    if (MarkdownRenderChild && typeof this.addChild === "function") {
-      this.mdHost = this.addChild(new MarkdownRenderChild(root));
-    }
-    root.addClass?.("slim-copilot");
-    const header = create(root, "header", "slim-copilot-head");
-    const headRow = create(header, "div", "slim-copilot-head-row");
-    create(headRow, "div", "slim-copilot-eyebrow", "SLIM");
-    const tools = create(headRow, "div", "slim-copilot-tools");
-    const history = iconButton(tools, "history", this.showThreads ? "Back to the chat" : "Chats",
-      this.showThreads ? "clickable-icon slim-history is-active" : "clickable-icon slim-history");
-    history.onclick = () => { this.showThreads = !this.showThreads; this.render(); };
-    const add = iconButton(tools, "plus", "New chat");
-    add.onclick = () => this.newThread();
-
-    if (this.loading) { create(root, "p", "slim-copilot-status", "Indexing this note..."); return; }
-    if (this.error && !this.context) { create(root, "p", "slim-copilot-error", this.error); return; }
-    if (!this.context) { create(root, "p", "slim-copilot-status", "Open a Markdown note."); return; }
-
-    const sourcePath = this.context.source.path;
-    const sourceTitle = this.context.source.title || pathStem(sourcePath);
-    const related = this.context.related || [];
-    if (related.length) {
-      // The title is the chip; Nearby folds under it. Closed by default: it is context for
-      // them to reach for, not the reason the pane is open.
-      const context = create(header, "details", "slim-copilot-context");
-      context.open = this.nearbyOpen;
-      const summary = create(context, "summary", "slim-copilot-context-summary");
-      summary.onclick = () => { this.nearbyOpen = !context.open; };   // pre-toggle state, as with groups
-      const note = create(summary, "span", "slim-copilot-note", sourceTitle);
-      note.setAttribute("title", sourcePath);
-      create(summary, "small", "slim-copilot-nearby-count", `${related.length} nearby`);
-      for (const item of related) {
-        const button = create(context, "button", "slim-related-note");
-        button.setAttribute("title", item.path);
-        create(button, "span", "", item.title || pathStem(item.path));
-        create(button, "small", "", item.scope || "");
-        button.onclick = () => this.openNote(item.path);
-      }
-    } else {
-      const note = create(header, "div", "slim-copilot-note", sourceTitle);
-      note.setAttribute("title", sourcePath);
-    }
-
-    if (this.showThreads) this.renderThreadList(root, sourceTitle);
-    else this.renderTranscript(root);
-
-    const composer = create(root, "footer", "slim-copilot-composer");
-    if (this.pendingImages.length) {
-      const previews = create(composer, "div", "slim-copilot-image-previews");
-      this.pendingImages.forEach((attachment, index) => {
-        const item = create(previews, "div", "slim-copilot-image-preview");
-        const image = create(item, "img", "");
-        image.src = attachment.preview
-          || (attachment.id && this.activeThread ? this.imageURL(this.activeThread.id, attachment.id) : "");
-        image.alt = attachment.name;
-        const remove = iconButton(item, "x", `Remove ${attachment.name}`);
-        remove.onclick = () => { this.pendingImages.splice(index, 1); this.render(); };
-      });
-    }
-    const slash = create(composer, "div", "slim-slash-menu");
-    this.el.slash = slash;
-    const modes = create(composer, "select", "slim-mode-select");
-    for (const value of ["quick", "deep"]) {
-      const option = create(modes, "option", "", value[0].toUpperCase() + value.slice(1));
-      option.value = value;
-      option.selected = value === this.mode;
-    }
-    modes.onchange = () => { this.mode = modes.value; };
-    const input = create(composer, "textarea", "slim-copilot-input");
-    input.placeholder = "Ask SLIM, or / for skills";
-    input.value = this.draft;
-    input.rows = 1;
-    autoGrow(input);
-    input.oninput = () => {
-      this.draft = input.value;
-      autoGrow(input);
-      if (input.value === "/") this.loadSkills();
-      else this.renderSlash();
-    };
-    input.onfocus = () => { this.composerFocused = true; };
-    input.onblur = () => { this.composerFocused = false; };
-    this.el.input = input;
-    input.onkeydown = (event) => {
-      // A half-typed command completes before it sends: "/con" + Enter is "/consolidate… ".
-      const hits = matchSkills(this.skills, slashQuery(this.draft));
-      if (hits.length && (event.key === "Tab"
-          || (event.key === "Enter" && !event.shiftKey && this.draft.length > 1
-              && !hits.some((h) => `/${h.name}` === this.draft)))) {
-        event.preventDefault();
-        this.pickSkill(hits[0]);
-        return;
-      }
-      if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); this.send(); }
-      if ((event.key === "Backspace" || event.key === "Delete") &&
-          !event.metaKey && !event.altKey && !event.ctrlKey) {
-        // Obsidian's sidebar keymap can consume deletion before Electron applies the
-        // textarea's native edit. Do the ordinary character/selection deletion here; keep
-        // modified word/line deletion native so macOS retains its platform conventions.
-        let start = Number.isInteger(input.selectionStart) ? input.selectionStart : input.value.length;
-        let end = Number.isInteger(input.selectionEnd) ? input.selectionEnd : start;
-        if (start === end && event.key === "Backspace" && start > 0) start -= 1;
-        if (start === end && event.key === "Delete" && end < input.value.length) end += 1;
-        if (start !== end) {
-          event.preventDefault();
-          input.value = `${input.value.slice(0, start)}${input.value.slice(end)}`;
-          input.selectionStart = input.selectionEnd = start;
-          this.draft = input.value;
-          this.renderSlash();
-        }
-      }
-    };
-    input.onpaste = (event) => {
-      const files = [...(event.clipboardData?.files || [])];
-      if (files.some((file) => String(file.type || "").startsWith("image/"))) {
-        event.preventDefault();
-        this.addImages(files);
-        return;
-      }
-      // Electron does not consistently perform the textarea's native insertion after a
-      // plugin paste listener has inspected clipboardData. Insert plain text ourselves while
-      // preserving the browser selection: paste must replace highlighted text, not append to
-      // the draft or trigger a full render that moves the caret.
-      const text = event.clipboardData?.getData?.("text/plain");
-      if (typeof text !== "string") return;
-      event.preventDefault();
-      const start = Number.isInteger(input.selectionStart) ? input.selectionStart : input.value.length;
-      const end = Number.isInteger(input.selectionEnd) ? input.selectionEnd : start;
-      input.value = `${input.value.slice(0, start)}${text}${input.value.slice(end)}`;
-      input.selectionStart = input.selectionEnd = start + text.length;
-      this.draft = input.value;
-      autoGrow(input);
-      this.renderSlash();
-    };
-    const picker = create(composer, "input", "slim-copilot-image-picker");
-    picker.type = "file";
-    picker.accept = "image/png,image/jpeg,image/webp";
-    picker.multiple = true;
-    picker.onchange = () => { this.addImages(picker.files); picker.value = ""; };
-    const attach = iconButton(composer, "image-plus", "Attach images", "clickable-icon slim-attach");
-    attach.onclick = () => picker.click();
-    composer.ondragover = (event) => {
-      if ([...(event.dataTransfer?.items || [])].some((item) => item.kind === "file")) event.preventDefault();
-    };
-    composer.ondrop = (event) => {
-      const files = [...(event.dataTransfer?.files || [])];
-      if (files.some((file) => String(file.type || "").startsWith("image/"))) {
-        event.preventDefault();
-        this.addImages(files);
-      }
-    };
-    const send = iconButton(
-      composer, this.sending ? "square" : "send", this.sending ? "Stop response" : "Send",
-      "mod-cta slim-send");
-    send.onclick = () => this.sending ? this.cancel() : this.send();
-    this.renderSlash();
-    if (focused && typeof input.focus === "function") {
-      input.focus();
-      input.selectionStart = input.selectionEnd = input.value.length;
-    }
-  }
-
-  renderThreadList(root, sourceTitle) {
-    const list = create(root, "nav", "slim-copilot-threads");
-    if (!this.threads.length) {
-      create(list, "p", "slim-copilot-status", "No chats yet.");
-      return;
-    }
-    for (const group of groupThreads(this.threads, this.context.source.id)) {
-      const details = create(list, "details", "slim-note-group");
-      details.open = this.groupOpen.has(group.sourceId)
-        ? this.groupOpen.get(group.sourceId) : group.expanded;
-      const label = group.sourceId === this.context.source.id
-        ? sourceTitle : noteTitle(this.app, group.path);
-      const summary = create(details, "summary", "", label);
-      summary.setAttribute("title", group.path);
-      // At click time `open` is still the pre-toggle state; the browser flips it afterwards.
-      summary.onclick = () => { this.groupOpen.set(group.sourceId, !details.open); };
-      for (const thread of group.threads) {
-        const row = create(details, "div", `slim-chat-row${thread.id === this.activeThread?.id ? " is-active" : ""}`);
-        const open = create(row, "button", "slim-chat-open", thread.title || "Conversation");
-        open.onclick = () => this.openThread(thread.id);
-        const rename = iconButton(row, "pencil", `Rename ${thread.title}`);
-        rename.onclick = () => this.renameThread(thread.id);
-        const armed = this.deleteArmed === thread.id;
-        const remove = iconButton(
-          row, armed ? "check" : "trash-2",
-          armed ? `Confirm delete ${thread.title}` : `Delete ${thread.title}`,
-          armed ? "clickable-icon is-armed" : "clickable-icon");
-        remove.onclick = () => this.deleteThread(thread.id);
-      }
-    }
-  }
-
-  renderTranscript(root) {
-    const transcript = create(root, "section", "slim-copilot-transcript");
-    this.el.transcript = transcript;
-    const pending = [];
-    for (const turn of this.turns) {
-      const message = create(transcript, "article", `slim-message is-${turn.role}`);
-      const run = turn.role === "slim" ? turn.turn?.edit_run : null;
-      if (run) {
-        this.renderEditRun(message, run, pending);
-      } else if (turn.role === "slim") {
-        const body = create(message, "div", "slim-message-text slim-rendered-markdown");
-        pending.push(this.renderMarkdown(body, turn.text)
-          .catch((e) => console.error("[slim] render answer", e)));
-      } else {
-        create(message, "div", "slim-message-text", turn.text);
-      }
-      if (turn.attachments?.length) this.renderAttachments(message, turn.attachments);
-      // Sources are a footnote row, one chip per note, only when the answer drew on notes.
-      const sources = groupCitations(turn.turn?.citations);
-      if (sources.length) {
-        const list = create(message, "div", "slim-sources");
-        create(list, "span", "slim-copilot-label", "From your notes");
-        for (const source of sources) {
-          const chip = create(list, "button", "slim-source", source.title);
-          chip.setAttribute("title", source.path);
-          chip.onclick = () => this.openNote(source.path);
-        }
-      }
-      const read = inputsText(turn.turn?.inputs);
-      if (read) create(message, "small", "slim-inputs", read);
-      if (turn.turn?.verification?.truncated && !run) {
-        create(message, "small", "slim-verification", "Cut off at the length limit — ask for the rest.");
-      }
-      if (run) this.renderEditMeta(message, run, turn);
-      else if (turn.role === "slim" && turn.turn) this.renderActions(message, turn);
-    }
-    const streamingHere = this.sending && this.turns === this.streamingTurns;
-    if (streamingHere) {
-      const live = create(transcript, "article", "slim-message is-slim is-streaming");
-      this.el.live = live;
-      if (this.editRun) {
-        this.el.liveEdit = live;
-        this.drawLiveEdit(live);
-      } else {
-        this.el.liveText = create(live, "div", "slim-message-text", this.streamingText);
-      }
-      this.el.stage = create(transcript, "div", "slim-copilot-stage", stageLine(this.stage, this.stageSince, Date.now()));
-    }
-    if (this.error) {
-      const error = create(transcript, "div", "slim-copilot-error", this.error);
-      if (this.retryQuestion) {
-        const retry = iconButton(error, "rotate-ccw", "Retry response");
-        retry.onclick = () => this.retry();
-      }
-    }
-    if (!this.turns.length && !streamingHere && !this.error) {
-      const suggestions = create(transcript, "div", "slim-suggestions");
-      for (const prompt of SUGGESTED_PROMPTS) {
-        const button = create(suggestions, "button", "slim-suggest", prompt);
-        button.onclick = () => this.send(prompt);
-      }
-    }
-    // A full render is a new transcript element at scrollTop 0: the newest turn — the
-    // reason for the render — would sit below the fold.
-    transcript.scrollTop = transcript.scrollHeight;
-    if (pending.length) {
-      // The Markdown lands after that scroll. Re-apply it once — unless they scrolled meanwhile.
-      const anchor = transcript.scrollTop;
-      Promise.all(pending).then(() => {
-        if (this.el.transcript === transcript && transcript.scrollTop === anchor) {
-          transcript.scrollTop = transcript.scrollHeight;
-        }
-      }).catch((e) => console.error("[slim] render turns", e));
-    }
-  }
-
-  // A sent image stays a thumbnail: the server serves the stored bytes back. A pending image
-  // has its own preview; a ref that fails to load falls back to the name chip.
-  renderAttachments(message, attachments) {
-    const gallery = create(message, "div", "slim-message-images");
-    const threadId = this.activeThread?.id;
-    for (const attachment of attachments) {
-      const name = attachment.name || "Attached image";
-      const src = attachment.preview || (attachment.id && threadId ? this.imageURL(threadId, attachment.id) : "");
-      if (!src) { create(gallery, "span", "slim-image-chip", name); continue; }
-      const image = create(gallery, "img", "slim-message-image");
-      image.src = src;
-      image.alt = name;
-      image.onerror = () => { image.remove?.(); create(gallery, "span", "slim-image-chip", name); };
-    }
-  }
-
-  // Under an answer: copy, regenerate (last answer only, while idle), and how it was made.
-  renderActions(message, turn) {
-    const actions = create(message, "div", "slim-message-actions");
-    const copy = iconButton(actions, "copy", "Copy answer");
-    copy.onclick = () => {
-      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) navigator.clipboard.writeText(turn.text);
-    };
-    if (turn === this.turns.at(-1) && !this.sending) {
-      const again = iconButton(actions, "refresh-cw", "Regenerate");
-      again.onclick = () => this.regenerate();
-    }
-    create(actions, "small", "slim-message-meta", metaText(turn.turn));
-  }
-
-  renderSoon() {
-    if (this.renderQueued) return;
-    this.renderQueued = true;
-    queueMicrotask(() => { this.renderQueued = false; this.render(); });
-  }
-
-  // ---- an edit turn in the chat: the intro, a line per step, what came of it ---------------
-
-  // The run streaming now, redrawn in place on each event: the transcript is not rebuilt.
-  renderEdit() {
-    if (!this.el?.liveEdit) { this.renderSoon(); return; }
-    const follow = atBottom(this.el.transcript);
-    clear(this.el.liveEdit);
-    this.drawLiveEdit(this.el.liveEdit);
-    if (follow) this.el.transcript.scrollTop = this.el.transcript.scrollHeight;
-  }
-
-  drawLiveEdit(parent) {
-    const run = this.editRun;
-    if (!run) return;
-    this.renderEditRun(parent, { plan: run.plan, step_states: run.steps, changes: run.changes }, null);
-    const meta = create(parent, "div", "slim-edit-meta");
-    create(meta, "span", "", `${this.mode === "deep" ? "Deep" : "Quick"} · ${Math.max(0, Math.round((Date.now() - run.started) / 1000))} s`);
-  }
-
-  renderEditRun(message, run, pending) {
-    const box = create(message, "div", "slim-edit");
-    const intro = run.plan?.intro || "";
-    if (intro) {
-      const el = create(box, "div", "slim-edit-intro slim-rendered-markdown");
-      if (pending) pending.push(this.renderMarkdown(el, intro).catch((e) => console.error("[slim] render intro", e)));
-      else el.textContent = intro;
-    }
-    const steps = run.plan?.steps || [];
-    const states = run.step_states || [];
-    const shown = steps.map((text, i) => [text, states[i] || (i < (run.steps_done || 0) ? "done" : null)])
-      .filter(([, state]) => state);
-    if (shown.length) {
-      const list = create(box, "ul", "slim-steps");
-      for (const [text, state] of shown) {
-        const item = create(list, "li", `slim-step is-${state}`);
-        create(item, "span", "slim-step-icon", { doing: "", done: "✓", partial: "◐", skipped: "–" }[state] ?? "");
-        create(item, "span", state === "doing" ? "slim-step-text slim-shimmer" : "slim-step-text", text);
-      }
-    }
-    if (pending && "stopped" in run) create(box, "p", "slim-edit-outcome", editOutcome(run));
-    for (const change of run.changes || []) {
-      // A change made inside another was SLIM's own rework: it is never named on its own.
-      if (change.state === "skipped" && !change.part_of) {
-        create(box, "small", "slim-edit-note", `Skipped “${change.label || change.id}”: you edited this here.`);
-      }
-      if (change.op !== "create") continue;
-      const row = create(box, "div", "slim-edit-note slim-edit-created");
-      const what = { creating: "Creating", created: "Created", trashed: "Moved to trash:",
-                     failed: `Not created (${change.reason || "it failed"}):` }[change.state] || "";
-      create(row, "span", "", `${what} `);
-      const name = create(row, "button", "slim-link", change.path);
-      name.onclick = () => this.openNote(change.path);
-      if (change.state === "created" && pending) {
-        create(row, "span", "", " · ");
-        const undo = create(row, "button", "slim-link", "Undo");
-        const turn = this.turns.find((t) => t.turn?.edit_run === run);
-        undo.onclick = () => turn && this.trashCreated(turn, change);
-      }
-    }
-  }
-
-  // N changes · Undo all · Redo · See before · Hide marks · Quick · T s, while the note's editor
-  // holds the run; once it has closed, or after a reload: N changes · See before · Restore.
-  renderEditMeta(message, run, turn) {
-    const meta = create(message, "div", "slim-edit-meta");
-    const ref = run.before_ref;
-    const parts = [];
-    const text = (value) => parts.push(["span", value]);
-    const link = (label, act, disabled = false) => parts.push(["button", label, act, disabled]);
-    const { landed, undone } = runCounts(run);
-    const inNote = landed.some((change) => change.op !== "create");
-    const view = ref && this.plugin.liveRunView?.(ref);
-    const live = view && this.plugin.live?.state(view, ref);
-    if (this.restoreRefused?.ref === ref) {
-      create(meta, "div", "slim-edit-warning", this.restoreRefused.message).setAttribute("role", "alert");
-    }
-    if (this.restoreArmed === ref) {
-      const warning = create(meta, "div", "slim-edit-warning",
-        "You've edited this note since this change; restoring would discard those edits.");
-      warning.setAttribute("role", "alert");
-      link("Restore anyway", () => this.restore(turn, true));
-      link("Cancel", () => { this.restoreArmed = null; this.render(); });
-    } else if (run.restored) {
-      text("Restored the version from before this edit");
-      if (this.restoredFrom.has(ref)) link("Undo", () => this.unrestore(turn));
-    } else {
-      if (landed.length) text(`${landed.length} change${landed.length === 1 ? "" : "s"}${undone ? `, ${undone} undone` : ""}`);
-      const shownIn = view || this.plugin.liveViewFor?.(this.context?.source?.path);
-      const showing = Boolean(ref && shownIn && this.plugin.live?.showing(shownIn) === ref);
-      if (live) {
-        link("Undo all", () => this.undoAllRun(ref), !live.changes.some((change) => change.state === "applied"));
-        if (live.redoable) link("Redo", () => this.redoRun(ref));
-        link(showing ? "Back to now" : "See before", () => this.toggleBefore(turn, !showing));
-        link(live.marks ? "Hide marks" : "Show marks", () => this.plugin.live.setMarks(view, ref, !live.marks));
-      } else if (inNote && ref) {
-        link(showing ? "Back to now" : "See before", () => this.toggleBefore(turn, !showing));
-        link("Restore", () => this.restore(turn));
-      }
-    }
-    if (turn?.turn) text(metaText(turn.turn));
-    parts.forEach(([tag, label, act, disabled], i) => {
-      if (i) create(meta, "span", "slim-edit-sep", "·");
-      const el = create(meta, tag, tag === "button" ? "slim-link" : "", label);
-      if (tag !== "button") return;
-      el.disabled = Boolean(disabled);
-      el.onclick = async () => {
-        try { await act(); } catch (error) { this.error = error.message || String(error); }
-        this.render();
-      };
-    });
-  }
-
-  // The note's editor moved a run's changes (↺, Cmd-Z, Undo all): the turn follows and is saved,
-  // with the hash Restore compares against.
-  runChanged(view, runId) {
-    const live = this.plugin.live?.state(view, runId);
-    if (this.editRun?.ref === runId) {
-      for (const change of this.editRun.changes) {
-        const now = live?.changes.find((item) => item.id === change.id);
-        if (now && change.op !== "create") change.state = now.state;
-      }
-      this.renderEdit();
-      return;
-    }
-    const found = this.findRunTurn(runId);
-    if (found && live) {
-      const run = found.turn.turn.edit_run;
-      for (const change of run.changes || []) {
-        const now = live.changes.find((item) => item.id === change.id);
-        if (now && change.op !== "create") change.state = now.state;
-      }
-      run.hash_after = sha256Hex(view.state.doc.toString());
-      if (live.touched) run.typed = true;
-      this.saveRun(found.thread, found.turns);
-    }
-    this.renderSoon();
-  }
-
-  // The turn a run belongs to, in the chat on screen or in the one it was asked in.
-  findRunTurn(ref) {
-    const at = (turns) => turns?.find((turn) => turn.role === "slim" && turn.turn?.edit_run?.before_ref === ref);
-    if (at(this.turns)) return { thread: this.activeThread, turns: this.turns, turn: at(this.turns) };
-    const kept = this.runTurns.get(ref);
-    const turn = at(kept?.turns);
-    if (!turn) return null;
-    // The same chat reopened is a fresh copy of it: save that one.
-    if (this.activeThread?.id === kept.thread.id) return null;
-    return { ...kept, turn };
-  }
-
-  // A question still waiting for its answer is not saved with it: the answer's save brings it.
-  saveRun(thread, turns) {
-    if (!thread || this.deletedThreads.has(thread.id)) return this.savingRuns;
-    const settled = this.sending && turns === this.streamingTurns && turns.at(-1)?.role === "you"
-      ? turns.slice(0, -1) : turns;
-    this.savingRuns = (this.savingRuns || Promise.resolve())
-      .then(() => this.saveRecord(thread, settled))
-      .catch((error) => { this.error = error.message || String(error); this.render(); });
-    return this.savingRuns;
-  }
-
-  async beforeText(ref) {
-    if (!this.beforeTexts.has(ref)) {
-      const data = await this.plugin.getJSON(`/api/copilot/before?thread=${encodeURIComponent(this.activeThread.id)}`
-        + `&ref=${encodeURIComponent(ref)}`);
-      this.beforeTexts.set(ref, String(data.text ?? ""));
-    }
-    return this.beforeTexts.get(ref);
-  }
-
-  async undoAllRun(ref) {
-    const view = this.plugin.liveRunView?.(ref);
-    if (!view) return;
-    const { kept } = this.plugin.live.undoAll(view, ref);
-    if (kept) new Notice(`SLIM: ${kept} change${kept === 1 ? "" : "s"} you've edited since stay as they are.`);
-  }
-
-  redoRun(ref) {
-    const view = this.plugin.liveRunView?.(ref);
-    if (view && this.plugin.live.redo(view, ref) === "refused") {
-      new Notice("SLIM: you've edited that part of the note since, so it stays as it is.");
-    }
-  }
-
-  // The note as it was before the run, over the note, read-only; the file is not touched.
-  async toggleBefore(turn, on) {
-    const run = turn.turn.edit_run;
-    const view = this.plugin.liveRunView?.(run.before_ref) || await this.plugin.noteView?.(this.context.source.path);
-    if (!view) throw new Error("Open the note in an editor to see it as it was.");
-    this.plugin.live.showBefore(view, run.before_ref, on ? await this.beforeText(run.before_ref) : "", on);
-  }
-
-  // The note as it was before the run, as one editor change (Cmd-Z takes it back). If the note
-  // has been edited since, it says so first and waits for a second click. The server says what
-  // may be put back: never a recording's frontmatter, block or transcript as they were, which a
-  // Resume may have added to since; then it refuses, and the chat says why.
-  async restore(turn, force = false) {
-    const run = turn.turn.edit_run;
-    const ref = run.before_ref;
-    const view = await this.plugin.noteView?.(this.context.source.path);
-    if (!view || !this.plugin.live) throw new Error("Open the note in an editor to restore it.");
-    const doc = view.state.doc.toString();
-    this.restoreRefused = null;
-    if (!force && (run.typed || sha256Hex(doc) !== run.hash_after)) {
-      this.restoreArmed = ref;
-      this.render();
-      return;
-    }
-    this.restoreArmed = null;
-    const answer = await this.plugin.postJSON("/api/copilot/restore", { thread_id: this.activeThread.id, ref, doc });
-    if (answer?.refused || typeof answer?.text !== "string") {
-      this.restoreRefused = { ref, message: answer?.refused || "SLIM could not restore this note." };
-      this.render();
-      return;
-    }
-    this.restoredFrom.set(ref, doc);
-    this.plugin.live.restore(view, answer.text);
-    Object.assign(run, { restored: true, typed: false, hash_after: sha256Hex(view.state.doc.toString()) });
-    this.saveRun(this.activeThread, this.turns);
-    this.reindex(this.context.source.path);
-    this.render();
-  }
-
-  // Undo of a Restore, while the note is still exactly the restored copy.
-  async unrestore(turn) {
-    const run = turn.turn.edit_run;
-    const was = this.restoredFrom.get(run.before_ref);
-    const view = this.plugin.liveViewFor?.(this.context.source.path);
-    if (was === undefined || !view) return;
-    if (sha256Hex(view.state.doc.toString()) !== run.hash_after) {
-      throw new Error("The note has changed since it was restored; use Cmd-Z in the note.");
-    }
-    this.plugin.live.restore(view, was);
-    this.restoredFrom.delete(run.before_ref);
-    Object.assign(run, { restored: false, hash_after: sha256Hex(view.state.doc.toString()) });
-    this.saveRun(this.activeThread, this.turns);
-    this.reindex(this.context.source.path);
-  }
-
-  reindex(path) {
-    this.saveOpenCopies(path)
-      .then(() => this.plugin.postJSON("/api/copilot/context", { path, related: false }))
-      .catch((e) => console.warn("[slim] index after restore", path, e.message));
-  }
-
-  // Every pane showing the note writes its buffer first, so what reads the file next (a sync,
-  // an index) sees what the owner typed, not the copy from before Obsidian's autosave.
-  async saveOpenCopies(path) {
-    for (const leaf of this.app.workspace?.getLeavesOfType?.("markdown") || []) {
-      if (leaf.view?.file?.path === path && typeof leaf.view.save === "function") await leaf.view.save();
-    }
-  }
-}
-
-// The changes a run made that the owner decides on, and how many of those are undone. A change
-// `part_of` another only rewrote SLIM's own text from earlier in the run: it is that one's.
-function runCounts(run) {
-  const landed = (run.changes || [])
-    .filter((change) => !change.part_of && !["skipped", "failed", "creating"].includes(change.state));
-  const undone = run.restored ? landed.length
-    : landed.filter((change) => change.state === "undone" || change.state === "trashed").length;
-  return { landed, undone };
-}
-
-// What the model sees of an earlier turn: an answer's prose; an edit turn as its plan and what
-// became of its changes, never the text it wrote (that is in the note, which the model reads).
-function historyText(turn) {
-  const run = turn?.turn?.edit_run;
-  if (turn?.role !== "slim" || !run) return turn?.text;
-  const { landed, undone } = runCounts(run);
-  const steps = run.plan?.steps || [];
-  return `[Changed the note: ${run.plan?.intro || run.summary || "no plan"}`
-    + `${steps.length ? `; steps: ${steps.join("; ")}` : ""}`
-    + `; ${landed.length} change${landed.length === 1 ? "" : "s"}, ${undone} undone`
-    + `${run.stopped && steps.length ? `; stopped after ${run.steps_done || 0} of ${steps.length} steps` : ""}]`;
-}
-
-const STOPPED_BECAUSE = {
-  refusals: "its changes kept being refused",
-  "call limit": "it reached its limit of calls",
-  "token budget": "it reached its output budget",
-  "empty plan": "the plan had no steps",
-};
-
-// "Done: …", or how far a run got, why it stopped, and what it left undone.
-function editOutcome(run) {
-  const steps = run.plan?.steps || [];
-  const { landed } = runCounts(run);
-  if (!run.stopped) {
-    const said = run.summary && run.summary !== run.plan?.intro ? run.summary : "";
-    if (!said) return landed.length ? "Done." : "Done. Nothing needed changing.";
-    return /^done\b/i.test(said) ? said : `Done: ${said}`;
-  }
-  const why = run.stopped === "stopped" ? ""
-    : STOPPED_BECAUSE[run.stopped] || String(run.stopped).replace(/^error: /, "");
-  if (!landed.length) return `Stopped before changing anything${why ? `: ${why}` : ""}.`;
-  if (!steps.length) return `Stopped${why ? `: ${why}` : ""}.`;
-  const done = Math.min(run.steps_done || 0, steps.length);
-  const states = run.step_states || [];
-  const left = [
-    ...steps.slice(0, done).filter((_step, i) => states[i] === "partial").map((step) => `the rest of ${step}`),
-    ...steps.slice(done),
-  ];
-  const list = left.length < 2 ? left.join("") : `${left.slice(0, -1).join(", ")} and ${left.at(-1)}`;
-  return `Stopped after ${done} of ${steps.length} step${steps.length === 1 ? "" : "s"}${why ? `: ${why}` : ""}.`
-    + `${left.length ? ` Not done: ${list}.` : ""}`;
-}
-
-/* ---- live editing: SLIM's changes land in the note as they arrive ----------------------------
- * The server runs the editing loop on its own copy of the note and streams each change as
- * splices on that copy. The plugin applies them through the editor, mapped through whatever the
- * owner typed meanwhile, and draws what each change did. Nothing here talks to the server.
- */
-
-// Words with the whitespace after them. Math, bold, code and links stay whole, so a mark never
-// splits their syntax.
-function wordTokens(text) {
-  const s = String(text || "");
-  const out = [];
-  let i = 0;
-  while (i < s.length) {
-    let j = i;
-    while (j < s.length && !/\s/.test(s[j])) {
-      let close = 0;
-      if (s[j] === "$") close = s.indexOf("$", j + 1) + 1;
-      else if (s.startsWith("**", j)) close = s.indexOf("**", j + 2) + 2;
-      else if (s[j] === "`") close = s.indexOf("`", j + 1) + 1;
-      else if (s.startsWith("[[", j)) close = s.indexOf("]]", j + 2) + 2;
-      j = close > j + 1 ? close : j + 1;
-    }
-    while (j < s.length && /\s/.test(s[j])) j += 1;
-    out.push(s.slice(i, j));
-    i = j;
-  }
-  return out;
-}
-
-// The longest common run of words; a replaced run reads removals first.
-function wordOps(before, after) {
-  const a = wordTokens(before), b = wordTokens(after);
-  const n = a.length, m = b.length;
-  const same = (i, j) => a[i].trimEnd() === b[j].trimEnd();
-  const t = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
-  for (let i = n - 1; i >= 0; i -= 1) {
-    for (let j = m - 1; j >= 0; j -= 1) {
-      t[i][j] = same(i, j) ? t[i + 1][j + 1] + 1 : Math.max(t[i + 1][j], t[i][j + 1]);
-    }
-  }
-  const ops = [];
-  let i = 0, j = 0;
-  while (i < n || j < m) {
-    if (i < n && j < m && same(i, j)) { ops.push(["=", a[i], b[j]]); i += 1; j += 1; }
-    else if (j >= m || (i < n && t[i + 1][j] >= t[i][j + 1])) { ops.push(["-", a[i]]); i += 1; }
-    else { ops.push(["+", b[j]]); j += 1; }
-  }
-  return ops;
-}
-
-const MARKER = /^\s*(?:#{1,6}\s+|(?:[-*+]|\d+[.)])\s+|>\s?)?/;
-const UNMARKABLE = /^\s*(?:\$\$|```|~~~|\|)/;
-const MAX_WORD_CELLS = 250_000;
-
-// A change that keeps every word and moves only markdown (a heading level, bold, a list marker,
-// blank lines), named for what it does; "" for a change to the words. The note draws it quietly,
-// since striking the words and drawing them again reads as a rewrite.
-function formatChange(before, after) {
-  if (!before || !after) return "";
-  const words = (text) => String(text).split(/\s+/).filter(Boolean).join(" ");
-  const plain = (text) => words(String(text)
-    .replace(/^[ \t]*(?:#{1,6}[ \t]+|>[ \t]?|(?:[-*+]|\d+[.)])[ \t]+)/gm, "")
-    .replace(/\*\*|__|~~|==|`/g, ""));
-  if (plain(before) !== plain(after)) return "";
-  const lines = (text) => String(text).split("\n").filter((line) => line.trim());
-  if (words(before) === words(after)) {
-    const indents = (text) => lines(text).map((line) => /^\s*/.exec(line)[0].length).join();
-    return indents(before) === indents(after) ? "Spacing only" : "Indentation changed";
-  }
-  const what = [];
-  const level = (line) => (/^(#{1,6})\s/.exec(line) || ["", ""])[1].length;
-  const b = lines(after);
-  lines(before).forEach((line, k) => {
-    const from = level(line), to = level(b[k] || "");
-    if (from && to && from !== to) what.push(`Heading level ${from} → ${to}`);
-  });
-  const bold = (text) => (String(text).match(/\*\*|__/g) || []).length;
-  if (bold(after) > bold(before)) what.push("Bold added");
-  if (bold(after) < bold(before)) what.push("Bold removed");
-  return [...new Set(what)].join(" · ") || "Formatting only";
-}
-
-// Line for line the same kind (a heading stays a heading of its level, an item an item), none
-// of them math, code or a table: what word marks can be drawn on. `half` also asks that each
-// line keeps half its words.
-function markable(before, after, half = true) {
-  const lines = (text) => String(text || "").split("\n").filter((line) => line.trim());
-  const a = lines(before), b = lines(after);
-  if (!a.length || a.length !== b.length) return false;
-  const kept = Boolean(formatChange(before, after));
-  return a.every((line, k) => {
-    const other = b[k];
-    if (UNMARKABLE.test(line) || UNMARKABLE.test(other)) return false;
-    const ma = MARKER.exec(line)[0], mb = MARKER.exec(other)[0];
-    if (ma.trim() !== mb.trim()) return false;
-    const x = line.slice(ma.length), y = other.slice(mb.length);
-    const xs = wordTokens(x).length, ys = wordTokens(y).length;
-    if (!(xs + ys) || xs * ys > MAX_WORD_CELLS) return false;
-    return !half || kept || (2 * wordOps(x, y).filter((op) => op[0] === "=").length) / (xs + ys) >= 0.5;
-  });
-}
-
-// What one change did, as offsets into each splice's new text: the rail over the new text, the
-// words it added, the words it removed (drawn struck where they were), a formatting-only change's
-// lines, and removed text folded into one struck line. Computed once per change.
-function changeMarks(op, pieces) {
-  return pieces.map(({ old, now }) => {
-    const out = { rail: now ? [0, now.length] : null, ins: [], dels: [], formats: [], fold: null };
-    if (!old) return out;
-    if (!now) { out.fold = { text: old, moved: op === "move" }; return out; }
-    const lines = [];
-    let pos = 0;
-    for (const line of now.split("\n")) {
-      if (line.trim()) lines.push([pos, line]);
-      pos += line.length + 1;
-    }
-    // A change that keeps most of its words is marked word by word, and so is a wording fix
-    // (edit_text) or a heading renamed, however few words stay; one mostly rewritten shows the
-    // old text folded above the new, not a scatter of marks.
-    const renamed = lines.length === 1 && /^\s*#{1,6}\s/.test(now);
-    if (formatChange(old, now)) {
-      for (const [start, line] of lines) out.formats.push([start, start + line.length]);
-    } else if (markable(old, now, op !== "edit_text" && !renamed)) {
-      const olds = old.split("\n").filter((line) => line.trim());
-      lines.forEach(([start, line], k) => {
-        const other = olds[k];
-        const ma = MARKER.exec(other)[0], mb = MARKER.exec(line)[0];
-        let at = start + mb.length, gone = "", goneAt = at, from = -1, to = -1;
-        const flushGone = () => { if (gone.trim()) out.dels.push([goneAt, gone.trimEnd()]); gone = ""; };
-        const flushAdded = () => { if (from >= 0) out.ins.push([from, to]); from = -1; };
-        for (const [kind, word, kept] of wordOps(other.slice(ma.length), line.slice(mb.length))) {
-          if (kind === "-") { if (!gone) goneAt = at; gone += word; continue; }
-          flushGone();
-          if (kind === "+") {
-            if (from < 0) from = at;
-            to = at + word.trimEnd().length;
-            at += word.length;
-            continue;
-          }
-          flushAdded();
-          at += kept.length;
-        }
-        flushGone();
-        flushAdded();
-      });
-    } else {
-      out.fold = { text: old, moved: false };
-    }
-    return out;
-  });
-}
-
-// One replace from the common prefix to the common suffix: the change between two texts.
-function textDiff(before, after) {
-  const a = String(before), b = String(after);
-  const max = Math.min(a.length, b.length);
-  let start = 0;
-  while (start < max && a.charCodeAt(start) === b.charCodeAt(start)) start += 1;
-  let end = 0;
-  while (end < max - start && a.charCodeAt(a.length - 1 - end) === b.charCodeAt(b.length - 1 - end)) end += 1;
-  if (start === a.length && start === b.length) return [];
-  return [{ from: start, to: a.length - end, insert: b.slice(start, b.length - end) }];
-}
-
-// The first line of some markdown, without its markers: what a folded removal shows.
-function excerpt(markdown) {
-  const line = String(markdown || "").split("\n").find((text) => text.trim()) || "";
-  return line.replace(/^\s*(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s?)/, "").replace(/\*\*|__|`/g, "").trim();
-}
-
-// The note's blocks: runs of lines between blank lines, with a fenced block kept whole.
-function noteBlocks(text) {
-  const out = [];
-  let lines = [], fence = null;
-  for (const line of String(text || "").split("\n")) {
-    const trimmed = line.trim();
-    if (fence) {
-      lines.push(line);
-      if (trimmed.startsWith(fence) || (fence === "$$" && trimmed.endsWith("$$"))) fence = null;
-      continue;
-    }
-    if (!trimmed) {
-      if (lines.length) out.push(lines.join("\n"));
-      lines = [];
-      continue;
-    }
-    lines.push(line);
-    const open = /^(`{3,}|~{3,}|\$\$)/.exec(trimmed);
-    if (open && !(open[1] === "$$" && trimmed.length > 2 && trimmed.endsWith("$$"))) fence = open[1];
-  }
-  if (lines.length) out.push(lines.join("\n"));
-  return out;
-}
-
-// A block as it was, with the words that are gone now struck (Markdown's ~~).
-function struckWords(before, after) {
-  const others = String(after).split("\n").filter((line) => line.trim());
-  let k = 0;
-  return String(before).split("\n").map((line) => {
-    if (!line.trim()) return line;
-    const other = others[k++] || "";
-    const ma = MARKER.exec(line)[0], mb = MARKER.exec(other)[0];
-    let out = ma, gone = "";
-    const flush = () => {
-      if (!gone) return;
-      const word = gone.trimEnd();
-      out += `~~${word}~~${gone.slice(word.length)}`;
-      gone = "";
-    };
-    for (const [kind, word] of wordOps(line.slice(ma.length), other.slice(mb.length))) {
-      if (kind === "-") gone += word;
-      else if (kind === "=") { flush(); out += word; }
-    }
-    flush();
-    return out;
-  }).join("\n");
-}
-
-// The note as it was, block by block, against the note now: what is gone, what changed, what
-// moved, and where something was added. See before draws it.
-function beforeBlocks(before, now) {
-  const a = noteBlocks(before), b = noteBlocks(now);
-  const key = (text) => text.trim();
-  const n = a.length, m = b.length;
-  const t = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
-  for (let i = n - 1; i >= 0; i -= 1) {
-    for (let j = m - 1; j >= 0; j -= 1) {
-      t[i][j] = key(a[i]) === key(b[j]) ? t[i + 1][j + 1] + 1 : Math.max(t[i + 1][j], t[i][j + 1]);
-    }
-  }
-  const runs = [];
-  let gone = [], added = [];
-  const flush = () => { if (gone.length || added.length) runs.push({ gone, added }); gone = []; added = []; };
-  let i = 0, j = 0;
-  while (i < n || j < m) {
-    if (i < n && j < m && key(a[i]) === key(b[j])) { flush(); runs.push({ same: a[i] }); i += 1; j += 1; }
-    else if (j >= m || (i < n && t[i + 1][j] >= t[i][j + 1])) gone.push(a[i++]);
-    else added.push(b[j++]);
-  }
-  flush();
-  // A block gone from one place and added at another moved: as many times as both happened.
-  const count = (field) => {
-    const out = new Map();
-    for (const run of runs) for (const text of run[field] || []) out.set(key(text), (out.get(key(text)) || 0) + 1);
-    return out;
-  };
-  const goneCount = count("gone"), addedCount = count("added");
-  const movesOut = new Map(), movesIn = new Map();
-  for (const [k, n] of goneCount) {
-    const moves = Math.min(n, addedCount.get(k) || 0);
-    if (moves) { movesOut.set(k, moves); movesIn.set(k, moves); }
-  }
-  const take = (moves, text) => {
-    const left = moves.get(key(text)) || 0;
-    if (left) moves.set(key(text), left - 1);
-    return left > 0;
-  };
-  const out = [];
-  for (const run of runs) {
-    if (run.same !== undefined) { out.push({ kind: "same", markdown: run.same }); continue; }
-    const fresh = run.added.filter((text) => !take(movesIn, text));
-    let k = 0;
-    for (const text of run.gone) {
-      if (take(movesOut, text)) { out.push({ kind: "moved", markdown: text }); continue; }
-      const other = fresh[k];
-      if (other !== undefined && markable(text, other)) {
-        out.push({ kind: "changed", markdown: struckWords(text, other) });
-        k += 1;
-      } else out.push({ kind: "removed", markdown: text });
-    }
-    const left = fresh.slice(k);
-    if (left.length) out.push({ kind: "added", markdown: excerpt(left[0]), count: left.length });
-  }
-  return out;
-}
-
-/* The live editor: one CodeMirror extension, the same in every Markdown editor. `cm` is the
- * CodeMirror modules (state, view and commands: Obsidian's at runtime, real ones in a browser
- * test); `host` is the plugin's side: the live editors, Obsidian's editor fields, a Markdown
- * renderer, an icon setter, and `changed(view, runId)`, told whenever a run's changes move.
- *
- * Per run, code keeps:
- *   base    the note as it was sent: the server's first copy;
- *   agent   the server's copy now (every change, whether it landed here or not);
- *   kept    the changes now in the note; a skipped change is never kept;
- *   doc     base with the kept changes: SLIM's version of the note;
- *   toDoc   agent → doc; owner  doc → the editor's text (everything else that changed the note).
- * Undo and redo change `kept` and replay the changes from base, so a change and the changes made
- * inside it come and go together, exactly: an inverse mapped through a later change made inside
- * its text leaves that change's words behind. A change the server says is `part_of` another
- * reworked only SLIM's own text from this run: it is drawn, counted and undone as that one.
- */
-function makeLiveEditor(cm, host) {
-  const { StateField, StateEffect, ChangeSet, Text, Compartment, EditorState } = cm.state;
-  const { EditorView, Decoration, WidgetType, ViewPlugin } = cm.view;
-  const isolate = cm.commands?.isolateHistory;
-  const AGENT = "slim.agent", UNDO = "slim.undo", REDO = "slim.redo", RESTORE = "slim.restore";
-  const setRun = StateEffect.define();      // {id, run}: this transaction is that run's own
-  const clearRuns = StateEffect.define();
-  const showBefore = StateEffect.define();  // {runId, text} or null
-  const setDraft = StateEffect.define();    // {start: draft} | {grow: {id, text}} | {end: id} | {endRun: runId} | {rename: {from, to}}
-  const DRAFT_RENDER_MS = 250;              // a draft's Markdown is drawn again at most this often
-  const lock = new Compartment();
-  const focused = new WeakMap();
-  const leaving = new WeakMap();            // view → the timer that lets go of its hovered change
-  const LEAVE_MS = 500;
-
-  const pathOf = (state) => (host.infoField && state.field(host.infoField, false)?.file?.path) || null;
-  const livePreview = (state) => !host.livePreviewField || state.field(host.livePreviewField, false) !== false;
-  const own = (spec) => ({ ...spec, annotations: isolate ? isolate.of("full") : undefined });
-
-  // The owner's edits against a range of SLIM's text: inside it, not merely beside it.
-  const inside = (changes, from, to) => {
-    let hit = false;
-    changes.iterChangedRanges((a, b) => { if (!hit) hit = a === b ? from < a && a < to : a < to && b > from; });
-    return hit;
-  };
-  // Undo or redo would replace text the owner has edited.
-  const clashes = (owner, delta) => {
-    let hit = false;
-    delta.iterChangedRanges((from, to) => { if (!hit && from < to) hit = inside(owner, from, to); });
-    return hit;
-  };
-
-  // Where each splice's new text starts once the change is in, given agent → doc.
-  const starts = (splices, toDoc) => {
-    const out = [];
-    let shift = 0;
-    for (const { from, to, insert } of splices) {
-      const a = toDoc.mapPos(from, 1), b = from === to ? a : Math.max(a, toDoc.mapPos(to, -1));
-      out.push(a + shift);
-      shift += insert.length - (b - a);
-    }
-    return out;
-  };
-  const place = (rel, at) => {
-    const out = { rails: [], ins: [], dels: [], formats: [], folds: [] };
-    rel.forEach((piece, i) => {
-      const s = at[i];
-      if (piece.rail) out.rails.push([s + piece.rail[0], s + piece.rail[1]]);
-      for (const [f, t] of piece.ins) out.ins.push([s + f, s + t]);
-      for (const [p, text] of piece.dels) out.dels.push([s + p, text]);
-      for (const [f, t] of piece.formats) out.formats.push([s + f, s + t]);
-      if (piece.fold) out.folds.push([s, piece.fold.text, piece.fold.moved]);
-    });
-    return out;
-  };
-  // A range keeps text typed at its edges outside it; a point stays before text put there.
-  const mapMarks = (at, changes) => {
-    const range = ([f, t]) => { const a = changes.mapPos(f, 1); return [a, Math.max(a, changes.mapPos(t, -1))]; };
-    const point = ([p, ...rest]) => [changes.mapPos(p, -1), ...rest];
-    return { rails: at.rails.map(range), ins: at.ins.map(range), dels: at.dels.map(point),
-             formats: at.formats.map(range), folds: at.folds.map(point) };
-  };
-
-  // The run's changes from base with `kept` in the note: agent → doc, and each change's marks.
-  function replay(run, kept) {
-    let agent = run.base, toDoc = ChangeSet.empty(run.base.length);
-    const marks = new Map();
-    for (const step of run.steps) {
-      if (kept.has(step.id)) {
-        const onDoc = step.changes.map(toDoc);
-        for (const [id, m] of marks) marks.set(id, mapMarks(m, onDoc));
-        marks.set(step.id, place(step.rel, starts(step.splices, toDoc)));
-        toDoc = toDoc.map(step.changes, true);
-      } else {
-        toDoc = step.changes.invert(agent).compose(toDoc);
-      }
-      agent = step.changes.apply(agent);
-    }
-    return { toDoc, marks };
-  }
-
-  // From one doc to another, both images of the agent's copy: back to that copy and forward
-  // again. A change neither doc keeps comes back as a replace of its text with itself; equal
-  // whole lines are trimmed from each end, so that text is never touched.
-  function between(run, toDoc) {
-    const specs = [];
-    const lines = (text) => text.match(/[^\n]*\n|[^\n]+$/g) || [];
-    run.toDoc.invert(run.agent).compose(toDoc).iterChanges((fromA, toA, _fromB, _toB, inserted) => {
-      const a = lines(run.doc.sliceString(fromA, toA)), b = lines(inserted.toString());
-      let i = 0, j = 0;
-      while (i < a.length && i < b.length && a[i] === b[i]) i += 1;
-      while (j < a.length - i && j < b.length - i && a[a.length - 1 - j] === b[b.length - 1 - j]) j += 1;
-      if (i === a.length && i === b.length) return;
-      const size = (list) => list.reduce((n, line) => n + line.length, 0);
-      specs.push({ from: fromA + size(a.slice(0, i)), to: toA - size(a.slice(a.length - j)),
-                   insert: b.slice(i, b.length - j).join("") });
-    });
-    return ChangeSet.of(specs, run.doc.length);
-  }
-
-  // Everything that needs these changes, directly or through another.
-  const dependents = (run, ids) => {
-    const out = new Set(ids);
-    for (let grew = true; grew;) {
-      grew = false;
-      for (const step of run.steps) {
-        if (!out.has(step.id) && step.needs.some((id) => out.has(id))) { out.add(step.id); grew = true; }
-      }
-    }
-    return out;
-  };
-  // A kept set the note can hold: every change in it has what it needs, and nothing that needs
-  // a skipped change is ever in it.
-  const holdable = (run, ids) => {
-    const byId = new Map(run.steps.map((step) => [step.id, step]));
-    const blocked = new Set(run.steps.filter((step) => step.skipped).map((step) => step.id));
-    for (let grew = true; grew;) {
-      grew = false;
-      for (const step of run.steps) {
-        if (!blocked.has(step.id) && step.needs.some((id) => blocked.has(id))) { blocked.add(step.id); grew = true; }
-      }
-    }
-    const out = new Set();
-    const add = (id) => {
-      if (out.has(id) || blocked.has(id) || !byId.has(id)) return;
-      out.add(id);
-      for (const need of byId.get(id).needs) add(need);
-    };
-    for (const id of ids) add(id);
-    return out;
-  };
-  const same = (a, b) => a.size === b.size && [...a].every((id) => b.has(id));
-
-  // A run moved to another kept set; null when the owner's edits are in the way.
-  function moved(run, kept, push) {
-    const w = replay(run, kept);
-    const delta = between(run, w.toDoc);
-    if (clashes(run.owner, delta)) return null;
-    const redo = (push ? [...run.redo, push] : run.redo).filter((group) => group.some((id) => !kept.has(id)));
-    return {
-      changes: delta.map(run.owner),
-      run: { ...run, kept, doc: delta.apply(run.doc), toDoc: w.toDoc, owner: run.owner.map(delta, true),
-             marks: w.marks, redo, latest: null, version: run.version + 1 },
-    };
-  }
-
-  // Cmd-Z and Cmd-Shift-Z are the editor's own history: when one takes a change out or puts it
-  // back, the run follows. Recognized by its result, the note as that move would leave it.
-  function fromHistory(run, tr) {
-    const tries = [...run.redo].reverse().map((group) => ({ kept: holdable(run, [...run.kept, ...group]) }));
-    for (const step of [...run.steps].reverse()) {
-      if (step.skipped) continue;
-      if (run.kept.has(step.id)) {
-        const gone = dependents(run, [step.id]);
-        tries.push({ kept: new Set([...run.kept].filter((id) => !gone.has(id))),
-                     push: [...gone].filter((id) => run.kept.has(id)) });
-      } else {
-        tries.push({ kept: holdable(run, [...run.kept, step.id]) });
-      }
-    }
-    for (const { kept, push } of tries) {
-      if (same(kept, run.kept)) continue;
-      const next = moved(run, kept, push);
-      if (next && next.changes.apply(tr.startState.doc).eq(tr.newDoc)) return next.run;
-    }
-    return null;
-  }
-
-  const runsField = StateField.define({
-    create: () => new Map(),
-    update(runs, tr) {
-      const mine = new Map();
-      for (const effect of tr.effects) {
-        if (effect.is(clearRuns)) return new Map();
-        if (effect.is(setRun)) mine.set(effect.value.id, effect.value.run);
-      }
-      if (!mine.size && !tr.docChanged) return runs;
-      const path = pathOf(tr.state);
-      const history = tr.isUserEvent("undo") || tr.isUserEvent("redo");
-      const next = new Map();
-      for (const [id, run] of runs) {
-        if (mine.has(id)) continue;
-        if (!tr.docChanged) { next.set(id, run); continue; }
-        if (run.path && path && run.path !== path) continue;  // the editor shows another note now
-        next.set(id, (history && fromHistory(run, tr))
-          || { ...run, owner: run.owner.compose(tr.changes) });
-      }
-      for (const [id, run] of mine) if (run) next.set(id, run);
-      return next;
-    },
-  });
-
-  const beforeField = StateField.define({
-    create: () => null,
-    update(value, tr) {
-      for (const effect of tr.effects) if (effect.is(showBefore)) value = effect.value;
-      return value;
-    },
-  });
-
-  const runOf = (state, runId) => state.field(runsField, false)?.get(runId) || null;
-
-  // ---- drawing -----------------------------------------------------------------------------
-
-  // Words a change removed, struck, where they were.
-  class Gone extends WidgetType {
-    constructor(text, raw, path) { super(); this.text = text; this.raw = raw; this.path = path; }
-    eq(other) { return other.text === this.text && other.raw === this.raw; }
-    toDOM() {
-      const span = document.createElement("span");
-      span.className = "slim-del";
-      span.textContent = this.text;
-      if (!this.raw) {
-        const holder = document.createElement("div");
-        Promise.resolve(host.render(holder, this.text, this.path)).then(() => {
-          const p = holder.querySelector("p") || holder;
-          if (p.childNodes.length) span.replaceChildren(...p.childNodes);
-        }).catch(() => {});
-      }
-      return span;
-    }
-  }
-
-  const undoButton = (view, runId, id, tip) => {
-    const button = document.createElement("button");
-    button.className = "slim-undo";
-    button.setAttribute("aria-label", `Undo: ${tip}`);
-    if (host.icon) host.icon(button, "undo-2");
-    if (!button.childNodes.length) button.textContent = "↺";
-    const label = button.appendChild(document.createElement("span"));
-    label.className = "slim-undo-tip";
-    label.textContent = `Undo · ${tip}`;
-    button.onmousedown = (event) => event.preventDefault();         // keep the caret where it is
-    // The editor ignores events inside a widget: the button holds its change's hover itself.
-    button.onmouseenter = () => showHover(view, runId, id);
-    button.onmouseleave = () => leaveHover(view);
-    button.onclick = (event) => {
-      event.preventDefault();
-      const done = api.undo(view, runId, [id]);
-      if (done === "refused") host.refused?.(view, runId, id);
-    };
-    return button;
-  };
-
-  // ↺ at the left of a change's first line, shown while the change is hovered.
-  class Undo extends WidgetType {
-    constructor(runId, id, tip, shown) { super(); this.runId = runId; this.id = id; this.tip = tip; this.shown = shown; }
-    eq(other) { return other.runId === this.runId && other.id === this.id && other.tip === this.tip && other.shown === this.shown; }
-    toDOM(view) {
-      const holder = document.createElement("span");
-      holder.className = `slim-undo-holder${this.shown ? " is-shown" : ""}`;
-      holder.dataset.key = `${this.runId}\n${this.id}\n${this.tip}`;
-      holder.appendChild(undoButton(view, this.runId, this.id, this.tip));
-      return holder;
-    }
-    // Hovering only shows or hides it: the button under the pointer stays the same element.
-    updateDOM(dom) {
-      if (dom.dataset.key !== `${this.runId}\n${this.id}\n${this.tip}`) return false;
-      dom.classList.toggle("is-shown", this.shown);
-      return true;
-    }
-    ignoreEvent() { return true; }
-  }
-
-  // Removed text, folded into one struck line that opens on a click; a moved block's line says
-  // so and a click goes to where it went.
-  class Folded extends WidgetType {
-    constructor(opts) { super(); Object.assign(this, opts); }
-    eq(other) { return other.key === this.key && other.hovered === this.hovered; }
-    get key() { return JSON.stringify(["runId", "id", "text", "moved", "open", "undo", "path"].map((k) => this[k])); }
-    toDOM(view) {
-      const box = document.createElement("div");
-      box.className = `slim-removed slim-change${this.hovered ? " is-hovered" : ""}`;
-      box.dataset.slimRun = this.runId;
-      box.dataset.slimChange = this.id;
-      box.dataset.key = this.key;
-      box.onmouseenter = () => showHover(view, this.runId, this.id);
-      box.onmouseleave = () => leaveHover(view);
-      const line = box.appendChild(document.createElement("button"));
-      line.className = "slim-removed-line";
-      line.setAttribute("aria-expanded", String(Boolean(this.open)));
-      const struck = line.appendChild(document.createElement("s"));
-      struck.textContent = excerpt(this.text) || "(blank lines)";
-      if (this.moved) line.appendChild(document.createTextNode(" · moved"));
-      line.title = this.moved ? "Show where it went" : this.open ? "Fold" : "Show what was removed";
-      line.onmousedown = (event) => event.preventDefault();
-      line.onclick = (event) => {
-        event.preventDefault();
-        if (this.moved) api.reveal(view, this.runId, this.id);
-        else api.toggleOpen(view, this.runId, this.id);
-      };
-      if (this.open && !this.moved) {
-        const full = box.appendChild(document.createElement("div"));
-        full.className = "slim-removed-full";
-        Promise.resolve(host.render(full, this.text, this.path)).catch(() => { full.textContent = this.text; });
-      }
-      if (this.undo) {
-        const holder = box.appendChild(document.createElement("span"));
-        holder.className = `slim-undo-holder${this.hovered ? " is-shown" : ""}`;
-        holder.appendChild(undoButton(view, this.runId, this.id, this.undo));
-      }
-      return box;
-    }
-    // Hovering only marks it: the box under the pointer stays the same element.
-    updateDOM(dom) {
-      if (dom.dataset.key !== this.key) return false;
-      dom.classList.toggle("is-hovered", Boolean(this.hovered));
-      dom.querySelector(".slim-undo-holder")?.classList.toggle("is-shown", Boolean(this.hovered));
-      return true;
-    }
-    ignoreEvent() { return true; }
-  }
-
-  // ↺'s words: the change, and how many other changes made inside it go with it. Its own
-  // rewrites (`part_of` it) are the change itself and are not counted.
-  const tipFor = (run, step) => {
-    const parts = new Set(run.steps.filter((other) => other.partOf).map((other) => other.id));
-    const inside = [...dependents(run, [step.id])]
-      .filter((id) => id !== step.id && run.kept.has(id) && !parts.has(id)).length;
-    return `${step.label || step.id}${inside ? ` · also undoes ${inside} inside it` : ""}`;
-  };
-
-  function draw(state) {
-    const runs = state.field(runsField, false);
-    if (!runs?.size) return Decoration.none;
-    const { doc } = state;
-    const raw = !livePreview(state);
-    const path = pathOf(state) || "";
-    const clamp = (pos) => Math.max(0, Math.min(doc.length, pos));
-    const ranges = [];
-    for (const run of runs.values()) {
-      if (!run.marks || !run.display.marks || run.owner.newLength !== doc.length) continue;
-      const settled = !run.active;
-      // A change and the changes `part_of` it are drawn as one, under its id: one rail, one
-      // hover, one ↺ on the first line any of them covers.
-      const drawn = [], lines = new Map();
-      for (const step of run.steps) {
-        const root = step.partOf || step.id;
-        if (!run.kept.has(step.id) || !run.kept.has(root) || !run.marks.has(step.id)) continue;
-        const at = mapMarks(run.marks.get(step.id), run.owner);
-        drawn.push({ step, root, at });
-        if (!lines.has(root)) lines.set(root, new Set());
-        for (const [f, t] of at.rails) {
-          if (t <= f) continue;
-          let end = t;
-          while (end > f + 1 && doc.sliceString(end - 1, end) === "\n") end -= 1;
-          for (let pos = clamp(f); pos <= clamp(end - 1) && pos < doc.length + 1;) {
-            const line = doc.lineAt(pos);
-            lines.get(root).add(line.from);
-            if (line.to >= doc.length) break;
-            pos = line.to + 1;
-          }
-        }
-      }
-      const byId = new Map(run.steps.map((step) => [step.id, step]));
-      for (const [root, starts] of lines) {
-        const hovered = run.display.hover === root;
-        const cls = `slim-change${hovered ? " is-hovered" : ""}${run.latest === root ? " slim-arrive" : ""}`;
-        const attributes = { "data-slim-run": run.id, "data-slim-change": root };
-        for (const from of starts) ranges.push(Decoration.line({ class: cls, attributes }).range(from));
-        if (settled && starts.size) {
-          const widget = new Undo(run.id, root, tipFor(run, byId.get(root)), hovered);
-          ranges.push(Decoration.widget({ widget, side: -1 }).range(Math.min(...starts)));
-        }
-      }
-      for (const { step, root, at } of drawn) {
-        // A change made inside another is measured against SLIM's own draft, not the owner's
-        // text: it draws its rails and nothing else.
-        if (step.id !== root) continue;
-        for (const [f, t] of at.ins) if (t > f) ranges.push(Decoration.mark({ class: "slim-ins" }).range(clamp(f), clamp(t)));
-        for (const [f, t] of at.formats) if (t > f) ranges.push(Decoration.mark({ class: "slim-format" }).range(clamp(f), clamp(t)));
-        for (const [p, text] of at.dels) {
-          ranges.push(Decoration.widget({ widget: new Gone(text, raw, path), side: -1 }).range(clamp(p)));
-        }
-        at.folds.forEach(([p, text, isMove], k) => {
-          const widget = new Folded({ runId: run.id, id: root, text, moved: isMove, path,
-            open: run.display.open.has(root), hovered: run.display.hover === root,
-            undo: settled && !lines.get(root).size && k === 0 ? tipFor(run, step) : null });
-          ranges.push(Decoration.widget({ widget, block: true, side: -1 }).range(doc.lineAt(clamp(p)).from));
+        containerEl.createEl("p", {
+          cls: "slim-hint",
+          text: "Changes take effect the next time the server is started \u2014 disable and re-enable the plugin to restart it now."
         });
       }
-    }
-    return Decoration.set(ranges, true);
+    };
+    module2.exports = { DEFAULTS, SlimSettingTab };
   }
+});
 
-  const marksField = StateField.define({
-    create: draw,
-    update(value, tr) {
-      const was = tr.startState, now = tr.state;
-      if (tr.docChanged || was.field(runsField, false) !== now.field(runsField, false)
-          || livePreview(was) !== livePreview(now)) return draw(now);
-      return value;
-    },
-    provide: (field) => EditorView.decorations.from(field),
-  });
-
-  // See before: the note as it was, in place, read-only, with what changed since marked on it.
-  class Before extends WidgetType {
-    constructor(runId, text, path) { super(); this.runId = runId; this.text = text; this.path = path; }
-    eq(other) { return other.runId === this.runId && other.text === this.text; }
-    toDOM(view) {
-      const root = document.createElement("div");
-      root.className = "slim-before";
-      const bar = root.appendChild(document.createElement("div"));
-      bar.className = "slim-before-bar";
-      const title = bar.appendChild(document.createElement("b"));
-      title.textContent = "Before SLIM's edits";
-      const note = bar.appendChild(document.createElement("span"));
-      note.textContent = "read-only";
-      const back = bar.appendChild(document.createElement("button"));
-      back.className = "slim-link";
-      back.textContent = "Back to now";
-      back.onmousedown = (event) => event.preventDefault();
-      back.onclick = (event) => { event.preventDefault(); api.showBefore(view, this.runId, this.text, false); };
-      for (const block of beforeBlocks(this.text, view.state.doc.toString())) {
-        const el = root.appendChild(document.createElement("div"));
-        if (block.kind === "added") {
-          el.className = "slim-before-marker is-added";
-          el.textContent = `+ added here: ${block.markdown}${block.count > 1 ? ` (and ${block.count - 1} more)` : ""}`;
-          continue;
+// src/sse.js
+var require_sse = __commonJS({
+  "src/sse.js"(exports2, module2) {
+    "use strict";
+    var http = require("http");
+    var SSEParser = class {
+      constructor() {
+        this.buffer = "";
+      }
+      push(chunk) {
+        this.buffer += chunk;
+        const events = [];
+        while (true) {
+          const boundary = this.buffer.indexOf("\n\n");
+          if (boundary < 0) break;
+          const block = this.buffer.slice(0, boundary);
+          this.buffer = this.buffer.slice(boundary + 2);
+          let event = "message";
+          const data = [];
+          for (const line of block.split("\n")) {
+            if (line.startsWith("event:")) event = line.slice(6).trim();
+            if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
+          }
+          if (!data.length) continue;
+          try {
+            events.push({ event, data: JSON.parse(data.join("\n")) });
+          } catch (_error) {
+            events.push({ event: "error", data: { error: "Malformed server event" } });
+          }
         }
-        el.className = `slim-before-block${block.kind === "same" ? "" : ` slim-change is-${block.kind}`}`;
-        Promise.resolve(host.render(el, block.markdown, this.path)).catch(() => { el.textContent = block.markdown; });
-        if (block.kind === "moved") {
-          const marker = root.appendChild(document.createElement("div"));
-          marker.className = "slim-before-marker is-moved";
-          marker.textContent = "moved";
-        }
+        return events;
       }
-      return root;
-    }
-    ignoreEvent() { return true; }
-  }
-
-  const beforeMarks = StateField.define({
-    create: () => Decoration.none,
-    update(value, tr) {
-      const shown = tr.state.field(beforeField, false);
-      if (!shown) return Decoration.none;
-      if (!tr.docChanged && shown === tr.startState.field(beforeField, false)) return value;
-      const widget = new Before(shown.runId, shown.text, pathOf(tr.state) || "");
-      return Decoration.set([Decoration.replace({ widget, block: true }).range(0, tr.state.doc.length)]);
-    },
-    provide: (field) => EditorView.decorations.from(field),
-  });
-
-  // ---- drafts: a change's text while the model writes it ------------------------------------
-
-  // Shown where the change will go and never in the note: no history, no save, nothing for a
-  // change to skip. A replace dims the text it will replace. Each draft's place is in this
-  // editor's own positions, so every edit, the owner's or SLIM's, maps it; the change that
-  // lands, the server, or the run's end takes it away.
-  const draftsField = StateField.define({
-    create: () => new Map(),
-    update(drafts, tr) {
-      let next = drafts;
-      const path = pathOf(tr.state);                // the editor shows another note now: none of its drafts
-      if (drafts.size && (tr.docChanged || path !== pathOf(tr.startState))) {
-        next = new Map([...drafts].filter(([, d]) => !(d.path && path && d.path !== path)).map(([id, d]) => {
-          if (!tr.docChanged) return [id, d];
-          if (d.from === d.to) { const at = tr.changes.mapPos(d.from, -1); return [id, { ...d, from: at, to: at }]; }
-          const from = tr.changes.mapPos(d.from, 1);
-          return [id, { ...d, from, to: Math.max(from, tr.changes.mapPos(d.to, -1)) }];
-        }));
-      }
-      for (const effect of tr.effects) {
-        if (!effect.is(setDraft)) continue;
-        const { start, grow, end, endRun, rename } = effect.value;
-        next = new Map(next);
-        if (start) next.set(start.id, start);
-        if (grow && next.has(grow.id)) next.set(grow.id, { ...next.get(grow.id), text: next.get(grow.id).text + grow.text });
-        if (end != null) next.delete(end);
-        for (const [id, d] of next) {
-          if (endRun != null && d.runId === endRun) next.delete(id);
-          if (rename && d.runId === rename.from) next.set(id, { ...d, runId: rename.to });
-        }
-      }
-      return next;
-    },
-  });
-  const draftsOf = (state, runId) => [...(state.field(draftsField, false)?.values() || [])].some((d) => d.runId === runId);
-
-  // The draft's Markdown, drawn again at most every DRAFT_RENDER_MS with the latest text; plain
-  // text until the first drawing is in. Drawings can finish out of order: one replaces what is
-  // shown only if it began later, and each is dropped (and its component) with the next.
-  const paintDraft = (view, box, text, path) => {
-    box.slimText = text;
-    if (box.slimTimer) return;
-    box.slimTimer = setTimeout(() => {
-      box.slimTimer = null;
-      box.slimAt = Date.now();
-      const order = box.slimBegun = (box.slimBegun || 0) + 1;
-      const shown = box.slimText, holder = document.createElement("div");
-      const drawn = host.renderFor ? host.renderFor(holder, shown, path)
-        : Promise.resolve(host.render(holder, shown, path)).then(() => null);
-      Promise.resolve(drawn).then((drop) => {
-        if (box.slimGone || order < (box.slimShown || 0)) { drop?.(); return; }
-        box.slimShown = order;
-        box.slimDrop?.();
-        box.slimDrop = drop;
-        box.replaceChildren(...holder.childNodes);
-        view.requestMeasure();
-      }).catch(() => { if (!box.slimGone && order >= (box.slimShown || 0)) box.textContent = shown; });
-    }, Math.max(0, DRAFT_RENDER_MS - (Date.now() - (box.slimAt || 0))));
-  };
-
-  class Draft extends WidgetType {
-    constructor(id, text, path) { super(); this.id = id; this.text = text; this.path = path; }
-    eq(other) { return other.id === this.id && other.text === this.text; }
-    toDOM(view) {
-      const box = document.createElement("div");
-      box.className = "slim-draft";
-      box.dataset.draft = this.id;
-      box.textContent = this.text;
-      paintDraft(view, box, this.text, this.path);
-      return box;
-    }
-    updateDOM(dom, view) {
-      if (dom.dataset.draft !== this.id) return false;
-      paintDraft(view, dom, this.text, this.path);
-      return true;
-    }
-    destroy(dom) {
-      dom.slimGone = true;
-      clearTimeout(dom.slimTimer);
-      dom.slimDrop?.();
-    }
-    ignoreEvent() { return true; }
-  }
-
-  // Under the text it will replace, or at the start of the line its insert goes before; at the
-  // end of a line, under it.
-  const draftMarks = StateField.define({
-    create: () => Decoration.none,
-    update(value, tr) {
-      const drafts = tr.state.field(draftsField, false);
-      if (drafts === tr.startState.field(draftsField, false) && !tr.docChanged) return value;
-      if (!drafts?.size) return Decoration.none;
-      const { doc } = tr.state;
-      const path = pathOf(tr.state) || "";
-      const ranges = [];
-      for (const d of drafts.values()) {
-        const from = Math.min(d.from, doc.length), to = Math.min(Math.max(d.to, from), doc.length);
-        for (let pos = from; pos < to;) {
-          const line = doc.lineAt(pos);
-          ranges.push(Decoration.line({ class: "slim-drafting" }).range(line.from));
-          if (line.to >= doc.length) break;
-          pos = line.to + 1;
-        }
-        const line = doc.lineAt(to), widget = new Draft(d.id, d.text, path);
-        ranges.push(to === line.from ? Decoration.widget({ widget, block: true, side: -1 }).range(to)
-          : Decoration.widget({ widget, block: true, side: 1 }).range(line.to));
-      }
-      return Decoration.set(ranges, true);
-    },
-    provide: (field) => EditorView.decorations.from(field),
-  });
-
-  // Every live editor, so the plugin finds the one showing a note; and each run that moved, so
-  // the chat and its saved turn follow what happened in the note (↺, Cmd-Z, See before).
-  const tracker = ViewPlugin.fromClass(class {
-    constructor(view) {
-      this.view = view;
-      host.views.add(view);
-      focused.set(view, view.hasFocus ? Date.now() : 0);
-    }
-    update(update) {
-      if (update.focusChanged && update.view.hasFocus) focused.set(update.view, Date.now());
-      const was = update.startState.field(runsField, false), now = update.state.field(runsField, false);
-      const told = new Set();
-      if (was !== now) {
-        for (const [id, run] of was) if (!run.pending && now.get(id)?.version !== run.version) told.add(id);
-        for (const [id, run] of now) if (!run.pending && !was.has(id)) told.add(id);
-      }
-      const before = update.startState.field(beforeField, false), after = update.state.field(beforeField, false);
-      if (before !== after) for (const shown of [before, after]) if (shown) told.add(shown.runId);
-      if (told.size) queueMicrotask(() => { for (const id of told) host.changed?.(update.view, id); });
-    }
-    destroy() {
-      host.views.delete(this.view);
-      clearTimeout(leaving.get(this.view));          // never let go of a hover in a closed editor
-      leaving.delete(this.view);
-    }
-  });
-
-  // A change under the pointer is marked and shows its ↺ at once. Leaving waits a moment before
-  // letting go, so the pointer can cross the margin to ↺.
-  const showHover = (view, runId, id) => {
-    clearTimeout(leaving.get(view));
-    leaving.delete(view);
-    const runs = view.state.field(runsField, false);
-    if (!runs) return;
-    const effects = [];
-    for (const run of runs.values()) {
-      const want = run.id === runId ? id : null;
-      if (run.display.hover !== want) {
-        effects.push(setRun.of({ id: run.id, run: { ...run, display: { ...run.display, hover: want } } }));
-      }
-    }
-    if (effects.length) view.dispatch({ effects });
-  };
-  const leaveHover = (view) => {
-    const runs = view.state.field(runsField, false);
-    if (leaving.has(view) || ![...(runs?.values() || [])].some((run) => run.display.hover)) return;
-    leaving.set(view, setTimeout(() => { leaving.delete(view); showHover(view, null, null); }, LEAVE_MS));
-  };
-  const hover = (view, target) => {
-    const el = target?.closest?.("[data-slim-change]");
-    if (el) showHover(view, el.dataset.slimRun, el.dataset.slimChange);
-    else leaveHover(view);
-    return false;
-  };
-
-  const api = {
-    extension: [runsField, marksField, beforeField, beforeMarks, draftsField, draftMarks, tracker, lock.of([]),
-      EditorView.domEventHandlers({
-        mouseover: (event, view) => hover(view, event.target),
-        mouseleave: (_event, view) => hover(view, null),
-      })],
-    pathOf: (view) => pathOf(view.state),
-    focusedAt: (view) => focused.get(view) || 0,
-
-    // A run starts on the text that was sent, at Send: every keystroke from then on is the
-    // owner's, mapped exactly (anything already typed counts as one replace). Until the server
-    // names the run it is `pending`, under the chat's own name, and the chat is not told of it.
-    startRun(view, { id, base, pending = false }) {
-      const sent = Text.of(String(base).split("\n"));
-      const now = view.state.doc.toString();
-      const run = {
-        id, path: pathOf(view.state), base: sent, agent: sent, doc: sent, steps: [], kept: new Set(),
-        toDoc: ChangeSet.empty(sent.length), owner: ChangeSet.of(textDiff(String(base), now), sent.length),
-        marks: new Map(), redo: [], active: true, latest: null, version: 1, pending,
-        display: { marks: true, hover: null, open: new Set() },
-      };
-      view.dispatch({ effects: setRun.of({ id, run }) });
-    },
-
-    // The server's name for a run started at Send; false when the editor no longer has it.
-    claimRun(view, from, to) {
-      const run = runOf(view.state, from);
-      if (!run) return false;
-      view.dispatch({ effects: [setRun.of({ id: from, run: null }), setDraft.of({ rename: { from, to } }),
-        setRun.of({ id: to, run: { ...run, id: to, pending: false, version: run.version + 1 } })] });
-      return true;
-    },
-
-    // A question answered, or a request that never became a run: nothing to keep.
-    dropRun(view, id) {
-      const effects = draftsOf(view.state, id) ? [setDraft.of({ endRun: id })] : [];
-      if (runOf(view.state, id)) effects.push(setRun.of({ id, run: null }));
-      if (effects.length) view.dispatch({ effects });
-    },
-
-    // A change's text while the model writes it, at its place in the server's copy (UTF-16 units
-    // of that copy, as splices are), shown where that place is now. False when the editor has no
-    // such run or the place is not in its copy.
-    startDraft(view, runId, { id, from, to, text = "" }) {
-      const run = runOf(view.state, runId), path = pathOf(view.state);
-      if (!run || !Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from || to > run.agent.length) return false;
-      if (run.path && path && run.path !== path) return false;      // the editor shows another note now
-      const point = (pos, side) => run.owner.mapPos(run.toDoc.mapPos(pos, side), side);
-      const a = point(from, from === to ? -1 : 1), b = from === to ? a : Math.max(a, point(to, -1));
-      const effects = [setDraft.of({ start: { id: String(id), runId, path: run.path, from: a, to: b, text: String(text) } })];
-      if (!view.hasFocus) effects.push(EditorView.scrollIntoView(b, { y: "nearest", yMargin: 80 }));
-      view.dispatch({ effects });
-      return true;
-    },
-
-    growDraft(view, id, text) {
-      if (text && view.state.field(draftsField, false)?.has(id)) view.dispatch({ effects: setDraft.of({ grow: { id, text } }) });
-    },
-
-    endDraft(view, id) {
-      if (view.state.field(draftsField, false)?.has(id)) view.dispatch({ effects: setDraft.of({ end: id }) });
-    },
-
-    // One change as the server made it: splices on its copy, in order. It lands where those
-    // splices sit now, unless the owner has edited there (or undone what it changes), or a change
-    // it needs is not in the note: then it is skipped, and later changes still land where they
-    // belong.
-    applyChange(view, runId, change) {
-      const run = runOf(view.state, runId);
-      if (!run || !run.active) return "skipped";
-      const splices = (change.splices || []).map(({ from, to, insert }) => ({ from, to, insert: String(insert ?? "") }));
-      let end = 0;
-      for (const s of splices) {
-        if (!Number.isInteger(s.from) || !Number.isInteger(s.to) || s.from < end || s.to < s.from || s.to > run.agent.length) {
-          return "skipped";
-        }
-        end = s.to;
-      }
-      const changes = ChangeSet.of(splices, run.agent.length);
-      const pieces = splices.map((s) => ({ old: run.agent.sliceString(s.from, s.to), now: s.insert }));
-      // What it needs: what the server says, and every earlier change whose text its splices
-      // cut into (a line diff can reach past the blocks a tool call named).
-      const needs = new Set((change.needs || []).map(String));
-      for (const earlier of run.steps) {
-        const cut = earlier.regions.some(([a, b]) => splices.some(({ from, to }) =>
-          from < to ? from < b && to > a : a < from && from < b));
-        if (cut) needs.add(earlier.id);
-      }
-      // A change `part_of` an earlier one reworked only SLIM's own text from this run: it is
-      // drawn and undone as part of that change (its root), and never stands without it.
-      const named = change.part_of == null ? null : run.steps.find((earlier) => earlier.id === String(change.part_of));
-      const partOf = named ? named.partOf || named.id : null;
-      if (partOf) needs.add(partOf);
-      let shift = 0;
-      const regions = [];
-      for (const { from, to, insert } of splices) {
-        if (insert) regions.push([from + shift, from + shift + insert.length]);
-        shift += insert.length - (to - from);
-      }
-      const remap = (step) => ({ ...step, regions: step.regions.map(([a, b]) => {
-        const f = changes.mapPos(a, 1);
-        return [f, Math.max(f, changes.mapPos(b, -1))];
-      }) });
-      const step = { id: String(change.id), label: change.label || "", op: change.op || "", step: change.step, partOf,
-                     needs: [...needs], splices, changes, regions, rel: changeMarks(change.op, pieces) };
-      const at = splices.map(({ from, to }) => {
-        const a = run.toDoc.mapPos(from, 1);
-        return [a, from === to ? a : Math.max(a, run.toDoc.mapPos(to, -1))];
+    };
+    function streamRequest(port, path, body, handlers, signal) {
+      return new Promise((resolve, reject) => {
+        const encoded = Buffer.from(JSON.stringify(body));
+        const request = http.request({
+          hostname: "127.0.0.1",
+          port,
+          path,
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Content-Length": encoded.length }
+        }, (response) => {
+          if (response.statusCode !== 200) {
+            const parts = [];
+            response.on("data", (chunk) => parts.push(chunk));
+            response.on("end", () => reject(new Error(
+              `${path} returned ${response.statusCode}: ${Buffer.concat(parts).toString("utf8")}`
+            )));
+            return;
+          }
+          const parser = new SSEParser();
+          response.setEncoding("utf8");
+          response.on("data", (chunk) => {
+            try {
+              for (const item of parser.push(chunk)) {
+                const handler = handlers[item.event];
+                if (handler) handler(item.data);
+              }
+            } catch (error) {
+              response.destroy();
+              request.destroy();
+              reject(error);
+            }
+          });
+          response.on("end", resolve);
+          response.on("error", reject);
+        });
+        request.on("error", reject);
+        if (signal) signal.addEventListener("abort", () => {
+          const error = new Error("Cancelled");
+          error.name = "AbortError";
+          request.destroy(error);
+        }, { once: true });
+        request.end(encoded);
       });
-      const touched = run.steps.some((earlier) => needs.has(earlier.id) && !run.kept.has(earlier.id))
-        || splices.some(({ from, to }) => run.toDoc.touchesRange(from, to))
-        || at.some(([from, to]) => run.owner.touchesRange(from, to));
-      const agent = changes.apply(run.agent);
-      const steps = run.steps.map(remap);
-      if (touched) {
-        const next = { ...run, steps: [...steps, { ...step, skipped: true }], agent,
-                       toDoc: changes.invert(run.agent).compose(run.toDoc), version: run.version + 1 };
-        view.dispatch({ effects: setRun.of({ id: runId, run: next }) });
-        return "skipped";
-      }
-      const onDoc = changes.map(run.toDoc);
-      const marks = new Map([...run.marks].map(([id, m]) => [id, mapMarks(m, onDoc)]));
-      marks.set(step.id, place(step.rel, starts(splices, run.toDoc)));
-      const next = { ...run, steps: [...steps, step], agent, kept: new Set([...run.kept, step.id]),
-                     doc: onDoc.apply(run.doc), toDoc: run.toDoc.map(changes, true),
-                     owner: run.owner.map(onDoc, true), marks, latest: partOf || step.id, version: run.version + 1 };
-      const landing = onDoc.map(run.owner);
-      const effects = [setRun.of({ id: runId, run: next })];
-      // Where it landed comes into view, unless the owner is typing in this editor.
-      if (!view.hasFocus) {
-        let first = null;
-        landing.iterChangedRanges((_fromA, _toA, fromB) => { if (first === null) first = fromB; });
-        if (first !== null) effects.push(EditorView.scrollIntoView(first, { y: "nearest", yMargin: 80 }));
-      }
-      view.dispatch(own({ changes: landing, effects, userEvent: AGENT }));
-      return "applied";
-    },
-
-    // The run is over: no more changes come, and ↺ appears.
-    endRun(view, runId) {
-      const run = runOf(view.state, runId);
-      const effects = draftsOf(view.state, runId) ? [setDraft.of({ endRun: runId })] : [];
-      if (run?.active) effects.push(setRun.of({ id: runId, run: { ...run, active: false, latest: null, version: run.version + 1 } }));
-      if (effects.length) view.dispatch({ effects });
-    },
-
-    // ↺: these changes and everything made inside them, as one step. Refused, not forced, when
-    // the owner has edited that text since.
-    undo(view, runId, ids) {
-      const run = runOf(view.state, runId);
-      if (!run) return "gone";
-      const gone = dependents(run, ids);
-      const kept = new Set([...run.kept].filter((id) => !gone.has(id)));
-      if (same(kept, run.kept)) return "nothing";
-      const next = moved(run, kept, [...run.kept].filter((id) => gone.has(id)));
-      if (!next) return "refused";
-      view.dispatch(own({ changes: next.changes, effects: setRun.of({ id: runId, run: next.run }), userEvent: UNDO }));
-      return "undone";
-    },
-
-    // Puts back what the last ↺ (or Undo all) took out.
-    redo(view, runId) {
-      const run = runOf(view.state, runId);
-      const group = run?.redo.at(-1);
-      if (!group) return "nothing";
-      const kept = holdable(run, [...run.kept, ...group]);
-      const next = moved(run, kept, null);
-      if (!next) return "refused";
-      next.run.redo = run.redo.slice(0, -1).filter((g) => g.some((id) => !kept.has(id)));
-      view.dispatch(own({ changes: next.changes, effects: setRun.of({ id: runId, run: next.run }), userEvent: REDO }));
-      return "redone";
-    },
-
-    // Every change the owner has not edited since, and what those need, comes out as one step.
-    // A change and those `part_of` it go or stay together, and are counted once.
-    undoAll(view, runId) {
-      const run = runOf(view.state, runId);
-      if (!run || !run.kept.size) return { undone: 0, kept: 0 };
-      const rootOf = new Map(run.steps.map((step) => [step.id, step.partOf || step.id]));
-      const edited = new Set([...run.kept]
-        .filter((id) => (run.marks.get(id)?.rails || []).some(([f, t]) => inside(run.owner, f, t))).map((id) => rootOf.get(id)));
-      // What stays: the changes the owner edited, what they need, and every part of a root that
-      // stays, until nothing more comes in.
-      let kept = new Set([...run.kept].filter((id) => edited.has(rootOf.get(id))));
-      for (let size = -1; size !== kept.size;) {
-        size = kept.size;
-        kept = holdable(run, kept);
-        for (const id of run.kept) if (kept.has(rootOf.get(id))) kept.add(id);
-      }
-      const gone = [...run.kept].filter((id) => !kept.has(id));
-      const roots = (ids) => [...ids].filter((id) => rootOf.get(id) === id).length;
-      const next = gone.length ? moved(run, kept, gone) : null;
-      if (!next) return { undone: 0, kept: roots(run.kept) };
-      view.dispatch(own({ changes: next.changes, effects: setRun.of({ id: runId, run: next.run }), userEvent: UNDO }));
-      return { undone: roots(gone), kept: roots(kept) };
-    },
-
-    setMarks(view, runId, on) {
-      const run = runOf(view.state, runId);
-      if (run && run.display.marks !== on) {
-        view.dispatch({ effects: setRun.of({ id: runId, run: { ...run, display: { ...run.display, marks: on }, version: run.version + 1 } }) });
-      }
-    },
-
-    toggleOpen(view, runId, id) {
-      const run = runOf(view.state, runId);
-      if (!run) return;
-      const open = new Set(run.display.open);
-      if (open.has(id)) open.delete(id); else open.add(id);
-      view.dispatch({ effects: setRun.of({ id: runId, run: { ...run, display: { ...run.display, open } } }) });
-    },
-
-    // A moved block: show where it went.
-    reveal(view, runId, id) {
-      const run = runOf(view.state, runId);
-      const at = run?.marks.get(id) && mapMarks(run.marks.get(id), run.owner);
-      const pos = at?.rails[0]?.[0] ?? at?.folds[0]?.[0];
-      if (pos != null && pos <= view.state.doc.length) {
-        view.dispatch({ effects: EditorView.scrollIntoView(pos, { y: "center" }) });
-      }
-    },
-
-    // The note as it was before the run, drawn over the note: read-only, the file untouched.
-    showBefore(view, runId, beforeText, on) {
-      const shown = view.state.field(beforeField, false);
-      if (!on && shown?.runId !== runId) return;
-      view.dispatch({
-        effects: [showBefore.of(on ? { runId, text: String(beforeText) } : null),
-                  lock.reconfigure(on ? [EditorView.editable.of(false), EditorState.readOnly.of(true)] : [])],
-      });
-    },
-    showing: (view) => view.state.field(beforeField, false)?.runId || null,
-
-    // The note as it was before the run, as one editor change: Cmd-Z takes it back. The runs'
-    // marks go with it.
-    restore(view, beforeText) {
-      view.dispatch(own({
-        changes: textDiff(view.state.doc.toString(), String(beforeText)),
-        effects: [clearRuns.of(null), showBefore.of(null), lock.reconfigure([])],
-        userEvent: RESTORE,
-      }));
-    },
-
-    state(view, runId) {
-      const run = runOf(view.state, runId);
-      if (!run) return null;
-      const changes = run.steps.map((step) => ({
-        id: step.id, label: step.label,
-        state: step.skipped ? "skipped" : run.kept.has(step.id) ? "applied" : "undone",
-      }));
-      return {
-        changes, undone: changes.filter((change) => change.state === "undone").length,
-        redoable: run.redo.length > 0, active: run.active, marks: run.display.marks,
-        before: api.showing(view) === runId, touched: !run.owner.empty,
-      };
-    },
-  };
-  return api;
-}
-
-/* One durable meeting object per recording/note, with one reserved capture slot.
- *
- * RecorderView deliberately remains the session controller: it already owns the draft, staged
- * segments, processing promise, review edits and recovery behavior. This manager owns only the
- * facts that are global across those controllers — lookup, path changes, and the exclusive
- * microphone/system-audio lease. Processing and review sessions never occupy that lease.
- */
-class MeetingSessionManager {
-  constructor(plugin, sessionFactory = null) {
-    this.plugin = plugin;
-    this.sessionFactory = sessionFactory || ((leaf) => new RecorderView(leaf, plugin));
-    this.sessions = new Map();
-    this.paths = new Map();
-    this.activeCaptureId = null;
-  }
-
-  createSession(leaf = null) {
-    const session = this.sessionFactory(leaf);
-    session.sessionId = session.sessionId || recordingId();
-    if (!session.recordingId) session.recordingId = session.sessionId;
-    session.manager = this;
-    this.sessions.set(session.sessionId, session);
-    this.indexSession(session);
-    return session;
-  }
-
-  indexSession(session) {
-    if (!session) return null;
-    for (const [path, owner] of this.paths) {
-      if (owner === session && path !== session.draftRel && path !== session.filedNotePath) {
-        this.paths.delete(path);
-      }
     }
-    for (const path of [session.draftRel, session.filedNotePath]) {
-      if (path) this.paths.set(path, session);
-    }
-    return session;
+    module2.exports = { SSEParser, streamRequest };
   }
+});
 
-  sessionForPath(path) { return (path && this.paths.get(path)) || null; }
-
-  sessionForLeaf(leaf) {
-    if (!leaf) return null;
-    for (const session of this.sessions.values()) {
-      if (session.editorLeaf === leaf) return session;
-    }
-    return null;
-  }
-
-  claimCapture(session) {
-    if (!session || !session.sessionId) throw new Error("meeting session has no identity");
-    // Only a session that is recording holds the microphone. The ribbon's setup draft takes
-    // the lease so a second click returns to it, but it captures nothing — a Resume elsewhere
-    // takes over rather than reporting a recording they could not see (2026-09-05).
-    const holder = this.activeCapture();
-    if (holder && holder !== session && holder.state === "recording") {
-      throw new Error("another meeting capture is already active");
-    }
-    this.activeCaptureId = session.sessionId;
-    return session;
-  }
-
-  /* A setup draft that was never started keeps the lease for as long as Obsidian stays open, so
-   * a click days later reopened it under the name of the day it was made (2026-09-17). An
-   * untouched one from an earlier day is deleted and replaced; one with their input is kept. */
-  async releaseStaleSetupDraft(session) {
-    if (session.state !== "idle" || (session.segments && session.segments.length)) return false;
-    if (String(session.recordingId || "").slice(0, 8) === localDay()) return false;
-    if (typeof session.removeUntouchedDraft !== "function") return false;
-    if (!(await session.removeUntouchedDraft())) return false;
-    this.removeSession(session);
-    return true;
-  }
-
-  releaseCapture(session) {
-    if (session && this.activeCaptureId === session.sessionId) this.activeCaptureId = null;
-  }
-
-  activeCapture() {
-    const session = this.activeCaptureId && this.sessions.get(this.activeCaptureId);
-    if (!session && this.activeCaptureId) this.activeCaptureId = null;
-    return session || null;
-  }
-
-  async activate(leaf = null) {
-    let session = this.activeCapture();
-    if (session && await this.releaseStaleSetupDraft(session)) session = null;
-    if (!session) {
-      // A processing session may navigate its leaf to the filed note at any moment. Starting B
-      // in that same leaf lets A's completion replace B's live recorder. Give the new capture a
-      // fresh pane whenever the current one already belongs to another durable meeting object.
-      const availableLeaf = this.sessionForLeaf(leaf) ? null : leaf;
-      session = this.createSession(availableLeaf);
-      this.claimCapture(session);
-    }
-    await session.open();
-    this.indexSession(session);
-    return session;
-  }
-
-  async openPath(path, leaf = null) {
-    const session = this.sessionForPath(path);
-    if (!session) return null;
-    if (leaf) session.editorLeaf = leaf;
-    await session.open();
-    this.indexSession(session);
-    return session;
-  }
-
-  async adoptFile(file, leaf = null) {
-    if (!file || !file.path) return null;
-    const existing = this.sessionForPath(file.path);
-    if (existing) {
-      if (leaf) existing.editorLeaf = leaf;
-      return existing;
-    }
-    const session = this.createSession(leaf);
-    let adopted = false;
-    if (file.path.endsWith(DRAFT_SUFFIX) && typeof session.adoptPausedDraft === "function") {
-      adopted = await session.adoptPausedDraft(file.path);
-      if (adopted) session.editorLeaf = leaf;
-    } else if (typeof session.openExisting === "function") {
-      adopted = await session.openExisting(file, leaf);
-    }
-    if (!adopted) {
-      this.removeSession(session);
-      return null;
-    }
-    this.indexSession(session);
-    if (typeof session.attachEditorObject === "function") session.attachEditorObject();
-    if (typeof session.render === "function") session.render();
-    return session;
-  }
-
-  removeSession(session) {
-    if (!session) return;
-    this.releaseCapture(session);
-    for (const [path, owner] of this.paths) {
-      if (owner === session) this.paths.delete(path);
-    }
-    this.sessions.delete(session.sessionId);
-  }
-
-  ownsEditor(info) {
-    for (const session of this.sessions.values()) {
-      if (typeof session.ownsEditor === "function" && session.ownsEditor(info)) return session;
-    }
-    return null;
-  }
-
-  handleVaultDelete(file) {
-    const session = file && this.sessionForPath(file.path);
-    if (!session) return;
-    // The session knows which deletions are the server's own work (the draft during filing,
-    // the old path during a move). Every other deletion is the user's instruction to release
-    // this one object, including the setup draft that reserves the microphone action.
-    if (session.expectsDeletion(file.path)) return;
-    if (typeof session.handleVaultDelete === "function") session.handleVaultDelete(file);
-    this.removeSession(session);
-  }
-
-  handleVaultRename(file, oldPath) {
-    const session = this.sessionForPath(oldPath);
-    if (!session || !file || !file.path) return;
-    if (session.draftRel === oldPath) session.draftRel = file.path;
-    if (session.filedNotePath === oldPath) {
-      session.filedNotePath = file.path;
-      if (session.result) session.result.note = file.path;
-    }
-    this.indexSession(session);
-  }
-
-  flushNotes() {
-    return Promise.all([...this.sessions.values()].map((session) =>
-      typeof session.flushNotes === "function" ? session.flushNotes() : null));
-  }
-
-  onClose() {
-    for (const session of this.sessions.values()) {
-      if (typeof session.onClose === "function") session.onClose();
-    }
-    this.sessions.clear();
-    this.paths.clear();
-    this.activeCaptureId = null;
-  }
-}
-
-module.exports = class SlimRecorderPlugin extends Plugin {
-  async onload() {
-    this.settings = Object.assign({}, DEFAULTS, await this.loadData());
-    this.server = null;
-    this._ensuring = null;
-    this.meetingBlocks = new Map();
-    this.meetings = new MeetingSessionManager(this);
-    this.setupLive();
-    this.registerMarkdownCodeBlockProcessor("slim-meeting", (_source, el, ctx) => {
-      const path = ctx.sourcePath;
-      el.addClass("slim-meeting-block");
-      this.meetingBlocks.set(path, el);
-      if (ctx && typeof ctx.addChild === "function" && MarkdownRenderChild) {
-        const child = new MarkdownRenderChild(el);
-        child.onunload = () => {
-          if (this.meetingBlocks.get(path) === el) this.meetingBlocks.delete(path);
+// src/plugin.js
+var require_plugin = __commonJS({
+  "src/plugin.js"(exports2, module2) {
+    "use strict";
+    var {
+      Plugin,
+      MarkdownView,
+      MarkdownRenderer,
+      MarkdownRenderChild,
+      Notice,
+      requestUrl,
+      setIcon,
+      editorInfoField,
+      editorLivePreviewField
+    } = require("obsidian");
+    var nodePath = require("path");
+    var { pcm16k, captureSilence } = require_audio();
+    var {
+      groupThreads,
+      noteTitle,
+      groupCitations,
+      sha256Hex,
+      slashQuery,
+      matchSkills,
+      inputsText,
+      editorSelection,
+      normalizeMath,
+      metaText,
+      stageLine,
+      SUGGESTED_PROMPTS,
+      historyText,
+      editOutcome
+    } = require_chat_text();
+    var { VIEW_TYPE_COPILOT, RenameModal, CopilotView } = require_chat_view();
+    var { clockSeconds } = require_clock();
+    var { markdownBlockShortcut, stampSourceAtoms, inlineMarkdown, markdownFromEditable } = require_editable_markdown();
+    var { wordTokens, wordOps, formatChange, markable, changeMarks, textDiff, excerpt, beforeBlocks } = require_live_diff();
+    var { makeLiveEditor } = require_live_editor();
+    var {
+      STAGING_DIR,
+      DRAFT_SUFFIX,
+      recordingIdFromStaged,
+      splitMeetingNote,
+      embedLegacyMeetingBlock,
+      renderPassiveMeetingBlock
+    } = require_meeting_note();
+    var { RecorderView } = require_recorder_view();
+    var { serverArgv, serverEnv, serverMethods } = require_server();
+    var { MeetingSessionManager } = require_sessions();
+    var { DEFAULTS, SlimSettingTab } = require_settings_tab();
+    var { SSEParser, streamRequest } = require_sse();
+    var SlimRecorderPlugin = class extends Plugin {
+      async onload() {
+        this.settings = Object.assign({}, DEFAULTS, await this.loadData());
+        this.server = null;
+        this._ensuring = null;
+        this.meetingBlocks = /* @__PURE__ */ new Map();
+        this.meetings = new MeetingSessionManager(this);
+        this.setupLive();
+        this.registerMarkdownCodeBlockProcessor("slim-meeting", (_source, el, ctx) => {
+          const path = ctx.sourcePath;
+          el.addClass("slim-meeting-block");
+          this.meetingBlocks.set(path, el);
+          if (ctx && typeof ctx.addChild === "function" && MarkdownRenderChild) {
+            const child = new MarkdownRenderChild(el);
+            child.onunload = () => {
+              if (this.meetingBlocks.get(path) === el) this.meetingBlocks.delete(path);
+              const session2 = this.meetings.sessionForPath(path);
+              if (session2 && session2.contentEl === el) {
+                if (typeof session2.flushNotes === "function") session2.flushNotes();
+                session2.contentEl = null;
+                session2.editorView = null;
+              }
+            };
+            ctx.addChild(child);
+          }
           const session = this.meetings.sessionForPath(path);
-          if (session && session.contentEl === el) {
-            if (typeof session.flushNotes === "function") session.flushNotes();
-            session.contentEl = null;
-            session.editorView = null;
+          if (session) {
+            session.attachEditorObject();
+            session.render();
+          } else {
+            renderPassiveMeetingBlock(this.app, this, el, _source, path);
           }
-        };
-        ctx.addChild(child);
-      }
-      const session = this.meetings.sessionForPath(path);
-      if (session) {
-        session.attachEditorObject();
-        session.render();
-      } else {
-        // Adoption follows from the real Markdown leaf below. Until then the durable block is
-        // still readable; no session is allowed to paint another meeting's state into it.
-        renderPassiveMeetingBlock(this.app, this, el, _source, path);
-      }
-    });
-    const activate = () => this.activate().catch((e) => {
-      console.error("[slim] activate", e);
-      new Notice(`SLIM: could not open the recorder — ${e.message || e}`);
-    });
-    this.addRibbonIcon("mic", "SLIM: record", activate);
-    this.addCommand({ id: "start-recording", name: "Start recording",
-                      callback: activate });
-    this.registerView(VIEW_TYPE_COPILOT, (leaf) => new CopilotView(leaf, this));
-    this.addRibbonIcon("message-square-text", "SLIM: open-note copilot",
-                       () => this.activateCopilot());
-    this.addCommand({ id: "open-note-copilot", name: "Open note copilot",
-                      callback: () => this.activateCopilot() });
-    if (this.app.workspace && typeof this.app.workspace.on === "function") {
-      this.registerEvent(this.app.workspace.on("active-leaf-change", () => {
-        const file = this.app.workspace.getActiveFile();
-        for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_COPILOT)) {
-          if (leaf.view && typeof leaf.view.setActiveFile === "function") {
-            leaf.view.setActiveFile(file);
+        });
+        const activate = () => this.activate().catch((e) => {
+          console.error("[slim] activate", e);
+          new Notice(`SLIM: could not open the recorder \u2014 ${e.message || e}`);
+        });
+        this.addRibbonIcon("mic", "SLIM: record", activate);
+        this.addCommand({
+          id: "start-recording",
+          name: "Start recording",
+          callback: activate
+        });
+        this.registerView(VIEW_TYPE_COPILOT, (leaf) => new CopilotView(leaf, this));
+        this.addRibbonIcon(
+          "message-square-text",
+          "SLIM: open-note copilot",
+          () => this.activateCopilot()
+        );
+        this.addCommand({
+          id: "open-note-copilot",
+          name: "Open note copilot",
+          callback: () => this.activateCopilot()
+        });
+        if (this.app.workspace && typeof this.app.workspace.on === "function") {
+          this.registerEvent(this.app.workspace.on("active-leaf-change", () => {
+            const file = this.app.workspace.getActiveFile();
+            for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_COPILOT)) {
+              if (leaf.view && typeof leaf.view.setActiveFile === "function") {
+                leaf.view.setActiveFile(file);
+              }
+            }
+            queueMicrotask(() => this.noticeClosedPendingReviews());
+          }));
+          this.registerEvent(this.app.workspace.on("layout-change", () => this.noticeClosedPendingReviews()));
+          this.registerEvent(this.app.workspace.on("quit", (tasks) => {
+            tasks.add(() => this.meetings.flushNotes());
+          }));
+        }
+        this.addSettingTab(new SlimSettingTab(this.app, this));
+        if (this.app.workspace && typeof this.app.workspace.on === "function" && typeof this.registerEvent === "function") {
+          this.registerEvent(this.app.workspace.on("editor-paste", (event, editor, info) => {
+            const session = this.meetings.ownsEditor(info);
+            if (!session) return;
+            session.handleEditorPaste(event, editor).catch((e) => {
+              console.error("[slim] image paste", e);
+              new Notice(`SLIM: ${e.message || e}`);
+            });
+          }));
+          this.registerEvent(this.app.workspace.on("file-open", (file) => {
+            const leaf = this.app.workspace.getMostRecentLeaf && this.app.workspace.getMostRecentLeaf();
+            if (!file || !leaf || !(leaf.view instanceof MarkdownView)) return;
+            for (const session of this.meetings.sessions.values()) {
+              if (session.editorLeaf === leaf && file.path !== session.draftRel && file.path !== session.filedNotePath) session.detachEditorObject();
+            }
+            const tracked = this.meetings.sessionForPath(file.path);
+            if (tracked) {
+              tracked.editorLeaf = leaf;
+              tracked.attachEditorObject();
+              tracked.render();
+              return;
+            }
+            this.meetings.adoptFile(file, leaf).catch((e) => console.error("[slim] open note", e));
+          }));
+          if (this.app.vault && typeof this.app.vault.on === "function") {
+            this.registerEvent(this.app.vault.on("delete", (file) => this.meetings.handleVaultDelete(file)));
+            this.registerEvent(this.app.vault.on("rename", (file, oldPath) => this.meetings.handleVaultRename(file, oldPath)));
           }
         }
-        queueMicrotask(() => this.noticeClosedPendingReviews());
-      }));
-      this.registerEvent(this.app.workspace.on("layout-change", () => this.noticeClosedPendingReviews()));
-      // Quitting with the caret in `My notes` fires no blur. Obsidian awaits quit tasks, and
-      // the server is killed only at unload, after them.
-      this.registerEvent(this.app.workspace.on("quit", (tasks) => {
-        tasks.add(() => this.meetings.flushNotes());
-      }));
-    }
-    this.addSettingTab(new SlimSettingTab(this.app, this));
-
-    if (this.app.workspace && typeof this.app.workspace.on === "function" &&
-        typeof this.registerEvent === "function") {
-      this.registerEvent(this.app.workspace.on("editor-paste", (event, editor, info) => {
-        const session = this.meetings.ownsEditor(info);
-        if (!session) return;
-        session.handleEditorPaste(event, editor)
-          .catch((e) => { console.error("[slim] image paste", e); new Notice(`SLIM: ${e.message || e}`); });
-      }));
-      this.registerEvent(this.app.workspace.on("file-open", (file) => {
-        const leaf = this.app.workspace.getMostRecentLeaf && this.app.workspace.getMostRecentLeaf();
-        if (!file || !leaf || !(leaf.view instanceof MarkdownView)) return;
+        this.ensureServer().catch((e) => console.error("[slim] ensureServer", e));
+        if (this.app.workspace && typeof this.app.workspace.onLayoutReady === "function") {
+          this.app.workspace.onLayoutReady(() => {
+            this.warnAboutStrandedAudio();
+            const leaves = this.app.workspace.getLeavesOfType("markdown") || [];
+            for (const leaf of leaves) {
+              const file = leaf && leaf.view instanceof MarkdownView && leaf.view.file;
+              if (file) this.meetings.adoptFile(file, leaf).catch((e) => console.error("[slim] open visible note", e));
+            }
+          });
+        }
+      }
+      onunload() {
+        if (this.meetings) this.meetings.onClose();
+        this.stopServer();
+      }
+      async saveSettings() {
+        await this.saveData(this.settings);
+      }
+      meetingBlockFor(path) {
+        const el = this.meetingBlocks && this.meetingBlocks.get(path);
+        return el || null;
+      }
+      async openMeetingPath(path) {
+        const file = this.app.vault.getAbstractFileByPath(path);
+        if (!file) throw new Error(`no note at ${path}`);
+        const workspace = this.app.workspace;
+        const markdownLeaves = typeof workspace.getLeavesOfType === "function" ? workspace.getLeavesOfType("markdown") : [];
+        let leaf = markdownLeaves.find((candidate) => candidate.view && candidate.view.file && candidate.view.file.path === path);
+        if (!leaf) {
+          leaf = workspace.getLeaf(true);
+          await leaf.openFile(file, { active: true, state: { mode: "source", source: false } });
+        }
+        let session = this.meetings.sessionForPath(path);
+        if (session) {
+          session.editorLeaf = leaf;
+          await session.open();
+        } else {
+          session = await this.meetings.adoptFile(file, leaf);
+        }
+        if (typeof workspace.revealLeaf === "function") workspace.revealLeaf(leaf);
+        return { leaf, session };
+      }
+      async revealMeetingPath(path) {
+        await this.openMeetingPath(path);
+        if (this.app.commands && typeof this.app.commands.executeCommandById === "function") {
+          this.app.commands.executeCommandById("file-explorer:reveal-active-file");
+        }
+      }
+      showPendingReviewNotice(session) {
+        const path = session && session.filedNotePath;
+        if (!path) return;
+        const notice = new Notice(
+          `SLIM: recording saved at ${path}. Review is still pending.`,
+          2e4
+        );
+        const el = notice.noticeEl;
+        if (!el || typeof el.empty !== "function") return;
+        el.empty();
+        el.createDiv({ text: "SLIM: recording saved. Review is still pending." });
+        el.createDiv({ cls: "slim-notice-path", text: path });
+        const actions = el.createDiv({ cls: "slim-notice-actions" });
+        const reopen = actions.createEl("button", { cls: "mod-cta", text: "Reopen" });
+        reopen.addEventListener("click", () => {
+          this.openMeetingPath(path).then(() => {
+            if (typeof notice.hide === "function") notice.hide();
+          }).catch((e) => new Notice(`SLIM: could not reopen the note \u2014 ${e.message || e}`));
+        });
+        const reveal = actions.createEl("button", { text: "Reveal" });
+        reveal.addEventListener("click", () => {
+          this.revealMeetingPath(path).then(() => {
+            if (typeof notice.hide === "function") notice.hide();
+          }).catch((e) => new Notice(`SLIM: could not reveal the note \u2014 ${e.message || e}`));
+        });
+      }
+      noticeClosedPendingReviews() {
+        if (!this.meetings || !this.app.workspace || typeof this.app.workspace.getLeavesOfType !== "function") return;
+        const live = new Set(this.app.workspace.getLeavesOfType("markdown"));
         for (const session of this.meetings.sessions.values()) {
-          if (session.editorLeaf === leaf && file.path !== session.draftRel &&
-              file.path !== session.filedNotePath) session.detachEditorObject();
+          const shown = session.editorLeaf && session.editorLeaf.view && session.editorLeaf.view.file;
+          const stillShowingMeeting = shown && (shown.path === session.filedNotePath || shown.path === session.draftRel);
+          if (live.has(session.editorLeaf) && stillShowingMeeting) {
+            session.reviewCloseNotified = false;
+          } else if (session.state === "card" && !session.filing && session.editorLeaf && !session.reviewCloseNotified) {
+            session.reviewCloseNotified = true;
+            this.showPendingReviewNotice(session);
+          }
         }
-        const tracked = this.meetings.sessionForPath(file.path);
-        if (tracked) {
-          tracked.editorLeaf = leaf;
-          tracked.attachEditorObject();
-          tracked.render();
+      }
+      // ---- SLIM's changes in the note --------------------------------------------------------------
+      // One extension in every Markdown editor: an editing run's changes land in the editor showing
+      // the note, drawn where they are. Without CodeMirror (node tests) there is no live editor.
+      setupLive() {
+        this.liveViews = /* @__PURE__ */ new Set();
+        let cm;
+        try {
+          cm = { state: require("@codemirror/state"), view: require("@codemirror/view") };
+        } catch (e) {
           return;
         }
-        this.meetings.adoptFile(file, leaf).catch((e) => console.error("[slim] open note", e));
-      }));
-      if (this.app.vault && typeof this.app.vault.on === "function") {
-        this.registerEvent(this.app.vault.on("delete", (file) => this.meetings.handleVaultDelete(file)));
-        this.registerEvent(this.app.vault.on("rename", (file, oldPath) =>
-          this.meetings.handleVaultRename(file, oldPath)));
-      }
-    }
-
-    // Not awaited: the server takes seconds to bind and onload blocks Obsidian's startup.
-    // `post()` waits on it before the first request, which is the moment it actually matters.
-    this.ensureServer().catch((e) => console.error("[slim] ensureServer", e));
-    if (this.app.workspace && typeof this.app.workspace.onLayoutReady === "function") {
-      this.app.workspace.onLayoutReady(() => {
-        this.warnAboutStrandedAudio();
-        // `file-open` does not fire for leaves already visible when a plugin reloads. Adopt all
-        // of them, not whichever one happened to be most recent.
-        const leaves = this.app.workspace.getLeavesOfType("markdown") || [];
-        for (const leaf of leaves) {
-          const file = leaf && leaf.view instanceof MarkdownView && leaf.view.file;
-          if (file) this.meetings.adoptFile(file, leaf)
-            .catch((e) => console.error("[slim] open visible note", e));
-        }
-      });
-    }
-  }
-
-  onunload() {
-    if (this.meetings) this.meetings.onClose();
-    this.stopServer();
-  }
-
-  async saveSettings() { await this.saveData(this.settings); }
-
-  meetingBlockFor(path) {
-    const el = this.meetingBlocks && this.meetingBlocks.get(path);
-    // A code-block processor is invoked while Obsidian is still constructing the Live Preview
-    // DOM, so its element can legitimately report `isConnected === false` at the exact moment
-    // the already-open note is adopted after a plugin reload. The MarkdownRenderChild unload
-    // hook removes genuinely stale entries; rejecting the construction-phase element here
-    // loses the only mount opportunity and leaves an empty block until the user changes files.
-    return el || null;
-  }
-
-  // ---- the server's lifecycle ------------------------------------------------------------
-
-  /* Nothing else starts `slim chat`: there is no launchd agent, and the Electron shell that
-   * used to do it was cut on 2026-08-27. Without this, recording with the server down fails
-   * at the POST — the audio survives in the staging folder but recovery is by hand.
-   *
-   * Not a memory decision: measured 2026-08-06, the server is 31 MB and holds NO model. Ollama
-   * loads weights on demand and evicts on its own keep_alive.
-   */
-  ensureServer() {
-    // One spawn at a time. Both `post()` calls of a single recording can arrive here at once,
-    // and two spawns would race for one port.
-    if (!this._ensuring) {
-      this._ensuring = this._ensureServer().finally(() => { this._ensuring = null; });
-    }
-    return this._ensuring;
-  }
-
-  async _ensureServer() {
-    const port = this.settings.port;
-    // A CLI-started server is REUSED, not duplicated — the second bind would fail anyway, and
-    // killing their own `uv run slim chat` on unload would be worse than not managing it at all.
-    // ⚠ waitForPort, not a single portOpen: `--reload` closes the port for a beat on every
-    // restart, and a one-shot probe there reads "nothing serving" and spawns a SECOND server
-    // that then fights the reloader's respawn for the bind. 3s covers a restart. It probes
-    // once immediately, so a live server still returns at once; the 3s is paid only when
-    // nothing is listening at all, and that path is the un-awaited one at onload().
-    if (await waitForPort(port, 3000)) {
-      this.warnIfStale();          // not awaited: a reused server must not delay a recording
-      return "reused";
-    }
-
-    try {
-      // ⚠ detached: its own process GROUP. `uv run` wraps
-      // the real python server, so a plain child.kill() reaches only uv — measured there, the
-      // server outlived the app. See stopServer().
-      const argv = serverArgv(this.settings);
-      const base = this.vaultBasePath();
-      // ⚠ stdio is "ignore", so the server's own output goes nowhere from here. Run
-      // `uv run slim chat` in a terminal when you want to watch it work — and `--reload`
-      // there too, which is the only place it ever belonged (a restart cuts requests in
-      // flight, so a save during a recording loses that recording's filing).
-      this.server = spawn(this.settings.uvPath, argv,
-                          { stdio: "ignore", detached: true,
-                            env: base ? serverEnv(base) : process.env });
-    } catch (e) {
-      this.server = null;
-      new Notice(`SLIM: could not launch ${this.settings.uvPath} — ${(e && e.message) || e}`,
-                 20000);
-      return "failed";
-    }
-    const child = this.server;
-    child.on("error", (e) => {
-      // A bad uv path fails here, asynchronously, not at spawn().
-      if (this.server === child) this.server = null;
-      console.error("[slim] server spawn", e);
-      new Notice(`SLIM: the server did not start — check the repo and uv paths in settings. ` +
-                 `(${(e && e.message) || e})`, 20000);
-    });
-    child.on("exit", () => { if (this.server === child) this.server = null; });
-
-    if (await waitForPort(port, 30000)) return "started";
-    new Notice(`SLIM: the server did not come up on 127.0.0.1:${port} within 30s. Check that ` +
-               "Ollama is running and that `uv run slim chat` works from the repo.", 20000);
-    return "timeout";
-  }
-
-  /* ⚠ A REUSED SERVER CAN BE OLDER THAN THE CODE, and nothing about it looks wrong.
-   *
-   * Reuse is deliberate — it is what stops this plugin killing a terminal `slim chat --reload`.
-   * But `uv run` reads Python from disk at spawn time and never hot-reloads, and "the plugin
-   * owns the lifecycle" turned out not to hold: Obsidian does not reliably call `onunload` when
-   * the whole APP quits, so a server started the previous afternoon survived a Cmd+Q and a
-   * relaunch, was reused, and failed two recordings against a bug already fixed on disk
-   * (2026-08-23). In July the same trap cost a full day of debugging.
-   *
-   * It WARNS rather than restarting: the server on the port might be their, with a reloader
-   * attached, and killing that out from under them is its own surprise. ONCE PER SERVER: the
-   * check runs on every request that reuses the server, and saying it each time stacked a
-   * column of 30 s notices over the sidebar (2026-09-29).
-   */
-  /* This vault's own base path, or null on a mobile adapter that has none. `openDiskFile()`
-   * already resolves audio against it; the server has to agree on the same directory. */
-  vaultBasePath() {
-    try {
-      const adapter = this.app.vault.adapter;
-      if (typeof adapter.getBasePath !== "function") return null;
-      return nodePath.resolve(adapter.getBasePath());
-    } catch (e) {
-      console.error("[slim] no vault base path", e);
-      return null;
-    }
-  }
-
-  async warnIfStale() {
-    // ⚠ Deliberately NOT this.post(): that calls ensureServer() and would recurse.
-    const res = await requestUrl({
-      url: `http://127.0.0.1:${this.settings.port}/api/health`,
-      method: "GET",
-      throw: false,
-    }).catch(() => null);
-    // A server old enough to predate this endpoint answers 404 — which is itself proof that it
-    // is stale, and worth saying so rather than swallowing.
-    if (!res || res.status === 404) {
-      this.sayOnce("predates-health",
-        "SLIM: the running server predates /api/health, so it is serving OLD code. " +
-        `Restart it:\n\nlsof -tiTCP:${this.settings.port} -sTCP:LISTEN | xargs kill`);
-      return;
-    }
-    const health = res.json;
-    if (!health) return;
-    // A REUSED server resolved its own vault, possibly before this vault was opened or moved.
-    // Wrong vault is worse than old code: the recording is filed somewhere nobody is looking.
-    // Python's Path.resolve() follows symlinks; Node's nodePath.resolve() does not. Use
-    // fs.realpathSync to match, or fall back to the lexical resolve if it fails.
-    const base = this.vaultBasePath();
-    const fs = require("fs");
-    let resolvedBase = base;
-    try { if (base) resolvedBase = fs.realpathSync(base); } catch {}
-    const killCmd = `lsof -tiTCP:${this.settings.port} -sTCP:LISTEN | xargs kill`;
-    if (resolvedBase && health.vault && health.vault !== resolvedBase) {
-      this.sayOnce(`vault:${health.pid}:${health.started_at}`,
-        `SLIM: the server on port ${this.settings.port} is using the vault ${health.vault}, ` +
-        `but this vault is ${base}. Recordings would be filed in the wrong one. Restart it:` +
-        `\n\n${killCmd}`);
-      return;
-    }
-    if (!health.stale) return;
-    this.sayOnce(`stale:${health.pid}:${health.started_at}`,
-      `SLIM: the running server started ${health.started_at} but ${health.newest_file} changed ` +
-      `${health.newest_source}. It is serving OLD code. Restart it:\n\n` + killCmd);
-  }
-
-  sayOnce(key, text) {
-    if (this.staleSaid === key) return;
-    this.staleSaid = key;
-    new Notice(text, 30000);
-  }
-
-  async openMeetingPath(path) {
-    const file = this.app.vault.getAbstractFileByPath(path);
-    if (!file) throw new Error(`no note at ${path}`);
-    const workspace = this.app.workspace;
-    const markdownLeaves = typeof workspace.getLeavesOfType === "function"
-      ? workspace.getLeavesOfType("markdown") : [];
-    let leaf = markdownLeaves.find((candidate) =>
-      candidate.view && candidate.view.file && candidate.view.file.path === path);
-    if (!leaf) {
-      leaf = workspace.getLeaf(true);
-      await leaf.openFile(file, { active: true, state: { mode: "source", source: false } });
-    }
-    let session = this.meetings.sessionForPath(path);
-    if (session) {
-      session.editorLeaf = leaf;
-      await session.open();
-    } else {
-      session = await this.meetings.adoptFile(file, leaf);
-    }
-    if (typeof workspace.revealLeaf === "function") workspace.revealLeaf(leaf);
-    return { leaf, session };
-  }
-
-  async revealMeetingPath(path) {
-    await this.openMeetingPath(path);
-    if (this.app.commands && typeof this.app.commands.executeCommandById === "function") {
-      this.app.commands.executeCommandById("file-explorer:reveal-active-file");
-    }
-  }
-
-  showPendingReviewNotice(session) {
-    const path = session && session.filedNotePath;
-    if (!path) return;
-    const notice = new Notice(
-      `SLIM: recording saved at ${path}. Review is still pending.`, 20000);
-    const el = notice.noticeEl;
-    if (!el || typeof el.empty !== "function") return;
-    el.empty();
-    el.createDiv({ text: "SLIM: recording saved. Review is still pending." });
-    el.createDiv({ cls: "slim-notice-path", text: path });
-    const actions = el.createDiv({ cls: "slim-notice-actions" });
-    const reopen = actions.createEl("button", { cls: "mod-cta", text: "Reopen" });
-    reopen.addEventListener("click", () => {
-      this.openMeetingPath(path)
-        .then(() => { if (typeof notice.hide === "function") notice.hide(); })
-        .catch((e) => new Notice(`SLIM: could not reopen the note — ${e.message || e}`));
-    });
-    const reveal = actions.createEl("button", { text: "Reveal" });
-    reveal.addEventListener("click", () => {
-      this.revealMeetingPath(path)
-        .then(() => { if (typeof notice.hide === "function") notice.hide(); })
-        .catch((e) => new Notice(`SLIM: could not reveal the note — ${e.message || e}`));
-    });
-  }
-
-  noticeClosedPendingReviews() {
-    if (!this.meetings || !this.app.workspace ||
-        typeof this.app.workspace.getLeavesOfType !== "function") return;
-    const live = new Set(this.app.workspace.getLeavesOfType("markdown"));
-    for (const session of this.meetings.sessions.values()) {
-      const shown = session.editorLeaf && session.editorLeaf.view && session.editorLeaf.view.file;
-      const stillShowingMeeting = shown &&
-        (shown.path === session.filedNotePath || shown.path === session.draftRel);
-      if (live.has(session.editorLeaf) && stillShowingMeeting) {
-        session.reviewCloseNotified = false;
-      } else if (session.state === "card" && !session.filing && session.editorLeaf &&
-                 !session.reviewCloseNotified) {
-        session.reviewCloseNotified = true;
-        this.showPendingReviewNotice(session);
-      }
-    }
-  }
-
-  // ---- SLIM's changes in the note --------------------------------------------------------------
-  // One extension in every Markdown editor: an editing run's changes land in the editor showing
-  // the note, drawn where they are. Without CodeMirror (node tests) there is no live editor.
-  setupLive() {
-    this.liveViews = new Set();
-    let cm;
-    try {
-      cm = { state: require("@codemirror/state"), view: require("@codemirror/view") };
-    } catch (e) {
-      return;
-    }
-    try { cm.commands = require("@codemirror/commands"); } catch (e) { /* no isolated history */ }
-    this.live = makeLiveEditor(cm, {
-      views: this.liveViews,
-      infoField: editorInfoField,
-      livePreviewField: editorLivePreviewField,
-      render: (el, markdown, sourcePath) => MarkdownRenderer.render(this.app, markdown, el, sourcePath, this),
-      // A drawing soon replaced (a draft's) is drawn under a component of its own, removed with it.
-      renderFor: (el, markdown, sourcePath) => {
-        if (!MarkdownRenderChild) return MarkdownRenderer.render(this.app, markdown, el, sourcePath, this).then(() => null);
-        const child = this.addChild(new MarkdownRenderChild(el));
-        return MarkdownRenderer.render(this.app, markdown, el, sourcePath, child)
-          .then(() => () => this.removeChild(child), (error) => { this.removeChild(child); throw error; });
-      },
-      icon: (el, name) => setIcon?.(el, name),
-      changed: (view, runId) => this.liveChanged(view, runId),
-      refused: () => new Notice("SLIM: you've edited this change since, so it stays as it is."),
-    });
-    this.registerEditorExtension(this.live.extension);
-  }
-
-  // The editor showing a note: the one focused last.
-  liveViewFor(path) {
-    const live = this.live;
-    let best = null;
-    for (const view of (live ? this.liveViews : [])) {
-      if (live.pathOf(view) === path && (!best || live.focusedAt(view) > live.focusedAt(best))) best = view;
-    }
-    return best;
-  }
-
-  // The editor holding a run, while one does: its marks, ↺ and Redo live there.
-  liveRunView(runId) {
-    for (const view of (this.live ? this.liveViews : [])) if (this.live.state(view, runId)) return view;
-    return null;
-  }
-
-  // Changes land in Live Preview or source; reading view would hide them as they land.
-  async showEditing(path) {
-    for (const leaf of this.app.workspace?.getLeavesOfType?.("markdown") || []) {
-      if (leaf.view?.file?.path !== path || leaf.view?.getMode?.() !== "preview") continue;
-      const state = leaf.getViewState();
-      await leaf.setViewState({ ...state, state: { ...state.state, mode: "source" } });
-    }
-  }
-
-  // The note's editor, opening the note if no editor shows it (See before and Restore after the
-  // note was closed).
-  async noteView(path) {
-    await this.showEditing(path);
-    if (this.liveViewFor(path) || !this.live) return this.liveViewFor(path);
-    const file = this.app.vault.getAbstractFileByPath(path);
-    if (!file) return null;
-    await this.app.workspace.getLeaf(false).openFile(file);
-    return this.liveViewFor(path);
-  }
-
-  liveChanged(view, runId) {
-    for (const leaf of this.app.workspace?.getLeavesOfType?.(VIEW_TYPE_COPILOT) || []) leaf.view?.runChanged?.(view, runId);
-  }
-
-  stopServer() {
-    const child = this.server;
-    this.server = null;
-    if (!child || child.pid == null) return;
-    try {
-      process.kill(-child.pid, "SIGTERM");   // the whole group: uv AND the python server
-    } catch (e) {
-      try { child.kill(); } catch (e2) { /* already gone */ }
-    }
-  }
-
-  /* Writing chunks to disk is only half a guarantee if the survivor is never mentioned again.
-   * `record.write_recording` unlinks the staged file once the audio is archived, so anything
-   * non-empty still sitting here is a recording that never finished being filed. */
-  async warnAboutStrandedAudio() {
-    try {
-      const adapter = this.app.vault.adapter;
-      if (!(await adapter.exists(STAGING_DIR))) return;
-      const listing = await adapter.list(STAGING_DIR);
-      const webm = (listing.files || []).filter((f) => f.toLowerCase().endsWith(".webm"));
-      const stranded = [];
-      for (const f of webm) {
-        // A zero-byte file is a recording that failed before its first chunk — nothing to
-        // recover, and warning about it would train them to ignore this notice.
         try {
-          const st = await adapter.stat(f);
-          if (!st || st.size > 0) stranded.push(f);
-        } catch (e) { stranded.push(f); }
-      }
-      if (!stranded.length) return;
-
-      const draftsById = new Map();
-      for (const folder of ["Capture/_unfiled", "Journal"]) {
-        if (!(await adapter.exists(folder))) continue;
-        const drafts = await adapter.list(folder);
-        for (const path of drafts.files || []) {
-          const name = nodePath.posix.basename(path);
-          if (!name.endsWith(DRAFT_SUFFIX) || !name.includes("--recording--")) continue;
-          const id = name.slice(0, -DRAFT_SUFFIX.length).split("--recording--").pop();
-          if (id) draftsById.set(id, path);
+          cm.commands = require("@codemirror/commands");
+        } catch (e) {
         }
-      }
-
-      // ⚠ A resumed recording stages `<id>-001.webm`, `-002.webm`. Without stripping that
-      // suffix the segments look stranded and their draft looks orphaned — the notice whose
-      // whole job is to say "nothing was lost" would say the opposite.
-      const paired = [...new Set(stranded.map(recordingIdFromStaged))].filter((id) => draftsById.has(id));
-      if (paired.length) {
-        new Notice(
-          `SLIM: ${paired.length} recoverable recording${paired.length > 1 ? "s" : ""} ` +
-          `have both a saved Markdown draft and audio (${paired.join(", ")}). Open the draft ` +
-          "to review it; SLIM will not delete either source automatically.", 30000);
-      }
-      const unpaired = stranded.filter((path) => !draftsById.has(recordingIdFromStaged(path)));
-      if (!unpaired.length) return;
-      new Notice(
-        `SLIM: ${unpaired.length} recording${unpaired.length > 1 ? "s" : ""} in ${STAGING_DIR} ` +
-        "never finished filing. The audio is intact and playable — file it by hand.", 30000);
-    } catch (e) {
-      console.error("[slim] stranded audio check", e);
-    }
-  }
-
-  async activate() {
-    const { workspace } = this.app;
-    const recent = typeof workspace.getMostRecentLeaf === "function"
-      ? workspace.getMostRecentLeaf() : null;
-    const leaf = recent && recent.view instanceof MarkdownView ? recent : null;
-    const session = await this.meetings.activate(leaf);
-    if (session.editorLeaf && typeof workspace.revealLeaf === "function") {
-      workspace.revealLeaf(session.editorLeaf);
-    }
-  }
-
-  /* The recording POST stays synchronous so its durable-source guarantees remain simple.
-   * This lightweight companion request exposes only progress for that POST. A first 404 is
-   * normal: the poll can win the race with the request handler creating its job record. */
-  watchRecording(jobId, onProgress) {
-    let stopped = false;
-    let timer = null;
-    const tick = async () => {
-      if (stopped) return;
-      try {
-        const res = await requestUrl({
-          url: `http://127.0.0.1:${this.settings.port}/api/record/progress?job_id=${encodeURIComponent(jobId)}`,
-          method: "GET",
-          throw: false,
+        this.live = makeLiveEditor(cm, {
+          views: this.liveViews,
+          infoField: editorInfoField,
+          livePreviewField: editorLivePreviewField,
+          render: (el, markdown, sourcePath) => MarkdownRenderer.render(this.app, markdown, el, sourcePath, this),
+          // A drawing soon replaced (a draft's) is drawn under a component of its own, removed with it.
+          renderFor: (el, markdown, sourcePath) => {
+            if (!MarkdownRenderChild) return MarkdownRenderer.render(this.app, markdown, el, sourcePath, this).then(() => null);
+            const child = this.addChild(new MarkdownRenderChild(el));
+            return MarkdownRenderer.render(this.app, markdown, el, sourcePath, child).then(() => () => this.removeChild(child), (error) => {
+              this.removeChild(child);
+              throw error;
+            });
+          },
+          icon: (el, name) => setIcon?.(el, name),
+          changed: (view, runId) => this.liveChanged(view, runId),
+          refused: () => new Notice("SLIM: you've edited this change since, so it stays as it is.")
         });
-        if (res.status === 200 && res.json) {
-          onProgress(res.json);
-          if (res.json.done) { stopped = true; return; }
-        }
-      } catch (e) {
-        // Progress is supplementary. The POST below remains the authoritative success/error
-        // path, so a transient poll failure must never turn a recoverable recording into an
-        // apparent failure.
-        console.debug("[slim] progress poll", e);
+        this.registerEditorExtension(this.live.extension);
       }
-      if (!stopped) timer = window.setTimeout(tick, 600);
+      // The editor showing a note: the one focused last.
+      liveViewFor(path) {
+        const live = this.live;
+        let best = null;
+        for (const view of live ? this.liveViews : []) {
+          if (live.pathOf(view) === path && (!best || live.focusedAt(view) > live.focusedAt(best))) best = view;
+        }
+        return best;
+      }
+      // The editor holding a run, while one does: its marks, ↺ and Redo live there.
+      liveRunView(runId) {
+        for (const view of this.live ? this.liveViews : []) if (this.live.state(view, runId)) return view;
+        return null;
+      }
+      // Changes land in Live Preview or source; reading view would hide them as they land.
+      async showEditing(path) {
+        for (const leaf of this.app.workspace?.getLeavesOfType?.("markdown") || []) {
+          if (leaf.view?.file?.path !== path || leaf.view?.getMode?.() !== "preview") continue;
+          const state = leaf.getViewState();
+          await leaf.setViewState({ ...state, state: { ...state.state, mode: "source" } });
+        }
+      }
+      // The note's editor, opening the note if no editor shows it (See before and Restore after the
+      // note was closed).
+      async noteView(path) {
+        await this.showEditing(path);
+        if (this.liveViewFor(path) || !this.live) return this.liveViewFor(path);
+        const file = this.app.vault.getAbstractFileByPath(path);
+        if (!file) return null;
+        await this.app.workspace.getLeaf(false).openFile(file);
+        return this.liveViewFor(path);
+      }
+      liveChanged(view, runId) {
+        for (const leaf of this.app.workspace?.getLeavesOfType?.(VIEW_TYPE_COPILOT) || []) leaf.view?.runChanged?.(view, runId);
+      }
+      /* Writing chunks to disk is only half a guarantee if the survivor is never mentioned again.
+       * `record.write_recording` unlinks the staged file once the audio is archived, so anything
+       * non-empty still sitting here is a recording that never finished being filed. */
+      async warnAboutStrandedAudio() {
+        try {
+          const adapter = this.app.vault.adapter;
+          if (!await adapter.exists(STAGING_DIR)) return;
+          const listing = await adapter.list(STAGING_DIR);
+          const webm = (listing.files || []).filter((f) => f.toLowerCase().endsWith(".webm"));
+          const stranded = [];
+          for (const f of webm) {
+            try {
+              const st = await adapter.stat(f);
+              if (!st || st.size > 0) stranded.push(f);
+            } catch (e) {
+              stranded.push(f);
+            }
+          }
+          if (!stranded.length) return;
+          const draftsById = /* @__PURE__ */ new Map();
+          for (const folder of ["Capture/_unfiled", "Journal"]) {
+            if (!await adapter.exists(folder)) continue;
+            const drafts = await adapter.list(folder);
+            for (const path of drafts.files || []) {
+              const name = nodePath.posix.basename(path);
+              if (!name.endsWith(DRAFT_SUFFIX) || !name.includes("--recording--")) continue;
+              const id = name.slice(0, -DRAFT_SUFFIX.length).split("--recording--").pop();
+              if (id) draftsById.set(id, path);
+            }
+          }
+          const paired = [...new Set(stranded.map(recordingIdFromStaged))].filter((id) => draftsById.has(id));
+          if (paired.length) {
+            new Notice(
+              `SLIM: ${paired.length} recoverable recording${paired.length > 1 ? "s" : ""} have both a saved Markdown draft and audio (${paired.join(", ")}). Open the draft to review it; SLIM will not delete either source automatically.`,
+              3e4
+            );
+          }
+          const unpaired = stranded.filter((path) => !draftsById.has(recordingIdFromStaged(path)));
+          if (!unpaired.length) return;
+          new Notice(
+            `SLIM: ${unpaired.length} recording${unpaired.length > 1 ? "s" : ""} in ${STAGING_DIR} never finished filing. The audio is intact and playable \u2014 file it by hand.`,
+            3e4
+          );
+        } catch (e) {
+          console.error("[slim] stranded audio check", e);
+        }
+      }
+      async activate() {
+        const { workspace } = this.app;
+        const recent = typeof workspace.getMostRecentLeaf === "function" ? workspace.getMostRecentLeaf() : null;
+        const leaf = recent && recent.view instanceof MarkdownView ? recent : null;
+        const session = await this.meetings.activate(leaf);
+        if (session.editorLeaf && typeof workspace.revealLeaf === "function") {
+          workspace.revealLeaf(session.editorLeaf);
+        }
+      }
+      /* The recording POST stays synchronous so its durable-source guarantees remain simple.
+       * This lightweight companion request exposes only progress for that POST. A first 404 is
+       * normal: the poll can win the race with the request handler creating its job record. */
+      watchRecording(jobId, onProgress) {
+        let stopped = false;
+        let timer = null;
+        const tick = async () => {
+          if (stopped) return;
+          try {
+            const res = await requestUrl({
+              url: `http://127.0.0.1:${this.settings.port}/api/record/progress?job_id=${encodeURIComponent(jobId)}`,
+              method: "GET",
+              throw: false
+            });
+            if (res.status === 200 && res.json) {
+              onProgress(res.json);
+              if (res.json.done) {
+                stopped = true;
+                return;
+              }
+            }
+          } catch (e) {
+            console.debug("[slim] progress poll", e);
+          }
+          if (!stopped) timer = window.setTimeout(tick, 600);
+        };
+        tick();
+        return () => {
+          stopped = true;
+          if (timer != null) window.clearTimeout(timer);
+        };
+      }
+      async activateCopilot() {
+        const { workspace } = this.app;
+        const existing = workspace.getLeavesOfType(VIEW_TYPE_COPILOT);
+        const leaf = existing.length ? existing[0] : workspace.getRightLeaf(false);
+        await leaf.setViewState({ type: VIEW_TYPE_COPILOT, active: true });
+        workspace.revealLeaf(leaf);
+        if (leaf.view && typeof leaf.view.setActiveFile === "function") {
+          await leaf.view.setActiveFile(workspace.getActiveFile());
+        }
+      }
+      async saveActiveNote(file) {
+        const view = this.app.workspace.getActiveViewOfType ? this.app.workspace.getActiveViewOfType(MarkdownView) : null;
+        if (view && view.file?.path === file?.path && typeof view.save === "function") {
+          await view.save();
+        }
+      }
+      // `requestUrl` rather than fetch: it bypasses CORS, which a plugin origin otherwise trips on.
+      async post(path, body) {
+        await this.ensureServer();
+        const res = await requestUrl({
+          url: `http://127.0.0.1:${this.settings.port}${path}`,
+          method: "POST",
+          contentType: "application/json",
+          body: JSON.stringify(body),
+          throw: false
+        });
+        if (res.status !== 200) {
+          let detail = res.text;
+          let cancelled = false;
+          let silent = false;
+          try {
+            detail = res.json && res.json.error || detail;
+            cancelled = !!(res.json && res.json.cancelled);
+            silent = !!(res.json && res.json.silent);
+          } catch (e) {
+          }
+          const err = new Error(cancelled || silent ? detail : `${path} returned ${res.status}: ${detail}`);
+          err.status = res.status;
+          err.detail = detail;
+          err.cancelled = cancelled;
+          err.silent = silent;
+          throw err;
+        }
+        return res.json;
+      }
+      postJSON(path, body) {
+        return this.post(path, body);
+      }
+      async getJSON(path) {
+        await this.ensureServer();
+        const res = await requestUrl({
+          url: `http://127.0.0.1:${this.settings.port}${path}`,
+          method: "GET",
+          throw: false
+        });
+        if (res.status !== 200) {
+          const detail = res.json && res.json.error || res.text;
+          throw new Error(`${path} returned ${res.status}: ${detail}`);
+        }
+        return res.json;
+      }
+      async streamCopilot(body, handlers, signal) {
+        await this.ensureServer();
+        return streamRequest(this.settings.port, "/api/copilot/stream", body, handlers, signal);
+      }
+      postRecording(body) {
+        return this.post("/api/record", body);
+      }
+      postLiveTranscript(body) {
+        return this.post("/api/record/live", body);
+      }
+      applyCard(body) {
+        return this.post("/api/record/apply", body);
+      }
+      completeReview(body) {
+        return this.post("/api/record/review", body);
+      }
+      saveNotes(body) {
+        return this.post("/api/record/notes", body);
+      }
+      retrySummary(body) {
+        return this.post("/api/record/summary", body);
+      }
+      cancelRecording(body) {
+        return this.post("/api/record/cancel", body);
+      }
+      recordTranscript(body) {
+        return this.post("/api/record/transcript", body);
+      }
+      appendRecording(body) {
+        return this.post("/api/record/append", body);
+      }
     };
-    tick();
-    return () => {
-      stopped = true;
-      if (timer != null) window.clearTimeout(timer);
-    };
+    Object.assign(SlimRecorderPlugin.prototype, serverMethods);
+    module2.exports = SlimRecorderPlugin;
+    module2.exports.RecorderView = RecorderView;
+    module2.exports.MeetingSessionManager = MeetingSessionManager;
+    module2.exports.splitMeetingNote = splitMeetingNote;
+    module2.exports.embedLegacyMeetingBlock = embedLegacyMeetingBlock;
+    module2.exports.markdownBlockShortcut = markdownBlockShortcut;
+    module2.exports.pcm16k = pcm16k;
+    module2.exports.captureSilence = captureSilence;
+    module2.exports.clockSeconds = clockSeconds;
+    module2.exports.renderPassiveMeetingBlock = renderPassiveMeetingBlock;
+    module2.exports.CopilotView = CopilotView;
+    module2.exports.RenameModal = RenameModal;
+    module2.exports.SSEParser = SSEParser;
+    module2.exports.groupThreads = groupThreads;
+    module2.exports.groupCitations = groupCitations;
+    module2.exports.normalizeMath = normalizeMath;
+    module2.exports.SUGGESTED_PROMPTS = SUGGESTED_PROMPTS;
+    module2.exports.metaText = metaText;
+    module2.exports.stageLine = stageLine;
+    module2.exports.noteTitle = noteTitle;
+    module2.exports.streamRequest = streamRequest;
+    module2.exports.inlineMarkdown = inlineMarkdown;
+    module2.exports.stampSourceAtoms = stampSourceAtoms;
+    module2.exports.markdownFromEditable = markdownFromEditable;
+    module2.exports.serverArgv = serverArgv;
+    module2.exports.serverEnv = serverEnv;
+    module2.exports.sha256Hex = sha256Hex;
+    module2.exports.slashQuery = slashQuery;
+    module2.exports.matchSkills = matchSkills;
+    module2.exports.inputsText = inputsText;
+    module2.exports.editorSelection = editorSelection;
+    module2.exports.historyText = historyText;
+    module2.exports.editOutcome = editOutcome;
+    module2.exports.wordTokens = wordTokens;
+    module2.exports.wordOps = wordOps;
+    module2.exports.markable = markable;
+    module2.exports.formatChange = formatChange;
+    module2.exports.makeLiveEditor = makeLiveEditor;
+    module2.exports.changeMarks = changeMarks;
+    module2.exports.beforeBlocks = beforeBlocks;
+    module2.exports.textDiff = textDiff;
+    module2.exports.excerpt = excerpt;
   }
+});
 
-  async activateCopilot() {
-    const { workspace } = this.app;
-    const existing = workspace.getLeavesOfType(VIEW_TYPE_COPILOT);
-    const leaf = existing.length ? existing[0] : workspace.getRightLeaf(false);
-    await leaf.setViewState({ type: VIEW_TYPE_COPILOT, active: true });
-    workspace.revealLeaf(leaf);
-    if (leaf.view && typeof leaf.view.setActiveFile === "function") {
-      await leaf.view.setActiveFile(workspace.getActiveFile());
-    }
-  }
-
-  async saveActiveNote(file) {
-    const view = this.app.workspace.getActiveViewOfType
-      ? this.app.workspace.getActiveViewOfType(MarkdownView) : null;
-    if (view && view.file?.path === file?.path && typeof view.save === "function") {
-      await view.save();
-    }
-  }
-
-  // `requestUrl` rather than fetch: it bypasses CORS, which a plugin origin otherwise trips on.
-  async post(path, body) {
-    // Cheap when the server is up (one loopback connect) and the whole point when it is not:
-    // a recording made minutes after launch, or after the server died, still lands.
-    await this.ensureServer();
-    const res = await requestUrl({
-      url: `http://127.0.0.1:${this.settings.port}${path}`,
-      method: "POST",
-      contentType: "application/json",
-      body: JSON.stringify(body),
-      throw: false,
-    });
-    if (res.status !== 200) {
-      let detail = res.text;
-      let cancelled = false;
-      let silent = false;
-      try {
-        detail = (res.json && res.json.error) || detail;
-        cancelled = !!(res.json && res.json.cancelled);
-        silent = !!(res.json && res.json.silent);
-      } catch (e) { /* not json */ }
-      // A cancel is THEIR instruction, not a failure, and the caller has to be able to tell the
-      // two apart: one parks the session, the other shows an error screen.
-      const err = new Error(cancelled || silent
-        ? detail : `${path} returned ${res.status}: ${detail}`);
-      err.status = res.status;
-      err.detail = detail;
-      err.cancelled = cancelled;
-      err.silent = silent;
-      throw err;
-    }
-    return res.json;
-  }
-
-  postJSON(path, body) { return this.post(path, body); }
-
-  async getJSON(path) {
-    await this.ensureServer();
-    const res = await requestUrl({
-      url: `http://127.0.0.1:${this.settings.port}${path}`,
-      method: "GET", throw: false,
-    });
-    if (res.status !== 200) {
-      const detail = (res.json && res.json.error) || res.text;
-      throw new Error(`${path} returned ${res.status}: ${detail}`);
-    }
-    return res.json;
-  }
-
-  async streamCopilot(body, handlers, signal) {
-    await this.ensureServer();
-    return streamRequest(this.settings.port, "/api/copilot/stream", body, handlers, signal);
-  }
-
-  postRecording(body) { return this.post("/api/record", body); }
-  postLiveTranscript(body) { return this.post("/api/record/live", body); }
-  applyCard(body) { return this.post("/api/record/apply", body); }
-  completeReview(body) { return this.post("/api/record/review", body); }
-  saveNotes(body) { return this.post("/api/record/notes", body); }
-  retrySummary(body) { return this.post("/api/record/summary", body); }
-  cancelRecording(body) { return this.post("/api/record/cancel", body); }
-  recordTranscript(body) { return this.post("/api/record/transcript", body); }
-  appendRecording(body) { return this.post("/api/record/append", body); }
-};
-
-// A testing seam, and the only one. `obsidian/main.test.mjs` needs the view class; Obsidian
-// itself only ever reads the default export, so an extra property costs nothing at runtime.
-module.exports.RecorderView = RecorderView;
-module.exports.MeetingSessionManager = MeetingSessionManager;
-module.exports.splitMeetingNote = splitMeetingNote;
-module.exports.embedLegacyMeetingBlock = embedLegacyMeetingBlock;
-module.exports.markdownBlockShortcut = markdownBlockShortcut;
-module.exports.pcm16k = pcm16k;
-module.exports.captureSilence = captureSilence;
-module.exports.clockSeconds = clockSeconds;
-module.exports.renderPassiveMeetingBlock = renderPassiveMeetingBlock;
-module.exports.CopilotView = CopilotView;
-module.exports.RenameModal = RenameModal;
-module.exports.SSEParser = SSEParser;
-module.exports.groupThreads = groupThreads;
-module.exports.groupCitations = groupCitations;
-module.exports.normalizeMath = normalizeMath;
-module.exports.SUGGESTED_PROMPTS = SUGGESTED_PROMPTS;
-module.exports.metaText = metaText;
-module.exports.stageLine = stageLine;
-module.exports.noteTitle = noteTitle;
-module.exports.streamRequest = streamRequest;
-module.exports.inlineMarkdown = inlineMarkdown;
-module.exports.stampSourceAtoms = stampSourceAtoms;
-module.exports.markdownFromEditable = markdownFromEditable;
-module.exports.serverArgv = serverArgv;
-module.exports.serverEnv = serverEnv;
-module.exports.sha256Hex = sha256Hex;
-module.exports.slashQuery = slashQuery;
-module.exports.matchSkills = matchSkills;
-module.exports.inputsText = inputsText;
-module.exports.editorSelection = editorSelection;
-module.exports.historyText = historyText;
-module.exports.editOutcome = editOutcome;
-module.exports.wordTokens = wordTokens;
-module.exports.wordOps = wordOps;
-module.exports.markable = markable;
-module.exports.formatChange = formatChange;
-module.exports.makeLiveEditor = makeLiveEditor;
-module.exports.changeMarks = changeMarks;
-module.exports.beforeBlocks = beforeBlocks;
-module.exports.textDiff = textDiff;
-module.exports.excerpt = excerpt;
+// src/main.js
+module.exports = require_plugin();

@@ -33,3 +33,6 @@ docs/
 # Claude Code worktrees live inside the repo; `.claude/hooks` and `settings.json` are tracked,
 # the worktree checkouts never are (a `git add -A` once recorded one as a submodule gitlink).
 .claude/worktrees/
+
+# the plugin build toolchain; obsidian/main.js is built from obsidian/src and committed
+obsidian/node_modules/
