@@ -5,7 +5,8 @@
 const { MarkdownView, Notice } = require("obsidian");
 const nodePath = require("path");
 const { STAGING_DIR, RECORDER_ATTACHMENTS, DRAFT_SUFFIX, EMPTY_MEETING_BLOCK, recordingIdFromStaged,
-        recordingId, splitMeetingNote, frontmatterScalar, hasMeetingBlock, embedLegacyMeetingBlock } = require("./meeting-note");
+        recordingId, splitMeetingNote, frontmatterScalar, hasMeetingBlock,
+        embedLegacyMeetingBlock } = require("./meeting-note");
 
 class RecorderView {
   constructor(leaf, plugin) {

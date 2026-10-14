@@ -9,47 +9,84 @@ var __commonJS = (cb, mod) => function __require() {
   }
 };
 
-// src/audio.js
-var require_audio = __commonJS({
-  "src/audio.js"(exports2, module2) {
+// src/chat-images.js
+var require_chat_images = __commonJS({
+  "src/chat-images.js"(exports2, module2) {
     "use strict";
-    var MIC_CHANNEL = 0;
-    var SYSTEM_CHANNEL = 1;
-    var LIVE_FLUSH_BYTES = 64e3;
-    function pcm16k(input, inputRate) {
-      const source = input || new Float32Array();
-      const ratio = Math.max(1, Number(inputRate || 16e3) / 16e3);
-      const length = Math.floor(source.length / ratio);
-      const out = Buffer.alloc(length * 2);
-      for (let i = 0; i < length; i++) {
-        const start = Math.floor(i * ratio);
-        const end = Math.min(source.length, Math.floor((i + 1) * ratio));
-        let value = 0;
-        for (let j = start; j < end; j++) value += source[j];
-        value = Math.max(-1, Math.min(1, value / Math.max(1, end - start)));
-        out.writeInt16LE(value < 0 ? value * 32768 : value * 32767, i * 2);
-      }
-      return out;
+    var MAX_COPILOT_IMAGES = 3;
+    var MAX_COPILOT_IMAGE_BYTES = 2e6;
+    var MAX_COPILOT_IMAGE_INPUT_BYTES = 2e7;
+    var MAX_COPILOT_IMAGE_EDGE = 1600;
+    var COPILOT_IMAGE_TYPES = /* @__PURE__ */ new Set(["image/png", "image/jpeg", "image/webp"]);
+    function imageBytes(data) {
+      return Buffer.byteLength(String(data || ""), "base64");
     }
-    var SILENT_PEAK = 10 ** (-80 / 20);
-    var SILENT_START_S = 5;
-    var SILENT_LATER_S = 20;
-    function captureSilence(watch, peaks, seconds = 1) {
-      const prev = watch || { heard: false, silent: 0, warn: false };
-      const sound = peaks.mic >= SILENT_PEAK || peaks.system >= SILENT_PEAK;
-      const silent = sound ? 0 : prev.silent + seconds;
-      const limit = prev.heard ? SILENT_LATER_S : SILENT_START_S;
-      return { heard: prev.heard || sound, silent, warn: silent >= limit };
+    function imageName(name, mime) {
+      const safe = String(name || "image").replace(/\\/g, "/").split("/").pop().slice(0, 120);
+      const ext = mime === "image/png" ? "png" : mime === "image/webp" ? "webp" : "jpg";
+      return `${safe.replace(/\.[^.]+$/, "") || "image"}.${ext}`;
+    }
+    function loadBrowserImage(source) {
+      return new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error("This image could not be decoded."));
+        image.src = source;
+      });
+    }
+    async function resizeCopilotImage(file) {
+      const mime = String(file?.type || "").toLowerCase();
+      if (!COPILOT_IMAGE_TYPES.has(mime)) throw new Error("Use a PNG, JPEG, or WebP image.");
+      if (!Number.isFinite(file.size) || file.size <= 0) throw new Error("This image is empty.");
+      if (file.size > MAX_COPILOT_IMAGE_INPUT_BYTES) throw new Error("Images must be 20 MB or smaller before resizing.");
+      const buffer = Buffer.from(await file.arrayBuffer());
+      const original = `data:${mime};base64,${buffer.toString("base64")}`;
+      const image = await loadBrowserImage(original);
+      if (Math.max(image.naturalWidth, image.naturalHeight) <= MAX_COPILOT_IMAGE_EDGE && buffer.length <= MAX_COPILOT_IMAGE_BYTES) {
+        return {
+          name: imageName(file.name, mime),
+          mime,
+          data: original.split(",")[1],
+          preview: original,
+          bytes: buffer.length
+        };
+      }
+      let scale = Math.min(1, MAX_COPILOT_IMAGE_EDGE / Math.max(image.naturalWidth, image.naturalHeight));
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+        const context = canvas.getContext("2d");
+        context.fillStyle = "#fff";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        const quality = Math.max(0.65, 0.9 - attempt * 0.07);
+        const resized = canvas.toDataURL("image/jpeg", quality);
+        const data = resized.split(",")[1];
+        const bytes = imageBytes(data);
+        if (bytes <= MAX_COPILOT_IMAGE_BYTES) {
+          return {
+            name: imageName(file.name, "image/jpeg"),
+            mime: "image/jpeg",
+            data,
+            preview: resized,
+            bytes
+          };
+        }
+        scale *= 0.8;
+      }
+      throw new Error("The image is still over 2 MB after resizing. Crop it and try again.");
     }
     module2.exports = {
-      MIC_CHANNEL,
-      SYSTEM_CHANNEL,
-      LIVE_FLUSH_BYTES,
-      pcm16k,
-      SILENT_PEAK,
-      SILENT_START_S,
-      SILENT_LATER_S,
-      captureSilence
+      MAX_COPILOT_IMAGES,
+      MAX_COPILOT_IMAGE_BYTES,
+      MAX_COPILOT_IMAGE_INPUT_BYTES,
+      MAX_COPILOT_IMAGE_EDGE,
+      COPILOT_IMAGE_TYPES,
+      imageBytes,
+      imageName,
+      loadBrowserImage,
+      resizeCopilotImage
     };
   }
 });
@@ -255,88 +292,6 @@ var require_chat_text = __commonJS({
       historyText,
       STOPPED_BECAUSE,
       editOutcome
-    };
-  }
-});
-
-// src/chat-images.js
-var require_chat_images = __commonJS({
-  "src/chat-images.js"(exports2, module2) {
-    "use strict";
-    var MAX_COPILOT_IMAGES = 3;
-    var MAX_COPILOT_IMAGE_BYTES = 2e6;
-    var MAX_COPILOT_IMAGE_INPUT_BYTES = 2e7;
-    var MAX_COPILOT_IMAGE_EDGE = 1600;
-    var COPILOT_IMAGE_TYPES = /* @__PURE__ */ new Set(["image/png", "image/jpeg", "image/webp"]);
-    function imageBytes(data) {
-      return Buffer.byteLength(String(data || ""), "base64");
-    }
-    function imageName(name, mime) {
-      const safe = String(name || "image").replace(/\\/g, "/").split("/").pop().slice(0, 120);
-      const ext = mime === "image/png" ? "png" : mime === "image/webp" ? "webp" : "jpg";
-      return `${safe.replace(/\.[^.]+$/, "") || "image"}.${ext}`;
-    }
-    function loadBrowserImage(source) {
-      return new Promise((resolve, reject) => {
-        const image = new Image();
-        image.onload = () => resolve(image);
-        image.onerror = () => reject(new Error("This image could not be decoded."));
-        image.src = source;
-      });
-    }
-    async function resizeCopilotImage(file) {
-      const mime = String(file?.type || "").toLowerCase();
-      if (!COPILOT_IMAGE_TYPES.has(mime)) throw new Error("Use a PNG, JPEG, or WebP image.");
-      if (!Number.isFinite(file.size) || file.size <= 0) throw new Error("This image is empty.");
-      if (file.size > MAX_COPILOT_IMAGE_INPUT_BYTES) throw new Error("Images must be 20 MB or smaller before resizing.");
-      const buffer = Buffer.from(await file.arrayBuffer());
-      const original = `data:${mime};base64,${buffer.toString("base64")}`;
-      const image = await loadBrowserImage(original);
-      if (Math.max(image.naturalWidth, image.naturalHeight) <= MAX_COPILOT_IMAGE_EDGE && buffer.length <= MAX_COPILOT_IMAGE_BYTES) {
-        return {
-          name: imageName(file.name, mime),
-          mime,
-          data: original.split(",")[1],
-          preview: original,
-          bytes: buffer.length
-        };
-      }
-      let scale = Math.min(1, MAX_COPILOT_IMAGE_EDGE / Math.max(image.naturalWidth, image.naturalHeight));
-      for (let attempt = 0; attempt < 5; attempt += 1) {
-        const canvas = document.createElement("canvas");
-        canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
-        canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
-        const context = canvas.getContext("2d");
-        context.fillStyle = "#fff";
-        context.fillRect(0, 0, canvas.width, canvas.height);
-        context.drawImage(image, 0, 0, canvas.width, canvas.height);
-        const quality = Math.max(0.65, 0.9 - attempt * 0.07);
-        const resized = canvas.toDataURL("image/jpeg", quality);
-        const data = resized.split(",")[1];
-        const bytes = imageBytes(data);
-        if (bytes <= MAX_COPILOT_IMAGE_BYTES) {
-          return {
-            name: imageName(file.name, "image/jpeg"),
-            mime: "image/jpeg",
-            data,
-            preview: resized,
-            bytes
-          };
-        }
-        scale *= 0.8;
-      }
-      throw new Error("The image is still over 2 MB after resizing. Crop it and try again.");
-    }
-    module2.exports = {
-      MAX_COPILOT_IMAGES,
-      MAX_COPILOT_IMAGE_BYTES,
-      MAX_COPILOT_IMAGE_INPUT_BYTES,
-      MAX_COPILOT_IMAGE_EDGE,
-      COPILOT_IMAGE_TYPES,
-      imageBytes,
-      imageName,
-      loadBrowserImage,
-      resizeCopilotImage
     };
   }
 });
@@ -1835,109 +1790,6 @@ var require_chat_view = __commonJS({
   }
 });
 
-// src/clock.js
-var require_clock = __commonJS({
-  "src/clock.js"(exports2, module2) {
-    "use strict";
-    function pad(n) {
-      return String(n).padStart(2, "0");
-    }
-    function clockSeconds(clock, now) {
-      if (!clock) return 0;
-      return Math.floor(clock.base + (clock.since == null ? 0 : (now - clock.since) / 1e3));
-    }
-    function hhmmss(totalSeconds) {
-      const s = Math.floor(totalSeconds);
-      return `${pad(Math.floor(s / 3600))}:${pad(Math.floor(s % 3600 / 60))}:${pad(s % 60)}`;
-    }
-    module2.exports = { pad, clockSeconds, hhmmss };
-  }
-});
-
-// src/editable-markdown.js
-var require_editable_markdown = __commonJS({
-  "src/editable-markdown.js"(exports2, module2) {
-    "use strict";
-    function markdownBlockShortcut(text) {
-      const heading = String(text || "").match(/^(#{1,6})\s$/);
-      if (heading) return { tag: `h${heading[1].length}`, kind: "block" };
-      if (/^[-*+]\s$/.test(text || "")) return { tag: "ul", kind: "list" };
-      if (/^\d+\.\s$/.test(text || "")) return { tag: "ol", kind: "list" };
-      if (/^>\s$/.test(text || "")) return { tag: "blockquote", kind: "block" };
-      return null;
-    }
-    var SOURCE_ATOM = /(!?\[\[[^\]]+\]\]|!\[[^\]]*\]\([^)]*\)|\$\$[^$]+\$\$|\$[^$\n]+\$)/g;
-    function stampSourceAtoms(root, markdown) {
-      if (!root || typeof root.querySelectorAll !== "function") return;
-      const atoms = String(markdown || "").match(SOURCE_ATOM) || [];
-      if (!atoms.length) return;
-      const matched = Array.from(
-        root.querySelectorAll("img, .internal-embed, a.internal-link, mjx-container, .math")
-      );
-      const inside = new Set(matched);
-      const nodes = matched.filter((node) => {
-        for (let up = node.parentElement; up; up = up.parentElement) if (inside.has(up)) return false;
-        return true;
-      });
-      for (let i = 0; i < nodes.length && i < atoms.length; i += 1) {
-        if (typeof nodes[i].setAttribute === "function") {
-          nodes[i].setAttribute("data-slim-src", atoms[i]);
-        }
-      }
-    }
-    function inlineMarkdown(node) {
-      if (!node) return "";
-      if (node.nodeType === 3) return node.nodeValue || "";
-      const stamped = typeof node.getAttribute === "function" ? node.getAttribute("data-slim-src") : null;
-      if (stamped) return stamped;
-      const tag = String(node.tagName || "").toLowerCase();
-      if (tag === "br") return "\n";
-      const inner = Array.from(node.childNodes || [], inlineMarkdown).join("");
-      if (tag === "strong" || tag === "b") return `**${inner}**`;
-      if (tag === "em" || tag === "i") return `*${inner}*`;
-      if (tag === "code") return `\`${inner}\``;
-      if (tag === "a") return `[${inner}](${node.getAttribute("href") || ""})`;
-      return inner;
-    }
-    function markdownFromEditable(root) {
-      const list = (node, depth) => {
-        const ordered = String(node.tagName || "").toLowerCase() === "ol";
-        return Array.from(node.children || []).map((li, i) => {
-          const own = [], inner = [];
-          for (const child of li.childNodes || []) {
-            const tag = String(child.tagName || "").toLowerCase();
-            if (tag === "ul" || tag === "ol") inner.push(list(child, depth + 1));
-            else own.push(inlineMarkdown(child));
-          }
-          const marker = ordered ? `${i + 1}.` : "-";
-          return [`${"	".repeat(depth)}${marker} ${own.join("").trim()}`, ...inner].join("\n");
-        }).join("\n");
-      };
-      const block = (node) => {
-        const tag = String(node.tagName || "").toLowerCase();
-        if (/^h[1-6]$/.test(tag)) return `${"#".repeat(Number(tag[1]))} ${inlineMarkdown(node).trim()}`;
-        if (tag === "ul" || tag === "ol") return list(node, 0);
-        if (tag === "blockquote") {
-          return inlineMarkdown(node).split("\n").map((line) => `> ${line}`).join("\n").trim();
-        }
-        if (tag === "pre") return `\`\`\`
-${node.textContent || ""}
-\`\`\``;
-        if (tag === "hr") return "---";
-        return inlineMarkdown(node).trimEnd();
-      };
-      return Array.from(root && root.children || []).map(block).filter((part) => part.trim()).join("\n\n").trim();
-    }
-    module2.exports = {
-      markdownBlockShortcut,
-      SOURCE_ATOM,
-      stampSourceAtoms,
-      inlineMarkdown,
-      markdownFromEditable
-    };
-  }
-});
-
 // src/live-diff.js
 var require_live_diff = __commonJS({
   "src/live-diff.js"(exports2, module2) {
@@ -3240,6 +3092,25 @@ var require_live_editor = __commonJS({
   }
 });
 
+// src/clock.js
+var require_clock = __commonJS({
+  "src/clock.js"(exports2, module2) {
+    "use strict";
+    function pad(n) {
+      return String(n).padStart(2, "0");
+    }
+    function clockSeconds(clock, now) {
+      if (!clock) return 0;
+      return Math.floor(clock.base + (clock.since == null ? 0 : (now - clock.since) / 1e3));
+    }
+    function hhmmss(totalSeconds) {
+      const s = Math.floor(totalSeconds);
+      return `${pad(Math.floor(s / 3600))}:${pad(Math.floor(s % 3600 / 60))}:${pad(s % 60)}`;
+    }
+    module2.exports = { pad, clockSeconds, hhmmss };
+  }
+});
+
 // src/meeting-note.js
 var require_meeting_note = __commonJS({
   "src/meeting-note.js"(exports2, module2) {
@@ -3430,6 +3301,243 @@ ${fence}`);
       embedLegacyMeetingBlock,
       renderMeetingTabs,
       renderPassiveMeetingBlock
+    };
+  }
+});
+
+// src/server.js
+var require_server = __commonJS({
+  "src/server.js"(exports2, module2) {
+    "use strict";
+    var { Notice, requestUrl } = require("obsidian");
+    var { spawn } = require("child_process");
+    var net = require("net");
+    var nodePath = require("path");
+    function serverArgv(settings, parentPid = process.pid) {
+      return [
+        "--directory",
+        settings.repoPath,
+        "run",
+        "slim",
+        "chat",
+        "--port",
+        String(settings.port),
+        "--parent-pid",
+        String(parentPid)
+      ];
+    }
+    function serverEnv(vaultBase, env = process.env) {
+      return Object.assign({}, env, { SLIM_VAULT: vaultBase });
+    }
+    function portOpen(port) {
+      return new Promise((resolve) => {
+        const sock = net.connect({ port, host: "127.0.0.1" }, () => {
+          sock.end();
+          resolve(true);
+        });
+        sock.on("error", () => resolve(false));
+        sock.setTimeout(1e3, () => {
+          sock.destroy();
+          resolve(false);
+        });
+      });
+    }
+    async function waitForPort(port, timeoutMs) {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (await portOpen(port)) return true;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      return false;
+    }
+    var serverMethods = {
+      // ---- the server's lifecycle ------------------------------------------------------------
+      /* Nothing else starts `slim chat`: there is no launchd agent, and the Electron shell that
+       * used to do it was cut on 2026-08-27. Without this, recording with the server down fails
+       * at the POST — the audio survives in the staging folder but recovery is by hand.
+       *
+       * Not a memory decision: measured 2026-08-06, the server is 31 MB and holds NO model. Ollama
+       * loads weights on demand and evicts on its own keep_alive.
+       */
+      ensureServer() {
+        if (!this._ensuring) {
+          this._ensuring = this._ensureServer().finally(() => {
+            this._ensuring = null;
+          });
+        }
+        return this._ensuring;
+      },
+      async _ensureServer() {
+        const port = this.settings.port;
+        if (await waitForPort(port, 3e3)) {
+          this.warnIfStale();
+          return "reused";
+        }
+        try {
+          const argv = serverArgv(this.settings);
+          const base = this.vaultBasePath();
+          this.server = spawn(
+            this.settings.uvPath,
+            argv,
+            {
+              stdio: "ignore",
+              detached: true,
+              env: base ? serverEnv(base) : process.env
+            }
+          );
+        } catch (e) {
+          this.server = null;
+          new Notice(
+            `SLIM: could not launch ${this.settings.uvPath} \u2014 ${e && e.message || e}`,
+            2e4
+          );
+          return "failed";
+        }
+        const child = this.server;
+        child.on("error", (e) => {
+          if (this.server === child) this.server = null;
+          console.error("[slim] server spawn", e);
+          new Notice(`SLIM: the server did not start \u2014 check the repo and uv paths in settings. (${e && e.message || e})`, 2e4);
+        });
+        child.on("exit", () => {
+          if (this.server === child) this.server = null;
+        });
+        if (await waitForPort(port, 3e4)) return "started";
+        new Notice(`SLIM: the server did not come up on 127.0.0.1:${port} within 30s. Check that Ollama is running and that \`uv run slim chat\` works from the repo.`, 2e4);
+        return "timeout";
+      },
+      /* ⚠ A REUSED SERVER CAN BE OLDER THAN THE CODE, and nothing about it looks wrong.
+       *
+       * Reuse is deliberate — it is what stops this plugin killing a terminal `slim chat --reload`.
+       * But `uv run` reads Python from disk at spawn time and never hot-reloads, and "the plugin
+       * owns the lifecycle" turned out not to hold: Obsidian does not reliably call `onunload` when
+       * the whole APP quits, so a server started the previous afternoon survived a Cmd+Q and a
+       * relaunch, was reused, and failed two recordings against a bug already fixed on disk
+       * (2026-08-23). In July the same trap cost a full day of debugging.
+       *
+       * It WARNS rather than restarting: the server on the port might be their, with a reloader
+       * attached, and killing that out from under them is its own surprise. ONCE PER SERVER: the
+       * check runs on every request that reuses the server, and saying it each time stacked a
+       * column of 30 s notices over the sidebar (2026-09-29).
+       */
+      /* This vault's own base path, or null on a mobile adapter that has none. `openDiskFile()`
+       * already resolves audio against it; the server has to agree on the same directory. */
+      vaultBasePath() {
+        try {
+          const adapter = this.app.vault.adapter;
+          if (typeof adapter.getBasePath !== "function") return null;
+          return nodePath.resolve(adapter.getBasePath());
+        } catch (e) {
+          console.error("[slim] no vault base path", e);
+          return null;
+        }
+      },
+      async warnIfStale() {
+        const res = await requestUrl({
+          url: `http://127.0.0.1:${this.settings.port}/api/health`,
+          method: "GET",
+          throw: false
+        }).catch(() => null);
+        if (!res || res.status === 404) {
+          this.sayOnce(
+            "predates-health",
+            `SLIM: the running server predates /api/health, so it is serving OLD code. Restart it:
+
+lsof -tiTCP:${this.settings.port} -sTCP:LISTEN | xargs kill`
+          );
+          return;
+        }
+        const health = res.json;
+        if (!health) return;
+        const base = this.vaultBasePath();
+        const fs = require("fs");
+        let resolvedBase = base;
+        try {
+          if (base) resolvedBase = fs.realpathSync(base);
+        } catch {
+        }
+        const killCmd = `lsof -tiTCP:${this.settings.port} -sTCP:LISTEN | xargs kill`;
+        if (resolvedBase && health.vault && health.vault !== resolvedBase) {
+          this.sayOnce(
+            `vault:${health.pid}:${health.started_at}`,
+            `SLIM: the server on port ${this.settings.port} is using the vault ${health.vault}, but this vault is ${base}. Recordings would be filed in the wrong one. Restart it:
+
+${killCmd}`
+          );
+          return;
+        }
+        if (!health.stale) return;
+        this.sayOnce(
+          `stale:${health.pid}:${health.started_at}`,
+          `SLIM: the running server started ${health.started_at} but ${health.newest_file} changed ${health.newest_source}. It is serving OLD code. Restart it:
+
+` + killCmd
+        );
+      },
+      sayOnce(key, text) {
+        if (this.staleSaid === key) return;
+        this.staleSaid = key;
+        new Notice(text, 3e4);
+      },
+      stopServer() {
+        const child = this.server;
+        this.server = null;
+        if (!child || child.pid == null) return;
+        try {
+          process.kill(-child.pid, "SIGTERM");
+        } catch (e) {
+          try {
+            child.kill();
+          } catch (e2) {
+          }
+        }
+      }
+    };
+    module2.exports = { serverArgv, serverEnv, portOpen, waitForPort, serverMethods };
+  }
+});
+
+// src/audio.js
+var require_audio = __commonJS({
+  "src/audio.js"(exports2, module2) {
+    "use strict";
+    var MIC_CHANNEL = 0;
+    var SYSTEM_CHANNEL = 1;
+    var LIVE_FLUSH_BYTES = 64e3;
+    function pcm16k(input, inputRate) {
+      const source = input || new Float32Array();
+      const ratio = Math.max(1, Number(inputRate || 16e3) / 16e3);
+      const length = Math.floor(source.length / ratio);
+      const out = Buffer.alloc(length * 2);
+      for (let i = 0; i < length; i++) {
+        const start = Math.floor(i * ratio);
+        const end = Math.min(source.length, Math.floor((i + 1) * ratio));
+        let value = 0;
+        for (let j = start; j < end; j++) value += source[j];
+        value = Math.max(-1, Math.min(1, value / Math.max(1, end - start)));
+        out.writeInt16LE(value < 0 ? value * 32768 : value * 32767, i * 2);
+      }
+      return out;
+    }
+    var SILENT_PEAK = 10 ** (-80 / 20);
+    var SILENT_START_S = 5;
+    var SILENT_LATER_S = 20;
+    function captureSilence(watch, peaks, seconds = 1) {
+      const prev = watch || { heard: false, silent: 0, warn: false };
+      const sound = peaks.mic >= SILENT_PEAK || peaks.system >= SILENT_PEAK;
+      const silent = sound ? 0 : prev.silent + seconds;
+      const limit = prev.heard ? SILENT_LATER_S : SILENT_START_S;
+      return { heard: prev.heard || sound, silent, warn: silent >= limit };
+    }
+    module2.exports = {
+      MIC_CHANNEL,
+      SYSTEM_CHANNEL,
+      LIVE_FLUSH_BYTES,
+      pcm16k,
+      SILENT_PEAK,
+      SILENT_START_S,
+      SILENT_LATER_S,
+      captureSilence
     };
   }
 });
@@ -4653,12 +4761,100 @@ var require_recorder_render = __commonJS({
   }
 });
 
+// src/editable-markdown.js
+var require_editable_markdown = __commonJS({
+  "src/editable-markdown.js"(exports2, module2) {
+    "use strict";
+    function markdownBlockShortcut(text) {
+      const heading = String(text || "").match(/^(#{1,6})\s$/);
+      if (heading) return { tag: `h${heading[1].length}`, kind: "block" };
+      if (/^[-*+]\s$/.test(text || "")) return { tag: "ul", kind: "list" };
+      if (/^\d+\.\s$/.test(text || "")) return { tag: "ol", kind: "list" };
+      if (/^>\s$/.test(text || "")) return { tag: "blockquote", kind: "block" };
+      return null;
+    }
+    var SOURCE_ATOM = /(!?\[\[[^\]]+\]\]|!\[[^\]]*\]\([^)]*\)|\$\$[^$]+\$\$|\$[^$\n]+\$)/g;
+    function stampSourceAtoms(root, markdown) {
+      if (!root || typeof root.querySelectorAll !== "function") return;
+      const atoms = String(markdown || "").match(SOURCE_ATOM) || [];
+      if (!atoms.length) return;
+      const matched = Array.from(
+        root.querySelectorAll("img, .internal-embed, a.internal-link, mjx-container, .math")
+      );
+      const inside = new Set(matched);
+      const nodes = matched.filter((node) => {
+        for (let up = node.parentElement; up; up = up.parentElement) if (inside.has(up)) return false;
+        return true;
+      });
+      for (let i = 0; i < nodes.length && i < atoms.length; i += 1) {
+        if (typeof nodes[i].setAttribute === "function") {
+          nodes[i].setAttribute("data-slim-src", atoms[i]);
+        }
+      }
+    }
+    function inlineMarkdown(node) {
+      if (!node) return "";
+      if (node.nodeType === 3) return node.nodeValue || "";
+      const stamped = typeof node.getAttribute === "function" ? node.getAttribute("data-slim-src") : null;
+      if (stamped) return stamped;
+      const tag = String(node.tagName || "").toLowerCase();
+      if (tag === "br") return "\n";
+      const inner = Array.from(node.childNodes || [], inlineMarkdown).join("");
+      if (tag === "strong" || tag === "b") return `**${inner}**`;
+      if (tag === "em" || tag === "i") return `*${inner}*`;
+      if (tag === "code") return `\`${inner}\``;
+      if (tag === "a") return `[${inner}](${node.getAttribute("href") || ""})`;
+      return inner;
+    }
+    function markdownFromEditable(root) {
+      const list = (node, depth) => {
+        const ordered = String(node.tagName || "").toLowerCase() === "ol";
+        return Array.from(node.children || []).map((li, i) => {
+          const own = [], inner = [];
+          for (const child of li.childNodes || []) {
+            const tag = String(child.tagName || "").toLowerCase();
+            if (tag === "ul" || tag === "ol") inner.push(list(child, depth + 1));
+            else own.push(inlineMarkdown(child));
+          }
+          const marker = ordered ? `${i + 1}.` : "-";
+          return [`${"	".repeat(depth)}${marker} ${own.join("").trim()}`, ...inner].join("\n");
+        }).join("\n");
+      };
+      const block = (node) => {
+        const tag = String(node.tagName || "").toLowerCase();
+        if (/^h[1-6]$/.test(tag)) return `${"#".repeat(Number(tag[1]))} ${inlineMarkdown(node).trim()}`;
+        if (tag === "ul" || tag === "ol") return list(node, 0);
+        if (tag === "blockquote") {
+          return inlineMarkdown(node).split("\n").map((line) => `> ${line}`).join("\n").trim();
+        }
+        if (tag === "pre") return `\`\`\`
+${node.textContent || ""}
+\`\`\``;
+        if (tag === "hr") return "---";
+        return inlineMarkdown(node).trimEnd();
+      };
+      return Array.from(root && root.children || []).map(block).filter((part) => part.trim()).join("\n\n").trim();
+    }
+    module2.exports = {
+      markdownBlockShortcut,
+      SOURCE_ATOM,
+      stampSourceAtoms,
+      inlineMarkdown,
+      markdownFromEditable
+    };
+  }
+});
+
 // src/recorder-review.js
 var require_recorder_review = __commonJS({
   "src/recorder-review.js"(exports2, module2) {
     "use strict";
     var { MarkdownRenderer, Notice } = require("obsidian");
-    var { markdownBlockShortcut, stampSourceAtoms, markdownFromEditable } = require_editable_markdown();
+    var {
+      markdownBlockShortcut,
+      stampSourceAtoms,
+      markdownFromEditable
+    } = require_editable_markdown();
     var { TYPES, renderMeetingTabs } = require_meeting_note();
     module2.exports = {
       /* Returns the render promise when there is one, so a caller can act when the DOM is
@@ -5530,198 +5726,6 @@ var require_recorder_view = __commonJS({
   }
 });
 
-// src/server.js
-var require_server = __commonJS({
-  "src/server.js"(exports2, module2) {
-    "use strict";
-    var { Notice, requestUrl } = require("obsidian");
-    var { spawn } = require("child_process");
-    var net = require("net");
-    var nodePath = require("path");
-    function serverArgv(settings, parentPid = process.pid) {
-      return [
-        "--directory",
-        settings.repoPath,
-        "run",
-        "slim",
-        "chat",
-        "--port",
-        String(settings.port),
-        "--parent-pid",
-        String(parentPid)
-      ];
-    }
-    function serverEnv(vaultBase, env = process.env) {
-      return Object.assign({}, env, { SLIM_VAULT: vaultBase });
-    }
-    function portOpen(port) {
-      return new Promise((resolve) => {
-        const sock = net.connect({ port, host: "127.0.0.1" }, () => {
-          sock.end();
-          resolve(true);
-        });
-        sock.on("error", () => resolve(false));
-        sock.setTimeout(1e3, () => {
-          sock.destroy();
-          resolve(false);
-        });
-      });
-    }
-    async function waitForPort(port, timeoutMs) {
-      const deadline = Date.now() + timeoutMs;
-      while (Date.now() < deadline) {
-        if (await portOpen(port)) return true;
-        await new Promise((r) => setTimeout(r, 250));
-      }
-      return false;
-    }
-    var serverMethods = {
-      // ---- the server's lifecycle ------------------------------------------------------------
-      /* Nothing else starts `slim chat`: there is no launchd agent, and the Electron shell that
-       * used to do it was cut on 2026-08-27. Without this, recording with the server down fails
-       * at the POST — the audio survives in the staging folder but recovery is by hand.
-       *
-       * Not a memory decision: measured 2026-08-06, the server is 31 MB and holds NO model. Ollama
-       * loads weights on demand and evicts on its own keep_alive.
-       */
-      ensureServer() {
-        if (!this._ensuring) {
-          this._ensuring = this._ensureServer().finally(() => {
-            this._ensuring = null;
-          });
-        }
-        return this._ensuring;
-      },
-      async _ensureServer() {
-        const port = this.settings.port;
-        if (await waitForPort(port, 3e3)) {
-          this.warnIfStale();
-          return "reused";
-        }
-        try {
-          const argv = serverArgv(this.settings);
-          const base = this.vaultBasePath();
-          this.server = spawn(
-            this.settings.uvPath,
-            argv,
-            {
-              stdio: "ignore",
-              detached: true,
-              env: base ? serverEnv(base) : process.env
-            }
-          );
-        } catch (e) {
-          this.server = null;
-          new Notice(
-            `SLIM: could not launch ${this.settings.uvPath} \u2014 ${e && e.message || e}`,
-            2e4
-          );
-          return "failed";
-        }
-        const child = this.server;
-        child.on("error", (e) => {
-          if (this.server === child) this.server = null;
-          console.error("[slim] server spawn", e);
-          new Notice(`SLIM: the server did not start \u2014 check the repo and uv paths in settings. (${e && e.message || e})`, 2e4);
-        });
-        child.on("exit", () => {
-          if (this.server === child) this.server = null;
-        });
-        if (await waitForPort(port, 3e4)) return "started";
-        new Notice(`SLIM: the server did not come up on 127.0.0.1:${port} within 30s. Check that Ollama is running and that \`uv run slim chat\` works from the repo.`, 2e4);
-        return "timeout";
-      },
-      /* ⚠ A REUSED SERVER CAN BE OLDER THAN THE CODE, and nothing about it looks wrong.
-       *
-       * Reuse is deliberate — it is what stops this plugin killing a terminal `slim chat --reload`.
-       * But `uv run` reads Python from disk at spawn time and never hot-reloads, and "the plugin
-       * owns the lifecycle" turned out not to hold: Obsidian does not reliably call `onunload` when
-       * the whole APP quits, so a server started the previous afternoon survived a Cmd+Q and a
-       * relaunch, was reused, and failed two recordings against a bug already fixed on disk
-       * (2026-08-23). In July the same trap cost a full day of debugging.
-       *
-       * It WARNS rather than restarting: the server on the port might be their, with a reloader
-       * attached, and killing that out from under them is its own surprise. ONCE PER SERVER: the
-       * check runs on every request that reuses the server, and saying it each time stacked a
-       * column of 30 s notices over the sidebar (2026-09-29).
-       */
-      /* This vault's own base path, or null on a mobile adapter that has none. `openDiskFile()`
-       * already resolves audio against it; the server has to agree on the same directory. */
-      vaultBasePath() {
-        try {
-          const adapter = this.app.vault.adapter;
-          if (typeof adapter.getBasePath !== "function") return null;
-          return nodePath.resolve(adapter.getBasePath());
-        } catch (e) {
-          console.error("[slim] no vault base path", e);
-          return null;
-        }
-      },
-      async warnIfStale() {
-        const res = await requestUrl({
-          url: `http://127.0.0.1:${this.settings.port}/api/health`,
-          method: "GET",
-          throw: false
-        }).catch(() => null);
-        if (!res || res.status === 404) {
-          this.sayOnce(
-            "predates-health",
-            `SLIM: the running server predates /api/health, so it is serving OLD code. Restart it:
-
-lsof -tiTCP:${this.settings.port} -sTCP:LISTEN | xargs kill`
-          );
-          return;
-        }
-        const health = res.json;
-        if (!health) return;
-        const base = this.vaultBasePath();
-        const fs = require("fs");
-        let resolvedBase = base;
-        try {
-          if (base) resolvedBase = fs.realpathSync(base);
-        } catch {
-        }
-        const killCmd = `lsof -tiTCP:${this.settings.port} -sTCP:LISTEN | xargs kill`;
-        if (resolvedBase && health.vault && health.vault !== resolvedBase) {
-          this.sayOnce(
-            `vault:${health.pid}:${health.started_at}`,
-            `SLIM: the server on port ${this.settings.port} is using the vault ${health.vault}, but this vault is ${base}. Recordings would be filed in the wrong one. Restart it:
-
-${killCmd}`
-          );
-          return;
-        }
-        if (!health.stale) return;
-        this.sayOnce(
-          `stale:${health.pid}:${health.started_at}`,
-          `SLIM: the running server started ${health.started_at} but ${health.newest_file} changed ${health.newest_source}. It is serving OLD code. Restart it:
-
-` + killCmd
-        );
-      },
-      sayOnce(key, text) {
-        if (this.staleSaid === key) return;
-        this.staleSaid = key;
-        new Notice(text, 3e4);
-      },
-      stopServer() {
-        const child = this.server;
-        this.server = null;
-        if (!child || child.pid == null) return;
-        try {
-          process.kill(-child.pid, "SIGTERM");
-        } catch (e) {
-          try {
-            child.kill();
-          } catch (e2) {
-          }
-        }
-      }
-    };
-    module2.exports = { serverArgv, serverEnv, portOpen, waitForPort, serverMethods };
-  }
-});
-
 // src/sessions.js
 var require_sessions = __commonJS({
   "src/sessions.js"(exports2, module2) {
@@ -6029,41 +6033,18 @@ var require_plugin = __commonJS({
       editorLivePreviewField
     } = require("obsidian");
     var nodePath = require("path");
-    var { pcm16k, captureSilence } = require_audio();
-    var {
-      groupThreads,
-      noteTitle,
-      groupCitations,
-      sha256Hex,
-      slashQuery,
-      matchSkills,
-      inputsText,
-      editorSelection,
-      normalizeMath,
-      metaText,
-      stageLine,
-      SUGGESTED_PROMPTS,
-      historyText,
-      editOutcome
-    } = require_chat_text();
-    var { VIEW_TYPE_COPILOT, RenameModal, CopilotView } = require_chat_view();
-    var { clockSeconds } = require_clock();
-    var { markdownBlockShortcut, stampSourceAtoms, inlineMarkdown, markdownFromEditable } = require_editable_markdown();
-    var { wordTokens, wordOps, formatChange, markable, changeMarks, textDiff, excerpt, beforeBlocks } = require_live_diff();
+    var { VIEW_TYPE_COPILOT, CopilotView } = require_chat_view();
     var { makeLiveEditor } = require_live_editor();
     var {
       STAGING_DIR,
       DRAFT_SUFFIX,
       recordingIdFromStaged,
-      splitMeetingNote,
-      embedLegacyMeetingBlock,
       renderPassiveMeetingBlock
     } = require_meeting_note();
-    var { RecorderView } = require_recorder_view();
-    var { serverArgv, serverEnv, serverMethods } = require_server();
+    var { serverMethods } = require_server();
     var { MeetingSessionManager } = require_sessions();
     var { DEFAULTS, SlimSettingTab } = require_settings_tab();
-    var { SSEParser, streamRequest } = require_sse();
+    var { streamRequest } = require_sse();
     var SlimRecorderPlugin = class extends Plugin {
       async onload() {
         this.settings = Object.assign({}, DEFAULTS, await this.loadData());
@@ -6505,47 +6486,6 @@ var require_plugin = __commonJS({
     };
     Object.assign(SlimRecorderPlugin.prototype, serverMethods);
     module2.exports = SlimRecorderPlugin;
-    module2.exports.RecorderView = RecorderView;
-    module2.exports.MeetingSessionManager = MeetingSessionManager;
-    module2.exports.splitMeetingNote = splitMeetingNote;
-    module2.exports.embedLegacyMeetingBlock = embedLegacyMeetingBlock;
-    module2.exports.markdownBlockShortcut = markdownBlockShortcut;
-    module2.exports.pcm16k = pcm16k;
-    module2.exports.captureSilence = captureSilence;
-    module2.exports.clockSeconds = clockSeconds;
-    module2.exports.renderPassiveMeetingBlock = renderPassiveMeetingBlock;
-    module2.exports.CopilotView = CopilotView;
-    module2.exports.RenameModal = RenameModal;
-    module2.exports.SSEParser = SSEParser;
-    module2.exports.groupThreads = groupThreads;
-    module2.exports.groupCitations = groupCitations;
-    module2.exports.normalizeMath = normalizeMath;
-    module2.exports.SUGGESTED_PROMPTS = SUGGESTED_PROMPTS;
-    module2.exports.metaText = metaText;
-    module2.exports.stageLine = stageLine;
-    module2.exports.noteTitle = noteTitle;
-    module2.exports.streamRequest = streamRequest;
-    module2.exports.inlineMarkdown = inlineMarkdown;
-    module2.exports.stampSourceAtoms = stampSourceAtoms;
-    module2.exports.markdownFromEditable = markdownFromEditable;
-    module2.exports.serverArgv = serverArgv;
-    module2.exports.serverEnv = serverEnv;
-    module2.exports.sha256Hex = sha256Hex;
-    module2.exports.slashQuery = slashQuery;
-    module2.exports.matchSkills = matchSkills;
-    module2.exports.inputsText = inputsText;
-    module2.exports.editorSelection = editorSelection;
-    module2.exports.historyText = historyText;
-    module2.exports.editOutcome = editOutcome;
-    module2.exports.wordTokens = wordTokens;
-    module2.exports.wordOps = wordOps;
-    module2.exports.markable = markable;
-    module2.exports.formatChange = formatChange;
-    module2.exports.makeLiveEditor = makeLiveEditor;
-    module2.exports.changeMarks = changeMarks;
-    module2.exports.beforeBlocks = beforeBlocks;
-    module2.exports.textDiff = textDiff;
-    module2.exports.excerpt = excerpt;
   }
 });
 

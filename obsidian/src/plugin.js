@@ -4,21 +4,14 @@
 const { Plugin, MarkdownView, MarkdownRenderer, MarkdownRenderChild, Notice, requestUrl, setIcon,
         editorInfoField, editorLivePreviewField } = require("obsidian");
 const nodePath = require("path");
-const { pcm16k, captureSilence } = require("./audio");
-const { groupThreads, noteTitle, groupCitations, sha256Hex, slashQuery, matchSkills, inputsText,
-        editorSelection, normalizeMath, metaText, stageLine, SUGGESTED_PROMPTS, historyText, editOutcome } = require("./chat-text");
-const { VIEW_TYPE_COPILOT, RenameModal, CopilotView } = require("./chat-view");
-const { clockSeconds } = require("./clock");
-const { markdownBlockShortcut, stampSourceAtoms, inlineMarkdown, markdownFromEditable } = require("./editable-markdown");
-const { wordTokens, wordOps, formatChange, markable, changeMarks, textDiff, excerpt, beforeBlocks } = require("./live-diff");
+const { VIEW_TYPE_COPILOT, CopilotView } = require("./chat-view");
 const { makeLiveEditor } = require("./live-editor");
-const { STAGING_DIR, DRAFT_SUFFIX, recordingIdFromStaged, splitMeetingNote, embedLegacyMeetingBlock,
+const { STAGING_DIR, DRAFT_SUFFIX, recordingIdFromStaged,
         renderPassiveMeetingBlock } = require("./meeting-note");
-const { RecorderView } = require("./recorder-view");
-const { serverArgv, serverEnv, serverMethods } = require("./server");
+const { serverMethods } = require("./server");
 const { MeetingSessionManager } = require("./sessions");
 const { DEFAULTS, SlimSettingTab } = require("./settings-tab");
-const { SSEParser, streamRequest } = require("./sse");
+const { streamRequest } = require("./sse");
 
 class SlimRecorderPlugin extends Plugin {
   async onload() {
@@ -479,46 +472,3 @@ class SlimRecorderPlugin extends Plugin {
 Object.assign(SlimRecorderPlugin.prototype, serverMethods);
 
 module.exports = SlimRecorderPlugin;
-
-// Test seams until the tests require src/ directly.
-module.exports.RecorderView = RecorderView;
-module.exports.MeetingSessionManager = MeetingSessionManager;
-module.exports.splitMeetingNote = splitMeetingNote;
-module.exports.embedLegacyMeetingBlock = embedLegacyMeetingBlock;
-module.exports.markdownBlockShortcut = markdownBlockShortcut;
-module.exports.pcm16k = pcm16k;
-module.exports.captureSilence = captureSilence;
-module.exports.clockSeconds = clockSeconds;
-module.exports.renderPassiveMeetingBlock = renderPassiveMeetingBlock;
-module.exports.CopilotView = CopilotView;
-module.exports.RenameModal = RenameModal;
-module.exports.SSEParser = SSEParser;
-module.exports.groupThreads = groupThreads;
-module.exports.groupCitations = groupCitations;
-module.exports.normalizeMath = normalizeMath;
-module.exports.SUGGESTED_PROMPTS = SUGGESTED_PROMPTS;
-module.exports.metaText = metaText;
-module.exports.stageLine = stageLine;
-module.exports.noteTitle = noteTitle;
-module.exports.streamRequest = streamRequest;
-module.exports.inlineMarkdown = inlineMarkdown;
-module.exports.stampSourceAtoms = stampSourceAtoms;
-module.exports.markdownFromEditable = markdownFromEditable;
-module.exports.serverArgv = serverArgv;
-module.exports.serverEnv = serverEnv;
-module.exports.sha256Hex = sha256Hex;
-module.exports.slashQuery = slashQuery;
-module.exports.matchSkills = matchSkills;
-module.exports.inputsText = inputsText;
-module.exports.editorSelection = editorSelection;
-module.exports.historyText = historyText;
-module.exports.editOutcome = editOutcome;
-module.exports.wordTokens = wordTokens;
-module.exports.wordOps = wordOps;
-module.exports.markable = markable;
-module.exports.formatChange = formatChange;
-module.exports.makeLiveEditor = makeLiveEditor;
-module.exports.changeMarks = changeMarks;
-module.exports.beforeBlocks = beforeBlocks;
-module.exports.textDiff = textDiff;
-module.exports.excerpt = excerpt;

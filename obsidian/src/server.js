@@ -1,5 +1,5 @@
 // `slim chat`'s lifecycle: started by the plugin when nothing serves the port, warned about when
-// a reused one is stale. The plugin's server methods live here and are attached in main.js.
+// a reused one is stale. The plugin's server methods live here and are attached in plugin.js.
 "use strict";
 
 const { Notice, requestUrl } = require("obsidian");

@@ -2,7 +2,8 @@
 "use strict";
 
 const { MarkdownRenderer, Notice } = require("obsidian");
-const { markdownBlockShortcut, stampSourceAtoms, markdownFromEditable } = require("./editable-markdown");
+const { markdownBlockShortcut, stampSourceAtoms,
+        markdownFromEditable } = require("./editable-markdown");
 const { TYPES, renderMeetingTabs } = require("./meeting-note");
 
 module.exports = {
