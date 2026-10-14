@@ -8,7 +8,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import config, copilot_images, llm, record_state, trace
+from . import config, llm, note_images, record_state, trace
 
 _DRAFT_SUFFIX = ".slim-draft.md"
 
@@ -54,16 +54,16 @@ _MAX_NOTE_IMAGES = 15
 
 
 def _extract_note_images(notes_md: str, vault: Path) -> tuple[str, list[str]]:
-    """The images embedded in their notes, for the summary (`copilot_images.note_images`).
+    """The images embedded in their notes, for the summary (`note_images.load`).
 
     Returns (cleaned_notes, base64_images) where cleaned_notes has the embeds stripped (a file
     name in the text is noise to the summarizer) and base64_images is ready for Ollama's message
     ``images`` field.
     """
-    embeds = copilot_images.NOTE_EMBED_RE.findall(notes_md)
+    embeds = note_images.NOTE_EMBED_RE.findall(notes_md)
     if not embeds:
         return notes_md, []
-    found, skipped = copilot_images.note_images(notes_md, vault, limit=_MAX_NOTE_IMAGES)
+    found, skipped = note_images.load(notes_md, vault, limit=_MAX_NOTE_IMAGES)
     images = [data for _name, data in found]
     trace.record("record_images", {
         "embeds_found": len(embeds),
@@ -71,7 +71,7 @@ def _extract_note_images(notes_md: str, vault: Path) -> tuple[str, list[str]]:
         "skipped": skipped,
         "total_bytes": sum(len(base64.b64decode(data)) for data in images),
     })
-    cleaned = copilot_images.NOTE_EMBED_RE.sub("", notes_md)
+    cleaned = note_images.NOTE_EMBED_RE.sub("", notes_md)
     cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
     return cleaned, images
 

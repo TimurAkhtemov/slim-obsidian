@@ -98,7 +98,7 @@ HEARTBEAT_S = 1.0
 # backstop.
 CHARS_PER_TOKEN = 3
 # The most an image can cost: the model reads 32-pixel squares (patch 16, merge 2) and every
-# image arrives at most 1600 pixels on a side (`copilot_images.NOTE_IMAGE_MAX_EDGE`, and the
+# image arrives at most 1600 pixels on a side (`note_images.NOTE_IMAGE_MAX_EDGE`, and the
 # plugin's resize of a paste). A typical screenshot costs ~450 (`copilot_context.MAX_NOTE_IMAGES`).
 IMAGE_TOKENS = (1600 // 32) ** 2
 

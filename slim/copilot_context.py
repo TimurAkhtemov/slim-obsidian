@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 
 from . import config as config_mod, edits as edits_mod, embed as embed_mod, ingest as ingest_mod
-from . import copilot_images, llm, search as search_mod, skills as skills_mod
+from . import llm, note_images, search as search_mod, skills as skills_mod
 from .chunk import HEADING, source_text
 from .frontmatter import body_after_frontmatter, parse_frontmatter
 
@@ -364,5 +364,5 @@ def open_note_images(vault: Path, source: dict, evidence: list[dict]) -> tuple[l
         packed.append((vault / source["path"]).read_text(encoding="utf-8"))
     except OSError:
         pass
-    return copilot_images.note_images("\n".join(packed), vault, note_rel=source["path"],
-                                      limit=MAX_NOTE_IMAGES)
+    return note_images.load("\n".join(packed), vault, note_rel=source["path"],
+                            limit=MAX_NOTE_IMAGES)
