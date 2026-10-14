@@ -207,6 +207,8 @@ class ToolError(ValueError):
 
 _LABEL = re.compile(r"^\[(?:b\d+(?: s\d+)?|locked)\] ?", re.MULTILINE)
 _HANDLE = re.compile(r"\b[bs]\d+\b")
+# What joins two handles into a range: b11-b15, b11 – s14, [b11]-[b15], b11 through b15.
+_RANGE_MARK = re.compile(r"\]?\s*(?:[-–—…]|\.{2,3}|(?i:to|through|thru|until))\s*\[?")
 # A handle in words meant for the owner (a plan's steps, its summary), with the words around it
 # that only make sense with a handle: "after block b6", "[b11-b15]", "the section s4".
 _REFERENCE = re.compile(r"(?:\b(?P<prep>(?i:after|before|below|above|under|into|in|at|of|from|to|with|on))\s+)?"
@@ -380,13 +382,32 @@ class Note:
 
     def _handles(self, target) -> list[str]:
         """The target's handles, with s<n> on a plain block read as b<n>, and a range's last handle
-        past the end of the note read as the note's last block."""
-        found = [self._plain(h) for h in handles_in(target)]
+        past the end of the note (a number no block was ever given) read as the note's last block.
+        Handles listed rather than joined as a range ("b3, b7") are one target only when nothing
+        lies between them."""
+        line = str(target).split("\n", 1)[0]
+        marks = list(_HANDLE.finditer(line))
+        found = [self._plain(m.group()) for m in marks]
+        joined = [bool(_RANGE_MARK.fullmatch(line[a.end():b.start()])) for a, b in zip(marks, marks[1:])]
         live = [b for b in self.blocks if b.kind != "blank"]
-        if len(found) > 1 and live and not any(b.handle == "b" + found[-1][1:] for b in self.blocks) \
-                and int(found[-1][1:]) > int(live[-1].handle[1:]):
+        if joined and joined[-1] and live and int(found[-1][1:]) >= self._next:
             found[-1] = live[-1].handle
+        if not all(joined):
+            self._listed(found, joined)
         return found
+
+    def _listed(self, found: list[str], joined: list[bool]) -> None:
+        """A list must cover the range it would make: "b4, b5" is b4-b5, while "b3, b7" would take in
+        everything between and is refused. Handles joined as a range cover all between them."""
+        spans = [self._span(h) for h in found]
+        covered, start = set(), spans[0][0]
+        for n, (i, j) in enumerate(spans):
+            if n and not joined[n - 1]:
+                start = i
+            covered.update(range(start, j))
+        if any(k not in covered for k in range(spans[0][0], spans[-1][1]) if self.blocks[k].kind != "blank"):
+            raise ToolError(f"{', '.join(found)} are not next to each other: make one call for each (the range "
+                            f"{found[0]}-{found[-1]} would take in everything between them)", "list")
 
     def name(self, target) -> str:
         """A target as code names it back: b9, s7, b11-b15, or its first line if it holds no handle."""
@@ -616,10 +637,13 @@ class Change:
 
 
 def _text(args: dict, name: str, required: bool = True) -> str | None:
+    """An argument's text. markdown and new may be empty on purpose (a deletion); missing, they
+    are refused like any other, naming what the call gave instead (a misnamed parameter)."""
     value = args.get(name)
-    if value is None or (isinstance(value, str) and not value.strip() and name != "markdown"):
+    if value is None or (isinstance(value, str) and not value.strip() and name not in ("markdown", "new")):
         if required:
-            raise ToolError(f"{name} is missing", "args")
+            given = ", ".join(key for key, v in args.items() if v is not None and key != name)
+            raise ToolError(f"{name} is missing; this call gave {given or 'nothing'}", "args")
         return None
     if not isinstance(value, str):
         raise ToolError(f"{name} must be text", "args")
@@ -757,7 +781,7 @@ def _own(note: Note, changed: list[Block], target: str, ctx: dict) -> None:
         block, step = earlier[0]
         name = target if len(changed) == 1 else block.handle
         raise ToolError(f"{name} is what you wrote in step {step}; it stays as written. Make only what "
-                        "this step still needs, or call done if the note already has it.", "own")
+                        "this step still needs; if the note already has it, reply without a tool call.", "own")
 
 
 def _lines(text: str) -> list[str]:
@@ -790,7 +814,7 @@ def _renames(note: Note, i: int, j: int, markdown: str) -> bool:
 
 
 def _replace(note: Note, args: dict, ctx: dict):
-    markdown = strip_labels(_text(args, "markdown", False) or "")
+    markdown = strip_labels(_text(args, "markdown"))
     i, j, target, trimmed = note.pick(_handle(note, args, "target"), ctx["only"])
     old = "".join(b.text for b in note.blocks[i:j])
     raw, (markdown, folded) = markdown, fold(markdown, old)
@@ -821,11 +845,10 @@ def _replace(note: Note, args: dict, ctx: dict):
 def _edit_text(note: Note, args: dict, ctx: dict):
     """A wording fix inside a block or range: the model quotes what changes, never retypes the rest."""
     i, j, target, _ = note.pick(_handle(note, args, "target"), ctx["only"])
-    old, new = args.get("old"), args.get("new") or ""
+    old = args.get("old")
     if not isinstance(old, str) or not old:
         raise ToolError("old is empty; quote the exact text to change", "args")
-    if not isinstance(new, str):
-        raise ToolError("new must be text", "args")
+    new = _text(args, "new")
     text = "".join(b.text for b in note.blocks[i:j])
     found = text.count(old)
     if not found:

@@ -137,6 +137,18 @@ def test_a_target_is_read_from_its_first_line_and_its_handles():
         note.span("b5-b4")
 
 
+def test_handles_listed_are_one_target_only_when_nothing_lies_between_them():
+    note = Note(NOTE)
+    for listed in ("b4, b8", "b4 and b8", "[b4] [b8]", "b2, b5-b6"):
+        with pytest.raises(ToolError, match="not next to each other: make one call for each") as refused:
+            note.name(listed)
+        assert refused.value.code == "list"
+    assert note.span("b4, b5") == note.span("b4 b5") == note.span("b4-b5")
+    assert note.span("b4 through b6") == note.span("b4 to b6") == note.span("b4–b6")
+    assert note.span("s3 (b3–b6)") == note.span("s3  b3–b6  ## A") == note.span("s3")    # a section map line
+    assert note.span("s3, s7") == (note.span("s3")[0], len(note.blocks))                 # two sections in a row
+
+
 def test_a_heading_label_with_both_handles_is_refused_not_guessed():
     note = Note(NOTE)
     with pytest.raises(ToolError, match="b3 is the heading line alone and s3 is the heading with everything under it"):
@@ -192,6 +204,15 @@ def test_a_range_past_the_end_of_the_note_runs_to_its_end():
     note.replace(*note.span("b5"), "", owner="c1")
     with pytest.raises(ToolError, match="there is no b5"):      # gone, not past the end
         note.span("b4-b5")
+
+
+def test_a_handle_the_run_made_and_replaced_is_gone_not_past_the_end():
+    note = Note(NOTE)                                               # b1–b8
+    note.replace(*note.span("b4"), "One.\n\nTwo.", owner="c1")     # b9, b10
+    note.replace(*note.span("b10"), "Three.\n\nFour.", owner="c2")  # b11, b12: b10 is gone
+    with pytest.raises(ToolError, match="there is no b10"):
+        note.span("b2-b10")
+    assert note.span("b2-b13") == (note.span("b2")[0], len(note.blocks))    # never made: to the end
 
 
 def test_the_sections_map_names_each_heading_with_its_first_and_last_block():
@@ -474,6 +495,20 @@ def test_edit_text_may_delete_words_and_is_offered_beside_replace():
     assert list(edits.TOOLS).index("edit_text") == list(edits.TOOLS).index("replace") + 1
 
 
+def test_a_replace_or_edit_text_without_its_text_is_refused_never_a_deletion():
+    note = Note(NOTE)
+    with pytest.raises(ToolError, match="^markdown is missing; this call gave target, content$"):
+        apply(note, "replace", {"target": "b3", "content": "## A fixed"}, change_id="c1", step=1)
+    with pytest.raises(ToolError, match="^new is missing; this call gave target, old, replacement$"):
+        apply(note, "edit_text", {"target": "b4", "old": "Text a.", "replacement": "Text A."}, change_id="c1", step=1)
+    with pytest.raises(ToolError, match="^markdown is missing; this call gave target$"):
+        apply(note, "replace", {"target": "b3", "markdown": None}, change_id="c1", step=1)
+    assert note.text() == NOTE
+    apply(note, "edit_text", {"target": "b4", "old": " a.", "new": ""}, change_id="c1", step=1)     # empty on purpose
+    apply(note, "replace", {"target": "b2", "markdown": ""}, change_id="c2", step=1)
+    assert note.text() == "# Title\n\n## A\n\nText\n- one\n- two\n\n## B\n\nText b.\n"
+
+
 def test_a_section_replaced_by_only_a_heading_is_a_rename_and_keeps_its_text():
     for target in ("s3", "b3-b6"):
         note = Note(NOTE)
@@ -588,7 +623,8 @@ def test_a_later_step_may_not_rewrite_or_delete_what_an_earlier_step_wrote():
             apply(note, tool, {"target": para, **args}, change_id="c2", step=2)
         assert refused.value.code == "own" and note.text() == before
         assert str(refused.value) == (f"{para} is what you wrote in step 1; it stays as written. Make only what "
-                                      "this step still needs, or call done if the note already has it.")
+                                      "this step still needs; if the note already has it, reply without a "
+                                      "tool call.")
 
 
 def test_the_same_step_may_rework_its_own_text_and_that_change_is_part_of_the_first():

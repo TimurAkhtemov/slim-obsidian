@@ -800,15 +800,21 @@ def test_a_plan_longer_than_the_limit_is_cut_by_code(turn, monkeypatch):
     assert len(got["edit_run"]["plan"]["steps"]) == 8 == copilot.MAX_STEPS and got["edit_run"]["steps_done"] == 8
 
 
-def test_done_during_a_step_finishes_early_after_that_steps_calls(turn, monkeypatch):
+def test_done_where_the_run_does_not_offer_it_is_refused_and_the_steps_go_on(turn, monkeypatch):
+    # An edit run offers no done: one called anyway never ends the run with steps still to do.
     seen = scripted(monkeypatch,
                     ("", [("plan", {"intro": "Rename A and B.", "steps": ["Rename A", "Rename B", "Check"]})]),
                     ("", [("replace", {"target": "b3", "markdown": "## A renamed"}),
-                          ("done", {"summary": "Renamed A; B was fine."})]))
+                          ("done", {"summary": "Renamed A; B was fine."})]),
+                    ("", [("replace", {"target": "b7", "markdown": "## B renamed"})]),
+                    ("", []))
     got, _ = turn("rename")
     run = got["edit_run"]
-    assert run["summary"] == "Renamed A; B was fine." and "## A renamed" in got["final"] and len(run["changes"]) == 1
-    assert run["steps_done"] == 1 and run["stopped"] is None and len(seen) == 2
+    assert "done" not in seen[0]["tools"]
+    assert seen[2]["messages"][-1]["content"].startswith("refused: done is not available now\n\nStep 2 of 3")
+    assert "## A renamed" in got["final"] and "## B renamed" in got["final"] and len(run["changes"]) == 2
+    assert run["steps_done"] == 3 and run["stopped"] is None and run["summary"] == "Rename A and B."
+    assert len(seen) == 4
 
 
 def test_a_lone_edit_in_the_first_reply_is_a_one_step_run_in_one_call(turn, monkeypatch):
@@ -1438,11 +1444,11 @@ def test_the_plan_and_the_summary_the_owner_reads_name_text_not_handles(turn, mo
                     ("", [("plan", {"intro": "Rename b3 and tidy s7.",
                                     "steps": ["Rename the heading after block b2", "Tidy [b7-b8]"]})]),
                     ("", [("replace", {"target": "b3", "markdown": "## A renamed"})]),
-                    ("", [("done", {"summary": "Renamed b3."})]))
+                    ("", []))
     got, events = turn("rename A")
     shown = {"intro": "Rename “A” and tidy “B”.", "steps": ["Rename the heading after “Intro para.”", "Tidy “B”"]}
     assert events[1][1] == {**shown, "outline": None} and got["edit_run"]["plan"] == shown
-    assert got["edit_run"]["summary"] == "Renamed “A renamed”." == got["answer"]
+    assert got["edit_run"]["summary"] == "Rename “A” and tidy “B”." == got["answer"]
     assert "Step 1 of 2: Rename the heading after block b2" in seen[1]["messages"][-1]["content"]   # the model's own words
 
 
@@ -1457,13 +1463,14 @@ def test_a_later_step_that_would_rewrite_the_first_steps_text_is_refused_and_the
                     ("", [("plan", {"intro": "Add C.", "steps": ["Add the section", "Add its text", "Close it"]})]),
                     ("", [("insert", {"after": "s7", "markdown": "## C\n\nShort c."})]),
                     ("", [("replace", {"target": "b10", "markdown": "A much longer text about c."})]),
-                    ("", [("done", {"summary": "Added C."})]))
+                    ("", []),
+                    ("", []))
     got, _ = turn("add a short section C")
     run = got["edit_run"]
     assert "## C\n\nShort c.\n" in got["final"] and "longer" not in got["final"] and len(run["changes"]) == 1
     assert seen[3]["messages"][-1]["content"].startswith(
         "refused: b10 is what you wrote in step 1; it stays as written.")
-    assert run["changes"][0]["part_of"] is None and len(seen) == 4
+    assert run["changes"][0]["part_of"] is None and run["steps_done"] == 3 and len(seen) == 5
 
 
 def test_a_text_answer_on_the_edit_path_keeps_bare_words_that_look_like_handles(turn, monkeypatch):

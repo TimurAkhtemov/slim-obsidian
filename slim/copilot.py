@@ -1138,7 +1138,9 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
                 out["calls"] += 1
                 name = call["name"]
                 at = number[index] if isinstance(number, list) else number
-                if name == "done":          # the work is finished: this step's calls stand, no more steps
+                # The work is finished: this step's calls stand, no more steps. Only where done is
+                # offered (a new note); elsewhere it is refused like any tool not offered.
+                if name == "done" and "done" in tools:
                     out.update(summary=plain(_summary(call)), finished_early=True)
                     break
                 if name == "plan":          # the plan restated: answered, and neither a refusal nor a change
