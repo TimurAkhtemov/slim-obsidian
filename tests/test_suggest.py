@@ -52,24 +52,6 @@ def test_tag_counts_come_from_what_is_already_used(tmp_path):
     assert counts.get("mercer-theorem", 0) == 0
 
 
-def test_max_depth_is_a_display_bound_not_a_filing_ceiling(tmp_path):
-    """CLAUDE.md grants the owner any depth they like below level 2 under Notes/. A note four
-    levels deep must still count toward its ancestors up to max_depth — it just stops being
-    listed as its own browsable row past the bound."""
-    _note(tmp_path, "Notes/school/CS201 ML/Kernels/deep.md")
-    got = {f.path: f.count for f in suggest.folder_tree(tmp_path, max_depth=2)}
-    assert got["Notes"] == 1
-    assert got["Notes/school"] == 1
-    # deeper than max_depth is not listed for browsing, but does not vanish or double count
-    assert "Notes/school/CS201 ML" not in got
-    assert "Notes/school/CS201 ML/Kernels" not in got
-
-    # with a deeper bound the same note surfaces its deeper ancestor too
-    got_deep = {f.path: f.count for f in suggest.folder_tree(tmp_path, max_depth=3)}
-    assert got_deep["Notes/school/CS201 ML"] == 1
-    assert "Notes/school/CS201 ML/Kernels" not in got_deep
-
-
 def test_dot_prefixed_paths_are_excluded(tmp_path):
     """`Notes` itself is now listed once it exists as a directory — the tree walks directories,
     not just files. What must never appear is the dot-prefixed child."""
@@ -117,14 +99,6 @@ def test_empty_derived_directories_are_still_never_offered(tmp_path):
     for d in ("_Reflections", "Profile", "Attachments", "Attachments/_incoming"):
         (tmp_path / d).mkdir(parents=True, exist_ok=True)
     assert [f.path for f in suggest.folder_tree(tmp_path)] == []
-
-
-def test_an_empty_folder_deeper_than_max_depth_is_not_listed(tmp_path):
-    (tmp_path / "Notes" / "school" / "CS201 ML" / "Kernels").mkdir(parents=True)
-    paths = {f.path for f in suggest.folder_tree(tmp_path, max_depth=2)}
-    assert "Notes/school" in paths
-    assert "Notes/school/CS201 ML" not in paths
-    assert "Notes/school/CS201 ML/Kernels" not in paths
 
 
 def test_the_journal_floor_stays_flat_even_with_empty_subdirectories(tmp_path):
@@ -254,13 +228,6 @@ def test_a_deep_empty_folder_is_offered_too(tmp_path):
     (tmp_path / "Notes/job-search/Companies/Contoso").mkdir(parents=True)
     got = {f.path: f.count for f in suggest.folder_tree(tmp_path)}
     assert got["Notes/job-search/Companies/Contoso"] == 0
-
-
-def test_an_explicit_max_depth_still_bounds_browsing(tmp_path):
-    """The parameter survives for a caller that wants a shallow slice."""
-    _note(tmp_path, "Notes/a/b/c/d.md")
-    shallow = {f.path for f in suggest.folder_tree(tmp_path, max_depth=2)}
-    assert "Notes/a" in shallow and "Notes/a/b" not in shallow
 
 
 # --- context size (2026-08-22) ---------------------------------------------------------------

@@ -45,7 +45,7 @@ def _eligible(vault: Path):
         yield rel
 
 
-def folder_tree(vault: Path = VAULT, *, max_depth: int | None = None) -> list[Folder]:
+def folder_tree(vault: Path = VAULT) -> list[Folder]:
     """Every real folder that may receive a recording, with cumulative note counts —
     `Notes/school` counts everything beneath it, not just its direct children.
 
@@ -54,10 +54,8 @@ def folder_tree(vault: Path = VAULT, *, max_depth: int | None = None) -> list[Fo
     deriving folders from files hid it exactly when they needed it. An empty folder reports
     `count: 0`, which is the honest signal.
 
-    ⚠ **`max_depth` defaults to None — the WHOLE tree.** At 3 it hid MOST of the tree: measured
-    on the real vault, 48 of 84 folders sit at depth 4–7, including the pattern actually in use.
-    Passing a number bounds BROWSING only, never filing — notes below the bound keep counting
-    toward their visible ancestors.
+    ⚠ **The WHOLE tree, at every depth.** A depth cap of 3 hid MOST of it: measured on the real
+    vault, 48 of 84 folders sit at depth 4–7, including the pattern actually in use.
 
     ⚠ The floor appears but is FLAT. Walking directories is precisely how a subfolder could
     sneak into it, so an empty dated folder on disk is still never emitted.
@@ -70,8 +68,7 @@ def folder_tree(vault: Path = VAULT, *, max_depth: int | None = None) -> list[Fo
         if parts[0] == voicetags.JOURNAL_FOLDER:
             counts[voicetags.JOURNAL_FOLDER] += 1
             continue
-        deepest = len(parts) if max_depth is None else min(len(parts), max_depth)
-        for depth in range(1, deepest + 1):
+        for depth in range(1, len(parts) + 1):
             counts["/".join(parts[:depth])] += 1
 
     found: set[str] = set()
@@ -85,8 +82,6 @@ def folder_tree(vault: Path = VAULT, *, max_depth: int | None = None) -> list[Fo
                 continue
             rel = d.relative_to(vault)
             if any(p.startswith(".") for p in rel.parts):
-                continue
-            if max_depth is not None and len(rel.parts) > max_depth:
                 continue
             found.add("/".join(rel.parts))
     if (vault / voicetags.JOURNAL_FOLDER).is_dir():
