@@ -10,6 +10,7 @@ by decision, so there is no boost arm and no dispatcher.
 
 import re
 import sqlite3
+import threading
 from dataclasses import dataclass
 
 import numpy as np
@@ -47,6 +48,42 @@ FRAG_SELECT = """
     SELECT f.id AS fragment_id, s.id AS source_id, s.path, s.title, f.heading_path, f.text
     FROM fragments f JOIN sources s ON s.id = f.source_id
 """
+
+
+_MATRIX = {"key": None, "ids": [], "mat": None}
+# `chat` is a ThreadingHTTPServer and every handler opens its own connection, so two copilot
+# turns reach this cache at once. Without the lock a reader can take `ids` from one generation
+# and `mat` from the next, and the mismatched pair indexes out of range in `vector`.
+_MATRIX_LOCK = threading.Lock()
+
+
+def load_matrix(con: sqlite3.Connection) -> tuple[list[int], np.ndarray]:
+    """All current embeddings as (fragment_ids, normalized matrix). Cached per process and
+    invalidated by (db file, row count, max id, this process's write count from
+    `embed.generation`): an edit rewrites its fragments under new ids and cascades their old
+    vectors away, so any change moves the key. A write from ANOTHER process that both reuses
+    the maximum fragment id and leaves the row count unchanged is the one edit the key cannot
+    see; that note keeps its previous vectors here until the next change."""
+    dbfile = con.execute("PRAGMA database_list").fetchone()[2]
+    n, top = con.execute("SELECT count(*), max(fragment_id) FROM embeddings").fetchone()
+    with _MATRIX_LOCK:
+        key = (dbfile, n, top, embed_mod.generation())
+        if key == _MATRIX["key"]:
+            return _MATRIX["ids"], _MATRIX["mat"]
+    rows = con.execute("""
+        SELECT e.fragment_id, e.vector FROM embeddings e
+        JOIN fragments f ON f.id = e.fragment_id AND f.content_hash = e.content_hash
+        JOIN sources s ON s.id = f.source_id AND s.deleted = 0
+        ORDER BY e.fragment_id
+    """).fetchall()
+    ids = [r["fragment_id"] for r in rows]
+    mat = (np.vstack([np.frombuffer(r["vector"], dtype=np.float32) for r in rows])
+           if rows else np.zeros((0, embed_mod.DIM), dtype=np.float32))
+    # Every caller shares this buffer, so an in-place write would corrupt every later turn.
+    mat.flags.writeable = False
+    with _MATRIX_LOCK:
+        _MATRIX.update(key=key, ids=ids, mat=mat)
+    return ids, mat
 
 
 def fts_query(query: str, any_terms: bool = False) -> str:
@@ -111,7 +148,7 @@ def lexical(con: sqlite3.Connection, query: str, k: int = POOL,
 def vector(con: sqlite3.Connection, query: str, k: int = POOL,
            prefixes: Prefixes | None = None) -> list[Hit]:
     """Vector arm: brute-force cosine over normalized embeddings (exact, no ANN)."""
-    ids, mat = embed_mod.load_matrix(con)
+    ids, mat = load_matrix(con)
     if not ids:
         return []
     qv = embed_mod.embed_query(query)

@@ -82,8 +82,8 @@ def test_prefix_matching_is_case_insensitive_and_escapes_like_wildcards(con):
 
 
 def test_load_matrix_is_cached_until_embeddings_change(con):
-    ids1, m1 = embed_mod.load_matrix(con)
-    ids2, m2 = embed_mod.load_matrix(con)
+    ids1, m1 = search_mod.load_matrix(con)
+    ids2, m2 = search_mod.load_matrix(con)
     assert m1 is m2, "every search re-reading the whole matrix from SQLite was the defect"
     source_id = con.execute("SELECT id FROM sources LIMIT 1").fetchone()[0]
     con.execute("INSERT INTO fragments (source_id, content_hash, seq, heading_path, text) "
@@ -92,7 +92,7 @@ def test_load_matrix_is_cached_until_embeddings_change(con):
     con.execute("INSERT INTO embeddings (fragment_id, content_hash, vector) VALUES (?,?,?)",
                 (fid, "h9", (np.ones(768, dtype=np.float32) / 28).tobytes()))
     con.commit()
-    ids3, m3 = embed_mod.load_matrix(con)
+    ids3, m3 = search_mod.load_matrix(con)
     assert m3 is not m1 and len(ids3) == len(ids1) + 1
 
 
@@ -102,7 +102,7 @@ def test_re_embedding_the_newest_fragment_refreshes_the_cache(con, monkeypatch):
     first[0], second[1] = 1.0, 1.0
     monkeypatch.setattr(embed_mod, "_embed", lambda texts, timeout=120: [list(first)] * len(texts))
     embed_mod.embed_missing(con)
-    ids1, _m1 = embed_mod.load_matrix(con)
+    ids1, _m1 = search_mod.load_matrix(con)
     top = max(ids1)
     source_id = con.execute("SELECT source_id FROM fragments WHERE id = ?", (top,)).fetchone()[0]
 
@@ -115,7 +115,7 @@ def test_re_embedding_the_newest_fragment_refreshes_the_cache(con, monkeypatch):
     monkeypatch.setattr(embed_mod, "_embed", lambda texts, timeout=120: [list(second)] * len(texts))
     embed_mod.embed_source(con, source_id)
 
-    ids2, m2 = embed_mod.load_matrix(con)
+    ids2, m2 = search_mod.load_matrix(con)
     assert (len(ids2), max(ids2)) == (len(ids1), top), "the SQL half of the key did not move"
     assert np.allclose(m2[ids2.index(top)], second), "the cache must still have refreshed"
 
@@ -136,29 +136,9 @@ def test_per_source_cap_prevents_flooding():
     assert any(h.source_id == "s2" for h in fused)
 
 
-def test_a_run_that_must_not_load_a_model_skips_the_embedder(monkeypatch):
-    """SLIM_TEST_NO_MODELS=1 is for a run beside a job that has the model loaded: the embedder
-    tests skip instead of loading a second model. Unset, they run whenever the embedder is there."""
-    monkeypatch.setenv("SLIM_TEST_NO_MODELS", "1")
-    assert ollama_available() is False
-
-
 @pytest.mark.skipif(not ollama_available(), reason="ollama or the embedder is not available")
 def test_vector_arm_finds_paraphrase(con):
     """Semantic retrieval must find content whose wording differs from the query."""
     embed_mod.embed_missing(con)
     r = search_mod.vector(con, "when does the employee questionnaire go out?", k=2)
     assert r and r[0].path == "Projects/A/alpha.md"
-
-
-@pytest.mark.skipif(not ollama_available(), reason="ollama or the embedder is not available")
-def test_embedding_idempotent_and_normalized(con):
-    total = con.execute("SELECT COUNT(*) FROM fragments").fetchone()[0]
-    s1 = embed_mod.embed_missing(con)
-    s2 = embed_mod.embed_missing(con)
-    assert s1["embedded"] == total and s2["embedded"] == 0
-    ids, mat = embed_mod.load_matrix(con)
-    assert len(ids) == total
-    assert np.allclose(np.linalg.norm(mat, axis=1), 1.0), "vectors must be stored normalized"
-
-

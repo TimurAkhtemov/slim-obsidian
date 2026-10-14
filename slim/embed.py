@@ -94,47 +94,20 @@ def embed_source(con: sqlite3.Connection, source_id: str) -> dict:
     return {"embedded": embedded}
 
 
-_MATRIX = {"key": None, "ids": [], "mat": None}
-# `chat` is a ThreadingHTTPServer and every handler opens its own connection, so two copilot
-# turns reach this cache at once. Without the lock a reader can take `ids` from one generation
-# and `mat` from the next, and the mismatched pair indexes out of range in `search.vector`.
-_MATRIX_LOCK = threading.Lock()
-# Bumped by every write below, because the SQL half of the cache key cannot see one case:
-# SQLite reuses a freed maximum rowid, so re-ingesting the note that owns the highest fragment
-# id leaves (count, max id) unchanged — the copilot's own path on the note they have open.
+# Bumped by every write above, because the SQL half of `search.load_matrix`'s cache key cannot
+# see one case: SQLite reuses a freed maximum rowid, so re-ingesting the note that owns the
+# highest fragment id leaves (count, max id) unchanged — the copilot's own path on the note they
+# have open.
 _GENERATION = 0
+_GENERATION_LOCK = threading.Lock()
 
 
 def _bump_generation() -> None:
     global _GENERATION
-    with _MATRIX_LOCK:
+    with _GENERATION_LOCK:
         _GENERATION += 1
 
 
-def load_matrix(con: sqlite3.Connection) -> tuple[list[int], np.ndarray]:
-    """All current embeddings as (fragment_ids, normalized matrix). Cached per process and
-    invalidated by (db file, row count, max id, this process's write count): an edit rewrites
-    its fragments under new ids and cascades their old vectors away, so any change moves the
-    key. A write from ANOTHER process that both reuses the maximum fragment id and leaves the
-    row count unchanged is the one edit the key cannot see; that note keeps its previous
-    vectors here until the next change."""
-    dbfile = con.execute("PRAGMA database_list").fetchone()[2]
-    n, top = con.execute("SELECT count(*), max(fragment_id) FROM embeddings").fetchone()
-    with _MATRIX_LOCK:
-        key = (dbfile, n, top, _GENERATION)
-        if key == _MATRIX["key"]:
-            return _MATRIX["ids"], _MATRIX["mat"]
-    rows = con.execute("""
-        SELECT e.fragment_id, e.vector FROM embeddings e
-        JOIN fragments f ON f.id = e.fragment_id AND f.content_hash = e.content_hash
-        JOIN sources s ON s.id = f.source_id AND s.deleted = 0
-        ORDER BY e.fragment_id
-    """).fetchall()
-    ids = [r["fragment_id"] for r in rows]
-    mat = (np.vstack([np.frombuffer(r["vector"], dtype=np.float32) for r in rows])
-           if rows else np.zeros((0, DIM), dtype=np.float32))
-    # Every caller shares this buffer, so an in-place write would corrupt every later turn.
-    mat.flags.writeable = False
-    with _MATRIX_LOCK:
-        _MATRIX.update(key=key, ids=ids, mat=mat)
-    return ids, mat
+def generation() -> int:
+    """How many embedding writes this process has made; part of the vector cache's key."""
+    return _GENERATION
