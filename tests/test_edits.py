@@ -244,6 +244,16 @@ def test_insert_needs_exactly_one_place_and_some_text():
         apply(note, "insert", {"after": "b2", "markdown": "  "}, change_id="c1", step=1)
 
 
+def test_a_place_written_null_is_no_place():
+    # The reader keeps a text parameter's "null" (a note may say null); a place that says it names no
+    # block, as when Ollama's parser made it None.
+    note = Note(NOTE)
+    apply(note, "insert", {"after": "null", "before": "b3", "markdown": "New."}, change_id="c1", step=1)
+    assert note.text() == NOTE.replace("## A", "New.\n\n## A")
+    with pytest.raises(ToolError, match="target is missing"):
+        apply(Note(NOTE), "replace", {"target": "Null", "markdown": "x"}, change_id="c1", step=1)
+
+
 def test_the_selection_limits_what_may_change():
     note = Note(NOTE)
     with pytest.raises(ToolError, match="outside the selected"):

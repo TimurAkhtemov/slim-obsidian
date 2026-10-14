@@ -671,39 +671,14 @@ class _Reply:
     stats: dict
 
 
-# A JSON decode turns `\frac \beta \text \rho` into a control character and the command's
-# rest. In a tool call's text that is repaired only inside math, and only before a letter: a
-# real tab indents a nested list beside a formula, and `summarize._repair` (every tab, once a
-# `$` is anywhere) would write it out as `\t`.
-_MATH = re.compile(r"\$\$[\s\S]+?\$\$|\$[^$\n]+?\$")
-_MANGLED = re.compile(r"[\t\f\b\r](?=[A-Za-z])")
-_COMMAND = {"\t": "\\t", "\f": "\\f", "\b": "\\b", "\r": "\\r"}
-
-
-def _unmangle(text: str) -> str:
-    return _MATH.sub(lambda math: _MANGLED.sub(lambda c: _COMMAND[c.group()], math.group()), text)
-
-
-def _repair_args(value):
-    """_unmangle over a tool call's arguments, whatever their shape."""
-    if isinstance(value, str):
-        return _unmangle(value)
-    if isinstance(value, list):
-        return [_repair_args(v) for v in value]
-    if isinstance(value, dict):
-        return {k: _repair_args(v) for k, v in value.items()}
-    return value
-
-
 def _call(messages: list[dict], offered: list[str], *, think: bool, temperature: float,
           num_predict: int, on_part=None, should_stop=None) -> _Reply:
-    """One model call with the `offered` tools; its arguments repaired by `_repair_args`. It
-    streams: `on_part` hears its tool calls as they decode (`llm._Reader`)."""
+    """One model call with the `offered` tools. It streams: `on_part` hears its tool calls as they
+    decode (`llm._Reader`). A call's text is never JSON: `\\frac` and a real tab arrive as written."""
     msg, stats = llm.chat_tools(messages, edits_mod.ollama_tools(offered), think=think,
                                 temperature=temperature, num_predict=num_predict,
                                 on_part=on_part, should_stop=should_stop)
-    calls = [{"name": c["name"], "arguments": _repair_args(c.get("arguments") or {})}
-             for c in msg["tool_calls"]]
+    calls = [{"name": c["name"], "arguments": c.get("arguments") or {}} for c in msg["tool_calls"]]
     # Ollama's own parser can leave a tool call in the text: unreadable, and never an answer.
     malformed = ["a tool call came back as text"] if "<tool_call>" in msg["content"] else []
     message = {"role": "assistant", "content": msg["content"]}
@@ -853,16 +828,18 @@ class _Drafts:
     the call names, from the moment that place is known, with what was written before it. Code
     only places it, in UTF-16 units of the run's draft as a change's splices are, where the tool
     will put the change (`_where`); it is never the note's text. The change that lands names the
-    draft it replaces; a call refused or never applied ends its draft."""
+    draft it replaces; a call refused or never applied ends its draft, and one that turns into
+    text ends it at once."""
     PLACES = {"insert": ("after", "before"), "replace": ("target",)}
 
     def __init__(self, note: edits_mod.Note, only: set[str] | None, on_edit):
         self.note, self.only, self.on_edit = note, only, on_edit
         self.reply, self.calls, self.open, self.failed = 0, {}, [], 0
+        self.begun = 0                      # the reply's calls so far, dropped ones too: each draft id is its own
 
     def next_reply(self) -> None:
         self.end()
-        self.reply, self.calls = self.reply + 1, {}
+        self.reply, self.calls, self.begun = self.reply + 1, {}, 0
 
     def part(self, kind: str, index: int, name, value) -> None:
         """`on_part` for a model call (`llm._Reader`). A draft is only ever shown: one that fails is
@@ -873,10 +850,16 @@ class _Drafts:
             self.failed += 1
 
     def _part(self, kind: str, index: int, name, value) -> None:
+        if kind == "drop":                  # it turned into text: its draft goes, and the next call has its index
+            dead = self.calls.pop(index, None)
+            if dead and dead["id"] in self.open:
+                self.open.remove(dead["id"])
+                self.on_edit("draft_end", {"id": dead["id"]})
+            return
         call = self.calls.setdefault(index, {"tool": None, "place": None, "text": [], "id": None, "at": None,
-                                             "line": True})
+                                             "line": True, "n": self.begun})
         if kind == "call":
-            call["tool"] = name
+            call["tool"], self.begun = name, self.begun + 1
         elif call["tool"] not in self.PLACES:
             return
         elif kind == "value" and name in self.PLACES[call["tool"]]:
@@ -926,7 +909,7 @@ class _Drafts:
         if at is None:
             return
         if call["id"] is None:
-            call["id"] = f"d{self.reply}.{index}"
+            call["id"] = f"d{self.reply}.{call['n']}"
             self.open.append(call["id"])
         call["at"] = at
         text = self.note.text()

@@ -1251,7 +1251,7 @@ def test_matching_stays_an_ordered_subsequence():
     assert _misses(now, ["# T", "## Costs", "## Historical Evolution"]) == ([], [1])
 
 
-# --- C1: a tool call's text keeps its real tabs; only LaTeX the JSON decode mangled is repaired --
+# --- C1: a tool call's text lands as the model wrote it: its real tabs, its LaTeX, its "null" -----
 
 TABBED = "## List\n\n- item with $x$\n\t- nested under it\n\n## After\n\nend\n"
 
@@ -1265,12 +1265,21 @@ def test_a_tab_indented_list_beside_math_keeps_its_real_tabs(turn, monkeypatch):
     assert got["final"] == TABBED.replace("$x$", "$y$")
 
 
-def test_latex_the_decode_mangled_is_still_repaired_and_only_inside_math():
-    assert copilot._unmangle("$\x0crac{a}{b}$ and $$\x08eta + \text{x} \rho$$") == \
-        "$\\frac{a}{b}$ and $$\\beta + \\text{x} \\rho$$"
-    assert copilot._unmangle("\tcol\tumn $x$ \tafter") == "\tcol\tumn $x$ \tafter"     # outside math: real
-    assert copilot._unmangle("$a\t1$") == "$a\t1$"                                    # not before a letter
-    assert copilot._repair_args({"markdown": ["$\x0crac{1}{2}$"], "n": 3}) == {"markdown": ["$\\frac{1}{2}$"], "n": 3}
+def test_a_tool_calls_latex_and_tabs_land_exactly_as_the_model_wrote_them(turn, monkeypatch):
+    # The raw call's text is never JSON: `\frac` is `\frac`, and a tab before a letter in math is a
+    # tab (a repair for JSON's damage wrote it out as `\t`; review, 2026-10-13).
+    math = "$$\n\tx = \\frac{1}{2}\\theta\n$$"
+    wired(monkeypatch, "<tool_call>\n<function=insert>\n<parameter=after>\nb8\n</parameter>\n"
+                       f"<parameter=markdown>\n{math}\n</parameter>\n</function>\n</tool_call>")
+    got, _ = turn("add the formula")
+    assert got["final"] == NOTE + "\n" + math + "\n"
+
+
+def test_changing_a_word_to_null_writes_null(turn, monkeypatch):
+    wired(monkeypatch, "<tool_call>\n<function=edit_text>\n<parameter=target>\nb2\n</parameter>\n"
+                       "<parameter=old>\npara\n</parameter>\n<parameter=new>\nnull\n</parameter>\n</function>\n</tool_call>")
+    got, _ = turn("change para to null")
+    assert got["final"] == NOTE.replace("Intro para.", "Intro null.")
 
 
 # --- I1: steps sent as one string are its lines, without their list markers ----------------------
@@ -1498,6 +1507,45 @@ def streamed(monkeypatch, *replies, order=None):
         return script(messages, tools, **opts)
     monkeypatch.setattr(copilot.llm, "chat_tools", chat_tools)
     return seen
+
+
+def wired(monkeypatch, *replies, size=3):
+    """The model as the raw call hears it: each reply's text read by the real llm.chat_tools (its
+    prompt rendered, its reply read by llm._Reader), a few characters at a time."""
+    real = llm.chat_tools
+    seen = scripted(monkeypatch)
+    gate, pending = copilot.llm.chat_tools, list(replies)
+
+    def generate(body, on_chunk, should_stop, timeout):
+        text = pending.pop(0)
+        for i in range(0, len(text), size):
+            on_chunk(text[i:i + size])
+        return {"done": True, "eval_count": 10}
+
+    def chat_tools(messages, tools=None, **opts):
+        return gate(messages, tools, **opts) if opts.get("fmt") is not None else real(messages, tools, **opts)
+    monkeypatch.setattr(copilot.llm, "_generate", generate)
+    monkeypatch.setattr(copilot.llm, "chat_tools", chat_tools)
+    return seen
+
+
+def test_a_call_that_turns_into_text_ends_its_draft_and_the_next_call_drafts_afresh(turn, monkeypatch):
+    # Its </tool_call> came before its </function>: no call, as Ollama reads it (review, 2026-10-13).
+    dead = ("<tool_call>\n<function=replace>\n<parameter=target>\nb4\n</parameter>\n<parameter=markdown>\n"
+            "Dead text.\n</parameter>\n</tool_call>\n")
+    live = ("<tool_call>\n<function=insert>\n<parameter=after>\nb2\n</parameter>\n<parameter=markdown>\nLive.\n"
+            "</parameter>\n</function>\n</tool_call>")
+    wired(monkeypatch, dead + live)
+    got, events = turn("add a line")
+    drafts = [(e, p) for e, p in events if e.startswith("draft")]
+    first = drafts[0][1]
+    assert (first["from"], first["to"]) == (NOTE.index("Text a."), NOTE.index("- one"))
+    ended = drafts.index(("draft_end", {"id": first["id"]}))
+    shown = next(p for e, p in drafts[ended:] if e == "draft")
+    assert shown["id"] != first["id"] and shown["text"] == ""
+    assert shown["from"] == shown["to"] == NOTE.index("## A")
+    assert [p.get("draft") for e, p in events if e == "change"] == [shown["id"]]
+    assert "Live." in got["final"] and "Dead text." not in got["final"]
 
 
 def test_an_inserts_text_is_a_draft_at_its_place_until_its_change_lands(turn, monkeypatch):

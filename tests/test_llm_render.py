@@ -98,8 +98,25 @@ def test_values_are_typed_by_the_tools_schema_as_ollama_types_them():
             '["a", "<b>"]\n</parameter>\n</function>\n</tool_call>\n<tool_call>\n<function=plan>\n'
             "<parameter=steps>\n[not json\n</parameter>\n<parameter=other>\n[1]\n</parameter>\n</function>\n</tool_call>")
     (_content, _thinking, calls, _raw), _ = read(text, size=7)
-    assert calls == [{"name": "plan", "arguments": {"intro": None, "steps": ["a", "<b>"]}},
+    assert calls == [{"name": "plan", "arguments": {"intro": "null", "steps": ["a", "<b>"]}},
                      {"name": "plan", "arguments": {"steps": "[not json", "other": "[1]"}}]
+    (_content, _thinking, calls, _raw), _ = read("<tool_call>\n<function=plan>\n<parameter=steps>\nNull\n</parameter>\n"
+                                                 "<parameter=other>\nnull\n</parameter>\n</function>\n</tool_call>")
+    assert calls == [{"name": "plan", "arguments": {"steps": None, "other": None}}]
+
+
+def test_a_text_parameter_written_null_is_that_text_and_renders_as_ollamas_null():
+    # Ollama types any "null" as None, so "change undefined to null" deleted the word (review,
+    # 2026-10-13). A string parameter's text is its value; written back, it is the same bytes.
+    text = ("<tool_call>\n<function=insert>\n<parameter=after>\nb1\n</parameter>\n<parameter=markdown>\nnull\n"
+            "</parameter>\n</function>\n</tool_call>")
+    (_content, _thinking, calls, raw), parts = read(text, size=3)
+    assert calls == [{"name": "insert", "arguments": {"after": "b1", "markdown": "null"}}]
+    assert ("value", 0, "markdown", "null") in parts
+    ollamas = [{"function": {"name": "insert", "arguments": {"after": "b1", "markdown": None}}}]
+    history = lambda calls: [{"role": "user", "content": "go"}, {"role": "assistant", "content": "", "tool_calls": calls},
+                             {"role": "tool", "content": "ok: inserted"}]
+    assert llm.render(history(raw), TOOLS, False) == llm.render(history(ollamas), TOOLS, False)
 
 
 def test_thinking_ends_at_its_close_or_at_a_tool_call():
@@ -190,6 +207,17 @@ def test_a_parameter_never_closed_is_no_call_however_its_call_ends():
 def test_a_call_whose_function_is_never_closed_is_no_call():
     (content, _t, calls, _raw), _ = read("<tool_call>\n<function=insert>\n<parameter=after>\nb1\n</parameter>\n</tool_call>")
     assert calls == [] and content.startswith("<tool_call>")
+
+
+def test_a_call_that_turns_into_text_is_dropped_and_the_next_call_takes_its_index():
+    dead = "<tool_call>\n<function=replace>\n<parameter=target>\nb2\n</parameter>\n</tool_call>\n"
+    for size in (1, 7, len(dead + INSERT)):
+        (_content, _t, calls, _raw), parts = read(dead + INSERT, size=size)
+        assert [p[:2] for p in parts if p[0] in ("call", "drop", "end")] == [("call", 0), ("drop", 0), ("call", 0),
+                                                                             ("end", 0)]
+        assert calls == [{"name": "insert", "arguments": {"after": "b1", "markdown": "# T2\n\nA line."}}]
+    (_content, _t, calls, _raw), parts = read("<tool_call>\n<function=insert>\n<parameter=markdown>\npartial")
+    assert calls == [] and parts[-1] == ("drop", 0, None, None)      # cut off: dropped as the reply closes
 
 
 def test_line_endings_are_normalized_before_a_values_framing_newlines_go():

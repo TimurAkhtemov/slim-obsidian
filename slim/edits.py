@@ -627,6 +627,9 @@ def _text(args: dict, name: str, required: bool = True) -> str | None:
 
 
 def _handle(note: Note, args: dict, name: str, required: bool = True) -> str | None:
+    # A place written null is no place: the reader keeps a text parameter's "null" as text.
+    if str(args.get(name)).strip().lower() == "null":
+        args = {**args, name: None}
     value = _text(args, name, required)
     return note.name(value) if value else None
 

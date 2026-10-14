@@ -190,8 +190,6 @@ def chat_tools(messages: list[dict], tools: list[dict] | None = None, *, think: 
         "options": {"num_ctx": RESIDENT_CTX, "temperature": temperature,
                     "num_predict": num_predict},
     }
-    if tools:
-        body["tools"] = tools
     if fmt is not None:
         body["format"] = fmt
     resp = _post(body, MODEL, timeout)
@@ -443,7 +441,8 @@ class _Reader:
     qwen3coder.go): thinking up to `</think>`, text, and `<tool_call>` blocks, each parameter's value
     typed by the tool's schema. Unlike that parser it hands a value on as it arrives:
     `on_part(kind, index, name, value)` hears ("call", i, tool, None), ("parameter", i, name, None),
-    ("text", i, name, chunk), ("value", i, name, value) and ("end", i, None, None)."""
+    ("text", i, name, chunk), ("value", i, name, value) and ("end", i, None, None) — or, for a call
+    that turns into text, ("drop", i, None, None), and the next call is i again."""
 
     def __init__(self, think: bool, tools: list[dict] | None, on_part=None):
         self.types = {t["function"]["name"]: {k: (v or {}).get("type") for k, v in
@@ -530,6 +529,7 @@ class _Reader:
         if not self.call["closed"]:            # XML Ollama would refuse: text, never a call
             self.text.append(_CALL_OPEN + self.call["written"] + self.buf[:end + len(_CALL_CLOSE)])
             self.buf, self.call, self.state = self.buf[end + len(_CALL_CLOSE):], None, "text"
+            self.on_part("drop", index, None, None)
             return True
         self._eat(end + len(_CALL_CLOSE))
         self.calls.append({"name": self.call["name"], "arguments": self.call["arguments"]})
@@ -568,11 +568,13 @@ class _Reader:
         return True
 
     def _typed(self, tool: str, name: str, value: str):
-        """As Ollama types it: "null" is None; an array or object parameter is JSON if it parses."""
-        if value.lower() == "null":
-            return None
+        """As Ollama types it: "null" is None, and an array or object parameter is JSON if it parses.
+        But a string parameter's text is its value, "null" too: Ollama's None made "change undefined
+        to null" delete the word. Written back into the prompt, both are `null`."""
         kind = self.types.get(tool, {}).get(name)
         kinds = kind if isinstance(kind, list) else [kind]
+        if value.lower() == "null" and "string" not in kinds:
+            return None
         for want, shape in (("array", list), ("object", dict)):
             if want in kinds:
                 try:
@@ -592,6 +594,8 @@ class _Reader:
             self.text.append(self.buf)
         else:
             self.text.append(_CALL_OPEN + self.call["written"] + self.buf)
+            if self.call["name"] is not None:
+                self.on_part("drop", len(self.calls), None, None)
         self.buf = ""
         return ("".join(self.text), self.thinking, self.calls,
                 [{"function": {"name": c["name"], "arguments": c["arguments"]}} for c in self.calls])
