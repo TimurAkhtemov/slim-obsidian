@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import audio, inbox, trace
+from . import audio, inbox, notefile, trace
 from .config import DATA_DIR
 
 # Apple's synced Voice Memos recordings folder. Overridable everywhere via `container=` so the
@@ -124,7 +124,7 @@ def _titles(container: Path) -> tuple[dict[str, str], str]:
 def _dest_path(journal_inbox: Path, source: Path, title: str, digest: str) -> Path:
     """Name in the inbox: the user-visible title (slugged) or the original stem, then
     `--<hash8>` before the suffix so two different recordings can never collide on a name."""
-    base = inbox._slug(title) if title else source.stem
+    base = notefile.slug(title) if title else source.stem
     return journal_inbox / f"{base}--{digest[:8]}{source.suffix.lower()}"
 
 

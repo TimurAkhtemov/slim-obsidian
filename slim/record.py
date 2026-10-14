@@ -239,8 +239,8 @@ def write_note_text(path: Path, text: str) -> None:
     transcript. Every derived edit (notes autosave, retry, append) goes through here so an
     interrupted write leaves the previous note intact rather than half a recording.
     """
-    from . import inbox
-    inbox._atomic_write_text(path, text)
+    from . import notefile
+    notefile.atomic_write_text(path, text)
 
 
 def set_review_status(text: str, status: str) -> str:
@@ -323,7 +323,7 @@ def render_note(*, title: str, when: datetime, type_tag: str, transcript: str,
                 transcribed_at: datetime | None = None) -> str:
     """One recording's frontmatter.
 
-    ⚠ THE KEY ORDER MATCHES `inbox._render_note`. Two lanes write recordings, and when they
+    ⚠ THE KEY ORDER MATCHES inbox's `_render_note`. Two lanes write recordings, and when they
     wrote different vocabularies in different orders two notes of the same kind did not look
     alike in the one place they read them. Nothing in SLIM parses key order; THEY do. Fields
     inbox derives from spoken routing stay absent here, because the recorder has none.
@@ -391,7 +391,7 @@ def write_recording(*, audio_src: Path | list[Path], title: str, when: datetime,
                     transcribed_at: datetime | None = None,
                     draft_src: Path | None = None,
                     vault: Path = VAULT) -> Recorded:
-    from . import inbox
+    from . import inbox, notefile
 
     sources = [audio_src] if isinstance(audio_src, Path) else list(audio_src)
     archived_all, digests = [], []
@@ -416,11 +416,11 @@ def write_recording(*, audio_src: Path | list[Path], title: str, when: datetime,
                        asr_model=asr_model, speakers_by=speakers_by, audio_seconds=audio_seconds,
                        transcribed_at=transcribed_at)
 
-    name = f"{inbox.local_date(when)}--{inbox._slug(title)}--{digest[:8]}.md"
+    name = f"{inbox.local_date(when)}--{notefile.slug(title)}--{digest[:8]}.md"
     note = vault / dest_dir / name
     if note.exists() and (draft_src is None or note.resolve() != draft_src.resolve()):
         raise ValueError(f"refusing to overwrite an existing note at {note}")
-    inbox._atomic_write_text(note, text)
+    notefile.atomic_write_text(note, text)
 
     # A completed note is the commit point. Until it exists, both human sources stay where the
     # retry path can name them. Once it does, remove the draft before the staged audio so a late

@@ -153,11 +153,11 @@ def handle_record_apply(*, note: str, dest_dir: str, type_tag: str, topics: list
         # makes the name content-addressed, and neither is theirs to change by retitling.
         name = src.name
         if title.strip():
-            from . import inbox
+            from . import notefile
             updates["title"] = f'"{record_mod._clean_scalar(title)}"'
             parts = src.stem.split("--")
             if len(parts) >= 3:
-                name = f"{parts[0]}--{inbox._slug(title)}--{parts[-1]}{src.suffix}"
+                name = f"{parts[0]}--{notefile.slug(title)}--{parts[-1]}{src.suffix}"
 
         text = set_frontmatter(text, updates)
         text = record_mod.set_review_status(text, "complete")

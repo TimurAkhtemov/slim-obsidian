@@ -2,9 +2,10 @@
 
 `process()` transcribes every audio file the Voice Memos sweep dropped in `Inbox/Journal` into
 a note in `Journal/` — the phone lane writes JOURNALS, and only journals (2026-09-03). A spoken
-opening can still carry one out of the floor (`voicetags.route`); nothing else can. `record.py`
-reuses the helpers below — hashing, archiving, slugs, the note renderer — so both lanes write
-one vocabulary in one key order.
+opening can still carry one out of the floor (`voicetags.route`); nothing else can. Both lanes
+hash and archive through `audio`, name and write through `notefile`, and date through
+`local_date` below; `record.py` keeps `_render_note`'s key order, so both write one vocabulary
+in one order.
 
 Hard rules honored here: raw audio is never destroyed (content-addressed under the synced
 vault, idempotent by SHA-256); a note is never overwritten, only refused; hash, duration,
@@ -19,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import audio, enrich, trace, transcribe as tx, voicetags
+from . import audio, enrich, notefile, trace, transcribe as tx, voicetags
 from .config import DATA_DIR, VAULT
 
 INBOX = {"journal": VAULT / "Inbox" / "Journal"}
@@ -34,21 +35,6 @@ class Processed:
     status: str           # written | skipped (already done) | refused (note exists)
     detail: str = ""
     transcript: tx.Transcript | None = None
-
-
-def _atomic_write_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    partial = path.with_name(f".{path.name}.part")
-    try:
-        partial.write_text(text, encoding="utf-8")
-        partial.replace(path)
-    finally:
-        partial.unlink(missing_ok=True)
-
-
-def _slug(text: str) -> str:
-    s = re.sub(r"[^\w\s-]", "", text).strip()
-    return re.sub(r"[\s_]+", "-", s)[:60] or "recording"
 
 
 def recorded_at(path: Path) -> datetime:
@@ -94,7 +80,7 @@ def local_date(when: datetime) -> str:
 
 def _note_path(when: datetime, title: str, digest: str, folder: str | None = None) -> Path:
     date = local_date(when)
-    name = f"{date}--{_slug(title)}--{digest[:8]}.md"
+    name = f"{date}--{notefile.slug(title)}--{digest[:8]}.md"
     return VAULT / (folder or _default_dir()) / name
 
 
@@ -220,7 +206,7 @@ def process(dry_run: bool = False) -> list[Processed]:
             # Archive and verify the irreplaceable source before committing derived output or
             # removing the Inbox copy. The archive stays in the synced vault.
             archived = audio.archive_audio(memo, digest)
-            _atomic_write_text(note, _render_note(title, when, t, digest, labels, routing))
+            notefile.atomic_write_text(note, _render_note(title, when, t, digest, labels, routing))
             trace.record("enrich", {
                 "note": str(note), "audio_sha256": digest,
                 "type_tag": labels["type_tag"], "topics": labels["topics"],
@@ -239,7 +225,7 @@ def process(dry_run: bool = False) -> list[Processed]:
                 "audio_seconds": round(t.audio_seconds, 1),
                 "transcribed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             }
-            _atomic_write_text(MANIFEST, json.dumps(manifest, indent=2))
+            notefile.atomic_write_text(MANIFEST, json.dumps(manifest, indent=2))
             # The source is already archived and hash-verified in the vault, so the staged
             # copy has nothing left to protect.
             memo.unlink()
