@@ -6,8 +6,9 @@
 2. The stale-server guard — `GET /api/health` reports whether the running process predates
    the newest edit under `slim/`, and it never refuses to serve.
 
-The route contracts themselves live beside their callers: `test_record_endpoint.py` for
-`/api/record*` and `test_copilot_endpoint.py` for `/api/copilot*`.
+The route contracts themselves live beside their callers: `test_record_http.py` for
+`/api/record*` (and `test_record_pipeline/segments/review/state.py` for the recorder behind
+them) and `test_copilot_endpoint.py` for `/api/copilot*`.
 """
 
 from types import SimpleNamespace

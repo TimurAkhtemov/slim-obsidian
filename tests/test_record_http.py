@@ -12,8 +12,7 @@ import urllib.request
 import pytest
 
 from slim import chat, config, record_state, suggest, summarize, transcribe
-from tests.test_record_endpoint import (_archive_in_tmp, _draft, _existing, _fakes,  # noqa: F401
-                                        _staged)
+from tests.record_fakes import _archive_in_tmp, _draft, _existing, _fakes, _staged  # noqa: F401
 
 
 @pytest.fixture
