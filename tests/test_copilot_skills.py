@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from slim import copilot, copilot_context, db, edits, edits_note, skills
+from slim import copilot, copilot_context, copilot_edit, db, edits, edits_note, skills
 
 
 @pytest.fixture
@@ -243,7 +243,7 @@ def test_consolidation_makes_a_new_note_as_a_change_and_writes_nothing(con, vaul
                             vault=vault, on_edit=lambda event, payload: events.append((event, payload)))
     system, user = seen[0]["messages"][0]["content"], seen[0]["messages"][-1]["content"]
     assert seen[0]["tools"] == ["create_note", "done"] and len(seen) == 1
-    assert seen[0]["opts"]["temperature"] == copilot.FIRST_TEMPERATURE     # a new note is prose they read
+    assert seen[0]["opts"]["temperature"] == copilot_edit.FIRST_TEMPERATURE     # a new note is prose they read
     assert copilot.NEW_NOTE_RIDER.format(folder="Capture/work") in system and copilot.EDIT_RIDER not in system
     assert "=== Capture/work/Kickoff.md · 2026-09-01 ===\nship friday" in system
     assert "words from" not in system                                 # the section, not the transcript

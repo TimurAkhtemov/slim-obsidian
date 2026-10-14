@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from slim import chat, copilot, copilot_context, db, threads
+from slim import chat, copilot, copilot_context, copilot_edit, db, threads
 
 
 @pytest.fixture
@@ -703,8 +703,8 @@ def test_a_change_turn_carries_the_rider_and_the_note_with_handles(turn, monkeyp
         "[b3] ## A\n\n[b4] Text a.\n[b5] - one\n[b6] - two\n\n[b7] ## B\n\n[b8] Text b.\n")
     assert [m["role"] for m in rest] == ["user", "assistant", "user"] and rest[-1]["content"] == "q"
     opts = seen[0]["opts"]
-    assert opts["think"] is False and opts["temperature"] == copilot.STEP_TEMPERATURE == 0.0
-    assert opts["num_predict"] == copilot.QUICK_NUM_PREDICT >= copilot.STEP_NUM_PREDICT
+    assert opts["think"] is False and opts["temperature"] == copilot_edit.STEP_TEMPERATURE == 0.0
+    assert opts["num_predict"] == copilot.QUICK_NUM_PREDICT >= copilot_edit.STEP_NUM_PREDICT
     assert copilot.INTENT_GATE is True
 
 
@@ -720,9 +720,9 @@ def test_deep_gives_the_first_edit_call_room_to_think(turn, monkeypatch):
     seen = scripted(monkeypatch, ("", [("replace", {"target": "b3", "markdown": "## A2"})]))
     turn("q", mode="deep")
     assert seen[0]["opts"]["think"] is True
-    assert seen[0]["opts"]["num_predict"] == copilot.QUICK_NUM_PREDICT + copilot.THINK_BUDGET
-    assert copilot.THINK_BUDGET == 8192
-    assert copilot.QUICK_NUM_PREDICT + copilot.THINK_BUDGET < copilot.RUN_OUTPUT_TOKENS
+    assert seen[0]["opts"]["num_predict"] == copilot.QUICK_NUM_PREDICT + copilot_edit.THINK_BUDGET
+    assert copilot_edit.THINK_BUDGET == 8192
+    assert copilot.QUICK_NUM_PREDICT + copilot_edit.THINK_BUDGET < copilot_edit.RUN_OUTPUT_TOKENS
 
 
 def test_a_plan_streams_its_events_in_order_and_returns_the_run(turn, monkeypatch):
@@ -752,8 +752,8 @@ def test_a_plan_streams_its_events_in_order_and_returns_the_run(turn, monkeypatc
     assert [c["tools"] for c in seen] == [["plan", *STEP_TOOLS]] * 3     # one list; no summary call
     assert "Step 2 of 2: Move B above A" in seen[2]["messages"][-1]["content"]
     assert seen[0]["opts"]["think"] is True and seen[1]["opts"]["think"] is False
-    assert seen[0]["opts"]["temperature"] == seen[1]["opts"]["temperature"] == copilot.STEP_TEMPERATURE == 0.0
-    assert seen[1]["opts"]["num_predict"] == copilot.STEP_NUM_PREDICT == 2048
+    assert seen[0]["opts"]["temperature"] == seen[1]["opts"]["temperature"] == copilot_edit.STEP_TEMPERATURE == 0.0
+    assert seen[1]["opts"]["num_predict"] == copilot_edit.STEP_NUM_PREDICT == 2048
     assert got["citations"] == []                          # an edit makes no sources call
 
 
@@ -786,18 +786,18 @@ def test_three_refusals_in_a_row_stop_the_run(turn, monkeypatch):
 
 
 def test_the_call_limit_stops_the_run(turn, monkeypatch):
-    monkeypatch.setattr(copilot, "MAX_CALLS", 3)
+    monkeypatch.setattr(copilot_edit, "MAX_CALLS", 3)
     many = [("insert", {"after": "b2", "markdown": f"p{i}"}) for i in range(5)]
     scripted(monkeypatch, ("", [("plan", {"intro": "x", "steps": ["a"]})]), ("", many))
     got, events = turn("go")
     assert got["edit_run"]["stopped"] == "call limit" and len(got["edit_run"]["changes"]) == 3
-    assert copilot.MAX_CALLS == 3 and events[-1] == ("step", {"index": 1, "state": "partial"})
+    assert copilot_edit.MAX_CALLS == 3 and events[-1] == ("step", {"index": 1, "state": "partial"})
 
 
 def test_a_plan_longer_than_the_limit_is_cut_by_code(turn, monkeypatch):
     scripted(monkeypatch, ("", [("plan", {"intro": "x", "steps": [f"s{i}" for i in range(12)]})]), *[("", [])] * 8)
     got, _ = turn("go")
-    assert len(got["edit_run"]["plan"]["steps"]) == 8 == copilot.MAX_STEPS and got["edit_run"]["steps_done"] == 8
+    assert len(got["edit_run"]["plan"]["steps"]) == 8 == copilot_edit.MAX_STEPS and got["edit_run"]["steps_done"] == 8
 
 
 def test_done_where_the_run_does_not_offer_it_is_refused_and_the_steps_go_on(turn, monkeypatch):
@@ -953,17 +953,17 @@ def test_a_first_call_that_fails_twice_is_a_failed_turn(turn, monkeypatch, con):
 
 
 def test_outline_entries_are_cleaned_of_what_the_model_wrote_around_them():
-    assert copilot._outline({"outline": ['"# Softmax Function\\n\\n## Formula\\n\\n## Example"']}) == [
+    assert copilot_edit._outline({"outline": ['"# Softmax Function\\n\\n## Formula\\n\\n## Example"']}) == [
         "# Softmax Function", "## Formula", "## Example"]                          # one quoted string, \n literal
-    assert copilot._outline({"outline": ["## Toolkit (New Section)", "## Tools (added)", "## Bag of Words (BoW)"]}) == [
+    assert copilot_edit._outline({"outline": ["## Toolkit (New Section)", "## Tools (added)", "## Bag of Words (BoW)"]}) == [
         "## Toolkit", "## Tools", "## Bag of Words (BoW)"]                         # annotations, not words
-    assert copilot._outline({"outline": ["# <the note's headings, one per line, in their final order>", "## <…>",
+    assert copilot_edit._outline({"outline": ["# <the note's headings, one per line, in their final order>", "## <…>",
                                          "## Formula"]}) == ["## Formula"]         # the rider's placeholder copied
 
 
 def _misses(now, want):
     """The outline's misses as the trace counts them: those the note lacks, those out of order."""
-    return copilot._match(now, want)[1:]
+    return copilot_edit._match(now, want)[1:]
 
 
 def test_an_annotation_on_either_side_does_not_make_a_miss():
@@ -989,7 +989,7 @@ def test_the_token_budget_stops_the_run_after_the_reply_that_crosses_it(turn, mo
     run = got["edit_run"]
     assert run["stopped"] == "token budget" and len(seen) == 3 and run["summary"] == ""
     assert len(run["changes"]) == 2 and got["final"].index("## B") < got["final"].index("## A renamed")
-    assert copilot.RUN_OUTPUT_TOKENS == 12000
+    assert copilot_edit.RUN_OUTPUT_TOKENS == 12000
 
 
 def test_a_runaway_reply_with_no_calls_stops_the_run_at_once(turn, monkeypatch):
@@ -1157,7 +1157,7 @@ def test_with_the_gate_off_every_turn_may_edit_at_the_reply_temperature(turn, mo
     seen = scripted(monkeypatch, ("A is the first section.", []))
     got, _ = turn("what is A?")
     assert seen.gate == [] and len(seen) == 1 and seen[0]["tools"] == ["plan", *STEP_TOOLS]
-    assert seen[0]["opts"]["temperature"] == copilot.FIRST_TEMPERATURE and not seen[0]["stream"]
+    assert seen[0]["opts"]["temperature"] == copilot_edit.FIRST_TEMPERATURE and not seen[0]["stream"]
     assert got["answer"] == "A is the first section." and got["deltas"] == ["A is the first section."]
 
 
@@ -1202,9 +1202,9 @@ def test_an_edit_with_short_or_no_prose_stays_a_one_reply_edit(turn, monkeypatch
 
 
 def test_list_items_in_any_marker_make_the_steps_and_the_first_sentence_the_intro():
-    assert copilot._listed_plan("Plan: do it. Now.\n- a\n* b\n3. c\n4) d") == ("Plan: do it.", ["a", "b", "c", "d"])
-    assert copilot._listed_plan("Only one:\n- a") is None and copilot._listed_plan("no list") is None
-    assert copilot._listed_plan("\n".join(f"- s{i}" for i in range(12)))[1] == [f"s{i}" for i in range(8)]
+    assert copilot_edit._listed_plan("Plan: do it. Now.\n- a\n* b\n3. c\n4) d") == ("Plan: do it.", ["a", "b", "c", "d"])
+    assert copilot_edit._listed_plan("Only one:\n- a") is None and copilot_edit._listed_plan("no list") is None
+    assert copilot_edit._listed_plan("\n".join(f"- s{i}" for i in range(12)))[1] == [f"s{i}" for i in range(8)]
 
 
 
@@ -1291,9 +1291,9 @@ def test_changing_a_word_to_null_writes_null(turn, monkeypatch):
 # --- I1: steps sent as one string are its lines, without their list markers ----------------------
 
 def test_steps_sent_as_one_string_are_read_as_its_lines():
-    assert copilot._steps("1. Rename A\n2) Move B up\n\n- Check\n*  Done") == ["Rename A", "Move B up", "Check", "Done"]
-    assert copilot._steps(["Rename A", " ", "2. Move B"]) == ["Rename A", "Move B"]
-    assert copilot._steps(None) == [] and copilot._steps("") == []
+    assert copilot_edit._steps("1. Rename A\n2) Move B up\n\n- Check\n*  Done") == ["Rename A", "Move B up", "Check", "Done"]
+    assert copilot_edit._steps(["Rename A", " ", "2. Move B"]) == ["Rename A", "Move B"]
+    assert copilot_edit._steps(None) == [] and copilot_edit._steps("") == []
 
 
 def test_a_plan_whose_steps_came_as_one_string_runs_each_of_them(turn, monkeypatch):
@@ -1363,7 +1363,7 @@ def test_deeps_thinking_does_not_eat_the_steps_budget(turn, monkeypatch):
     assert quick["stopped"] == "token budget" and calls == 2
     deep, calls = run("deep")
     assert deep["stopped"] is None and calls == 3 and len(deep["changes"]) == 2
-    assert copilot.RUN_OUTPUT_TOKENS + copilot.THINK_BUDGET == 20192
+    assert copilot_edit.RUN_OUTPUT_TOKENS + copilot_edit.THINK_BUDGET == 20192
 
 
 # --- M3: the window is watched on every call, and estimated before the first ---------------------
@@ -1434,7 +1434,7 @@ def test_no_call_follows_the_steps_when_the_outline_misses_a_heading(turn, monke
 
 
 def test_the_outline_holds_headings_only():
-    assert copilot._outline({"outline": ["## QF 6", "### <details><summary>Why</summary>",
+    assert copilot_edit._outline({"outline": ["## QF 6", "### <details><summary>Why</summary>",
                                          "The core principle is that a dollar today", "Formula: $PV$"]}) == [
         "## QF 6"]                                  # a <…> heading reads as the rider's placeholder: dropped too
 
@@ -1606,7 +1606,7 @@ def test_a_draft_that_fails_is_counted_and_the_change_still_lands(turn, monkeypa
 
     def where(self, call):
         raise RuntimeError("a bug in the draft")
-    monkeypatch.setattr(copilot._Drafts, "_where", where)
+    monkeypatch.setattr(copilot_edit._Drafts, "_where", where)
     records = []
     monkeypatch.setattr(copilot.trace, "record", lambda kind, payload: records.append(payload))
     got, events = turn("add a line")

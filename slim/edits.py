@@ -26,9 +26,9 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
+from . import edits_note
 from .chunk import TRANSCRIPT_MARKER, parse_frontmatter, set_frontmatter
 from .config import EXCLUDED_DIRS
-from . import edits_note
 from .edits_note import Block, Note, ToolError
 
 # A lone `...` in new text is the model's "the rest as before", and it would delete the rest.
@@ -307,7 +307,7 @@ def _renames(note: Note, i: int, j: int, markdown: str) -> bool:
 def lands(note: Note, tool: str, args: dict, markdown: str,
           only: set[str] | None = None) -> tuple[int, int, str, str, bool]:
     """Where a replace or an insert puts `markdown` (as the model wrote it, labels stripped): for
-    the tool, and for its draft while the text is still coming (`copilot._Drafts`). The blocks
+    the tool, and for its draft while the text is still coming (`copilot_edit._Drafts`). The blocks
     i..j it changes, i == j where an insert goes in; its target or anchor as named back; what the
     result adds about the place; and whether a replace renames: a whole section replaced by one
     heading line changes that heading alone, block i, and the section's text stays. Raises
@@ -465,7 +465,7 @@ TOOLS: dict[str, dict] = {
     "insert": {
         "description": "Insert new markdown after or before a block or section. Give exactly one of after or before.",
         # The place before the text: the model writes them in this order, so the text can show
-        # where it goes as it is written (`copilot._Drafts`).
+        # where it goes as it is written (`copilot_edit._Drafts`).
         "parameters": {"type": "object", "properties": {"after": _HANDLE_ARG, "before": _HANDLE_ARG,
                                                        "markdown": {"type": "string"}}, "required": ["markdown"]},
         "apply": _insert},
