@@ -1,6 +1,7 @@
 """Heading-aware markdown chunking, plus the frontmatter reader and writer. Every fragment
 stays traceable to its source location (heading breadcrumb + line span). Called by `ingest`;
-the frontmatter helpers are used by `record`, `chat`, `reflect` and `suggest`."""
+the frontmatter helpers are used by `record`, `record_pipeline`,
+`record_review`, `reflect` and `suggest`."""
 
 import re
 from dataclasses import dataclass

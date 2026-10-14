@@ -1,8 +1,8 @@
 """Transcript -> structured summary: overview, key points, decisions, actions, questions.
 
 One JSON-grammar call to the resident model, plus `render` for the markdown. Called by
-`chat.py` for the recorder's summary, its retry and its append. Writes nothing: the
-caller decides where the markdown goes.
+`record_pipeline` and `record_review` for the recorder's summary and its retry. Writes
+nothing: the caller decides where the markdown goes.
 
 One schema for every kind of recording — nothing tells the model "this is a lecture",
 so an empty `action_items` is the schema working, not a degenerate case.
