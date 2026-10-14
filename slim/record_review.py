@@ -66,8 +66,9 @@ def handle_record_summary(*, note: str, instructions: str = "", job_id: str = ""
         raise ValueError("this note has no transcript to summarize")
 
     record_state._record_progress_start(job_id)
-    record_state._record_progress_update(job_id, stage="summarizing", label="Reasoning about the summary",
-                            detail="The local model is re-reading the transcript")
+    record_state._record_progress_update(job_id, stage="summarizing",
+                                         label="Reasoning about the summary",
+                                         detail="The local model is re-reading the transcript")
     activity = (lambda kind, chunk: record_state._record_progress_update(
         job_id, stage="summarizing", label="Reasoning about the summary",
         detail="Live local-model activity", kind=kind, text=chunk)) if job_id else None
@@ -80,7 +81,8 @@ def handle_record_summary(*, note: str, instructions: str = "", job_id: str = ""
                             notes=clean_notes, instructions=instructions,
                             images=note_images or None)
     if not s.valid:
-        record_state._record_progress_update(job_id, stage="failed", label="Retry failed", detail=s.error)
+        record_state._record_progress_update(job_id, stage="failed", label="Retry failed",
+                                             detail=s.error)
         raise ValueError(f"the summary could not be rewritten: {s.error}")
 
     fm, _ = parse_frontmatter(text)
@@ -91,7 +93,7 @@ def handle_record_summary(*, note: str, instructions: str = "", job_id: str = ""
     # retry promises not to do. An empty answer is a failed answer.
     if not summary_md.strip():
         record_state._record_progress_update(job_id, stage="failed", label="Retry failed",
-                                detail="the model returned an empty summary")
+                                             detail="the model returned an empty summary")
         raise ValueError("the summary could not be rewritten: the model returned an empty "
                          "summary, so the one you had is untouched")
     # The note as it stands NOW, not as it stood before the model started thinking. The lock
@@ -174,7 +176,7 @@ def handle_record_apply(*, note: str, dest_dir: str, type_tag: str, topics: list
             src.unlink()
 
     record_state._index_now(vault, str(dest.relative_to(vault)),
-               moved_from=str(src.relative_to(vault)) if dest != src else None)
+                            moved_from=str(src.relative_to(vault)) if dest != src else None)
     trace.record("record", {"stage": "apply", "note": str(dest), "moved": dest != src})
     return {"note": str(dest.relative_to(vault))}
 

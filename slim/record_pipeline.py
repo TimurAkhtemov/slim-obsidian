@@ -245,8 +245,8 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
         # Silence is the same outcome by a different route — a muted mic, the wrong input — and
         # it produces exactly the same worthless note. Saying so is the point.
         trace.record("record", {"stage": "transcribe", "status": "empty"})
-        raise record_state.NoSpeech("no words were captured — nothing was filed, and your audio and notes "
-                       "are exactly where they were")
+        raise record_state.NoSpeech("no words were captured — nothing was filed, and your audio "
+                                    "and notes are exactly where they were")
 
     summary = None
     if text.strip():
@@ -439,8 +439,8 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
     fm, _ = parse_frontmatter(text)
     addition = _join_segments(gots, labelled=bool(fm.get("speakers_by")))
     if not addition:
-        raise record_state.NoSpeech("no words were captured — nothing was added, and your audio is exactly "
-                       "where it was")
+        raise record_state.NoSpeech("no words were captured — nothing was added, and your audio "
+                                    "is exactly where it was")
 
     # ⚠ PAST THE LOOP, AND BEFORE ARCHIVING. A resume normally has ONE segment, so a check
     # only at the top of the loop ran once and never again — they were told "nothing is written"
