@@ -5,7 +5,7 @@ deterministic in code. The model is only ever asked to CHOOSE among candidates f
 which is what stops it inventing a folder. Folders come from DIRECTORIES on disk, not from
 the folders that happen to contain notes, and the WHOLE tree is walked, not a shallow slice.
 
-Never reads a note BODY — frontmatter and path only. Called by `chat.py` per recording.
+Never reads a note BODY — frontmatter and path only. Called by `record_pipeline.py` per recording.
 """
 from __future__ import annotations
 
@@ -188,7 +188,7 @@ def build_card(transcript: str, *, declared_type: str = "", title: str = "",
                                           f"Transcript:\n{transcript[:12000]}")}],
             _SCHEMA,
             model=model or llm.RECORD_MODEL,
-            num_ctx=llm.RECORD_CTX,      # ⚠ moves with chat.handle_record's summarize call
+            num_ctx=llm.RECORD_CTX,      # ⚠ moves with handle_record's summarize (record_pipeline)
             num_predict=NUM_PREDICT,
             temperature=0.0,      # structured work: determinism IS correctness
             think=False,          # the summary pass thinks; this classification does not

@@ -149,7 +149,7 @@ def channel_levels(path: Path) -> np.ndarray:
 def label(path: Path, tokens) -> tuple[str | None, str]:
     """`(transcript with speakers, "")` when both sides spoke. When only one did, `(None, who)`:
     the text stays unlabelled, but a segment resumed onto a labelled call needs that one label
-    (`chat._join_segments`). `(None, "")` for a mono file or no tokens."""
+    (`record_pipeline._join_segments`). `(None, "")` for a mono file or no tokens."""
     tokens = list(tokens)
     if not tokens or channel_count(path) != 2:
         return None, ""

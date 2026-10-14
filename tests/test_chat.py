@@ -212,7 +212,7 @@ def _make_test_image(path, width=100, height=80, mode="RGB"):
 
 
 def test_extract_parses_recorder_embeds(tmp_path):
-    from slim.chat import _extract_note_images
+    from slim.record_pipeline import _extract_note_images
     img = tmp_path / "Attachments" / "Recorder" / "abc123" / "paste-001.png"
     _make_test_image(img)
     notes = "some notes\n![[Attachments/Recorder/abc123/paste-001.png]]\nmore notes"
@@ -224,7 +224,7 @@ def test_extract_parses_recorder_embeds(tmp_path):
 
 
 def test_extract_sends_an_embed_from_any_folder(tmp_path):
-    from slim.chat import _extract_note_images
+    from slim.record_pipeline import _extract_note_images
     img = tmp_path / "Attachments" / "other.png"
     _make_test_image(img)
     notes = "text\n![[Attachments/other.png]]\nmore"
@@ -238,7 +238,7 @@ def test_extract_finds_a_pasted_screenshot_by_name_the_way_obsidian_does(tmp_pat
     into `./Attachements` beside wherever the note was at the time — and filing then moves the
     note away from it. Matching only `Attachments/Recorder/…` sent no image to any summary,
     ever: 43 recorded notes had screenshots and every trace said `n_images: 0`."""
-    from slim.chat import _extract_note_images
+    from slim.record_pipeline import _extract_note_images
     _make_test_image(tmp_path / "Capture/_unfiled/Attachements/Screenshot 2026-09-17 at 7.59.13 AM.png")
     _make_test_image(tmp_path / "Capture/_unfiled/Attachements/Screenshot 2026-09-17 at 7.03.34 AM.png")
     notes = ("## Attention\n![[Screenshot 2026-09-17 at 7.59.13 AM.png|444]]\nsoftmax over scores\n"
@@ -249,14 +249,14 @@ def test_extract_finds_a_pasted_screenshot_by_name_the_way_obsidian_does(tmp_pat
 
 
 def test_extract_sends_an_image_embedded_twice_once(tmp_path):
-    from slim.chat import _extract_note_images
+    from slim.record_pipeline import _extract_note_images
     _make_test_image(tmp_path / "Attachements/shot.png")
     _, images = _extract_note_images("![[shot.png]]\n![[shot.png|300]]", tmp_path)
     assert len(images) == 1
 
 
 def test_extract_never_reads_outside_the_vault(tmp_path):
-    from slim.chat import _extract_note_images
+    from slim.record_pipeline import _extract_note_images
     vault = tmp_path / "vault"
     vault.mkdir()
     _make_test_image(tmp_path / "secret.png")
@@ -265,14 +265,14 @@ def test_extract_never_reads_outside_the_vault(tmp_path):
 
 
 def test_extract_does_not_search_obsidians_trash(tmp_path):
-    from slim.chat import _extract_note_images
+    from slim.record_pipeline import _extract_note_images
     _make_test_image(tmp_path / ".trash/gone.png")
     _, images = _extract_note_images("![[gone.png]]", tmp_path)
     assert images == []
 
 
 def test_extract_skips_missing_files(tmp_path, monkeypatch):
-    from slim.chat import _extract_note_images
+    from slim.record_pipeline import _extract_note_images
     from slim import trace
     traced = []
     monkeypatch.setattr(trace, "record", lambda kind, data: traced.append((kind, data)))
@@ -283,7 +283,7 @@ def test_extract_skips_missing_files(tmp_path, monkeypatch):
 
 
 def test_extract_caps_at_15_images(tmp_path):
-    from slim.chat import _extract_note_images
+    from slim.record_pipeline import _extract_note_images
     lines = []
     for i in range(20):
         img = tmp_path / "Attachments" / "Recorder" / "r1" / f"paste-{i:03d}.png"
@@ -295,7 +295,7 @@ def test_extract_caps_at_15_images(tmp_path):
 
 
 def test_extract_resizes_large_images(tmp_path):
-    from slim.chat import _extract_note_images
+    from slim.record_pipeline import _extract_note_images
     import base64
     from io import BytesIO
     from PIL import Image
@@ -310,7 +310,7 @@ def test_extract_resizes_large_images(tmp_path):
 
 
 def test_extract_keeps_alpha_as_png(tmp_path):
-    from slim.chat import _extract_note_images
+    from slim.record_pipeline import _extract_note_images
     import base64
     from io import BytesIO
     from PIL import Image

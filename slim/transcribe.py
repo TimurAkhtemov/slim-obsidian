@@ -1,7 +1,7 @@
 """Local speech-to-text: Parakeet via MLX, two instances (live captions, batch).
 
 The model is an unselected default — see experiment M8-transcription in the vault's slim-docs. Called by
-`chat.py` for the recorder and by `inbox` for the memo lane. Never writes to the vault.
+`record_pipeline.py` for the recorder and by `inbox` for the memo lane. Never writes to the vault.
 """
 from __future__ import annotations
 

@@ -65,28 +65,28 @@ def _fakes(monkeypatch, *, transcript="the kernel trick", summary="Derived the k
 
 
 def test_the_http_contract_accepts_exactly_one_notes_source():
-    from slim import chat
+    from slim import record_pipeline
 
-    legacy = chat._record_args({"audio": "a.webm", "notes_md": "- old client",
+    legacy = record_pipeline._record_args({"audio": "a.webm", "notes_md": "- old client",
                                 "type": "lecture", "title": "T"})
     assert legacy["notes_md"] == "- old client" and legacy["draft_rel"] is None
 
-    draft = chat._record_args({"audio": "a.webm", "draft": "d.slim-draft.md",
+    draft = record_pipeline._record_args({"audio": "a.webm", "draft": "d.slim-draft.md",
                                "type": "lecture", "title": "T"})
     assert draft["draft_rel"] == "d.slim-draft.md" and draft["notes_md"] is None
 
     with pytest.raises(ValueError, match="exactly one"):
-        chat._record_args({"audio": "a.webm", "draft": "d.slim-draft.md",
+        record_pipeline._record_args({"audio": "a.webm", "draft": "d.slim-draft.md",
                            "notes_md": "two truths", "type": "lecture"})
 
 
 def test_a_saved_draft_is_the_only_source_of_typed_notes(tmp_path, monkeypatch):
-    from slim import chat
+    from slim import record_pipeline
 
     notes = "  # Live notes\n\n- keep trailing spaces  \n\n![[Attachments/Recorder/t/paste.png]]\n"
     draft = _draft(tmp_path, text=notes)
     _fakes(monkeypatch)
-    out = chat.handle_record(audio_rel=_staged(tmp_path), draft_rel=draft,
+    out = record_pipeline.handle_record(audio_rel=_staged(tmp_path), draft_rel=draft,
                              notes_md=None, declared_type="lecture", title="SVMs",
                              when=NOW, vault=tmp_path)
 
@@ -97,12 +97,12 @@ def test_a_saved_draft_is_the_only_source_of_typed_notes(tmp_path, monkeypatch):
 
 
 def test_inline_draft_anchor_is_not_mistaken_for_their_notes(tmp_path, monkeypatch):
-    from slim import chat
+    from slim import record_pipeline
 
     notes = "## Follow-up\n\n- exact human note\n"
     draft = _draft(tmp_path, text="````slim-meeting\n\n````\n\n" + notes)
     _fakes(monkeypatch)
-    out = chat.handle_record(audio_rel=_staged(tmp_path), draft_rel=draft,
+    out = record_pipeline.handle_record(audio_rel=_staged(tmp_path), draft_rel=draft,
                              declared_type="lecture", title="SVMs",
                              when=NOW, vault=tmp_path)
     body = (tmp_path / out["note"]).read_text(encoding="utf-8")
@@ -111,7 +111,7 @@ def test_inline_draft_anchor_is_not_mistaken_for_their_notes(tmp_path, monkeypat
 
 
 def test_a_successful_draft_recording_removes_only_its_staging_files(tmp_path, monkeypatch):
-    from slim import chat
+    from slim import record_pipeline
 
     staged = _staged(tmp_path)
     draft = _draft(tmp_path)
@@ -120,7 +120,7 @@ def test_a_successful_draft_recording_removes_only_its_staging_files(tmp_path, m
     image.write_bytes(b"png")
     _fakes(monkeypatch)
 
-    out = chat.handle_record(audio_rel=staged, draft_rel=draft, notes_md=None,
+    out = record_pipeline.handle_record(audio_rel=staged, draft_rel=draft, notes_md=None,
                              declared_type="lecture", title="SVMs", when=NOW, vault=tmp_path)
 
     assert not (tmp_path / staged).exists()
@@ -130,14 +130,14 @@ def test_a_successful_draft_recording_removes_only_its_staging_files(tmp_path, m
 
 
 def test_a_failed_draft_transcript_keeps_both_sources_for_retry(tmp_path, monkeypatch):
-    from slim import chat
+    from slim import record_pipeline
 
     staged = _staged(tmp_path)
     draft = _draft(tmp_path)
     _fakes(monkeypatch, transcribe_raises=True)
 
     with pytest.raises(ValueError, match="transcription failed"):
-        chat.handle_record(audio_rel=staged, draft_rel=draft, notes_md=None,
+        record_pipeline.handle_record(audio_rel=staged, draft_rel=draft, notes_md=None,
                            declared_type="lecture", title="T", when=NOW, vault=tmp_path)
 
     assert (tmp_path / staged).exists()
@@ -150,30 +150,30 @@ def test_a_failed_draft_transcript_keeps_both_sources_for_retry(tmp_path, monkey
 )
 def test_a_draft_cannot_cross_the_journal_floor(tmp_path, monkeypatch,
                                                 type_tag, draft_type, message):
-    from slim import chat
+    from slim import record_pipeline
 
     _fakes(monkeypatch)
     with pytest.raises(ValueError, match=message):
-        chat.handle_record(audio_rel=_staged(tmp_path),
+        record_pipeline.handle_record(audio_rel=_staged(tmp_path),
                            draft_rel=_draft(tmp_path, type_tag=draft_type), notes_md=None,
                            declared_type=type_tag, title="T", when=NOW, vault=tmp_path)
 
 
 def test_audio_and_draft_must_describe_the_same_recording(tmp_path, monkeypatch):
-    from slim import chat
+    from slim import record_pipeline
 
     _fakes(monkeypatch)
     staged = _staged(tmp_path, "audio-id.webm")
     draft = _draft(tmp_path, recording_id="draft-id")
     with pytest.raises(ValueError, match="recording id"):
-        chat.handle_record(audio_rel=staged, draft_rel=draft, notes_md=None,
+        record_pipeline.handle_record(audio_rel=staged, draft_rel=draft, notes_md=None,
                            declared_type="lecture", title="T", when=NOW, vault=tmp_path)
 
     assert (tmp_path / staged).exists() and (tmp_path / draft).exists()
 
 
 def test_a_final_note_collision_keeps_the_draft_and_staged_audio(tmp_path, monkeypatch):
-    from slim import chat, inbox
+    from slim import inbox, record_pipeline
 
     staged = _staged(tmp_path)
     draft = _draft(tmp_path)
@@ -184,16 +184,16 @@ def test_a_final_note_collision_keeps_the_draft_and_staged_audio(tmp_path, monke
     victim.write_text("I was here first", encoding="utf-8")
 
     with pytest.raises(ValueError, match="overwrite"):
-        chat.handle_record(audio_rel=staged, draft_rel=draft, notes_md=None,
+        record_pipeline.handle_record(audio_rel=staged, draft_rel=draft, notes_md=None,
                            declared_type="lecture", title="SVMs", when=NOW, vault=tmp_path)
 
     assert victim.read_text(encoding="utf-8") == "I was here first"
     assert (tmp_path / staged).exists() and (tmp_path / draft).exists()
 
 def test_the_note_is_filed_and_the_card_describes_it(tmp_path, monkeypatch):
-    from slim import chat
+    from slim import record_pipeline
     _fakes(monkeypatch)
-    out = chat.handle_record(audio_rel=_staged(tmp_path), notes_md="- dual form",
+    out = record_pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="- dual form",
                              declared_type="lecture", title="SVMs", when=NOW, vault=tmp_path)
     note = tmp_path / out["note"]
     assert note.exists()
@@ -205,9 +205,9 @@ def test_the_note_is_filed_and_the_card_describes_it(tmp_path, monkeypatch):
 def test_the_card_carries_the_folders_and_tag_counts_the_ui_needs(tmp_path, monkeypatch):
     """The card is the whole payload — the plugin must not have to make a second call to
     render the tree or show 'this tag would be new'."""
-    from slim import chat
+    from slim import record_pipeline
     _fakes(monkeypatch)
-    out = chat.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
+    out = record_pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
                             title="SVMs", when=NOW, vault=tmp_path)
     assert isinstance(out["card"]["folders"], list)
     assert isinstance(out["card"]["tag_counts"], dict)
@@ -216,7 +216,7 @@ def test_the_card_carries_the_folders_and_tag_counts_the_ui_needs(tmp_path, monk
 def test_the_summary_pass_thinks(tmp_path, monkeypatch):
     """The one ratified exception to think=False. If this regresses, invention doubles in the
     text they read and trusts, silently."""
-    from slim import chat, summarize
+    from slim import record_pipeline, summarize
     _fakes(monkeypatch)
     seen = {}
     real = summarize.Summary
@@ -225,13 +225,13 @@ def test_the_summary_pass_thinks(tmp_path, monkeypatch):
         seen.update(k)
         return real(overview="s")
     monkeypatch.setattr(summarize, "summarize", spy)
-    chat.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
+    record_pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
                        title="T", when=NOW, vault=tmp_path)
     assert seen.get("think") is True
 
 
 def test_record_progress_reports_real_pipeline_and_model_activity(tmp_path, monkeypatch):
-    from slim import chat, summarize
+    from slim import record_pipeline, summarize
 
     _fakes(monkeypatch)
     events = []
@@ -246,7 +246,7 @@ def test_record_progress_reports_real_pipeline_and_model_activity(tmp_path, monk
         )
 
     monkeypatch.setattr(summarize, "summarize", streaming_summary)
-    chat.handle_record(
+    record_pipeline.handle_record(
         audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture", title="SVMs",
         when=NOW, vault=tmp_path, on_progress=lambda **event: events.append(event),
     )
@@ -264,9 +264,9 @@ def test_record_progress_reports_real_pipeline_and_model_activity(tmp_path, monk
 
 def test_a_dead_model_still_files_the_recording(tmp_path, monkeypatch):
     """⚠ THE CORE PROMISE. Summarization failing must cost a summary, never a recording."""
-    from slim import chat
+    from slim import record_pipeline
     _fakes(monkeypatch, summarize_raises=True)
-    out = chat.handle_record(audio_rel=_staged(tmp_path), notes_md="- my notes",
+    out = record_pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="- my notes",
                              declared_type="lecture", title="T", when=NOW, vault=tmp_path)
     note = tmp_path / out["note"]
     assert note.exists()
@@ -282,11 +282,11 @@ def test_failed_transcription_refuses_and_keeps_the_audio_staged(tmp_path, monke
     content it exists to keep.
 
     A summary or a title DECORATES a note that is already safe. The transcript IS the note."""
-    from slim import chat
+    from slim import record_pipeline
     _fakes(monkeypatch, transcribe_raises=True)
     staged = _staged(tmp_path)
     with pytest.raises(ValueError, match="transcription failed"):
-        chat.handle_record(audio_rel=staged, notes_md="- my notes",
+        record_pipeline.handle_record(audio_rel=staged, notes_md="- my notes",
                            declared_type="lecture", title="T", when=NOW, vault=tmp_path)
     assert (tmp_path / staged).exists(), "the audio must stay staged so a retry is possible"
     assert not list(tmp_path.rglob("*.md")), "no half-note may be left behind"
@@ -295,10 +295,10 @@ def test_failed_transcription_refuses_and_keeps_the_audio_staged(tmp_path, monke
 def test_a_staged_file_outside_the_vault_is_refused(tmp_path, monkeypatch):
     """`audio` arrives over HTTP. A traversal would let a caller name any file on the machine
     and have its bytes copied into the vault and transcribed."""
-    from slim import chat
+    from slim import record_pipeline
     _fakes(monkeypatch)
     with pytest.raises(ValueError):
-        chat.handle_record(audio_rel="../../etc/passwd", notes_md="", declared_type="lecture",
+        record_pipeline.handle_record(audio_rel="../../etc/passwd", notes_md="", declared_type="lecture",
                            title="T", when=NOW, vault=tmp_path)
 
 
@@ -400,12 +400,12 @@ def test_applying_never_silently_overwrites_another_note(tmp_path, monkeypatch):
 def test_a_missing_audio_file_fails_before_any_model_call(tmp_path, monkeypatch):
     """A bad path should cost nothing. Without an early check it burns a transcription attempt
     and a dense-model call before dying at write time."""
-    from slim import chat, transcribe
+    from slim import record_pipeline, transcribe
     called = []
     monkeypatch.setattr(transcribe, "transcribe",
                         lambda *a, **k: called.append(1))
     with pytest.raises(FileNotFoundError):
-        chat.handle_record(audio_rel="Attachments/_incoming/nope.webm", notes_md="",
+        record_pipeline.handle_record(audio_rel="Attachments/_incoming/nope.webm", notes_md="",
                            declared_type="lecture", title="T", when=NOW, vault=tmp_path)
     assert called == []
 
@@ -414,11 +414,11 @@ def test_a_failed_transcription_does_not_load_the_dense_model(tmp_path, monkeypa
     """Classifying an empty string would load ~20 GB and EVICT the resident chat model, so the
     cost of a failed ASR run would land on whatever they did next. It still must not be called —
     the request now fails before it gets there."""
-    from slim import chat, suggest
+    from slim import record_pipeline, suggest
     _fakes(monkeypatch, transcribe_raises=True)
     monkeypatch.setattr(suggest, "build_card", lambda *a, **k: pytest.fail("must not be called"))
     with pytest.raises(ValueError):
-        chat.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
+        record_pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
                            title="T", when=NOW, vault=tmp_path)
 
 
@@ -428,7 +428,7 @@ def test_a_vault_reached_through_a_symlink_still_reports_relative_paths(tmp_path
     symlink is introduced deliberately. On macOS `/var` -> `/private/var` makes that mismatch
     the DEFAULT for any temp-dir vault, and it made apply move the note correctly and then
     return a 400 — the caller sees a failure for work that actually happened."""
-    from slim import chat, inbox
+    from slim import chat, inbox, record_pipeline
 
     real = tmp_path / "real_vault"
     (real / "Attachments" / "_incoming").mkdir(parents=True)
@@ -440,7 +440,7 @@ def test_a_vault_reached_through_a_symlink_still_reports_relative_paths(tmp_path
     _fakes(monkeypatch, dest="Notes/school")
     (real / "Attachments" / "_incoming" / "s.webm").write_bytes(b"bytes")
 
-    out = chat.handle_record(audio_rel="Attachments/_incoming/s.webm", notes_md="",
+    out = record_pipeline.handle_record(audio_rel="Attachments/_incoming/s.webm", notes_md="",
                              declared_type="lecture", title="T", when=NOW, vault=link)
     assert not Path(out["note"]).is_absolute()      # relative, not an absolute leak
     assert not Path(out["audio"]).is_absolute()
@@ -455,7 +455,7 @@ def test_the_note_gets_the_whole_summary_not_just_the_overview(tmp_path, monkeyp
     """⚠ Found by an end-to-end run, not by review. handle_record wrote only `s.overview`, so
     key points, decisions, action items and open questions were generated and then thrown away.
     It read as the model being lazy when the caller was discarding its work."""
-    from slim import chat, suggest, summarize, transcribe
+    from slim import record_pipeline, suggest, summarize, transcribe
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="we discussed the export", model="fake", audio_seconds=9.0, wall_seconds=1.0))
     monkeypatch.setattr(summarize, "summarize", lambda *a, **k: summarize.Summary(
@@ -468,7 +468,7 @@ def test_the_note_gets_the_whole_summary_not_just_the_overview(tmp_path, monkeyp
         dest_dir="Capture/work", confident_depth=1, candidates=[], type_tag="meeting-note",
         topics=[]))
 
-    out = chat.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="meeting-note",
+    out = record_pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="meeting-note",
                              title="T", when=NOW, vault=tmp_path)
     body = (tmp_path / out["note"]).read_text(encoding="utf-8")
     assert "## Key points" in body
@@ -483,12 +483,12 @@ def test_the_note_gets_the_whole_summary_not_just_the_overview(tmp_path, monkeyp
 def test_an_untitled_recording_gets_a_real_title_not_a_timestamp(tmp_path, monkeypatch):
     """"Recording 2026-08-06-142530" is a timestamp in a title's slot: it names nothing, and
     the filename embeds it, so the vault fills with rows that all look alike."""
-    from slim import chat, enrich
+    from slim import enrich, record_pipeline
     _fakes(monkeypatch)
     monkeypatch.setattr(enrich, "enrich",
                         lambda *a, **k: ({"title": "Kernel methods and the dual form",
                                           "type_tag": "lecture", "topics": [], "project": ""}, {}))
-    out = chat.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
+    out = record_pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
                              title="", when=NOW, vault=tmp_path)
     assert "Kernel-methods" in out["note"]
     assert "Recording 2026" not in (tmp_path / out["note"]).read_text(encoding="utf-8")
@@ -496,22 +496,22 @@ def test_an_untitled_recording_gets_a_real_title_not_a_timestamp(tmp_path, monke
 
 def test_a_title_they_typed_is_never_overridden(tmp_path, monkeypatch):
     """Their words are testimony here exactly as a spoken type is."""
-    from slim import chat, enrich
+    from slim import enrich, record_pipeline
     _fakes(monkeypatch)
     monkeypatch.setattr(enrich, "enrich",
                         lambda *a, **k: pytest.fail("must not be called when they gave a title"))
-    out = chat.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
+    out = record_pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
                              title="My Own Title", when=NOW, vault=tmp_path)
     assert "My-Own-Title" in out["note"]
 
 
 def test_a_failed_title_call_still_files_the_recording(tmp_path, monkeypatch):
-    from slim import chat, enrich
+    from slim import enrich, record_pipeline
     _fakes(monkeypatch)
     def boom(*a, **k):
         raise RuntimeError("model down")
     monkeypatch.setattr(enrich, "enrich", boom)
-    out = chat.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
+    out = record_pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
                              title="", when=NOW, vault=tmp_path)
     assert (tmp_path / out["note"]).exists()
 
@@ -542,11 +542,11 @@ def test_a_filed_recording_is_indexed_so_the_brain_can_reach_it(tmp_path, monkey
     chat vault lane, or reflect — all of which read SQLite. ⚠ reflect._journals() selects
     type='journal' FROM THE DATABASE, so an unindexed journal is skipped by the nightly
     synthesis silently."""
-    from slim import chat, record_state
+    from slim import record_pipeline, record_state
     _fakes(monkeypatch)
     called = {}
     monkeypatch.setattr(record_state, "_index_now", lambda v, note: called.update(vault=v, note=note) or {})
-    out = chat.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="meeting-note",
+    out = record_pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="meeting-note",
                              title="T", when=NOW, vault=tmp_path)
     assert called.get("vault") == tmp_path
     assert called.get("note") == out["note"]
@@ -592,12 +592,12 @@ def test_filing_keeps_the_source_id_a_copilot_chat_was_opened_on(tmp_path, monke
 def test_a_broken_index_never_costs_the_recording(tmp_path, monkeypatch):
     """A note that is filed but not indexed is recoverable with `slim ingest`. One that failed
     to file is not — so indexing must never be able to take the recording down with it."""
-    from slim import chat, db
+    from slim import db, record_pipeline
     _fakes(monkeypatch)
     def boom(*a, **k):
         raise RuntimeError("database is locked")
     monkeypatch.setattr(db, "connect", boom)
-    out = chat.handle_record(audio_rel=_staged(tmp_path), notes_md="- notes",
+    out = record_pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="- notes",
                              declared_type="meeting-note", title="T", when=NOW, vault=tmp_path)
     assert (tmp_path / out["note"]).exists()
     assert "- notes" in (tmp_path / out["note"]).read_text(encoding="utf-8")
@@ -609,21 +609,21 @@ def test_a_broken_index_never_costs_the_recording(tmp_path, monkeypatch):
 # substituted "Recording" too, so every recorded note was named for the clock.
 
 def test_an_untitled_recording_is_named_from_its_transcript(tmp_path, monkeypatch):
-    from slim import chat, enrich
+    from slim import enrich, record_pipeline
     _fakes(monkeypatch)
     monkeypatch.setattr(enrich, "enrich",
                         lambda *a, **k: ({"title": "Kernel trick and the dual form"}, {}))
-    out = chat.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
+    out = record_pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
                              title="", when=NOW, vault=tmp_path)
     assert out["title"] == "Kernel trick and the dual form"
 
 
 def test_a_title_they_typed_is_never_overwritten(tmp_path, monkeypatch):
-    from slim import chat, enrich
+    from slim import enrich, record_pipeline
     _fakes(monkeypatch)
     monkeypatch.setattr(enrich, "enrich",
                         lambda *a, **k: pytest.fail("the model must not retitle their recording"))
-    out = chat.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
+    out = record_pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
                              title="SVMs", when=NOW, vault=tmp_path)
     assert out["title"] == "SVMs"
 
@@ -635,11 +635,11 @@ def test_the_timestamp_name_survives_only_as_a_last_resort(tmp_path, monkeypatch
     ⚠ A FAILED TRANSCRIPT no longer reaches here at all: it is refused before filing, so the
     only route to a timestamp name is a transcript that worked and a titling call that did not.
     """
-    from slim import chat, enrich
+    from slim import enrich, record_pipeline
     _fakes(monkeypatch)
     monkeypatch.setattr(enrich, "enrich",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("model is down")))
-    out = chat.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
+    out = record_pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
                              title="", when=NOW, vault=tmp_path)
     assert out["title"] == "Recording 2026-08-04 1430"
 
@@ -647,7 +647,7 @@ def test_the_timestamp_name_survives_only_as_a_last_resort(tmp_path, monkeypatch
 def test_their_title_is_passed_to_the_card_but_a_generated_one_is_not(tmp_path, monkeypatch):
     """⚠ A model-written title is derived from the same transcript the card already reads, so
     feeding it back adds no evidence and lets one guess reinforce the next."""
-    from slim import chat, enrich, suggest
+    from slim import enrich, record_pipeline, suggest
     _fakes(monkeypatch)
     seen = []
     monkeypatch.setattr(suggest, "build_card", lambda *a, **k: (
@@ -656,9 +656,9 @@ def test_their_title_is_passed_to_the_card_but_a_generated_one_is_not(tmp_path, 
                      type_tag="lecture", topics=[]))[1])
     monkeypatch.setattr(enrich, "enrich", lambda *a, **k: ({"title": "Generated Name"}, {}))
 
-    chat.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
+    record_pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
                        title="My Own Title", when=NOW, vault=tmp_path)
-    chat.handle_record(audio_rel=_staged(tmp_path, "u.webm"), notes_md="",
+    record_pipeline.handle_record(audio_rel=_staged(tmp_path, "u.webm"), notes_md="",
                        declared_type="lecture", title="", when=NOW, vault=tmp_path)
     assert seen == ["My Own Title", ""]
 
@@ -667,11 +667,11 @@ def test_a_silent_recording_is_refused_the_same_way(tmp_path, monkeypatch):
     """Silence reaches the same worthless note by a different route — a muted mic, the wrong
     input. Nothing is written; ⚠ since 2026-08-26 it is `NoSpeech`, not a failure, because
     saying so LOUDLY was the friction they objected to."""
-    from slim import chat, record_state
+    from slim import record_pipeline, record_state
     _fakes(monkeypatch, transcript="   ")
     staged = _staged(tmp_path)
     with pytest.raises(record_state.NoSpeech, match="no words"):
-        chat.handle_record(audio_rel=staged, notes_md="", declared_type="lecture",
+        record_pipeline.handle_record(audio_rel=staged, notes_md="", declared_type="lecture",
                            title="T", when=NOW, vault=tmp_path)
     assert (tmp_path / staged).exists()
 
@@ -679,9 +679,9 @@ def test_a_silent_recording_is_refused_the_same_way(tmp_path, monkeypatch):
 def test_a_failed_SUMMARY_still_files_the_note(tmp_path, monkeypatch):
     """⚠ The line that matters: a summary DECORATES a recording that is already safe and
     findable. Only the transcript is the artifact."""
-    from slim import chat
+    from slim import record_pipeline
     _fakes(monkeypatch, summarize_raises=True)
-    out = chat.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
+    out = record_pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
                              title="T", when=NOW, vault=tmp_path)
     assert (tmp_path / out["note"]).exists()
     assert "the kernel trick" in (tmp_path / out["note"]).read_text(encoding="utf-8")
@@ -700,7 +700,7 @@ def test_one_recording_asks_for_one_model_at_one_size(tmp_path, monkeypatch):
     set of calls one recording makes shows it, which is why this test drives `handle_record`
     and watches the llm boundary rather than any single function.
     """
-    from slim import chat, enrich, llm, transcribe
+    from slim import enrich, llm, record_pipeline, transcribe
 
     # ⚠ ONLY transcription is faked. The real summarize/suggest/enrich must run — faking
     # them is exactly what let this through, since each one is individually correct.
@@ -717,7 +717,7 @@ def test_one_recording_asks_for_one_model_at_one_size(tmp_path, monkeypatch):
 
     monkeypatch.setattr(llm, "chat_json", spy)
 
-    chat.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
+    record_pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
                        title="", when=NOW, vault=tmp_path)   # ⚠ no title → enrich runs
 
     sizes = {}
@@ -737,7 +737,7 @@ def test_summary_title_and_card_all_use_the_resident_model(tmp_path, monkeypatch
     that was gemma4:31b LOADING after evicting the resident qwen3.6:35b — then decoding at
     10 tok/s. Their call: no swap. All three calls in the request move together, at the
     resident's one context size, or one recording spawns two runners."""
-    from slim import chat, enrich, llm, suggest, summarize, transcribe
+    from slim import enrich, llm, record_pipeline, suggest, summarize, transcribe
     seen = {}
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="the kernel trick", model="fake", audio_seconds=9.0, wall_seconds=1.0))
@@ -750,7 +750,7 @@ def test_summary_title_and_card_all_use_the_resident_model(tmp_path, monkeypatch
         seen.update({"card": k}), suggest.Card(dest_dir="Capture/school", confident_depth=1,
                                                candidates=[], type_tag="lecture",
                                                topics=[]))[1])
-    chat.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
+    record_pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
                        title="", when=NOW, vault=tmp_path)
     assert llm.RECORD_MODEL == llm.MODEL                      # the decision, stated once
     assert seen["summarize"]["model"] == llm.RECORD_MODEL
@@ -762,12 +762,12 @@ def test_summary_title_and_card_all_use_the_resident_model(tmp_path, monkeypatch
 
 def test_their_notes_reach_the_summarizer(tmp_path, monkeypatch):
     """They tell it what they noticed and how they name things. The transcript stays the source."""
-    from slim import chat, summarize
+    from slim import record_pipeline, summarize
     seen = {}
     _fakes(monkeypatch)
     monkeypatch.setattr(summarize, "summarize", lambda *a, **k: (
         seen.update(k), summarize.Summary(overview="s"))[1])
-    chat.handle_record(audio_rel=_staged(tmp_path), notes_md="- dual form\n- RBF case",
+    record_pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="- dual form\n- RBF case",
                        declared_type="lecture", title="T", when=NOW, vault=tmp_path)
     assert seen["notes"] == "- dual form\n- RBF case"
 
@@ -777,7 +777,7 @@ def test_a_lecture_carries_no_open_questions_section(tmp_path, monkeypatch):
     hold the LECTURER's questions — rhetorical ones they pose and answers, examples on a slide.
     Rendered under "Open questions" they read as the owner's confusions (2026-08-26, NLP lecture).
     A meeting's unresolved question is real information and stays."""
-    from slim import chat, suggest, summarize, transcribe
+    from slim import record_pipeline, suggest, summarize, transcribe
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="does a three year old know english", model="fake", audio_seconds=9.0,
         wall_seconds=1.0))
@@ -789,7 +789,7 @@ def test_a_lecture_carries_no_open_questions_section(tmp_path, monkeypatch):
     monkeypatch.setattr(suggest, "build_card", lambda *a, **k: suggest.Card(
         dest_dir="Capture/school", confident_depth=1, candidates=[], type_tag="lecture",
         topics=[]))
-    out = chat.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
+    out = record_pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
                              title="T", when=NOW, vault=tmp_path)
     body = (tmp_path / out["note"]).read_text(encoding="utf-8")
     assert "## Key points" in body
@@ -804,7 +804,7 @@ def test_the_request_indexes_only_its_note_and_sweeps_the_vault_afterwards(tmp_p
     ~50-fragment note — a backlog from 11 other edited notes — and the recording waited for
     it. `ingest_note` + `embed_source` share the sweep's code, so the docstring's old
     objection (a second, less-tested copy) no longer holds."""
-    from slim import chat, embed as embed_mod, ingest as ingest_mod, record_state
+    from slim import embed as embed_mod, ingest as ingest_mod, record_pipeline, record_state
     _fakes(monkeypatch)
     seen = {"note": [], "source": [], "sweep_ingest": 0, "sweep_embed": 0}
     monkeypatch.setattr(ingest_mod, "ingest_note",
@@ -817,7 +817,7 @@ def test_the_request_indexes_only_its_note_and_sweeps_the_vault_afterwards(tmp_p
         seen.__setitem__("sweep_embed", seen["sweep_embed"] + 1), {"embedded": 0})[1])
     scheduled = []
     monkeypatch.setattr(record_state, "_schedule_sweep", lambda vault: scheduled.append(vault))
-    out = chat.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="meeting-note",
+    out = record_pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="meeting-note",
                              title="T", when=NOW, vault=tmp_path)
     assert seen["note"] == [out["note"]]
     assert seen["source"] == ["src-1"]
@@ -868,13 +868,13 @@ def test_the_sweep_runs_on_a_daemon_thread_and_sweeps_serialize(tmp_path, monkey
 
 
 def test_a_broken_single_note_index_never_costs_the_recording(tmp_path, monkeypatch):
-    from slim import chat, ingest as ingest_mod, record_state
+    from slim import ingest as ingest_mod, record_pipeline, record_state
     _fakes(monkeypatch)
     def boom(con, vault, rel):
         raise RuntimeError("index exploded")
     monkeypatch.setattr(ingest_mod, "ingest_note", boom)
     monkeypatch.setattr(record_state, "_schedule_sweep", lambda vault: None)
-    out = chat.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="meeting-note",
+    out = record_pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="meeting-note",
                              title="T", when=NOW, vault=tmp_path)
     assert (tmp_path / out["note"]).exists()
 
@@ -991,7 +991,7 @@ def test_cancelling_a_job_stops_the_pass_and_writes_nothing(tmp_path, monkeypatc
     """Their case: Stop is hit 40 minutes into a lecture by accident. Cancel has to leave the
     recording exactly as it was — ⚠ NOTHING WRITTEN, NOTHING DELETED — because the draft note
     and the staged audio are the only copies of what they said."""
-    from slim import chat, record_state, summarize, transcribe
+    from slim import record_pipeline, record_state, summarize, transcribe
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="forty minutes of lecture", model="fake", audio_seconds=2400.0, wall_seconds=30.0))
 
@@ -1004,7 +1004,7 @@ def test_cancelling_a_job_stops_the_pass_and_writes_nothing(tmp_path, monkeypatc
     draft = _draft(tmp_path)
     record_state._record_progress_start("job-1")
     with pytest.raises(record_state.RecordCancelled):
-        chat.handle_record(audio_rel=audio, draft_rel=draft, declared_type="lecture",
+        record_pipeline.handle_record(audio_rel=audio, draft_rel=draft, declared_type="lecture",
                            title="T", when=NOW, vault=tmp_path, job_id="job-1")
 
     assert (tmp_path / audio).is_file(), "the audio is the recording; cancel never deletes it"
@@ -1016,7 +1016,7 @@ def test_cancelling_a_job_stops_the_pass_and_writes_nothing(tmp_path, monkeypatc
 def test_cancelling_before_the_expensive_part_is_honoured(tmp_path, monkeypatch):
     """The stages that are not streaming — transcription, the card, the title — are blocking
     calls, so cancel lands at the next boundary. It must at least be CHECKED at each one."""
-    from slim import chat, record_state, transcribe
+    from slim import record_pipeline, record_state, transcribe
     calls = []
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: (
         calls.append(p), transcribe.Transcript(text="x", model="f", audio_seconds=1.0,
@@ -1024,7 +1024,7 @@ def test_cancelling_before_the_expensive_part_is_honoured(tmp_path, monkeypatch)
     record_state._record_progress_start("job-2")
     record_state.request_record_cancel("job-2")
     with pytest.raises(record_state.RecordCancelled):
-        chat.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
+        record_pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
                            title="T", when=NOW, vault=tmp_path, job_id="job-2")
     assert calls == [], "a cancel before transcription does not pay for a transcription"
 
@@ -1038,7 +1038,7 @@ def test_a_resumed_recording_is_one_note_from_several_segments(tmp_path, monkeyp
     """A second MediaRecorder session writes its own container header, so appending to one
     .webm risks a file nothing can play. Segments sidestep that: several audio files, one
     recording id, one note, transcripts joined in order."""
-    from slim import chat, transcribe
+    from slim import record_pipeline, transcribe
     seen = []
 
     def fake_tx(p, model=None):
@@ -1049,7 +1049,7 @@ def test_a_resumed_recording_is_one_note_from_several_segments(tmp_path, monkeyp
     _fakes(monkeypatch)
     monkeypatch.setattr(transcribe, "transcribe", fake_tx)
 
-    out = chat.handle_record(audio_rel=[_staged(tmp_path, "r-001.webm"),
+    out = record_pipeline.handle_record(audio_rel=[_staged(tmp_path, "r-001.webm"),
                                         _staged(tmp_path, "r-002.webm")],
                              notes_md="", declared_type="lecture", title="T", when=NOW,
                              vault=tmp_path)
@@ -1059,10 +1059,10 @@ def test_a_resumed_recording_is_one_note_from_several_segments(tmp_path, monkeyp
 
 
 def test_every_segment_is_archived_and_named_in_the_note(tmp_path, monkeypatch):
-    from slim import chat
+    from slim import record_pipeline
     from slim.chunk import parse_frontmatter
     _fakes(monkeypatch)
-    out = chat.handle_record(audio_rel=[_staged(tmp_path, "r-001.webm"),
+    out = record_pipeline.handle_record(audio_rel=[_staged(tmp_path, "r-001.webm"),
                                         _staged(tmp_path, "r-002.webm")],
                              notes_md="", declared_type="lecture", title="T", when=NOW,
                              vault=tmp_path)
@@ -1075,10 +1075,10 @@ def test_every_segment_is_archived_and_named_in_the_note(tmp_path, monkeypatch):
 def test_one_segment_still_writes_a_plain_scalar(tmp_path, monkeypatch):
     """300 notes already carry `audio:` as a scalar. A single-segment recording keeps writing
     one, so nothing downstream has to learn a new shape for the common case."""
-    from slim import chat
+    from slim import record_pipeline
     from slim.chunk import parse_frontmatter
     _fakes(monkeypatch)
-    out = chat.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
+    out = record_pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
                              title="T", when=NOW, vault=tmp_path)
     fm, _ = parse_frontmatter((tmp_path / out["note"]).read_text(encoding="utf-8"))
     assert isinstance(fm.get("audio"), str)
@@ -1088,7 +1088,7 @@ def test_a_transcribed_segment_is_not_transcribed_twice(tmp_path, monkeypatch):
     """⚠ THE REASON CANCEL IS AFFORDABLE. Without a cache, cancelling after a 40-minute
     transcription makes them pay for that transcription again on resume — which is most of the
     wait they cancelled to avoid."""
-    from slim import chat, record_state, transcribe
+    from slim import record_pipeline, record_state, transcribe
     calls = []
 
     def fake_tx(p, model=None):
@@ -1102,13 +1102,13 @@ def test_a_transcribed_segment_is_not_transcribed_twice(tmp_path, monkeypatch):
     first = _staged(tmp_path, "r-001.webm")
     record_state._record_progress_start("job-3")
     with pytest.raises(record_state.RecordCancelled):
-        chat.handle_record(audio_rel=first, notes_md="", declared_type="lecture", title="T",
+        record_pipeline.handle_record(audio_rel=first, notes_md="", declared_type="lecture", title="T",
                            when=NOW, vault=tmp_path, job_id="job-3")
     assert calls == ["r-001.webm"]
 
     _fakes(monkeypatch)
     monkeypatch.setattr(transcribe, "transcribe", fake_tx)
-    out = chat.handle_record(audio_rel=[first, _staged(tmp_path, "r-002.webm")],
+    out = record_pipeline.handle_record(audio_rel=[first, _staged(tmp_path, "r-002.webm")],
                              notes_md="", declared_type="lecture", title="T", when=NOW,
                              vault=tmp_path)
     assert calls == ["r-001.webm", "r-002.webm"], "the cancelled segment is reused, not redone"
@@ -1119,13 +1119,13 @@ def test_a_transcribed_segment_is_not_transcribed_twice(tmp_path, monkeypatch):
 
 def test_the_wire_takes_one_path_or_several():
     """An older plugin sends a string. Both shapes reach the same code."""
-    from slim import chat
-    one = chat._record_args({"audio": "a.webm", "notes_md": "", "type": "lecture"})
-    many = chat._record_args({"audio": ["a.webm", "b.webm"], "notes_md": "", "type": "lecture"})
+    from slim import record_pipeline
+    one = record_pipeline._record_args({"audio": "a.webm", "notes_md": "", "type": "lecture"})
+    many = record_pipeline._record_args({"audio": ["a.webm", "b.webm"], "notes_md": "", "type": "lecture"})
     assert one["audio_rel"] == "a.webm"
     assert many["audio_rel"] == ["a.webm", "b.webm"]
     with pytest.raises(ValueError):
-        chat._record_args({"audio": [], "notes_md": "", "type": "lecture"})
+        record_pipeline._record_args({"audio": [], "notes_md": "", "type": "lecture"})
 
 
 def test_a_segment_still_belongs_to_its_draft(tmp_path, monkeypatch):
@@ -1140,11 +1140,11 @@ def test_a_segment_still_belongs_to_its_draft(tmp_path, monkeypatch):
     `notes_md`, and the draft tests all used one segment, so the ONE combination the plugin
     actually sends was the one combination nothing covered. Two guards were widened for
     segments; this was the third and it was found by them, not by us."""
-    from slim import chat
+    from slim import record_pipeline
     _fakes(monkeypatch)
     rid = "20260826T150802-782569ba"
     draft = _draft(tmp_path, recording_id=rid)
-    out = chat.handle_record(
+    out = record_pipeline.handle_record(
         audio_rel=[_staged(tmp_path, f"{rid}-001.webm"), _staged(tmp_path, f"{rid}-002.webm")],
         draft_rel=draft, declared_type="lecture", title="T", when=NOW, vault=tmp_path)
     assert out["note"]
@@ -1153,11 +1153,11 @@ def test_a_segment_still_belongs_to_its_draft(tmp_path, monkeypatch):
 def test_a_mismatched_recording_id_is_still_refused(tmp_path, monkeypatch):
     """The guard exists to stop one recording's audio being filed with another's notes. It has
     to keep saying no — widening it for segments must not turn it off."""
-    from slim import chat
+    from slim import record_pipeline
     _fakes(monkeypatch)
     draft = _draft(tmp_path, recording_id="20260826T150802-782569ba")
     with pytest.raises(ValueError, match="do not match"):
-        chat.handle_record(audio_rel=_staged(tmp_path, "20260826T999999-cafebabe-001.webm"),
+        record_pipeline.handle_record(audio_rel=_staged(tmp_path, "20260826T999999-cafebabe-001.webm"),
                            draft_rel=draft, declared_type="lecture", title="T", when=NOW,
                            vault=tmp_path)
 
@@ -1166,14 +1166,14 @@ def test_the_transcript_so_far_can_be_read_back_without_transcribing(tmp_path, m
     """The paused screen has to show what was captured, or "1 segment saved" is a claim they have
     no way to check — and after a cancel that claim is the whole point. Reads the per-segment
     caches ONLY: asking for a transcript must never start a transcription."""
-    from slim import chat, transcribe
+    from slim import record_pipeline, transcribe
     calls = []
     monkeypatch.setattr(transcribe, "transcribe", lambda *a, **k: calls.append(1))
     first, second = _staged(tmp_path, "r-001.webm"), _staged(tmp_path, "r-002.webm")
     (tmp_path / first).with_suffix(".webm.transcript.json").write_text(
         json.dumps({"text": "the first part", "words": 3}), encoding="utf-8")
 
-    out = chat.handle_record_transcript(audio_rel=[first, second], vault=tmp_path)
+    out = record_pipeline.handle_record_transcript(audio_rel=[first, second], vault=tmp_path)
 
     assert out["text"] == "the first part"
     assert out["pending"] == 1, "the segment with no cache is reported, not invented"
@@ -1184,13 +1184,13 @@ def test_resuming_a_filed_note_appends_audio_and_words(tmp_path, monkeypatch):
     """Their ask: resume should be available when the review card is waiting, and on any note
     that is already finished. The note exists, its audio is archived and staging is clear, so
     this is an APPEND — not a second recording, and not a rewrite."""
-    from slim import chat, transcribe
+    from slim import record_pipeline, transcribe
     from slim.chunk import parse_frontmatter
     r = _existing(tmp_path, monkeypatch)
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="and ten minutes more", model="fake", audio_seconds=600.0, wall_seconds=5.0))
 
-    out = chat.handle_record_append(note=str(r.note.relative_to(tmp_path)),
+    out = record_pipeline.handle_record_append(note=str(r.note.relative_to(tmp_path)),
                                     audio_rel=[_staged(tmp_path, "more-001.webm")],
                                     vault=tmp_path)
 
@@ -1205,24 +1205,24 @@ def test_resuming_a_filed_note_appends_audio_and_words(tmp_path, monkeypatch):
 def test_an_appended_segment_leaves_the_summary_alone(tmp_path, monkeypatch):
     """Their call: the summary keeps describing what it described until they presse Retry summary.
     Nothing that costs a minute of model time runs unasked."""
-    from slim import chat, transcribe
+    from slim import record_pipeline, transcribe
     r = _existing(tmp_path, monkeypatch)     # written with summary_md="s"
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="more words", model="fake", audio_seconds=60.0, wall_seconds=1.0))
-    chat.handle_record_append(note=str(r.note.relative_to(tmp_path)),
+    record_pipeline.handle_record_append(note=str(r.note.relative_to(tmp_path)),
                               audio_rel=[_staged(tmp_path, "more-001.webm")], vault=tmp_path)
     assert "\ns\n" in r.note.read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
 def test_appending_silence_is_refused_and_keeps_the_audio(tmp_path, monkeypatch):
     """Same rule as the recording path: a transcript with no words is refused, not filed."""
-    from slim import chat, record_state, transcribe
+    from slim import record_pipeline, record_state, transcribe
     r = _existing(tmp_path, monkeypatch)
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="   ", model="fake", audio_seconds=60.0, wall_seconds=1.0))
     staged = _staged(tmp_path, "more-001.webm")
     with pytest.raises(record_state.NoSpeech, match="no words"):
-        chat.handle_record_append(note=str(r.note.relative_to(tmp_path)),
+        record_pipeline.handle_record_append(note=str(r.note.relative_to(tmp_path)),
                                   audio_rel=[staged], vault=tmp_path)
     assert (tmp_path / staged).is_file(), "the audio stays staged for a retry"
     assert "and ten minutes" not in r.note.read_text(encoding="utf-8")
@@ -1235,35 +1235,35 @@ def test_silence_is_reported_as_silence_not_as_a_failure(tmp_path, monkeypatch):
     a red screen asking whether to delete their files — a decision they should never have to make
     over a recording that simply had nothing in it. The note is still not written (an empty
     note is worthless), but the caller has to be able to tell silence from a real failure."""
-    from slim import chat, record_state, transcribe
+    from slim import record_pipeline, record_state, transcribe
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="   ", model="fake", audio_seconds=30.0, wall_seconds=1.0))
     with pytest.raises(record_state.NoSpeech) as caught:
-        chat.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
+        record_pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
                            title="T", when=NOW, vault=tmp_path)
     assert "no words" in str(caught.value).casefold()
 
 
 def test_a_real_transcription_failure_is_still_an_error(tmp_path, monkeypatch):
     """Silence being quiet must not make a broken ASR quiet too — that one they do need to see."""
-    from slim import chat, transcribe
+    from slim import record_pipeline, transcribe
 
     def boom(*a, **k):
         raise RuntimeError("ASR exploded")
     monkeypatch.setattr(transcribe, "transcribe", boom)
     with pytest.raises(ValueError, match="transcription failed"):
-        chat.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
+        record_pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
                            title="T", when=NOW, vault=tmp_path)
 
 
 def test_appending_silence_is_the_same_quiet_outcome(tmp_path, monkeypatch):
-    from slim import chat, record_state, transcribe
+    from slim import record_pipeline, record_state, transcribe
     r = _existing(tmp_path, monkeypatch)
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="", model="fake", audio_seconds=9.0, wall_seconds=1.0))
     staged = _staged(tmp_path, "more-001.webm")
     with pytest.raises(record_state.NoSpeech):
-        chat.handle_record_append(note=str(r.note.relative_to(tmp_path)), audio_rel=[staged],
+        record_pipeline.handle_record_append(note=str(r.note.relative_to(tmp_path)), audio_rel=[staged],
                                   vault=tmp_path)
     assert (tmp_path / staged).is_file()
 
@@ -1291,7 +1291,7 @@ def test_a_retry_does_not_clobber_notes_saved_while_it_ran(tmp_path, monkeypatch
 
 
 def test_an_append_does_not_clobber_notes_saved_while_it_ran(tmp_path, monkeypatch):
-    from slim import chat, transcribe
+    from slim import chat, record_pipeline, transcribe
     r = _existing(tmp_path, monkeypatch)
     note_rel = str(r.note.relative_to(tmp_path))
 
@@ -1301,7 +1301,7 @@ def test_an_append_does_not_clobber_notes_saved_while_it_ran(tmp_path, monkeypat
                                      wall_seconds=1.0)
     monkeypatch.setattr(transcribe, "transcribe", slow_tx)
 
-    chat.handle_record_append(note=note_rel, audio_rel=[_staged(tmp_path, "more-001.webm")],
+    record_pipeline.handle_record_append(note=note_rel, audio_rel=[_staged(tmp_path, "more-001.webm")],
                               vault=tmp_path)
     body = r.note.read_text(encoding="utf-8")
     assert "- typed while it ran" in body
@@ -1331,7 +1331,7 @@ def test_cancelling_a_one_segment_resume_actually_cancels(tmp_path, monkeypatch)
     """⚠ Cancel was checked only at the top of the per-segment loop, and a resume normally has
     exactly ONE segment — so the check ran once, before a transcription that can take forty
     minutes, and never again. They were told "nothing is written or deleted" and the note grew."""
-    from slim import chat, record_state, transcribe
+    from slim import record_pipeline, record_state, transcribe
 
     def cancel_during(p, model=None):
         record_state.request_record_cancel("job-append")
@@ -1344,7 +1344,7 @@ def test_cancelling_a_one_segment_resume_actually_cancels(tmp_path, monkeypatch)
     record_state._record_progress_start("job-append")
 
     with pytest.raises(record_state.RecordCancelled):
-        chat.handle_record_append(note=str(r.note.relative_to(tmp_path)), audio_rel=[staged],
+        record_pipeline.handle_record_append(note=str(r.note.relative_to(tmp_path)), audio_rel=[staged],
                                   job_id="job-append", vault=tmp_path)
 
     assert r.note.read_text(encoding="utf-8") == before, "nothing written, as promised"
@@ -1384,7 +1384,7 @@ def test_append_never_deletes_the_audio_it_just_recorded(tmp_path, monkeypatch):
     """⚠ The cleanup unlinked every input path. Point `audio` at a file that is ALREADY its
     content-addressed archive and `archive_audio` returns that same path — so the note ends up
     naming a recording the same request deleted."""
-    from slim import chat, transcribe
+    from slim import record_pipeline, transcribe
     r = _existing(tmp_path, monkeypatch)
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="more words", model="fake", audio_seconds=9.0, wall_seconds=1.0))
@@ -1393,7 +1393,7 @@ def test_append_never_deletes_the_audio_it_just_recorded(tmp_path, monkeypatch):
     archived.write_bytes(b"the only copy")
 
     with pytest.raises(ValueError, match="staged"):
-        chat.handle_record_append(note=str(r.note.relative_to(tmp_path)),
+        record_pipeline.handle_record_append(note=str(r.note.relative_to(tmp_path)),
                                   audio_rel=[str(archived.relative_to(tmp_path))],
                                   vault=tmp_path)
     assert archived.is_file(), "an archived recording is never an input to append"
@@ -1402,11 +1402,11 @@ def test_append_never_deletes_the_audio_it_just_recorded(tmp_path, monkeypatch):
 def test_every_segment_must_belong_to_the_same_recording(tmp_path, monkeypatch):
     """Only the FIRST segment was checked against the draft id, so two different recordings
     could be merged into one note and both staged files deleted."""
-    from slim import chat
+    from slim import record_pipeline
     _fakes(monkeypatch)
     draft = _draft(tmp_path, recording_id="alpha")
     with pytest.raises(ValueError, match="do not match"):
-        chat.handle_record(audio_rel=[_staged(tmp_path, "alpha-001.webm"),
+        record_pipeline.handle_record(audio_rel=[_staged(tmp_path, "alpha-001.webm"),
                                       _staged(tmp_path, "bravo-001.webm")],
                            draft_rel=draft, declared_type="lecture", title="T", when=NOW,
                            vault=tmp_path)
@@ -1415,7 +1415,7 @@ def test_every_segment_must_belong_to_the_same_recording(tmp_path, monkeypatch):
 def test_a_transcript_cache_is_bound_to_the_audio_it_transcribed(tmp_path, monkeypatch):
     """The cache was trusted by PATH. Different bytes at the same staged name returned the old
     words with no transcription at all."""
-    from slim import chat, transcribe
+    from slim import record_pipeline, transcribe
     calls = []
 
     def tx(p, model=None):
@@ -1428,13 +1428,13 @@ def test_a_transcript_cache_is_bound_to_the_audio_it_transcribed(tmp_path, monke
     staged.parent.mkdir(parents=True, exist_ok=True)
 
     staged.write_bytes(b"first audio")
-    first, cached = chat._transcribe_segment(staged, transcribe)
+    first, cached = record_pipeline._transcribe_segment(staged, transcribe)
     assert first["text"] == "take 1" and not cached
-    again, cached = chat._transcribe_segment(staged, transcribe)
+    again, cached = record_pipeline._transcribe_segment(staged, transcribe)
     assert again["text"] == "take 1" and cached, "same bytes, same words, no second pass"
 
     staged.write_bytes(b"DIFFERENT audio")
-    third, cached = chat._transcribe_segment(staged, transcribe)
+    third, cached = record_pipeline._transcribe_segment(staged, transcribe)
     assert third["text"] == "take 2" and not cached, "different bytes are a different recording"
 
 
@@ -1442,7 +1442,7 @@ def test_speaker_provenance_survives_the_segment_cache(tmp_path, monkeypatch):
     """The cache hands back the words without transcribing. It must hand back how their
     speakers were decided too, or a Try again files a labelled transcript that says nothing
     about where its labels came from."""
-    from slim import chat, transcribe
+    from slim import record_pipeline, transcribe
 
     _fakes(monkeypatch)
     monkeypatch.setattr(transcribe, "normalize_container", lambda p: p)
@@ -1453,14 +1453,14 @@ def test_speaker_provenance_survives_the_segment_cache(tmp_path, monkeypatch):
     staged.parent.mkdir(parents=True, exist_ok=True)
     staged.write_bytes(b"audio")
 
-    first, cached = chat._transcribe_segment(staged, transcribe)
+    first, cached = record_pipeline._transcribe_segment(staged, transcribe)
     assert (first["speakers_by"], cached) == ("channels", False)
-    again, cached = chat._transcribe_segment(staged, transcribe)
+    again, cached = record_pipeline._transcribe_segment(staged, transcribe)
     assert (again["speakers_by"], cached) == ("channels", True)
 
 
 def test_the_one_speaker_survives_the_segment_cache(tmp_path, monkeypatch):
-    from slim import chat, transcribe
+    from slim import record_pipeline, transcribe
 
     _fakes(monkeypatch)
     monkeypatch.setattr(transcribe, "normalize_container", lambda p: p)
@@ -1471,8 +1471,8 @@ def test_the_one_speaker_survives_the_segment_cache(tmp_path, monkeypatch):
     staged.parent.mkdir(parents=True, exist_ok=True)
     staged.write_bytes(b"audio")
 
-    chat._transcribe_segment(staged, transcribe)
-    again, cached = chat._transcribe_segment(staged, transcribe)
+    record_pipeline._transcribe_segment(staged, transcribe)
+    again, cached = record_pipeline._transcribe_segment(staged, transcribe)
     assert (again["solo_speaker"], cached) == ("Me", True)
 
 
@@ -1490,12 +1490,12 @@ def _segments_tx(monkeypatch, *results):
 
 def test_a_one_speaker_segment_in_a_labelled_recording_carries_its_label(tmp_path, monkeypatch):
     """Unlabelled, their closing monologue reads as the last speaker still talking."""
-    from slim import chat
+    from slim import record_pipeline
     _fakes(monkeypatch)
     _segments_tx(monkeypatch, ("**Me:** so\n\n**Them:** yes", "channels", ""),
                  ("and one more thing", "", "Me"))
 
-    out = chat.handle_record(audio_rel=[_staged(tmp_path, "r-001.webm"),
+    out = record_pipeline.handle_record(audio_rel=[_staged(tmp_path, "r-001.webm"),
                                         _staged(tmp_path, "r-002.webm")],
                              notes_md="", declared_type="meeting-note", title="T", when=NOW,
                              vault=tmp_path)
@@ -1504,12 +1504,12 @@ def test_a_one_speaker_segment_in_a_labelled_recording_carries_its_label(tmp_pat
 
 
 def test_the_labelled_segment_can_come_second(tmp_path, monkeypatch):
-    from slim import chat
+    from slim import record_pipeline
     _fakes(monkeypatch)
     _segments_tx(monkeypatch, ("they opened", "", "Them"),
                  ("**Me:** so\n\n**Them:** yes", "channels", ""))
 
-    out = chat.handle_record(audio_rel=[_staged(tmp_path, "r-001.webm"),
+    out = record_pipeline.handle_record(audio_rel=[_staged(tmp_path, "r-001.webm"),
                                         _staged(tmp_path, "r-002.webm")],
                              notes_md="", declared_type="meeting-note", title="T", when=NOW,
                              vault=tmp_path)
@@ -1519,11 +1519,11 @@ def test_the_labelled_segment_can_come_second(tmp_path, monkeypatch):
 
 def test_a_lecture_in_two_segments_stays_unlabelled(tmp_path, monkeypatch):
     """Every segment one-sided: nothing to tell apart, so no labels at all."""
-    from slim import chat
+    from slim import record_pipeline
     _fakes(monkeypatch)
     _segments_tx(monkeypatch, ("part one", "", "Them"), ("part two", "", "Them"))
 
-    out = chat.handle_record(audio_rel=[_staged(tmp_path, "r-001.webm"),
+    out = record_pipeline.handle_record(audio_rel=[_staged(tmp_path, "r-001.webm"),
                                         _staged(tmp_path, "r-002.webm")],
                              notes_md="", declared_type="lecture", title="T", when=NOW,
                              vault=tmp_path)
@@ -1532,31 +1532,31 @@ def test_a_lecture_in_two_segments_stays_unlabelled(tmp_path, monkeypatch):
 
 
 def test_resuming_a_labelled_note_labels_a_one_speaker_segment(tmp_path, monkeypatch):
-    from slim import chat, record
+    from slim import record, record_pipeline
     r = _existing(tmp_path, monkeypatch)
     r.note.write_text(record.append_audio_frontmatter(
         r.note.read_text(encoding="utf-8"), rels=[], digests=[], seconds=0.0,
         speakers_by="channels"), encoding="utf-8")
     _segments_tx(monkeypatch, ("and one more thing", "", "Me"))
 
-    chat.handle_record_append(note=str(r.note.relative_to(tmp_path)),
+    record_pipeline.handle_record_append(note=str(r.note.relative_to(tmp_path)),
                               audio_rel=[_staged(tmp_path, "more-001.webm")], vault=tmp_path)
     assert "**Me:** and one more thing" in r.note.read_text(encoding="utf-8")
 
 
 def test_resuming_an_unlabelled_note_adds_no_label(tmp_path, monkeypatch):
-    from slim import chat
+    from slim import record_pipeline
     r = _existing(tmp_path, monkeypatch)
     _segments_tx(monkeypatch, ("and ten minutes more", "", "Them"))
 
-    chat.handle_record_append(note=str(r.note.relative_to(tmp_path)),
+    record_pipeline.handle_record_append(note=str(r.note.relative_to(tmp_path)),
                               audio_rel=[_staged(tmp_path, "more-001.webm")], vault=tmp_path)
     body = r.note.read_text(encoding="utf-8")
     assert "and ten minutes more" in body and "**Them:**" not in body
 
 
 def test_the_paused_transcript_labels_segments_the_same_way(tmp_path):
-    from slim import chat
+    from slim import record_pipeline
     first, second = _staged(tmp_path, "r-001.webm"), _staged(tmp_path, "r-002.webm")
     (tmp_path / first).with_suffix(".webm.transcript.json").write_text(
         json.dumps({"text": "**Me:** so\n\n**Them:** yes", "speakers_by": "channels"}),
@@ -1564,7 +1564,7 @@ def test_the_paused_transcript_labels_segments_the_same_way(tmp_path):
     (tmp_path / second).with_suffix(".webm.transcript.json").write_text(
         json.dumps({"text": "and more", "solo_speaker": "Me"}), encoding="utf-8")
 
-    out = chat.handle_record_transcript(audio_rel=[first, second], vault=tmp_path)
+    out = record_pipeline.handle_record_transcript(audio_rel=[first, second], vault=tmp_path)
     assert out["text"] == "**Me:** so\n\n**Them:** yes\n\n**Me:** and more"
 
 
