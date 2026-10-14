@@ -8,7 +8,7 @@ import json
 
 import pytest
 
-from slim import llm
+from slim import llm, llm_render
 
 PNG = base64.b64encode(bytes.fromhex(
     "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
@@ -54,7 +54,7 @@ GATE_PROMPT = '<|im_start|>system\nYou edit notes.\n\n=== Notes/n.md ===\n[b1] #
                                                            (THINK, TOOLS, True, THINK_PROMPT),
                                                            (EDIT[:3], None, False, GATE_PROMPT)])
 def test_the_prompt_is_the_one_ollama_renders(messages, tools, think, prompt):
-    assert llm.render(messages, tools, think) == prompt
+    assert llm_render.render(messages, tools, think) == prompt
 
 
 # --- a reply as it decodes ----------------------------------------------------------------------
@@ -65,7 +65,7 @@ INSERT = ("I'll add it.\n\n<tool_call>\n<function=insert>\n<parameter=after>\nb1
 
 def read(text, *, think=False, size=1, tools=TOOLS):
     parts = []
-    reader = llm._Reader(think, tools, lambda *part: parts.append(part))
+    reader = llm_render._Reader(think, tools, lambda *part: parts.append(part))
     for i in range(0, len(text), size):
         reader.feed(text[i:i + size])
     return reader.close(), parts
@@ -84,7 +84,7 @@ def test_a_tool_call_is_read_the_same_however_the_reply_is_cut(size):
 
 
 def test_a_parameters_text_arrives_as_it_decodes():
-    reader, seen = llm._Reader(False, TOOLS, lambda *part: seen.append(part)), []
+    reader, seen = llm_render._Reader(False, TOOLS, lambda *part: seen.append(part)), []
     reader.feed("<tool_call>\n<function=insert>\n<parameter=markdown>\nFirst words")
     assert [p[3] for p in seen if p[0] == "text"] == ["First words"]
     reader.feed(" and more\n</para")                        # what may be the closing tag waits
@@ -116,7 +116,7 @@ def test_a_text_parameter_written_null_is_that_text_and_renders_as_ollamas_null(
     ollamas = [{"function": {"name": "insert", "arguments": {"after": "b1", "markdown": None}}}]
     history = lambda calls: [{"role": "user", "content": "go"}, {"role": "assistant", "content": "", "tool_calls": calls},
                              {"role": "tool", "content": "ok: inserted"}]
-    assert llm.render(history(raw), TOOLS, False) == llm.render(history(ollamas), TOOLS, False)
+    assert llm_render.render(history(raw), TOOLS, False) == llm_render.render(history(ollamas), TOOLS, False)
 
 
 def test_thinking_ends_at_its_close_or_at_a_tool_call():
@@ -243,6 +243,6 @@ def test_a_stream_that_ends_before_done_is_an_error(monkeypatch):
 def test_numbers_in_history_arguments_are_written_as_go_writes_them():
     message = {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "plan", "arguments": {
         "steps": [1.0, 1e-7, 0.00001, 2.5, 1e21, 7, True, None, {"b": 1, "a": "<"}]}}}]}
-    prompt = llm.render([{"role": "user", "content": "q"}, message, {"role": "tool", "content": "ok"}], TOOLS, False)
+    prompt = llm_render.render([{"role": "user", "content": "q"}, message, {"role": "tool", "content": "ok"}], TOOLS, False)
     assert '["1","1e-7","1e-05"' not in prompt
     assert '[1,1e-7,0.00001,2.5,1e+21,7,true,null,{"a":"\\u003c","b":1}]' in prompt

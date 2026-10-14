@@ -1518,7 +1518,7 @@ def streamed(monkeypatch, *replies, order=None):
 
 def wired(monkeypatch, *replies, size=3):
     """The model as the raw call hears it: each reply's text read by the real llm.chat_tools (its
-    prompt rendered, its reply read by llm._Reader), a few characters at a time."""
+    prompt rendered, its reply read by llm_render._Reader), a few characters at a time."""
     real = llm.chat_tools
     seen = scripted(monkeypatch)
     gate, pending = copilot.llm.chat_tools, list(replies)

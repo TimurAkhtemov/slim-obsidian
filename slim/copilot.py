@@ -674,7 +674,7 @@ class _Reply:
 def _call(messages: list[dict], offered: list[str], *, think: bool, temperature: float,
           num_predict: int, on_part=None, should_stop=None) -> _Reply:
     """One model call with the `offered` tools. It streams: `on_part` hears its tool calls as they
-    decode (`llm._Reader`). A call's text is never JSON: `\\frac` and a real tab arrive as written."""
+    decode (`llm_render._Reader`). A call's text is never JSON: `\\frac` and a real tab arrive as written."""
     msg, stats = llm.chat_tools(messages, edits_mod.ollama_tools(offered), think=think,
                                 temperature=temperature, num_predict=num_predict,
                                 on_part=on_part, should_stop=should_stop)
@@ -842,7 +842,7 @@ class _Drafts:
         self.reply, self.calls, self.begun = self.reply + 1, {}, 0
 
     def part(self, kind: str, index: int, name, value) -> None:
-        """`on_part` for a model call (`llm._Reader`). A draft is only ever shown: one that fails is
+        """`on_part` for a model call (`llm_render._Reader`). A draft is only ever shown: one that fails is
         counted for the trace, and the call goes on."""
         try:
             self._part(kind, index, name, value)
