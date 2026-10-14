@@ -125,12 +125,7 @@ function fileBackedView({ type = "lecture", existing = [] } = {}) {
   return { v, files, created, binaries, editorLeaf };
 }
 
-
-// --- the stale-server guard ------------------------------------------------------------------
-// Reuse is deliberate; a server OLDER THAN THE CODE being silently preferred is not. A server
-// from the previous afternoon survived a Cmd+Q, was reused, and failed two recordings against
-// a bug already fixed on disk (2026-08-23).
-
+// The plugin class without onload(): enough to call its methods.
 function plugin() {
   resetNotices();
   const p = Object.create(PluginClass.prototype);
@@ -138,10 +133,7 @@ function plugin() {
   return p;
 }
 
-// --- the digital-silence warning -------------------------------------------------------------
-// 2026-09-24: 157 s of zeros on both channels, and the empty-transcript refusal at the end was
-// the first anyone knew. A meeting you think is being recorded is the worst failure there is.
-
+// The two levels the silence tests feed.
 const ZERO = { mic: 0, system: 0 };
 const SPEECH = 0.05;
 
@@ -153,9 +145,6 @@ function findButton(root, text) {
   }
   return null;
 }
-
-
-// --- several durable meeting sessions, one capture ------------------------------------------
 
 function sessionManagerHarness() {
   let next = 0;

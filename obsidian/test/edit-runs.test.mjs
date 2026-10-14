@@ -500,7 +500,6 @@ test("a run lands in the editor focused last that shows the note, and is found a
   assert.equal(plugin.liveRunView("run-2"), null);
 });
 
-
 test("a change's text is a draft in the note while it is written, and the change takes its place", async () => {
   const { live, editor } = fakeLive();
   const view = editView({ live, editor, events: async (_body, handlers) => {

@@ -27,6 +27,11 @@ test("a plugin-started server is told which vault this plugin is in", () => {
   assert.equal(env.PATH, "/usr/bin");
 });
 
+// --- the stale-server guard ------------------------------------------------------------------
+// Reuse is deliberate; a server OLDER THAN THE CODE being silently preferred is not. A server
+// from the previous afternoon survived a Cmd+Q, was reused, and failed two recordings against
+// a bug already fixed on disk (2026-08-23).
+
 test("a stale server produces a warning naming the file and how to restart", async () => {
   setRequestUrl(async () => ({
     status: 200,

@@ -60,7 +60,6 @@ test("a note title comes from the frontmatter, then the file name, then the path
   assert.equal(noteTitle({ workspace: {} }, "Notes/gone/Old note.md"), "Old note");
 });
 
-
 // ---- skills ----------------------------------------------------------------------------------
 
 test("a slash command completes only while its first word is being typed", () => {

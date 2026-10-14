@@ -8,6 +8,8 @@ const require = createRequire(import.meta.url);
 const { RecorderView } = require("../src/recorder-view.js");
 const { MeetingSessionManager } = require("../src/sessions.js");
 
+// --- several durable meeting sessions, one capture ------------------------------------------
+
 test("a processing meeting does not hold the microphone hostage", async () => {
   const { manager, made } = sessionManagerHarness();
   const meetingA = manager.createSession();

@@ -19,6 +19,10 @@ function feed(peaks, watch = null) {
   return watch;
 }
 
+// --- the digital-silence warning -------------------------------------------------------------
+// 2026-09-24: 157 s of zeros on both channels, and the empty-transcript refusal at the end was
+// the first anyone knew. A meeting you think is being recorded is the worst failure there is.
+
 test("five seconds of zeros on BOTH channels says nothing is being recorded; four do not", () => {
   assert.equal(feed(Array(4).fill(ZERO)).warn, false);
   assert.equal(feed(Array(5).fill(ZERO)).warn, true);
