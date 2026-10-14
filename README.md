@@ -49,7 +49,7 @@ flowchart TB
         CLI["slim CLI<br/>ingest / reflect / status"]
     end
 
-    SRV["slim chat — 127.0.0.1:7546<br/>18 endpoints, loopback only, Host + Origin gated"]
+    SRV["slim chat — 127.0.0.1:7546<br/>22 endpoints, loopback only, Host + Origin gated"]
 
     subgraph P["Pipeline"]
         direction LR
@@ -81,8 +81,8 @@ staleness; when in doubt, kill the port.
 ## Your vault stays yours
 
 **SLIM does not ask you to restructure anything.** Indexing walks every Markdown file in the
-vault — `rglob("*.md")` — and skips only three top-level names (`Attachments/`, `Profile/`,
-`_Reflections/`), a few dot-folders, and the recorder's own drafts. There is no allow-list of
+vault — `rglob("*.md")` — and skips only four top-level names (`Attachments/`, `Profile/`,
+`Skills/`, `_Reflections/`), a few dot-folders, and the recorder's own drafts. There is no allow-list of
 folders anywhere. A vault organised any way at all is searchable and copilot-ready with no
 setup at all.
 
