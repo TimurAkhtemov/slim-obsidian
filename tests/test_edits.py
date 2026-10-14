@@ -89,6 +89,25 @@ def test_splices_turn_before_into_after_in_utf16_units():
     assert found[0]["from"] == 12          # the emoji is 2 UTF-16 units: 2 + len(" one\nkeep\n")
 
 
+def test_splices_diff_only_the_lines_between_what_both_texts_share_at_start_and_end(monkeypatch):
+    # difflib is quadratic in repeated lines: over a whole long note (4,000 blank lines) every
+    # change took a second, inside the model lock.
+    before = "".join(f"## S{k}\n\nPara {k}.\n\n" for k in range(500))
+    seen, real = [], edits.difflib.SequenceMatcher
+    monkeypatch.setattr(edits.difflib, "SequenceMatcher",
+                        lambda junk, a, b, **kw: seen.append((len(a), len(b))) or real(junk, a, b, **kw))
+    for after in (before.replace("Para 250.\n", "Para 250, longer.\nAnd a line.\n"),
+                  "New top.\n\n" + before, before + "New end.\n", before[:-1], before):
+        found = splices(before, after)
+        assert apply_splices(before, found) == after
+        assert max(seen.pop()) <= 2, "diffed lines both texts share"
+    assert splices(before, before) == []
+    edges = [("a\nb", "a\nc"), ("a\n", "a"), ("", "x\n"), ("x\n\ny\n", ""), ("x\n\n\ny\n", "x\n\ny\n"),
+             ("p\n\n", "p\n\n\n")]
+    for old, new in edges:
+        assert apply_splices(old, splices(old, new)) == new
+
+
 def test_replace_keeps_spacing_and_one_block_keeps_its_handle():
     note = Note(NOTE)
     i, j = note.span("b3")
@@ -193,6 +212,30 @@ def test_a_list_stays_tight_when_an_item_comes_or_goes():
     assert note.text() == "## L\n\n- a\n- a2\n- c\n- d\n\n## Next\n"
     note.insert(note.span("b2")[1], "A paragraph.", owner="c4")
     assert note.text() == "## L\n\n- a\n\nA paragraph.\n\n- a2\n- c\n- d\n\n## Next\n"
+
+
+def test_an_item_moved_within_its_list_keeps_the_lists_spacing(monkeypatch):
+    # A move's splices are its own (`_move_splices`), never a line diff of the note.
+    monkeypatch.setattr(edits, "splices", lambda *_: pytest.fail("the move's own splices did not rebuild it"))
+    text = "## L\n\n- one\n- two\n- three\n\n## Next\n"
+    for args, moved in (({"target": "b3", "after": "b4"}, "- one\n- three\n- two\n"),      # to the end
+                        ({"target": "b4", "before": "b2"}, "- three\n- one\n- two\n"),     # to the top
+                        ({"target": "b2", "after": "b3"}, "- two\n- one\n- three\n")):
+        note = Note(text)
+        change, _ = apply(note, "move", args, change_id="c1", step=1)
+        assert note.text() == f"## L\n\n{moved}\n## Next\n"
+        assert apply_splices(text, change.splices) == note.text()
+    note = Note("- one\n- two\n- three")                    # the list ends the note: only the order changes
+    apply(note, "move", {"target": "b2", "after": "b3"}, change_id="c1", step=1)
+    assert note.text() == "- one\n- three\n- two"
+    loose = "- a\n\n- b\n\n- c\n\n## Next\n"                  # a loose list stays loose
+    note = Note(loose)
+    apply(note, "move", {"target": "b3", "before": "b2"}, change_id="c1", step=1)
+    assert note.text() == "- a\n\n- c\n\n- b\n\n## Next\n"
+    out = "## L\n\n- a\n- b\n\nPara.\n\n## Next\n"           # out of its list: a block of its own, as before
+    note = Note(out)
+    apply(note, "move", {"target": "b3", "after": "b4"}, change_id="c1", step=1)
+    assert note.text() == "## L\n\n- a\n\nPara.\n\n- b\n\n## Next\n"
 
 
 def test_a_range_past_the_end_of_the_note_runs_to_its_end():

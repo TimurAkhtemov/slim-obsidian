@@ -319,16 +319,25 @@ def u16(text: str) -> int:
 
 def splices(before: str, after: str) -> list[dict]:
     """Line-level edits turning `before` into `after`: {from, to, insert} in UTF-16 units of
-    `before` (JavaScript string indices, as the plugin's editor counts), applied last-first."""
+    `before` (JavaScript string indices, as the plugin's editor counts), applied last-first. Only
+    the lines between what both share at their start and end are diffed: difflib is quadratic in
+    repeated lines, and over a whole long note (thousands of blank ones) a change took a second."""
     a, b = before.splitlines(keepends=True), after.splitlines(keepends=True)
+    top = 0
+    while top < min(len(a), len(b)) and a[top] == b[top]:
+        top += 1
+    end = 0
+    while end < min(len(a), len(b)) - top and a[-1 - end] == b[-1 - end]:
+        end += 1
     starts = [0]
     for line in a:
         starts.append(starts[-1] + len(line))
     out = []
-    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+    same = difflib.SequenceMatcher(None, a[top:len(a) - end], b[top:len(b) - end], autojunk=False)
+    for tag, i1, i2, j1, j2 in same.get_opcodes():
         if tag != "equal":
-            out.append({"from": u16(before[:starts[i1]]), "to": u16(before[:starts[i2]]),
-                        "insert": "".join(b[j1:j2])})
+            out.append({"from": u16(before[:starts[top + i1]]), "to": u16(before[:starts[top + i2]]),
+                        "insert": "".join(b[top + j1:top + j2])})
     return out
 
 
@@ -552,6 +561,14 @@ class Note:
             if not prev.text.endswith("\n\n"):
                 prev.text += "\n"
 
+    def _spacing(self, pos: int) -> str:
+        """How the list at `pos` ends an item before the next: with a blank line when it is loose,
+        a bare newline when it is tight, as the two items nearest `pos` show (one item is tight)."""
+        for k in (pos - 1, pos, pos - 2):
+            if 0 <= k < len(self.blocks) - 1 and self.blocks[k].kind == self.blocks[k + 1].kind == "list":
+                return "\n\n" if self.blocks[k].text.endswith("\n\n") else "\n"
+        return "\n"
+
     def _repeats(self, i: int, j: int, texts: list[str]) -> dict[int, Block]:
         """Which of blocks i..j each new block's text repeats word for word, by the new one's index."""
         same = difflib.SequenceMatcher(None, [b.text.rstrip("\n") for b in self.blocks[i:j]],
@@ -602,13 +619,28 @@ class Note:
     def move(self, i: int, j: int, pos: int) -> list[Block]:
         moved = self.blocks[i:j]
         del self.blocks[i:j]
-        if 0 < i < len(self.blocks):
-            self._separate(i)
+        if 0 < i < len(self.blocks) and not self.blocks[i - 1].kind == self.blocks[i].kind == "list":
+            self._separate(i)           # (an item gone from the middle of a list leaves it tight)
         if pos > i:
             pos -= j - i
-        if pos < len(self.blocks) and not moved[-1].text.endswith("\n\n"):
-            moved[-1].text = moved[-1].text.rstrip("\n") + "\n\n"
-        self._separate(pos)
+        prev = self.blocks[pos - 1] if pos > 0 else None
+        following = self.blocks[pos] if pos < len(self.blocks) else None
+        first, last = moved[0], moved[-1]
+        # Items moved among a list's items take its spacing: a list reordered reads as it did.
+        after_item = prev is not None and prev.kind == first.kind == "list"
+        before_item = following is not None and following.kind == last.kind == "list"
+        gap = self._spacing(pos)
+        ending = gap if before_item else None
+        if after_item and not before_item:  # after the list's last item: what ended the list ends it now
+            if last.kind == "list":
+                ending = prev.text[len(prev.text.rstrip("\n")):]
+            prev.text = prev.text.rstrip("\n") + gap
+        if ending is None and following and not last.text.endswith("\n\n"):
+            ending = "\n\n"
+        if ending is not None:
+            last.text = last.text.rstrip("\n") + ending
+        if not after_item and not (before_item and first.kind == "list"):
+            self._separate(pos)
         self.blocks[pos:pos] = moved
         return moved
 
@@ -978,8 +1010,8 @@ TOOLS: dict[str, dict] = {
 
 def _move_splices(before: str, old: list[tuple[Block, str]], blocks: list[Block], moved: list[Block]) -> list[dict]:
     """A move as what it is: the moved blocks taken out, and put in at their new place with the
-    blank lines either side gained. Never a line diff of the whole note, which keeps the longest
-    run in place and can "move" a short neighbour round it — a recording's meeting block."""
+    blank lines either side gained or lost. Never a line diff of the whole note, which keeps the
+    longest run in place and can "move" a short neighbour round it — a recording's meeting block."""
     chunk, spans, at = {id(b) for b in moved}, {}, 0
     for b, text in old:
         spans[id(b)] = (at, at + len(text))
@@ -997,10 +1029,14 @@ def _move_splices(before: str, old: list[tuple[Block, str]], blocks: list[Block]
     for k, b in enumerate(blocks):
         if id(b) in chunk:
             continue
-        end = spans[id(b)][1]
-        put(end, end, b.text[len(was[id(b)]):])         # a blank line it gained
+        start, end = spans[id(b)]
+        old = was[id(b)]
+        # A blank line it gained, or lost beside a list's items: only a block's end ever changes.
+        kept = start + (len(old) if b.text == old else len(os.path.commonprefix([old, b.text])))
+        tail = b.text[kept - start:]
         if k + 1 < len(blocks) and id(blocks[k + 1]) in chunk:
-            put(end, end, "".join(m.text for m in moved))
+            tail += "".join(m.text for m in moved)
+        put(kept, end, tail)
     return [{"from": u16(before[:start]), "to": u16(before[:stop]), "insert": text}
             for start, (stop, text) in sorted(edits_at.items()) if text or stop > start]
 
