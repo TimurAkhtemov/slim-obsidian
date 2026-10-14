@@ -85,3 +85,43 @@ def test_deleting_a_thread_deletes_its_copies_from_before():
     assert threads.load_before("chat-1", ref) is None
     threads.save_before("orphan", "before")                              # copies without a thread
     assert threads.delete_thread("orphan") is True
+
+
+# --- save, load, list ------------------------------------------------------------------------
+
+def test_copilot_thread_round_trip_requires_a_source():
+    with pytest.raises(threads.ThreadError, match="source id"):
+        threads.save_copilot(
+            "chat-1", "Question", [], source_id="", source_path="Note.md",
+            reasoning_mode="quick")
+    summary = threads.save_copilot(
+        "chat-1", "Gradient descent", [{"role": "you", "text": "Explain it"}],
+        source_id="source-1", source_path="Notes/school/cs-201/lesson.md",
+        reasoning_mode="deep",
+    )
+    assert summary.source_id == "source-1"
+    assert summary.reasoning_mode == "deep"
+    loaded = threads.load("chat-1")
+    assert loaded["source_path"] == "Notes/school/cs-201/lesson.md"
+
+
+@pytest.mark.parametrize("mode", ["slow", "auto"])
+def test_copilot_thread_rejects_unknown_modes(mode):
+    """`auto` is among them since 2026-09-03 — a saved thread may only name a depth they can
+    actually pick."""
+    with pytest.raises(threads.ThreadError, match="reasoning mode"):
+        threads.save_copilot(
+            "chat-1", "Question", [], source_id="source-1", source_path="Note.md",
+            reasoning_mode=mode)
+
+
+def test_copilot_threads_are_listed_with_their_source():
+    threads.save_copilot(
+        "first", "First", [], source_id="source-1", source_path="Notes/one.md",
+        reasoning_mode="quick")
+    threads.save_copilot(
+        "second", "Second", [], source_id="source-2", source_path="Notes/two.md",
+        reasoning_mode="deep")
+    got = threads.list_copilot_threads()
+    assert {item.id for item in got} == {"first", "second"}
+    assert all(item.source_id for item in got)

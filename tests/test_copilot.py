@@ -1,11 +1,11 @@
-"""Open-note copilot: one sidebar turn — its threads, the Ask path's messages and window, the sources
+"""Open-note copilot: one sidebar turn — the Ask path's messages and window, the sources
 call, traces, and the open note's images."""
 
 from pathlib import Path
 
 import pytest
 
-from slim import chat, copilot, copilot_context, db, threads
+from slim import chat, copilot, copilot_context, db
 
 
 @pytest.fixture
@@ -29,44 +29,6 @@ def write(root: Path, path: str, body: str) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(f"---\ntitle: {target.stem}\n---\n\n{body}\n", encoding="utf-8")
     return target
-
-
-def test_copilot_thread_round_trip_requires_a_source():
-    with pytest.raises(threads.ThreadError, match="source id"):
-        threads.save_copilot(
-            "chat-1", "Question", [], source_id="", source_path="Note.md",
-            reasoning_mode="quick")
-    summary = threads.save_copilot(
-        "chat-1", "Gradient descent", [{"role": "you", "text": "Explain it"}],
-        source_id="source-1", source_path="Notes/school/cs-201/lesson.md",
-        reasoning_mode="deep",
-    )
-    assert summary.source_id == "source-1"
-    assert summary.reasoning_mode == "deep"
-    loaded = threads.load("chat-1")
-    assert loaded["source_path"] == "Notes/school/cs-201/lesson.md"
-
-
-@pytest.mark.parametrize("mode", ["slow", "auto"])
-def test_copilot_thread_rejects_unknown_modes(mode):
-    """`auto` is among them since 2026-09-03 — a saved thread may only name a depth they can
-    actually pick."""
-    with pytest.raises(threads.ThreadError, match="reasoning mode"):
-        threads.save_copilot(
-            "chat-1", "Question", [], source_id="source-1", source_path="Note.md",
-            reasoning_mode=mode)
-
-
-def test_copilot_threads_are_listed_with_their_source():
-    threads.save_copilot(
-        "first", "First", [], source_id="source-1", source_path="Notes/one.md",
-        reasoning_mode="quick")
-    threads.save_copilot(
-        "second", "Second", [], source_id="source-2", source_path="Notes/two.md",
-        reasoning_mode="deep")
-    got = threads.list_copilot_threads()
-    assert {item.id for item in got} == {"first", "second"}
-    assert all(item.source_id for item in got)
 
 
 def test_quick_and_deep_use_the_same_resident_with_distinct_thinking(monkeypatch):
