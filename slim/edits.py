@@ -513,6 +513,22 @@ class Note:
         if self.tail_locked and pos == len(self.blocks):
             raise ToolError("nothing can go after the transcript; put it before the transcript", "locked")
 
+    def below_properties(self, pos: int) -> tuple[int, str]:
+        """New text never goes above a note's properties (its frontmatter) or inside them: Obsidian
+        reads them only at the very top. A place there is right after them instead, with what the
+        result says of it. (A recording's are its own: `check_insert` refuses that place first.)"""
+        text = self.text()
+        _fm, skip = parse_frontmatter(text)
+        if not skip:
+            return pos, ""
+        end, top, at = _line_starts(text)[skip], 0, 0
+        while top < len(self.blocks) and at < end:
+            at += len(self.blocks[top].text)
+            top += 1
+        if pos >= top:
+            return pos, ""
+        return top, f"; placed after {self.blocks[top - 1].handle} (the end of the note's properties, which stay at its top)"
+
     def cut(self, pos: int, level: int, blocks: list[Block] | None = None) -> tuple[str, int, str] | None:
         """Text holding a heading of `level` may not land inside a section of that level or lower
         rank: the rest of the section would end up under the new heading. Every enclosing
@@ -845,12 +861,36 @@ def _renames(note: Note, i: int, j: int, markdown: str) -> bool:
             and len(one) == 1 and one[0][0] == "heading")
 
 
+def lands(note: Note, tool: str, args: dict, markdown: str,
+          only: set[str] | None = None) -> tuple[int, int, str, str, bool]:
+    """Where a replace or an insert puts `markdown` (as the model wrote it, labels stripped): for
+    the tool, and for its draft while the text is still coming (`copilot._Drafts`). The blocks
+    i..j it changes, i == j where an insert goes in; its target or anchor as named back; what the
+    result adds about the place; and whether a replace renames: a whole section replaced by one
+    heading line changes that heading alone, block i, and the section's text stays. Raises
+    ToolError for a place the text may not go."""
+    if tool == "insert":
+        anchor, after = _where(note, args)
+        i, j = note.span(anchor)
+        note.check_insert(j if after else i)
+        pos, said = note.below_properties(j if after else i)
+        cut = note.cut(pos, heading_level(fold(markdown)[0]))
+        if cut and not after:
+            raise cut_refused(cut)
+        if cut:                         # after a heading or inside a section: after that whole section instead
+            pos, said = cut[1], placed(cut)
+            note.check_insert(pos)
+        return pos, pos, anchor, said, False
+    i, j, target, trimmed = note.pick(_handle(note, args, "target"), only)
+    old = "".join(b.text for b in note.blocks[i:j])
+    return i, j, target, trimmed, _renames(note, i, j, fold(markdown, old)[0])
+
+
 def _replace(note: Note, args: dict, ctx: dict):
     markdown = strip_labels(_text(args, "markdown"))
-    i, j, target, trimmed = note.pick(_handle(note, args, "target"), ctx["only"])
+    i, j, target, trimmed, renames = lands(note, "replace", args, markdown, ctx["only"])
     old = "".join(b.text for b in note.blocks[i:j])
     raw, (markdown, folded) = markdown, fold(markdown, old)
-    renames = _renames(note, i, j, markdown)
     ctx["targets"] = note.changed(i, i + 1 if renames else j, markdown)
     _own(note, ctx["targets"], target, ctx)
     _written(raw, old, markdown)
@@ -908,16 +948,10 @@ def _insert(note: Note, args: dict, ctx: dict):
     raw, (markdown, folded) = markdown, fold(markdown)
     anchor, after = _where(note, args)
     i, j = note.span(anchor)
-    pos = j if after else i
+    where = "after" if after else "before"
     _written(raw, "", markdown)
-    _copied(note, markdown, range(0), f"{'after' if after else 'before'} {anchor}")
-    note.check_insert(pos)
-    cut, said, where = note.cut(pos, heading_level(markdown)), "", "after" if after else "before"
-    if cut and not after:
-        raise cut_refused(cut)
-    if cut:                             # after a heading or inside a section: after that whole section instead
-        pos, said = cut[1], placed(cut)
-        note.check_insert(pos)
+    _copied(note, markdown, range(0), f"{where} {anchor}")
+    pos, _, _, said, _ = lands(note, "insert", args, raw)
     needs = note.owners(i, j)
     new = note.insert(pos, markdown, ctx["id"])
     made = " ".join(b.handle for b in new if b.kind != "blank")
@@ -936,8 +970,11 @@ def _move(note: Note, args: dict, ctx: dict):
     if pos in (i, j):
         raise ToolError(f"{target} is already there", "place")
     note.check_insert(pos)
+    pos, said = note.below_properties(pos)
+    if said and pos in (i, j):
+        raise ToolError(f"{target} is already right after the note's properties, which stay at its top", "place")
     level = min((b.level for b in note.blocks[i:j] if b.level), default=0)
-    cut, said = note.cut(pos - (j - i) if pos > i else pos, level, note.blocks[:i] + note.blocks[j:]), ""
+    cut = note.cut(pos - (j - i) if pos > i else pos, level, note.blocks[:i] + note.blocks[j:])
     if cut and not after:
         raise cut_refused(cut)
     if cut:                             # after the whole section it would cut, counted without the moved blocks

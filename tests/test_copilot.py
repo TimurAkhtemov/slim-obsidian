@@ -1645,8 +1645,37 @@ def test_a_draft_goes_where_its_change_will_land_as_its_text_decides_it(turn, mo
     # The heading would cut s3 after its heading: the draft moves to after the whole section, as the
     # insert does. A rename dims only the heading it renames.
     assert ("d1.0", NOTE.index("Text a."), NOTE.index("Text a.")) in starts
-    assert starts[-2][0] == "d1.0" and starts[-2][1:] == (NOTE.index("## B"), NOTE.index("## B"))
+    assert [s for s in starts if s[0] == "d1.0"][-1][1:] == (NOTE.index("## B"), NOTE.index("## B"))
     assert starts[-1] == ("d1.1", NOTE.index("## B"), NOTE.index("Text b."))
+
+
+def test_a_section_deleted_or_rewritten_is_dimmed_whole_while_its_text_streams(turn, monkeypatch):
+    # Empty text deletes the section, and a heading line still being written starts its new text:
+    # only a whole text of one heading line is a rename.
+    streamed(monkeypatch, ("", [("replace", {"target": "s7", "markdown": ""}),
+                                ("replace", {"target": "s3", "markdown": "## A\n\nNew a."})]))
+    _got, events = turn("drop B and rewrite A")
+    starts = {(p["id"], p["from"], p["to"]) for e, p in events if e == "draft"}
+    assert starts == {("d1.0", NOTE.index("## B"), len(NOTE)), ("d1.1", NOTE.index("## A"), NOTE.index("## B"))}
+
+
+def test_a_draft_reads_its_text_as_its_tool_does(turn, monkeypatch):
+    # A copied label is stripped, and a new <details> is a callout, before the text decides the
+    # place: the labelled heading moves the draft past s3, as it moves the insert; the folded one does not.
+    streamed(monkeypatch, ("", [("insert", {"after": "b4", "markdown": "[b9] ## A2\n\nNew."}),
+                                ("insert", {"after": "b3", "markdown": "<details><summary>More</summary>\n\n"
+                                                                      "## Inside\n\nx\n</details>"})]))
+    _got, events = turn("add two")
+    last = {p["id"]: (p["from"], p["to"]) for e, p in events if e == "draft"}
+    assert last == {"d1.0": (NOTE.index("## B"),) * 2, "d1.1": (NOTE.index("Text a."),) * 2}
+
+
+def test_a_draft_put_before_a_notes_properties_shows_after_them(turn, monkeypatch):
+    text = "---\ntags: [a]\n---\n\n# Title\n\nIntro.\n"
+    streamed(monkeypatch, ("", [("insert", {"before": "b1", "markdown": "TL;DR."})]))
+    got, events = turn("add a summary at the top", text=text)
+    assert {(p["from"], p["to"]) for e, p in events if e == "draft"} == {(text.index("# Title"),) * 2}
+    assert got["final"] == text.replace("# Title", "TL;DR.\n\n# Title")
 
 
 def test_a_draft_end_that_cannot_be_sent_is_counted_and_the_run_goes_on(con, vault, monkeypatch):

@@ -338,6 +338,26 @@ def test_a_recordings_parts_are_refused_and_new_text_goes_after_the_meeting_bloc
     assert take(before) == take(note.text()) and note.text().endswith("## Takeaways\n\n- one\n")
 
 
+PROPS = "---\ntags: [study]\n---\n\n# Title\n\nBody.\n"
+
+
+def test_new_text_put_above_or_inside_a_notes_properties_goes_right_after_them():
+    # Obsidian reads a note's properties only at its very top.
+    note = Note(PROPS)
+    _, said = apply(note, "insert", {"before": "b1", "markdown": "TL;DR."}, change_id="c1", step=1)
+    assert note.text() == PROPS.replace("# Title", "TL;DR.\n\n# Title")
+    assert said.startswith("inserted b4 before b1; placed after b1 (the end of the note's properties")
+    listed = "---\ntags:\n  - a\n  - b\n---\n\n# Title\n"            # a property list is blocks of its own
+    note = Note(listed)
+    apply(note, "insert", {"after": "b2", "markdown": "TL;DR."}, change_id="c1", step=1)
+    assert note.text() == listed.replace("# Title", "TL;DR.\n\n# Title")
+    note = Note(PROPS)
+    _, said = apply(note, "move", {"target": "b3", "before": "b1"}, change_id="c1", step=1)
+    assert note.text() == "---\ntags: [study]\n---\n\nBody.\n\n# Title\n\n" and "end of the note's properties" in said
+    with pytest.raises(ToolError, match="already right after the note's properties"):
+        apply(Note(PROPS), "move", {"target": "b2", "before": "b1"}, change_id="c1", step=1)
+
+
 def test_the_table_gives_ollama_function_schemas():
     [tool] = ollama_tools(["replace"])
     assert tool["type"] == "function" and tool["function"]["name"] == "replace"

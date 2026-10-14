@@ -827,9 +827,9 @@ class _Drafts:
     """An insert's or replace's text in the note while the model writes it: a draft at the place
     the call names, from the moment that place is known, with what was written before it. Code
     only places it, in UTF-16 units of the run's draft as a change's splices are, where the tool
-    will put the change (`_where`); it is never the note's text. The change that lands names the
-    draft it replaces; a call refused or never applied ends its draft, and one that turns into
-    text ends it at once."""
+    will put the change (`edits.lands`, which the tool calls too); it is never the note's text. The
+    change that lands names the draft it replaces; a call refused or never applied ends its draft,
+    and one that turns into text ends it at once."""
     PLACES = {"insert": ("after", "before"), "replace": ("target",)}
 
     def __init__(self, note: edits_mod.Note, only: set[str] | None, on_edit):
@@ -869,40 +869,33 @@ class _Drafts:
             call["text"], call["line"] = [], True   # given again, the last one is the call's: it starts over
             self._show(index, call)
         elif kind == "text" and name == "markdown":
-            # A heading can move an insert past a section, and a lone heading is a rename: the
-            # text decides the place, so it is placed again as each line starts and ends.
+            # A heading can move an insert past a section: the text decides the place, so it is
+            # placed again as each line starts and ends.
             placed = call["line"] or "\n" in value
             call["text"].append(value)
-            call["line"] = value.endswith("\n")
+            call["line"], call["whole"] = value.endswith("\n"), False
             if call["id"] and placed and self._where(call) != call["at"]:
                 self._show(index, call)
             elif call["id"]:
                 self.on_edit("draft_text", {"id": call["id"], "text": value})
-        elif kind == "value" and name == "markdown" and call["id"] and self._where(call) != call["at"]:
-            self._show(index, call)
+        elif kind == "value" and name == "markdown":
+            call["whole"] = True
+            if call["id"] and self._where(call) != call["at"]:
+                self._show(index, call)
 
     def _where(self, call: dict) -> tuple[int, int] | None:
-        """Where the call's change will go, as its tool will place it with the text so far."""
+        """Where the call's change will go: where its tool puts it with the text so far
+        (`edits.lands`). A rename dims its heading alone only once its text is whole: one heading
+        line still being written is as likely the start of a section's new text."""
+        if call["place"] is None:
+            return None
         name, value = call["place"]
-        note, text = self.note, "".join(call["text"])
         try:
-            if not isinstance(value, str) or not value.strip():
-                return None
-            if call["tool"] == "insert":
-                i, j = note.span(note.name(value))
-                pos = j if name == "after" else i
-                note.check_insert(pos)
-                cut = note.cut(pos, edits_mod.heading_level(text))
-                if cut and name == "after":     # (before, a cut is refused: it stays where it was asked)
-                    pos = cut[1]
-                return note.offset(pos), note.offset(pos)
-            i, j, _target, _said = note.pick(note.name(value), self.only)
-            lone = not text.strip() or ("\n" not in text.strip() and text.lstrip().startswith("#"))
-            if lone and j - i > 1 and note.blocks[i].level:     # a rename keeps the section's text
-                j = i + 1
-            return note.offset(i), note.offset(j)
+            i, j, _name, _said, renames = edits_mod.lands(self.note, call["tool"], {name: value},
+                                                          edits_mod.strip_labels("".join(call["text"])), self.only)
         except edits_mod.ToolError:
             return None                     # no such place: the call will say so when applied
+        return self.note.offset(i), self.note.offset(i + 1 if renames and call.get("whole") else j)
 
     def _show(self, index: int, call: dict) -> None:
         at = self._where(call)
