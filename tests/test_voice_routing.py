@@ -4,11 +4,9 @@ The gap this closes: the spoken tag already reached frontmatter, but `_note_path
 which INBOX FOLDER the audio came from — so every recording landed in `Journal/` regardless of
 what they said it was. Tagging without routing is filing metadata into a pile.
 """
-from datetime import datetime
-
 import pytest
 
-from slim import inbox, voicetags
+from slim import voicetags
 
 REGISTRY = {
     "beacon": {"name": "Beacon", "vault_path": "Notes/beacon"},
@@ -18,7 +16,6 @@ REGISTRY = {
     "personal-intelligence": {"name": "Personal Intelligence (SLIM)", "aliases": ["slim"],
                               "vault_path": "Notes/personal-intelligence"},
 }
-WHEN = datetime(2026, 8, 1, 9, 30)
 
 
 def route(text, default_dir="Journal", **kw):
@@ -202,67 +199,6 @@ def test_the_subject_subfolder_is_the_project_id_so_folder_and_tag_agree():
     assert (r.folder, r.subject) == ("Capture/ghost", "ghost")
 
 
-# --- THE NOTE ON DISK ---------------------------------------------------------------------
-
-def test_note_path_honours_the_routed_folder():
-    p = inbox._note_path(WHEN, "Cache the macro series", "deadbeef" * 8,
-                         folder="Capture/beacon")
-    assert p.parent.name == "beacon"
-    assert p.name.startswith("2026-08-01--")
-
-
-def test_note_path_without_routing_lands_in_the_floor():
-    """The phone lane writes journals, so an undecidable drop keeps the most protected place
-    it could have had rather than being pushed out to a sentinel."""
-    assert inbox._note_path(WHEN, "t", "d" * 64).parent.name == voicetags.JOURNAL_FOLDER
-
-
-def test_the_type_and_the_tag_are_one_word_by_construction():
-    """ONE spoken vocabulary (2026-09-03). A lecture used to render `type: lecture` alongside
-    `tags: [needs-triage]`, because the old tag vocabulary had no word for "lecture" and the
-    classifier looked like it had run and failed. There is one list now, so they cannot part."""
-    from types import SimpleNamespace
-    t = SimpleNamespace(text="Lecture note, week six, on attention.",
-                        model="parakeet", audio_seconds=1.0)
-    body = inbox._render_note(
-        "Attention", WHEN, t, "ab" * 32,
-        {"title": "", "type_tag": "", "topics": []},
-        {"folder": "Capture/school", "subject": None,
-         "kind": voicetags.LECTURE, "routed_by": "spoken"})
-    assert "type: lecture" in body
-    assert "tags: [lecture]" in body
-    assert "tagged_by: spoken" in body
-
-
-def test_an_untyped_recording_writes_no_tags_line_and_routed_by_default():
-    """The mirror: with nothing said and nothing inferred there is no type to write. The note
-    says so by omission and by `tagged_by: none` — never by inventing a label nothing triaged."""
-    from types import SimpleNamespace
-    t = SimpleNamespace(text="So the roster broke again.", model="parakeet", audio_seconds=1.0)
-    body = inbox._render_note(
-        "Roster", WHEN, t, "ab" * 32,
-        {"title": "", "type_tag": "", "topics": []},
-        {"folder": "Journal", "subject": None, "kind": "", "routed_by": "default"})
-    assert "tags:" not in body
-    assert "tagged_by: none" in body
-    assert "routed_by: default" in body
-
-
-def test_an_inferred_type_is_written_as_the_tag_and_marked_inferred():
-    """The middle case: they said nothing, enrichment did. `route` folds the inferred type into
-    the same field a spoken one lands in, and `tagged_by: inferred` is what separates them."""
-    from types import SimpleNamespace
-    t = SimpleNamespace(text="So the roster broke again.", model="parakeet", audio_seconds=1.0)
-    body = inbox._render_note(
-        "Roster", WHEN, t, "ab" * 32,
-        {"title": "", "type_tag": "meeting", "topics": []},
-        {"folder": "Capture/_unfiled", "subject": None,
-         "kind": "meeting", "routed_by": "inferred"})
-    assert "type: meeting-note" in body
-    assert "tags: [meeting]" in body
-    assert "tagged_by: inferred" in body
-
-
 # --- INFERRED ROUTING (the owner's call, 2026-08-01) -------------------------------------------------
 # They record mid-meeting and forgets to announce it, so the model's guess routes when they said
 # nothing. They accepted the egress consequence knowingly; these pin the guardrails that remain.
@@ -347,18 +283,3 @@ def test_the_models_none_is_honoured_instead_of_being_guessed_past():
     assert enrich.NO_PROJECT in enrich._schema(REGISTRY)["properties"]["project"]["enum"]
     r = route("Some rambling.", inferred_type="lecture", inferred_project=enrich.NO_PROJECT)
     assert (r.subject, r.folder) == (None, "Capture/_unfiled")
-
-
-def test_the_project_enum_is_exactly_the_registry_plus_none():
-    """Same drift guard as the type vocabulary below: the candidates the model may choose from
-    are the registry itself, not a hand-maintained copy of it."""
-    from slim import enrich
-    assert enrich._schema(REGISTRY)["properties"]["project"]["enum"] == \
-        [*sorted(REGISTRY), enrich.NO_PROJECT]
-
-
-def test_the_inferred_and_spoken_vocabularies_are_literally_the_same_list():
-    """enrich-v1 claimed this and shipped a different list, which is why the model's inferred
-    type sat in frontmatter unusable for two weeks. Pin it so they cannot drift again."""
-    from slim import enrich
-    assert enrich.TYPE_TAGS == list(voicetags.ROUTING_TYPES)

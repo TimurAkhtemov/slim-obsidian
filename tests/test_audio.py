@@ -17,7 +17,7 @@ import pytest
 
 from slim import audio
 
-pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
+needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
                                 reason="ffmpeg/ffprobe not installed")
 
 
@@ -44,17 +44,20 @@ def _seekable_webm(path: Path, seconds: int = 3) -> Path:
     return path
 
 
+@needs_ffmpeg
 def test_the_fixture_really_reproduces_the_bug(tmp_path):
     """If this ever stops being N/A the other tests below prove nothing."""
     assert _probe(_streamed_webm(tmp_path / "s.webm")) == "N/A"
 
 
+@needs_ffmpeg
 def test_audio_seconds_survives_a_container_with_no_duration(tmp_path):
     """The crash was here: float('N/A'). It killed the whole pass over a perfectly good file."""
     got = audio.audio_seconds(_streamed_webm(tmp_path / "s.webm", seconds=3))
     assert 2.5 < got < 3.6
 
 
+@needs_ffmpeg
 def test_a_corrupt_file_fails_with_ffprobe_s_reason_not_a_subprocess_repr(tmp_path):
     """Measured 2026-08-23: the plugin's error screen printed a CalledProcessError repr — the
     full ffprobe argv and the absolute vault path — where ffprobe's own one line would do."""
@@ -69,6 +72,7 @@ def test_a_corrupt_file_fails_with_ffprobe_s_reason_not_a_subprocess_repr(tmp_pa
     assert str(tmp_path) not in msg                    # the name, not the whole path
 
 
+@needs_ffmpeg
 def test_normalize_container_makes_the_file_seekable(tmp_path):
     """Fixes the cause rather than working around it — and fixes it for Obsidian's audio
     player too, not just for ASR."""
@@ -78,6 +82,7 @@ def test_normalize_container_makes_the_file_seekable(tmp_path):
     assert 2.5 < float(_probe(p)) < 3.6
 
 
+@needs_ffmpeg
 def test_normalize_container_is_lossless(tmp_path):
     """A REMUX, not a re-encode. Measured on the real meeting: 0.12 s versus 15 s and a
     generation loss for transcoding to AAC."""
@@ -87,6 +92,7 @@ def test_normalize_container_is_lossless(tmp_path):
     assert p.stat().st_size == pytest.approx(before, rel=0.1)
 
 
+@needs_ffmpeg
 def test_a_seekable_file_is_left_completely_alone(tmp_path):
     """Voice Memos m4a and every already-good file must not be rewritten on every ingest."""
     p = _seekable_webm(tmp_path / "ok.webm", seconds=3)
@@ -95,6 +101,7 @@ def test_a_seekable_file_is_left_completely_alone(tmp_path):
     assert p.read_bytes() == before
 
 
+@needs_ffmpeg
 def test_a_missing_file_is_not_an_error(tmp_path):
     """Called on the ingest path, where the caller already reports a missing file properly."""
     audio.normalize_container(tmp_path / "gone.webm")

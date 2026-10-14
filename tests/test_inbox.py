@@ -7,11 +7,12 @@ ASR itself is stubbed: these pin the PIPELINE's contract, not parakeet's accurac
 M8's bake-off, and it needs 3.6 hours of audio).
 """
 import json
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
-from slim import audio, inbox as inbox_mod
+from slim import audio, inbox as inbox_mod, voicetags
 from slim import transcribe as tx
 
 
@@ -36,6 +37,9 @@ def vault(tmp_path, monkeypatch):
     monkeypatch.setattr(inbox_mod, "recorded_at",
                         lambda p: __import__("datetime").datetime(2026, 7, 14, 9, 30).astimezone())
     return v
+
+
+WHEN = datetime(2026, 8, 1, 9, 30)
 
 
 def drop(vault: Path, name: str, content: bytes = b"fake audio") -> Path:
@@ -195,3 +199,64 @@ def test_swept_hash_suffix_is_stripped_from_the_note_title(vault):
     assert 'title: "morning-thoughts"' in r.note.read_text()
     assert "a1b2c3d4--" not in r.note.name, \
         "the sweep suffix must not survive into the note filename ahead of the digest"
+
+
+# --- THE NOTE ON DISK ---------------------------------------------------------------------
+
+def test_note_path_honours_the_routed_folder():
+    p = inbox_mod._note_path(WHEN, "Cache the macro series", "deadbeef" * 8,
+                         folder="Capture/beacon")
+    assert p.parent.name == "beacon"
+    assert p.name.startswith("2026-08-01--")
+
+
+def test_note_path_without_routing_lands_in_the_floor():
+    """The phone lane writes journals, so an undecidable drop keeps the most protected place
+    it could have had rather than being pushed out to a sentinel."""
+    assert inbox_mod._note_path(WHEN, "t", "d" * 64).parent.name == voicetags.JOURNAL_FOLDER
+
+
+def test_the_type_and_the_tag_are_one_word_by_construction():
+    """ONE spoken vocabulary (2026-09-03). A lecture used to render `type: lecture` alongside
+    `tags: [needs-triage]`, because the old tag vocabulary had no word for "lecture" and the
+    classifier looked like it had run and failed. There is one list now, so they cannot part."""
+    from types import SimpleNamespace
+    t = SimpleNamespace(text="Lecture note, week six, on attention.",
+                        model="parakeet", audio_seconds=1.0)
+    body = inbox_mod._render_note(
+        "Attention", WHEN, t, "ab" * 32,
+        {"title": "", "type_tag": "", "topics": []},
+        {"folder": "Capture/school", "subject": None,
+         "kind": voicetags.LECTURE, "routed_by": "spoken"})
+    assert "type: lecture" in body
+    assert "tags: [lecture]" in body
+    assert "tagged_by: spoken" in body
+
+
+def test_an_untyped_recording_writes_no_tags_line_and_routed_by_default():
+    """The mirror: with nothing said and nothing inferred there is no type to write. The note
+    says so by omission and by `tagged_by: none` — never by inventing a label nothing triaged."""
+    from types import SimpleNamespace
+    t = SimpleNamespace(text="So the roster broke again.", model="parakeet", audio_seconds=1.0)
+    body = inbox_mod._render_note(
+        "Roster", WHEN, t, "ab" * 32,
+        {"title": "", "type_tag": "", "topics": []},
+        {"folder": "Journal", "subject": None, "kind": "", "routed_by": "default"})
+    assert "tags:" not in body
+    assert "tagged_by: none" in body
+    assert "routed_by: default" in body
+
+
+def test_an_inferred_type_is_written_as_the_tag_and_marked_inferred():
+    """The middle case: they said nothing, enrichment did. `route` folds the inferred type into
+    the same field a spoken one lands in, and `tagged_by: inferred` is what separates them."""
+    from types import SimpleNamespace
+    t = SimpleNamespace(text="So the roster broke again.", model="parakeet", audio_seconds=1.0)
+    body = inbox_mod._render_note(
+        "Roster", WHEN, t, "ab" * 32,
+        {"title": "", "type_tag": "meeting", "topics": []},
+        {"folder": "Capture/_unfiled", "subject": None,
+         "kind": "meeting", "routed_by": "inferred"})
+    assert "type: meeting-note" in body
+    assert "tags: [meeting]" in body
+    assert "tagged_by: inferred" in body
