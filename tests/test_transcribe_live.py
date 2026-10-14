@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from slim import transcribe
+from slim import audio, transcribe
 
 
 @pytest.fixture(autouse=True)
@@ -88,7 +88,7 @@ def test_real_live_wrapper_keeps_mlx_stream_on_one_worker_thread(monkeypatch):
             thread_ids.append(("exit", threading.get_ident()))
 
     fake_stream = FakeStream()
-    monkeypatch.setattr(transcribe, "ensure_ffmpeg_on_path", lambda: None)
+    monkeypatch.setattr(audio, "ensure_ffmpeg_on_path", lambda: None)
     fake_mx = SimpleNamespace(array=lambda value: value)
     monkeypatch.setitem(sys.modules, "mlx", SimpleNamespace(core=fake_mx))
     monkeypatch.setitem(sys.modules, "mlx.core", fake_mx)
@@ -140,8 +140,8 @@ def test_final_parakeet_pass_does_not_wait_for_the_live_stream(monkeypatch):
             batch_called.set()
             return SimpleNamespace(text="final words")
 
-    monkeypatch.setattr(transcribe, "ensure_ffmpeg_on_path", lambda: None)
-    monkeypatch.setattr(transcribe, "audio_seconds", lambda _path: 1.0)
+    monkeypatch.setattr(audio, "ensure_ffmpeg_on_path", lambda: None)
+    monkeypatch.setattr(audio, "audio_seconds", lambda _path: 1.0)
     fake_mx = SimpleNamespace(array=lambda value: value)
     monkeypatch.setitem(sys.modules, "mlx", SimpleNamespace(core=fake_mx))
     monkeypatch.setitem(sys.modules, "mlx.core", fake_mx)

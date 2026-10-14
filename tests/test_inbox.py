@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from slim import inbox as inbox_mod
+from slim import audio, inbox as inbox_mod
 from slim import transcribe as tx
 
 
@@ -24,12 +24,12 @@ def vault(tmp_path, monkeypatch):
 
     monkeypatch.setattr(inbox_mod, "VAULT", v)
     monkeypatch.setattr(inbox_mod, "INBOX", {"journal": v / "Inbox" / "Journal"})
-    monkeypatch.setattr(inbox_mod, "AUDIO_ARCHIVE", v / "Attachments" / "Recordings")
+    monkeypatch.setattr(audio, "AUDIO_ARCHIVE", v / "Attachments" / "Recordings")
     monkeypatch.setattr(inbox_mod, "TMP_AUDIO_DIR", data / "audio" / "tmp")
     monkeypatch.setattr(inbox_mod, "MANIFEST", data / "audio" / "manifest.json")
 
     # Stub the ASR and the ffmpeg hop: this is a pipeline test.
-    monkeypatch.setattr(inbox_mod.tx, "to_wav16k", lambda src, dst: src)
+    monkeypatch.setattr(audio, "to_wav16k", lambda src, dst: src)
     monkeypatch.setattr(inbox_mod.tx, "transcribe", lambda p, model=None: tx.Transcript(
         text="So we agreed Priya would send the roster by Friday.",
         model=model or tx.MODEL, audio_seconds=600.0, wall_seconds=10.0))
@@ -107,7 +107,7 @@ def test_raw_audio_is_preserved_in_the_synced_vault(vault):
     inbox_mod.process()
 
     assert not a.exists(), "processed audio should leave the active Inbox"
-    archived = list(inbox_mod.AUDIO_ARCHIVE.glob("*.m4a"))
+    archived = list(audio.AUDIO_ARCHIVE.glob("*.m4a"))
     assert len(archived) == 1
     assert archived[0].read_bytes() == b"precious recording"   # byte-identical, never rewritten
     assert archived[0].is_relative_to(vault)
@@ -115,8 +115,8 @@ def test_raw_audio_is_preserved_in_the_synced_vault(vault):
 
 def test_corrupt_existing_archive_never_deletes_the_source(vault):
     a = drop(vault, "sync.m4a", b"precious recording")
-    digest = inbox_mod._sha256(a)
-    archived = inbox_mod.AUDIO_ARCHIVE / f"{digest}.m4a"
+    digest = audio.sha256(a)
+    archived = audio.AUDIO_ARCHIVE / f"{digest}.m4a"
     archived.parent.mkdir(parents=True)
     archived.write_bytes(b"corrupt")
 

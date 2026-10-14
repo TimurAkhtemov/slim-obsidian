@@ -5,58 +5,14 @@ The model is an unselected default — see experiment M8-transcription in the va
 """
 from __future__ import annotations
 
-import os
 import queue
-import re
-import shutil
-import subprocess
 import threading
 import time
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-# Where ffmpeg installs itself when PATH cannot be trusted. Homebrew on Apple silicon
-# first, Intel second; anything else has to be on PATH.
-FF_PREFIXES = ("/opt/homebrew/bin", "/usr/local/bin")
-
-
-@lru_cache(maxsize=None)
-def ffbin(name: str) -> str:
-    """Absolute path to an ffmpeg-family binary.
-
-    ⚠ **PATH IS NOT THE SAME FOR EVERY LANE, and that is what broke this.** Obsidian is
-    launched from the Dock, so the `slim chat` it spawns inherits launchd's minimal PATH, with
-    no `/opt/homebrew/bin` on it: `ffprobe` was not found and a real recording died at the
-    first line of `transcribe()` with `[Errno 2]` (2026-08-06). From a terminal the same code
-    works. Behavior differs by WHO STARTED THE PROCESS, and nothing in the code says so.
-    Resolving the absolute path here fixes every lane at once.
-    """
-    found = shutil.which(name)
-    if found:
-        return found
-    for prefix in FF_PREFIXES:
-        candidate = Path(prefix) / name
-        if candidate.exists():
-            return str(candidate)
-    raise FileNotFoundError(
-        f"{name} not found on PATH or in {', '.join(FF_PREFIXES)}. Install it with "
-        f"`brew install ffmpeg`. (If it IS installed, the process that started this server "
-        f"has a minimal PATH — that is what this lookup exists to survive.)")
-
-
-def ensure_ffmpeg_on_path() -> None:
-    """Put ffmpeg's directory on PATH, for code that does its OWN lookup.
-
-    ⚠ Resolving our own calls is not enough: `parakeet_mlx.audio.load_audio` runs
-    `shutil.which("ffmpeg")` itself, so the ENVIRONMENT has to be right, not just our argv
-    (2026-08-22).
-    """
-    directory = str(Path(ffbin("ffmpeg")).parent)
-    parts = os.environ.get("PATH", "").split(os.pathsep)
-    if directory not in parts:
-        os.environ["PATH"] = os.pathsep.join([directory, *parts])
-
+from . import audio
 
 # UNSELECTED default — see the module docstring. The only lane that varies is live vs batch.
 MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
@@ -67,10 +23,6 @@ MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
 # to be TOLD. This is not a tuning knob — it is the difference between working and crashing.
 CHUNK_SECONDS = 120.0
 OVERLAP_SECONDS = 15.0  # parakeet-mlx's own default
-
-AUDIO_SUFFIXES = {".m4a", ".mp3", ".wav", ".aac", ".mp4", ".mov",
-                  ".caf", ".flac", ".opus", ".webm", ".ogg"}
-
 
 @dataclass
 class Transcript:
@@ -90,85 +42,6 @@ class Transcript:
     @property
     def words(self) -> int:
         return len(self.text.split())
-
-
-def audio_seconds(path: Path) -> float:
-    """Duration in seconds.
-
-    ⚠ A container written incrementally by a recorder has NO duration in its header —
-    `MediaRecorder` streams webm and never finalizes it, so ffprobe answers `N/A`. That was
-    EVERY recording the plugin made, and `float("N/A")` raised from the first line of
-    `transcribe()`. `normalize_container` fixes the cause; this fallback exists because a crash
-    here kills a whole pass over a file that is fine.
-    """
-    out = subprocess.run(
-        [ffbin("ffprobe"), "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=nw=1:nk=1", str(path)],
-        capture_output=True, text=True,
-    )
-    if out.returncode != 0:
-        # ffprobe's own last line ("Invalid data found when processing input"), not the
-        # CalledProcessError repr — that is the full argv plus the absolute vault path, and the
-        # plugin's error screen prints whatever arrives here verbatim (measured 2026-08-23).
-        lines = [l for l in out.stderr.strip().splitlines() if l.strip()]
-        reason = lines[-1] if lines else f"exit status {out.returncode}"
-        prefix = f"{path}: "
-        if reason.startswith(prefix):
-            reason = reason[len(prefix):]
-        raise ValueError(f"ffprobe could not read {path.name}: {reason}")
-    raw = out.stdout.strip()
-    try:
-        return float(raw)
-    except ValueError:
-        pass
-
-    decoded = subprocess.run([ffbin("ffmpeg"), "-i", str(path), "-f", "null", "-"],
-                             capture_output=True, text=True)
-    marks = re.findall(r"time=(\d+):(\d\d):(\d\d(?:\.\d+)?)", decoded.stderr)
-    if not marks:
-        raise ValueError(f"could not determine duration of {path.name}")
-    h, m, s = marks[-1]
-    return int(h) * 3600 + int(m) * 60 + float(s)
-
-
-def normalize_container(path: Path) -> Path:
-    """Rewrite a stream-written container so it carries a duration, in place. Returns `path`.
-
-    A REMUX, not a re-encode: `-c copy` rewrites the container while ffmpeg, having read the
-    whole stream, now knows its length. Measured on a 37-minute meeting — **0.12 s, lossless,
-    same size**. Worth doing even though `audio_seconds` no longer crashes without it: Obsidian's
-    own player cannot seek a file whose length it does not know.
-    """
-    if not path.exists():
-        return path
-    probe = subprocess.run(
-        [ffbin("ffprobe"), "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=nw=1:nk=1", str(path)],
-        capture_output=True, text=True)
-    if probe.stdout.strip() not in ("", "N/A"):
-        return path                                   # already seekable; nothing to do
-
-    fixed = path.with_name(f".{path.name}.remux{path.suffix}")
-    try:
-        subprocess.run([ffbin("ffmpeg"), "-y", "-loglevel", "error", "-i", str(path),
-                        "-c", "copy", str(fixed)], check=True)
-        fixed.replace(path)
-    except Exception:                                  # noqa: BLE001 - the original still works
-        fixed.unlink(missing_ok=True)
-    return path
-
-
-def to_wav16k(src: Path, dst: Path) -> Path:
-    """Any recording -> 16 kHz mono WAV. Voice Memos hands us m4a; a call recorder may hand
-    us stereo at 48 kHz. Every ASR wants 16 kHz mono, so normalize once, here, rather than
-    letting each runtime resample differently."""
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [ffbin("ffmpeg"), "-y", "-loglevel", "error", "-i", str(src),
-         "-ac", "1", "-ar", "16000", str(dst)],
-        check=True,
-    )
-    return dst
 
 
 # ONE INSTANCE PER LANE, and the lane is part of the cache key. A parakeet model object is
@@ -218,7 +91,7 @@ class LiveTranscriber:
     """
 
     def __init__(self, model: str | None = None):
-        ensure_ffmpeg_on_path()
+        audio.ensure_ffmpeg_on_path()
         self.model_name = model or MODEL
         self._commands: queue.Queue = queue.Queue()
         self._ready = threading.Event()
@@ -328,10 +201,10 @@ def live_stop(session_id: str) -> str:
 
 def transcribe(path: Path, model: str | None = None) -> Transcript:
     """Transcribe an audio file. Long-form safe: chunked, so an hour-long meeting works."""
-    ensure_ffmpeg_on_path()          # parakeet_mlx shells out to ffmpeg by bare name
+    audio.ensure_ffmpeg_on_path()    # parakeet_mlx shells out to ffmpeg by bare name
     model = model or MODEL
 
-    secs = audio_seconds(path)
+    secs = audio.audio_seconds(path)
     t0 = time.perf_counter()
     with _ASR_BATCH_LOCK:
         asr = _asr_model(model, "batch")

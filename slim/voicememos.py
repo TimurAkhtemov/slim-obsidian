@@ -24,8 +24,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import inbox, trace
-from . import transcribe as tx
+from . import audio, inbox, trace
 from .config import DATA_DIR
 
 # Apple's synced Voice Memos recordings folder. Overridable everywhere via `container=` so the
@@ -130,9 +129,10 @@ def _dest_path(journal_inbox: Path, source: Path, title: str, digest: str) -> Pa
 
 
 def _copy_out(source: Path, dest: Path, digest: str) -> None:
-    """Copy container bytes into the inbox with inbox's partial-then-verify-then-replace
-    pattern. Reads `source`; never writes to it. A partial copy is a dotfile that is unlinked
-    unless it verifies, so an interrupted sweep can never leave a truncated recording behind."""
+    """Copy container bytes into the inbox with `audio.archive_audio`'s
+    partial-then-verify-then-replace pattern. Reads `source`; never writes to it. A partial
+    copy is a dotfile that is unlinked unless it verifies, so an interrupted sweep can never
+    leave a truncated recording behind."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     partial = dest.with_name(f".{dest.name}.part")
     try:
@@ -140,7 +140,7 @@ def _copy_out(source: Path, dest: Path, digest: str) -> None:
             shutil.copyfileobj(src, dst, length=1 << 20)
             dst.flush()
             os.fsync(dst.fileno())
-        if inbox._sha256(partial) != digest:
+        if audio.sha256(partial) != digest:
             raise RuntimeError(f"voice-memo copy failed verification: {source}")
         partial.replace(dest)
     finally:
@@ -193,10 +193,10 @@ def sweep(container: Path = CONTAINER, dry_run: bool = False) -> list[SweepResul
     found = copied = skipped = 0
 
     for source in entries:
-        if source.suffix.lower() not in tx.AUDIO_SUFFIXES:
+        if source.suffix.lower() not in audio.AUDIO_SUFFIXES:
             continue
         found += 1
-        digest = inbox._sha256(source)
+        digest = audio.sha256(source)
         if digest in manifest:
             skipped += 1
             results.append(SweepResult(source, Path(manifest[digest]["dest"]), digest,
@@ -225,7 +225,7 @@ def sweep(container: Path = CONTAINER, dry_run: bool = False) -> list[SweepResul
 
         # Idempotency belt if the manifest was lost: a name embeds the content hash, so an
         # existing dest with matching bytes is the same recording — record it, don't re-copy.
-        if dest.exists() and inbox._sha256(dest) == digest:
+        if dest.exists() and audio.sha256(dest) == digest:
             results.append(SweepResult(source, dest, digest, "skipped",
                                        "already in the inbox (same audio)"))
         else:

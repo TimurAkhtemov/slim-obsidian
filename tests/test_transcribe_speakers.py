@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from slim import speakers, transcribe
+from slim import audio, speakers, transcribe
 
 
 class _FakeASR:
@@ -17,8 +17,8 @@ class _FakeASR:
 
 @pytest.fixture(autouse=True)
 def _fake_model(monkeypatch):
-    monkeypatch.setattr(transcribe, "ensure_ffmpeg_on_path", lambda: None)
-    monkeypatch.setattr(transcribe, "audio_seconds", lambda p: 3.0)
+    monkeypatch.setattr(audio, "ensure_ffmpeg_on_path", lambda: None)
+    monkeypatch.setattr(audio, "audio_seconds", lambda p: 3.0)
     monkeypatch.setattr(transcribe, "_asr_model", lambda name, lane: _FakeASR())
 
 

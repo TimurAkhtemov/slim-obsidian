@@ -21,6 +21,8 @@ from pathlib import Path
 
 import numpy as np
 
+from . import audio
+
 ME, THEM = "Me", "Them"
 PROVENANCE = "channels"            # the note's `speakers_by`
 
@@ -109,9 +111,7 @@ def render(turns: list[tuple[str, str]]) -> str:
 
 
 def channel_count(path: Path) -> int:
-    from .transcribe import ffbin
-
-    out = subprocess.run([ffbin("ffprobe"), "-v", "error", "-select_streams", "a:0",
+    out = subprocess.run([audio.ffbin("ffprobe"), "-v", "error", "-select_streams", "a:0",
                           "-show_entries", "stream=channels", "-of", "csv=p=0", str(path)],
                          capture_output=True, text=True)
     try:
@@ -126,12 +126,10 @@ def channel_levels(path: Path) -> np.ndarray:
     Streamed in ten-second blocks: an hour of 16 kHz stereo is 230 MB as samples and 2 MB as
     levels, and this runs beside a 25 GB model.
     """
-    from .transcribe import ffbin
-
     frame = int(SAMPLE_RATE * FRAME_SECONDS)
     frame_bytes = frame * 2 * 2                       # two channels of s16le
     rows = []
-    with subprocess.Popen([ffbin("ffmpeg"), "-nostdin", "-loglevel", "error", "-i", str(path),
+    with subprocess.Popen([audio.ffbin("ffmpeg"), "-nostdin", "-loglevel", "error", "-i", str(path),
                            "-f", "s16le", "-ac", "2", "-ar", str(SAMPLE_RATE), "-"],
                           stdout=subprocess.PIPE) as proc:
         while block := proc.stdout.read(frame_bytes * 500):

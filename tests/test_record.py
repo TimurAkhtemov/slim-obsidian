@@ -11,11 +11,11 @@ NOW = datetime(2026, 8, 4, 14, 30, tzinfo=timezone.utc)
 
 @pytest.fixture(autouse=True)
 def _isolate_audio_archive(tmp_path, monkeypatch):
-    """`inbox.AUDIO_ARCHIVE` is bound to the real VAULT at import time. Redirect it into the
-    test's tmp_path so archiving never touches the real vault. Do NOT edit slim/inbox.py."""
-    from slim import inbox
+    """`audio.AUDIO_ARCHIVE` is bound to the real VAULT at import time. Redirect it into the
+    test's tmp_path so archiving never touches the real vault. Do NOT edit slim/audio.py."""
+    from slim import audio
 
-    monkeypatch.setattr(inbox, "AUDIO_ARCHIVE", tmp_path / "Attachments/Recordings")
+    monkeypatch.setattr(audio, "AUDIO_ARCHIVE", tmp_path / "Attachments/Recordings")
 
 
 def _write(tmp_path: Path, **kw):

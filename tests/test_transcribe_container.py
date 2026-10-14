@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from slim import transcribe
+from slim import audio
 
 pytestmark = pytest.mark.skipif(shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
                                 reason="ffmpeg/ffprobe not installed")
@@ -51,7 +51,7 @@ def test_the_fixture_really_reproduces_the_bug(tmp_path):
 
 def test_audio_seconds_survives_a_container_with_no_duration(tmp_path):
     """The crash was here: float('N/A'). It killed the whole pass over a perfectly good file."""
-    got = transcribe.audio_seconds(_streamed_webm(tmp_path / "s.webm", seconds=3))
+    got = audio.audio_seconds(_streamed_webm(tmp_path / "s.webm", seconds=3))
     assert 2.5 < got < 3.6
 
 
@@ -61,7 +61,7 @@ def test_a_corrupt_file_fails_with_ffprobe_s_reason_not_a_subprocess_repr(tmp_pa
     bad = tmp_path / "2026-08-23_11-42-00.webm"
     bad.write_bytes(b"\x00\x01not a container" * 64)
     with pytest.raises(ValueError) as e:
-        transcribe.audio_seconds(bad)
+        audio.audio_seconds(bad)
     msg = str(e.value)
     assert "2026-08-23_11-42-00.webm" in msg
     assert "Invalid data found" in msg                 # ffprobe's reason survives
@@ -74,7 +74,7 @@ def test_normalize_container_makes_the_file_seekable(tmp_path):
     player too, not just for ASR."""
     p = _streamed_webm(tmp_path / "s.webm", seconds=3)
     assert _probe(p) == "N/A"
-    transcribe.normalize_container(p)
+    audio.normalize_container(p)
     assert 2.5 < float(_probe(p)) < 3.6
 
 
@@ -83,7 +83,7 @@ def test_normalize_container_is_lossless(tmp_path):
     generation loss for transcoding to AAC."""
     p = _streamed_webm(tmp_path / "s.webm", seconds=3)
     before = p.stat().st_size
-    transcribe.normalize_container(p)
+    audio.normalize_container(p)
     assert p.stat().st_size == pytest.approx(before, rel=0.1)
 
 
@@ -91,13 +91,13 @@ def test_a_seekable_file_is_left_completely_alone(tmp_path):
     """Voice Memos m4a and every already-good file must not be rewritten on every ingest."""
     p = _seekable_webm(tmp_path / "ok.webm", seconds=3)
     before = p.read_bytes()
-    transcribe.normalize_container(p)
+    audio.normalize_container(p)
     assert p.read_bytes() == before
 
 
 def test_a_missing_file_is_not_an_error(tmp_path):
     """Called on the ingest path, where the caller already reports a missing file properly."""
-    transcribe.normalize_container(tmp_path / "gone.webm")
+    audio.normalize_container(tmp_path / "gone.webm")
 
 
 # --- binary resolution (2026-08-22) ---------------------------------------------------------
@@ -107,14 +107,14 @@ def test_a_missing_file_is_not_an_error(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _clear_ffbin_cache():
-    transcribe.ffbin.cache_clear()
+    audio.ffbin.cache_clear()
     yield
-    transcribe.ffbin.cache_clear()
+    audio.ffbin.cache_clear()
 
 
 def test_ffbin_prefers_what_is_on_path(monkeypatch):
-    monkeypatch.setattr(transcribe.shutil, "which", lambda n: f"/somewhere/{n}")
-    assert transcribe.ffbin("ffprobe") == "/somewhere/ffprobe"
+    monkeypatch.setattr(audio.shutil, "which", lambda n: f"/somewhere/{n}")
+    assert audio.ffbin("ffprobe") == "/somewhere/ffprobe"
 
 
 def test_ffbin_finds_homebrew_when_path_is_the_dock_minimum(tmp_path, monkeypatch):
@@ -123,16 +123,16 @@ def test_ffbin_finds_homebrew_when_path_is_the_dock_minimum(tmp_path, monkeypatc
     brew = tmp_path / "homebrew"
     brew.mkdir()
     (brew / "ffprobe").write_text("#!/bin/sh\n")
-    monkeypatch.setattr(transcribe.shutil, "which", lambda n: None)
-    monkeypatch.setattr(transcribe, "FF_PREFIXES", (str(brew),))
-    assert transcribe.ffbin("ffprobe") == str(brew / "ffprobe")
+    monkeypatch.setattr(audio.shutil, "which", lambda n: None)
+    monkeypatch.setattr(audio, "FF_PREFIXES", (str(brew),))
+    assert audio.ffbin("ffprobe") == str(brew / "ffprobe")
 
 
 def test_ffbin_says_what_to_do_when_it_is_genuinely_missing(tmp_path, monkeypatch):
-    monkeypatch.setattr(transcribe.shutil, "which", lambda n: None)
-    monkeypatch.setattr(transcribe, "FF_PREFIXES", (str(tmp_path / "nope"),))
+    monkeypatch.setattr(audio.shutil, "which", lambda n: None)
+    monkeypatch.setattr(audio, "FF_PREFIXES", (str(tmp_path / "nope"),))
     with pytest.raises(FileNotFoundError) as e:
-        transcribe.ffbin("ffmpeg")
+        audio.ffbin("ffmpeg")
     assert "brew install ffmpeg" in str(e.value)
 
 
@@ -142,8 +142,8 @@ def test_ffmpeg_is_put_on_path_for_dependencies_that_look_it_up_themselves(tmp_p
     brew = tmp_path / "brew"
     brew.mkdir()
     (brew / "ffmpeg").write_text("#!/bin/sh\n")
-    monkeypatch.setattr(transcribe.shutil, "which", lambda n: None)
-    monkeypatch.setattr(transcribe, "FF_PREFIXES", (str(brew),))
+    monkeypatch.setattr(audio.shutil, "which", lambda n: None)
+    monkeypatch.setattr(audio, "FF_PREFIXES", (str(brew),))
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
-    transcribe.ensure_ffmpeg_on_path()
-    assert transcribe.os.environ["PATH"].split(":")[0] == str(brew)
+    audio.ensure_ffmpeg_on_path()
+    assert audio.os.environ["PATH"].split(":")[0] == str(brew)

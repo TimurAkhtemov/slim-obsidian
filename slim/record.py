@@ -275,12 +275,12 @@ def append_transcript(text: str, addition: str) -> str:
 
 
 def archive_audio(src: Path) -> tuple[Path, str]:
-    """Archive a staged file content-addressed, returning (path, sha256). Reuses inbox's
+    """Archive a staged file content-addressed, returning (path, sha256). Reuses `audio`'s
     hash-verified copier so there is exactly one implementation of 'the audio is safe'."""
-    from . import inbox
+    from . import audio
 
-    digest = inbox._sha256(src)
-    archived = inbox._archive_audio(src, digest)
+    digest = audio.sha256(src)
+    archived = audio.archive_audio(src, digest)
     return archived, digest
 
 

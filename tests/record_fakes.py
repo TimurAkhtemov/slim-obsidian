@@ -12,8 +12,8 @@ NOW = datetime(2026, 8, 4, 14, 30, tzinfo=timezone.utc)
 
 @pytest.fixture(autouse=True)
 def _archive_in_tmp(tmp_path, monkeypatch):
-    from slim import inbox
-    monkeypatch.setattr(inbox, "AUDIO_ARCHIVE", tmp_path / "Attachments" / "Recordings")
+    from slim import audio
+    monkeypatch.setattr(audio, "AUDIO_ARCHIVE", tmp_path / "Attachments" / "Recordings")
 
 
 def _staged(tmp_path: Path, name: str = "t.webm") -> str:

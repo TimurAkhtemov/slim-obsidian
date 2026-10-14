@@ -12,21 +12,17 @@ dates and ids are deterministic, never inferred; and no summary is written on th
 """
 from __future__ import annotations
 
-import hashlib
 import json
-import os
 import re
-import shutil
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import enrich, trace, transcribe as tx, voicetags
+from . import audio, enrich, trace, transcribe as tx, voicetags
 from .config import DATA_DIR, VAULT
 
 INBOX = {"journal": VAULT / "Inbox" / "Journal"}
-AUDIO_ARCHIVE = VAULT / "Attachments" / "Recordings"
 TMP_AUDIO_DIR = DATA_DIR / "audio" / "tmp"
 MANIFEST = DATA_DIR / "audio" / "manifest.json"
 
@@ -38,41 +34,6 @@ class Processed:
     status: str           # written | skipped (already done) | refused (note exists)
     detail: str = ""
     transcript: tx.Transcript | None = None
-
-
-def _sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as fh:
-        for block in iter(lambda: fh.read(1 << 20), b""):
-            h.update(block)
-    return h.hexdigest()
-
-
-def _archive_audio(source: Path, digest: str) -> Path:
-    """Copy raw source bytes into the synced vault before the Inbox copy may be removed.
-
-    The temporary file and hash verification make a partial copy distinguishable from a
-    preserved source. An existing content-addressed path is trusted only after re-hashing it.
-    """
-    archived = AUDIO_ARCHIVE / f"{digest}{source.suffix.lower()}"
-    archived.parent.mkdir(parents=True, exist_ok=True)
-    if archived.exists():
-        if _sha256(archived) != digest:
-            raise RuntimeError(f"audio archive hash mismatch: {archived}")
-        return archived
-
-    partial = archived.with_name(f".{archived.name}.part")
-    try:
-        with source.open("rb") as src, partial.open("wb") as dst:
-            shutil.copyfileobj(src, dst, length=1 << 20)
-            dst.flush()
-            os.fsync(dst.fileno())
-        if _sha256(partial) != digest:
-            raise RuntimeError(f"audio archive copy failed verification: {source}")
-        partial.replace(archived)
-    finally:
-        partial.unlink(missing_ok=True)
-    return archived
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -204,31 +165,31 @@ def process(dry_run: bool = False) -> list[Processed]:
 
     folder = INBOX["journal"]
     if folder.exists():
-        for audio in sorted(folder.iterdir()):
-            if audio.suffix.lower() not in tx.AUDIO_SUFFIXES or audio.name.startswith("."):
+        for memo in sorted(folder.iterdir()):
+            if memo.suffix.lower() not in audio.AUDIO_SUFFIXES or memo.name.startswith("."):
                 continue
 
-            digest = _sha256(audio)
+            digest = audio.sha256(memo)
             if digest in manifest:
-                results.append(Processed(audio, Path(manifest[digest]["note"]),
+                results.append(Processed(memo, Path(manifest[digest]["note"]),
                                          "skipped", "already transcribed (same audio)"))
                 continue
 
-            when = recorded_at(audio)
+            when = recorded_at(memo)
             # The sweep names its copies `<stem>--<hash8>` and the note path adds the same
             # digest again, so a trailing hash is stripped from the TITLE or the filename and
             # the H1 both read "…--f70f13c6--f70f13c6" forever.
-            fallback_title = re.sub(r"--[0-9a-f]{8}$", "", audio.stem).replace("_", " ").strip()
+            fallback_title = re.sub(r"--[0-9a-f]{8}$", "", memo.stem).replace("_", " ").strip()
 
             if dry_run:
-                results.append(Processed(audio, _note_path(when, fallback_title, digest),
+                results.append(Processed(memo, _note_path(when, fallback_title, digest),
                                          "written", "(dry run)"))
                 continue
 
             # 16 kHz mono is what every ASR wants; normalize once so the runtime never
             # has to guess how to resample.
             wav = TMP_AUDIO_DIR / f"{digest}.wav"
-            tx.to_wav16k(audio, wav)
+            audio.to_wav16k(memo, wav)
             try:
                 t = tx.transcribe(wav)
             finally:
@@ -252,13 +213,13 @@ def process(dry_run: bool = False) -> list[Processed]:
             routing = r._asdict()
             note = _note_path(when, title, digest, folder=r.folder)
             if note.exists():
-                results.append(Processed(audio, note, "refused",
+                results.append(Processed(memo, note, "refused",
                                          "a note already exists at that path"))
                 continue
 
             # Archive and verify the irreplaceable source before committing derived output or
             # removing the Inbox copy. The archive stays in the synced vault.
-            archived = _archive_audio(audio, digest)
+            archived = audio.archive_audio(memo, digest)
             _atomic_write_text(note, _render_note(title, when, t, digest, labels, routing))
             trace.record("enrich", {
                 "note": str(note), "audio_sha256": digest,
@@ -281,8 +242,8 @@ def process(dry_run: bool = False) -> list[Processed]:
             _atomic_write_text(MANIFEST, json.dumps(manifest, indent=2))
             # The source is already archived and hash-verified in the vault, so the staged
             # copy has nothing left to protect.
-            audio.unlink()
+            memo.unlink()
 
-            results.append(Processed(audio, note, "written", transcript=t))
+            results.append(Processed(memo, note, "written", transcript=t))
 
     return results

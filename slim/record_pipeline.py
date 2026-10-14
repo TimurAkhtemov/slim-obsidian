@@ -115,12 +115,12 @@ def _transcribe_segment(staged: Path, transcribe_mod) -> tuple[dict, bool]:
     trusted by name alone hands back the previous recording's words with no transcription at
     all — the quietest way imaginable to file the wrong transcript.
     """
-    from . import inbox
+    from . import audio
 
     cache = _segment_cache(staged)
     digest = ""
     try:
-        digest = inbox._sha256(staged)
+        digest = audio.sha256(staged)
     except OSError:
         pass
     if cache.is_file():
@@ -130,14 +130,14 @@ def _transcribe_segment(staged: Path, transcribe_mod) -> tuple[dict, bool]:
                 return got, True
         except (OSError, json.JSONDecodeError):
             pass                      # a corrupt cache is not a reason to lose the segment
-    transcribe_mod.normalize_container(staged)
+    audio.normalize_container(staged)
     t = transcribe_mod.transcribe(staged)
     got = {"text": t.text, "model": t.model, "audio_seconds": t.audio_seconds,
            "words": t.words, "wall_seconds": t.wall_seconds, "rtf": t.rtf,
            "speakers_by": t.speakers_by, "solo_speaker": t.solo_speaker}
     # After normalize_container, which rewrites the file — hash what was actually read.
     try:
-        got["audio_sha256"] = inbox._sha256(staged)
+        got["audio_sha256"] = audio.sha256(staged)
     except OSError:
         pass
     try:

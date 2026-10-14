@@ -298,7 +298,7 @@ def test_every_segment_must_belong_to_the_same_recording(tmp_path, monkeypatch):
 def test_a_transcript_cache_is_bound_to_the_audio_it_transcribed(tmp_path, monkeypatch):
     """The cache was trusted by PATH. Different bytes at the same staged name returned the old
     words with no transcription at all."""
-    from slim import record_pipeline, transcribe
+    from slim import audio, record_pipeline, transcribe
     calls = []
 
     def tx(p, model=None):
@@ -306,7 +306,7 @@ def test_a_transcript_cache_is_bound_to_the_audio_it_transcribed(tmp_path, monke
         return transcribe.Transcript(text=f"take {len(calls)}", model="fake",
                                      audio_seconds=1.0, wall_seconds=1.0)
     monkeypatch.setattr(transcribe, "transcribe", tx)
-    monkeypatch.setattr(transcribe, "normalize_container", lambda p: None)
+    monkeypatch.setattr(audio, "normalize_container", lambda p: None)
     staged = tmp_path / "Attachments" / "_incoming" / "same-001.webm"
     staged.parent.mkdir(parents=True, exist_ok=True)
 
@@ -325,10 +325,10 @@ def test_speaker_provenance_survives_the_segment_cache(tmp_path, monkeypatch):
     """The cache hands back the words without transcribing. It must hand back how their
     speakers were decided too, or a Try again files a labelled transcript that says nothing
     about where its labels came from."""
-    from slim import record_pipeline, transcribe
+    from slim import audio, record_pipeline, transcribe
 
     _fakes(monkeypatch)
-    monkeypatch.setattr(transcribe, "normalize_container", lambda p: p)
+    monkeypatch.setattr(audio, "normalize_container", lambda p: p)
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="**Me:** so\n\n**Them:** yes", model="fake", audio_seconds=10.0, wall_seconds=1.0,
         speakers_by="channels"))
@@ -343,10 +343,10 @@ def test_speaker_provenance_survives_the_segment_cache(tmp_path, monkeypatch):
 
 
 def test_the_one_speaker_survives_the_segment_cache(tmp_path, monkeypatch):
-    from slim import record_pipeline, transcribe
+    from slim import audio, record_pipeline, transcribe
 
     _fakes(monkeypatch)
-    monkeypatch.setattr(transcribe, "normalize_container", lambda p: p)
+    monkeypatch.setattr(audio, "normalize_container", lambda p: p)
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="and one more thing", model="fake", audio_seconds=10.0, wall_seconds=1.0,
         solo_speaker="Me"))

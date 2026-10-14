@@ -126,12 +126,12 @@ def test_audio_and_draft_must_describe_the_same_recording(tmp_path, monkeypatch)
 
 
 def test_a_final_note_collision_keeps_the_draft_and_staged_audio(tmp_path, monkeypatch):
-    from slim import inbox, record_pipeline
+    from slim import audio, record_pipeline
 
     staged = _staged(tmp_path)
     draft = _draft(tmp_path)
     _fakes(monkeypatch)
-    digest = inbox._sha256(tmp_path / staged)
+    digest = audio.sha256(tmp_path / staged)
     victim = tmp_path / "Notes/school/CS201 ML" / f"2026-08-04--SVMs--{digest[:8]}.md"
     victim.parent.mkdir(parents=True)
     victim.write_text("I was here first", encoding="utf-8")
@@ -290,14 +290,14 @@ def test_a_vault_reached_through_a_symlink_still_reports_relative_paths(tmp_path
     symlink is introduced deliberately. On macOS `/var` -> `/private/var` makes that mismatch
     the DEFAULT for any temp-dir vault, and it made apply move the note correctly and then
     return a 400 — the caller sees a failure for work that actually happened."""
-    from slim import inbox, record_pipeline, record_review
+    from slim import audio, record_pipeline, record_review
 
     real = tmp_path / "real_vault"
     (real / "Attachments" / "_incoming").mkdir(parents=True)
     (real / "Notes" / "school").mkdir(parents=True)
     link = tmp_path / "linked_vault"
     link.symlink_to(real, target_is_directory=True)
-    monkeypatch.setattr(inbox, "AUDIO_ARCHIVE", link / "Attachments" / "Recordings")
+    monkeypatch.setattr(audio, "AUDIO_ARCHIVE", link / "Attachments" / "Recordings")
 
     _fakes(monkeypatch, dest="Notes/school")
     (real / "Attachments" / "_incoming" / "s.webm").write_bytes(b"bytes")
