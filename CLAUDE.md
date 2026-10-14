@@ -139,6 +139,7 @@ note loses its id. Embedding is part of ingest; `slim status` reports `unembedde
      is closed; Restore warns when the note has changed since, and is refused when a recording's
      own parts have (`/api/copilot/restore`). A recording's frontmatter, `slim-meeting` block and
      transcript are [locked] blocks no call may touch, and no change's splices may reach them.
+     New text put above a plain note's properties goes right after them.
 
 ## Where things live
 
@@ -203,6 +204,8 @@ reads. /api/chat parses a tool call itself and holds it back until it is whole, 
 a call with tools goes RAW to /api/generate, its prompt built by `llm.render` byte for byte as
 Ollama 0.35's `qwen3.5` renderer builds it (`tests/test_llm_render.py` holds Ollama's own
 rendering) and its reply read by `llm._Reader`. ⚠ A model with another renderer needs its own.
+A tool call's text is XML, taken as written: the JSON trap above never touches it, and unlike
+Ollama's parser `_Reader` keeps a text parameter written `null` as the word.
 
 **A note can be filed and still be unreachable.** Filing is a markdown file; the copilot and
 `reflect` read SQLite. Anything that writes a note must ingest AND embed, or say plainly
