@@ -402,7 +402,7 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
     edited by hand. ⚠ Silence is refused exactly as the recording path refuses it.
     """
     from . import record as record_mod, transcribe
-    from .chunk import parse_frontmatter
+    from .frontmatter import parse_frontmatter
     from .config import VAULT as _VAULT
 
     vault = vault or _VAULT

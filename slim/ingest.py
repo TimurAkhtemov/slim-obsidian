@@ -14,8 +14,9 @@ import sqlite3
 import uuid
 from pathlib import Path
 
-from .chunk import chunk_markdown, parse_frontmatter, strip_derived_blocks, strip_meeting_wrapper
+from .chunk import chunk_markdown, strip_derived_blocks, strip_meeting_wrapper
 from .config import EXCLUDED_DIRS, EXCLUDED_TOP, VAULT
+from .frontmatter import parse_frontmatter
 
 
 class IngestError(RuntimeError):

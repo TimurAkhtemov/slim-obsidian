@@ -205,7 +205,7 @@ def append_audio_frontmatter(text: str, *, rels: list[str], digests: list[str],
     keeps that provenance, and a resume that produced no model name never blanks it. `speakers_by`
     follows the same rule.
     """
-    from .chunk import parse_frontmatter, set_frontmatter
+    from .frontmatter import parse_frontmatter, set_frontmatter
 
     fm, _ = parse_frontmatter(text)
 
@@ -251,7 +251,7 @@ def set_review_status(text: str, status: str) -> str:
     """
     if status not in {"pending", "complete"}:
         raise ValueError(f"invalid recording review status: {status!r}")
-    from .chunk import set_frontmatter
+    from .frontmatter import set_frontmatter
     return set_frontmatter(text, {"review_status": status})
 
 
@@ -288,7 +288,7 @@ def _clean_scalar(value: str) -> str:
     """One frontmatter value, safe to write into a flow list.
 
     ⚠ Quoting does NOT solve this. SLIM's own reader splits a flow list on bare commas and
-    ignores quotes entirely (`chunk.parse_frontmatter`: `val[1:-1].split(",")`), so a comma
+    ignores quotes entirely (`frontmatter.parse_frontmatter`: `val[1:-1].split(",")`), so a comma
     inside a value silently becomes TWO values — measured on a model-written field that
     returned "Mercer's condition, restated". `topics` is model-generated free text, so fixing
     the writer is the safe half; `parse_frontmatter` is what ingest reads every note with.

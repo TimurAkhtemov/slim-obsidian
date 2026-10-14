@@ -55,7 +55,7 @@ def handle_record_summary(*, note: str, instructions: str = "", job_id: str = ""
     died is that shape exactly. This raises and writes nothing.
     """
     from . import record as record_mod, summarize
-    from .chunk import parse_frontmatter
+    from .frontmatter import parse_frontmatter
     from .config import VAULT as _VAULT
 
     vault = vault or _VAULT
@@ -123,7 +123,7 @@ def handle_record_apply(*, note: str, dest_dir: str, type_tag: str, topics: list
     """
     from . import record as record_mod
     from . import summarize
-    from .chunk import set_frontmatter
+    from .frontmatter import set_frontmatter
     from .config import VAULT as _VAULT
 
     vault = vault or _VAULT
@@ -187,7 +187,7 @@ def handle_record_review(*, note: str, vault: Path | None = None) -> dict:
     Approving the card as it stands is agreeing with where SLIM put it, so `filed_by` goes,
     as it does on apply: its presence means "SLIM guessed and nobody has looked"."""
     from . import record as record_mod
-    from .chunk import parse_frontmatter
+    from .frontmatter import parse_frontmatter
     from .config import VAULT as _VAULT
 
     vault = vault or _VAULT

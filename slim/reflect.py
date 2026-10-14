@@ -31,8 +31,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from . import llm, trace
-from .chunk import parse_frontmatter
 from .config import OWNER, VAULT
+from .frontmatter import parse_frontmatter
 
 REFLECT_PROMPT_VERSION = "reflect-v2"
 

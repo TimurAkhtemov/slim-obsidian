@@ -35,7 +35,7 @@ def test_a_resumed_recording_is_one_note_from_several_segments(tmp_path, monkeyp
 
 def test_every_segment_is_archived_and_named_in_the_note(tmp_path, monkeypatch):
     from slim import record_pipeline
-    from slim.chunk import parse_frontmatter
+    from slim.frontmatter import parse_frontmatter
     _fakes(monkeypatch)
     out = record_pipeline.handle_record(audio_rel=[_staged(tmp_path, "r-001.webm"),
                                                    _staged(tmp_path, "r-002.webm")],
@@ -51,7 +51,7 @@ def test_one_segment_still_writes_a_plain_scalar(tmp_path, monkeypatch):
     """300 notes already carry `audio:` as a scalar. A single-segment recording keeps writing
     one, so nothing downstream has to learn a new shape for the common case."""
     from slim import record_pipeline
-    from slim.chunk import parse_frontmatter
+    from slim.frontmatter import parse_frontmatter
     _fakes(monkeypatch)
     out = record_pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="",
                                         declared_type="lecture", title="T", when=NOW,
@@ -162,7 +162,7 @@ def test_resuming_a_filed_note_appends_audio_and_words(tmp_path, monkeypatch):
     that is already finished. The note exists, its audio is archived and staging is clear, so
     this is an APPEND — not a second recording, and not a rewrite."""
     from slim import record_pipeline, transcribe
-    from slim.chunk import parse_frontmatter
+    from slim.frontmatter import parse_frontmatter
     r = _existing(tmp_path, monkeypatch)
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="and ten minutes more", model="fake", audio_seconds=600.0, wall_seconds=5.0))

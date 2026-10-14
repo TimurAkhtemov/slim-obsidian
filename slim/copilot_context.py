@@ -10,8 +10,8 @@ from pathlib import Path, PurePosixPath
 
 from . import config as config_mod, edits as edits_mod, embed as embed_mod, ingest as ingest_mod
 from . import copilot_images, llm, search as search_mod, skills as skills_mod
-from .chunk import (HEADING, body_after_frontmatter, parse_frontmatter, strip_derived_blocks,
-                    strip_meeting_wrapper)
+from .chunk import HEADING, strip_derived_blocks, strip_meeting_wrapper
+from .frontmatter import body_after_frontmatter, parse_frontmatter
 
 # Skills read WHOLE notes, chosen by code. Half the resident window in chars/4, so
 # the answer and the thinking keep room and every call still uses num_ctx=RESIDENT_CTX (a

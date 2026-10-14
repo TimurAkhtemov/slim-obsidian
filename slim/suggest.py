@@ -13,8 +13,8 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from .chunk import parse_frontmatter
 from .config import VAULT
+from .frontmatter import parse_frontmatter
 from . import llm, voicetags
 
 # Derived or binary; never a filing destination and never a source of tags or counts.
