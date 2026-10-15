@@ -335,7 +335,8 @@ sweep every five minutes, the reflection nightly, and a restic backup of the vau
 - **`Journal/` is a floor, and the floor is a path.** No route carries a note out of it, and a
   test enforces that.
 - **Subject is the only folder axis.** A path encodes one fact; type, course and status live in
-  frontmatter where they can be queried. Two path segments is the ceiling — also test-enforced.
+  frontmatter where they can be queried. Folders SLIM invents are at most two segments deep;
+  depth you create is yours.
 - **The note is filed before the card is shown.** Nothing waits for approval.
 - **Autonomous writes are fine, and they are traced.** Provenance stays in frontmatter;
   `trace.record` logs machine facts — never prose, never chain-of-thought — for every stage,
