@@ -3,7 +3,7 @@ how a target is read. Nothing here writes a note."""
 
 import pytest
 
-from slim.copilot import blocks as edits_note
+from slim.copilot import blocks
 from slim.index import chunk
 from slim.copilot.blocks import Note, ToolError, strip_labels
 
@@ -38,11 +38,11 @@ MEMO = "---\ntype: meeting-note\n---\n\n# Call\n\none\ntwo\n\n## Transcript\n\nM
 # --- what a recording keeps --------------------------------------------------------------------
 
 def test_a_recordings_own_parts_are_its_frontmatter_its_block_and_its_transcript():
-    take = lambda text: [text[begin:end] for begin, end in edits_note.protected_ranges(text)]
+    take = lambda text: [text[begin:end] for begin, end in blocks.protected_ranges(text)]
     assert take(MEETING) == [MEETING[:MEETING.index("---\n\n") + 4],
                              MEETING[MEETING.index("```slim"):MEETING.index("\nAfterwards")]]
     assert take(MEMO) == ["---\ntype: meeting-note\n---\n", "## Transcript\n\nMe: hi\n"]
-    assert edits_note.protected_ranges("---\ntags: [a]\n---\n\n## Transcript of a talk\n") == []
+    assert blocks.protected_ranges("---\ntags: [a]\n---\n\n## Transcript of a talk\n") == []
 
 
 # --- blocks and handles ----------------------------------------------------------------------
@@ -208,6 +208,6 @@ def test_the_sections_map_names_each_heading_with_its_first_and_last_block():
 
 
 def test_headings_are_compared_by_level_and_words_without_a_trailing_note():
-    assert edits_note.headings("# T\n\ntext # not\n## A  \n```\n") == ["# T", "## A"]
-    assert edits_note.heading_key("##  Toolkit (New Section)") == edits_note.heading_key("## toolkit") == (2, "toolkit")
-    assert edits_note.heading_key("## Bag of Words (BoW)") == (2, "bag of words (bow)")
+    assert blocks.headings("# T\n\ntext # not\n## A  \n```\n") == ["# T", "## A"]
+    assert blocks.heading_key("##  Toolkit (New Section)") == blocks.heading_key("## toolkit") == (2, "toolkit")
+    assert blocks.heading_key("## Bag of Words (BoW)") == (2, "bag of words (bow)")

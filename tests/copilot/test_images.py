@@ -3,7 +3,7 @@ import base64
 
 import pytest
 
-from slim.copilot import turn as copilot, images as copilot_images, threads
+from slim.copilot import images as chat_images, threads, turn as copilot_turn
 
 
 PNG = base64.b64decode(
@@ -15,9 +15,9 @@ def raw_image(name="equation.png"):
 
 
 def test_images_round_trip_as_refs_and_thread_json_keeps_no_base64():
-    refs, created = copilot_images.save_images("chat-1", [raw_image()])
+    refs, created = chat_images.save_images("chat-1", [raw_image()])
     assert len(created) == 1
-    clean, images = copilot_images.load_refs("chat-1", refs)
+    clean, images = chat_images.load_refs("chat-1", refs)
     assert clean == refs
     assert base64.b64decode(images[0]) == PNG
 
@@ -32,12 +32,12 @@ def test_images_round_trip_as_refs_and_thread_json_keeps_no_base64():
 
 
 def test_images_reject_wrong_mime_oversize_count_and_path_shaped_thread_id():
-    with pytest.raises(copilot_images.ImageError, match="declared type"):
-        copilot_images.save_images("chat-1", [{**raw_image(), "mime": "image/jpeg"}])
-    with pytest.raises(copilot_images.ImageError, match="at most 3"):
-        copilot_images.save_images("chat-1", [raw_image()] * 4)
+    with pytest.raises(chat_images.ImageError, match="declared type"):
+        chat_images.save_images("chat-1", [{**raw_image(), "mime": "image/jpeg"}])
+    with pytest.raises(chat_images.ImageError, match="at most 3"):
+        chat_images.save_images("chat-1", [raw_image()] * 4)
     with pytest.raises(threads.ThreadError):
-        copilot_images.save_images("../escape", [raw_image()])
+        chat_images.save_images("../escape", [raw_image()])
 
 
 def test_recent_image_refs_are_rehydrated_for_follow_up_turns():
@@ -46,39 +46,39 @@ def test_recent_image_refs_are_rehydrated_for_follow_up_turns():
         payload = PNG + bytes([i])
         item = {"name": f"eq-{i}.png", "mime": "image/png",
                 "data": base64.b64encode(payload).decode()}
-        ref, _created = copilot_images.save_images("chat-1", [item])
+        ref, _created = chat_images.save_images("chat-1", [item])
         refs.append(ref[0])
     history = [{"role": "you", "text": str(i), "attachments": [ref]} for i, ref in enumerate(refs)]
-    got = copilot_images.hydrate_history("chat-1", history)
+    got = chat_images.hydrate_history("chat-1", history)
     assert "images" not in got[0]
     assert [len(turn.get("images") or []) for turn in got] == [0, 1, 1, 1]
 
 
 def test_a_stored_ref_can_be_sent_back_as_an_image_without_bytes():
     # Regenerate re-asks with the refs the question already has; nothing new is written.
-    refs, _created = copilot_images.save_images("chat-1", [raw_image()])
-    again, created = copilot_images.save_images("chat-1", [{k: refs[0][k] for k in ("id", "name", "mime", "bytes")}])
+    refs, _created = chat_images.save_images("chat-1", [raw_image()])
+    again, created = chat_images.save_images("chat-1", [{k: refs[0][k] for k in ("id", "name", "mime", "bytes")}])
     assert again == refs and created == []
-    _clean, images = copilot_images.load_refs("chat-1", again)
+    _clean, images = chat_images.load_refs("chat-1", again)
     assert base64.b64decode(images[0]) == PNG
-    with pytest.raises(copilot_images.ImageError, match="missing"):
-        copilot_images.save_images("chat-2", [{**refs[0]}])          # another thread's file
-    with pytest.raises(copilot_images.ImageError, match="invalid"):
-        copilot_images.save_images("chat-1", [{"id": "nope", "name": "x.png", "mime": "image/png", "bytes": 1}])
+    with pytest.raises(chat_images.ImageError, match="missing"):
+        chat_images.save_images("chat-2", [{**refs[0]}])          # another thread's file
+    with pytest.raises(chat_images.ImageError, match="invalid"):
+        chat_images.save_images("chat-1", [{"id": "nope", "name": "x.png", "mime": "image/png", "bytes": 1}])
 
 
 def test_image_path_finds_a_stored_file_by_validated_id_only():
-    refs, _created = copilot_images.save_images("chat-1", [raw_image()])
-    path, mime = copilot_images.image_path("chat-1", refs[0]["id"])
+    refs, _created = chat_images.save_images("chat-1", [raw_image()])
+    path, mime = chat_images.image_path("chat-1", refs[0]["id"])
     assert path.read_bytes() == PNG and mime == "image/png"
-    assert copilot_images.image_path("chat-1", "f" * 64) is None
-    assert copilot_images.image_path("chat-1", "../../etc/passwd") is None
+    assert chat_images.image_path("chat-1", "f" * 64) is None
+    assert chat_images.image_path("chat-1", "../../etc/passwd") is None
     with pytest.raises(threads.ThreadError):
-        copilot_images.image_path("../escape", refs[0]["id"])
+        chat_images.image_path("../escape", refs[0]["id"])
 
 
 def test_thread_delete_removes_its_images_too():
-    copilot_images.save_images("chat-1", [raw_image()])
+    chat_images.save_images("chat-1", [raw_image()])
     threads.save_copilot("chat-1", "Equation", [], source_id="src1",
                          source_path="Notes/x.md", reasoning_mode="quick")
     assert (threads.THREADS_DIR / "chat-1.images").is_dir()
@@ -93,8 +93,8 @@ def test_generate_answer_puts_images_on_user_messages_only(monkeypatch):
         seen["messages"] = messages
         return "Answer", {"duration_s": 1}
 
-    monkeypatch.setattr(copilot.llm, "chat_stream", fake_stream)
-    copilot.generate_answer(
+    monkeypatch.setattr(copilot_turn.llm, "chat_stream", fake_stream)
+    copilot_turn.generate_answer(
         "Explain", [{"role": "you", "text": "Earlier", "images": ["old"]},
                     {"role": "slim", "text": "Earlier answer", "images": ["never"]}],
         [], "quick", images=["current"])

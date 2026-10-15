@@ -416,9 +416,9 @@ def test_a_lecture_in_two_segments_stays_unlabelled(tmp_path, monkeypatch):
 
 
 def test_resuming_a_labelled_note_labels_a_one_speaker_segment(tmp_path, monkeypatch):
-    from slim.recorder import note as record, pipeline
+    from slim.recorder import note as note_writer, pipeline
     r = _existing(tmp_path, monkeypatch)
-    r.note.write_text(record.append_audio_frontmatter(
+    r.note.write_text(note_writer.append_audio_frontmatter(
         r.note.read_text(encoding="utf-8"), rels=[], digests=[], seconds=0.0,
         speakers_by="channels"), encoding="utf-8")
     _segments_tx(monkeypatch, ("and one more thing", "", "Me"))

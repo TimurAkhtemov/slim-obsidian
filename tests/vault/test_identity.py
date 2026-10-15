@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from slim import server as chat_mod, cli, config
+from slim import server, cli, config
 from slim.vault import identity
 
 
@@ -221,7 +221,7 @@ def test_chat_refuses_a_mismatched_vault_before_serving_writes(monkeypatch, tmp_
     identity.pin_vault(first)
     use_vault(monkeypatch, second)
     calls = []
-    monkeypatch.setattr(chat_mod, "serve", lambda *a, **kw: calls.append(1))
+    monkeypatch.setattr(server, "serve", lambda *a, **kw: calls.append(1))
 
     with pytest.raises(SystemExit):
         cli.cmd_chat(SimpleNamespace(parent_pid=None, port=7546, reload=False,

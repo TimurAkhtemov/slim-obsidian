@@ -11,8 +11,8 @@ import urllib.request
 
 import pytest
 
-from slim import server as chat, config
-from slim.recorder import state as record_state
+from slim import server, config
+from slim.recorder import state
 from slim.capture import suggest, summarize, transcribe
 from tests.recorder.fakes import _archive_in_tmp, _draft, _existing, _fakes, _staged  # noqa: F401
 
@@ -20,14 +20,14 @@ from tests.recorder.fakes import _archive_in_tmp, _draft, _existing, _fakes, _st
 @pytest.fixture
 def server_url(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "VAULT", tmp_path)
-    server = chat.make_server("127.0.0.1", 0)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    httpd = server.make_server("127.0.0.1", 0)
+    worker = threading.Thread(target=httpd.serve_forever, daemon=True)
     worker.start()
     try:
-        yield f"http://127.0.0.1:{server.server_address[1]}"
+        yield f"http://127.0.0.1:{httpd.server_address[1]}"
     finally:
-        server.shutdown()
-        server.server_close()
+        httpd.shutdown()
+        httpd.server_close()
         worker.join(timeout=2)
 
 
@@ -56,7 +56,7 @@ def _silent(monkeypatch):
 
 
 def _full_queue(monkeypatch):
-    monkeypatch.setattr(record_state._RECORD_PIPELINE, "limit", 0)
+    monkeypatch.setattr(state._RECORD_PIPELINE, "limit", 0)
 
 
 # --- POST /api/record -------------------------------------------------------------------
@@ -69,11 +69,11 @@ def test_record_files_the_note_and_ends_complete(server_url, tmp_path, monkeypat
     assert status == 200
     assert (tmp_path / body["note"]).is_file()
     assert body["card"]["dest_dir"] == "Notes/school/CS201 ML"
-    status, state = progress(server_url, "job-ok")
+    status, job = progress(server_url, "job-ok")
     assert status == 200
-    assert (state["stage"], state["label"], state["done"], state["error"]) == \
+    assert (job["stage"], job["label"], job["done"], job["error"]) == \
         ("complete", "AI review ready", True, "")
-    assert state["steps"][-1]["status"] == "done"
+    assert job["steps"][-1]["status"] == "done"
 
 
 def test_record_silence_is_422_and_ends_silent(server_url, tmp_path, monkeypatch):
@@ -83,8 +83,8 @@ def test_record_silence_is_422_and_ends_silent(server_url, tmp_path, monkeypatch
         "audio": _staged(tmp_path), "notes_md": "", "type": "lecture", "title": "T",
         "job_id": "job-silent"})
     assert status == 422 and body["silent"] is True and "no words" in body["error"]
-    _, state = progress(server_url, "job-silent")
-    assert (state["stage"], state["done"], state["error"]) == ("silent", True, "")
+    _, job = progress(server_url, "job-silent")
+    assert (job["stage"], job["done"], job["error"]) == ("silent", True, "")
 
 
 def test_record_cancel_is_409_and_ends_cancelled(server_url, tmp_path, monkeypatch):
@@ -100,8 +100,8 @@ def test_record_cancel_is_409_and_ends_cancelled(server_url, tmp_path, monkeypat
         "audio": audio, "draft": draft, "type": "lecture", "title": "T", "job_id": "job-c"})
     assert status == 409 and body["cancelled"] is True
     assert (tmp_path / audio).is_file() and (tmp_path / draft).is_file()
-    _, state = progress(server_url, "job-c")
-    assert (state["stage"], state["label"], state["done"]) == ("cancelled", "Cancelled", True)
+    _, job = progress(server_url, "job-c")
+    assert (job["stage"], job["label"], job["done"]) == ("cancelled", "Cancelled", True)
 
 
 def test_record_missing_audio_is_400_and_ends_failed(server_url, tmp_path, monkeypatch):
@@ -110,10 +110,10 @@ def test_record_missing_audio_is_400_and_ends_failed(server_url, tmp_path, monke
         "audio": "Attachments/_incoming/gone.webm", "notes_md": "", "type": "lecture",
         "job_id": "job-400"})
     assert status == 400 and "no audio" in body["error"]
-    _, state = progress(server_url, "job-400")
-    assert (state["stage"], state["label"], state["done"]) == \
+    _, job = progress(server_url, "job-400")
+    assert (job["stage"], job["label"], job["done"]) == \
         ("failed", "Processing stopped", True)
-    assert "no audio" in state["error"]
+    assert "no audio" in job["error"]
 
 
 def test_record_contract_errors_are_400(server_url, tmp_path):
@@ -132,9 +132,9 @@ def test_record_unexpected_failure_is_500_and_ends_failed(server_url, tmp_path, 
     status, body = post(server_url, "/api/record", {
         "audio": _staged(tmp_path), "notes_md": "", "type": "lecture", "job_id": "job-500"})
     assert status == 500 and body["error"] == "RuntimeError: card exploded"
-    _, state = progress(server_url, "job-500")
-    assert (state["stage"], state["done"], state["error"]) == ("failed", True, "card exploded")
-    assert state["steps"][-1]["status"] == "error"
+    _, job = progress(server_url, "job-500")
+    assert (job["stage"], job["done"], job["error"]) == ("failed", True, "card exploded")
+    assert job["steps"][-1]["status"] == "error"
 
 
 def test_record_full_queue_is_503_and_ends_failed(server_url, tmp_path, monkeypatch):
@@ -143,8 +143,8 @@ def test_record_full_queue_is_503_and_ends_failed(server_url, tmp_path, monkeypa
     status, body = post(server_url, "/api/record", {
         "audio": _staged(tmp_path), "notes_md": "", "type": "lecture", "job_id": "job-503"})
     assert status == 503 and "admitted jobs" in body["error"]
-    _, state = progress(server_url, "job-503")
-    assert (state["stage"], state["label"], state["done"]) == \
+    _, job = progress(server_url, "job-503")
+    assert (job["stage"], job["label"], job["done"]) == \
         ("failed", "Processing queue is full", True)
 
 
@@ -165,8 +165,8 @@ def test_append_adds_words_and_ends_complete(server_url, tmp_path, monkeypatch):
     status, body = post(server_url, "/api/record/append", {
         "note": note, "audio": [_staged(tmp_path, "more-001.webm")], "job_id": "app-ok"})
     assert status == 200 and body["words"] == 2 and body["note"] == note
-    _, state = progress(server_url, "app-ok")
-    assert (state["stage"], state["label"], state["detail"], state["done"]) == \
+    _, job = progress(server_url, "app-ok")
+    assert (job["stage"], job["label"], job["detail"], job["done"]) == \
         ("complete", "Added to the note", "2 more words", True)
 
 
@@ -177,8 +177,8 @@ def test_append_silence_is_422_and_ends_silent(server_url, tmp_path, monkeypatch
         "note": str(r.note.relative_to(tmp_path)),
         "audio": _staged(tmp_path, "more-001.webm"), "job_id": "app-silent"})
     assert status == 422 and body["silent"] is True
-    _, state = progress(server_url, "app-silent")
-    assert (state["stage"], state["done"]) == ("silent", True)
+    _, job = progress(server_url, "app-silent")
+    assert (job["stage"], job["done"]) == ("silent", True)
 
 
 def test_append_cancel_is_409_and_leaves_progress_cancelling(server_url, tmp_path, monkeypatch):
@@ -193,8 +193,8 @@ def test_append_cancel_is_409_and_leaves_progress_cancelling(server_url, tmp_pat
         "note": str(r.note.relative_to(tmp_path)),
         "audio": [_staged(tmp_path, "more-001.webm")], "job_id": "app-c"})
     assert status == 409 and body["cancelled"] is True
-    _, state = progress(server_url, "app-c")
-    assert (state["stage"], state["done"]) == ("cancelling", False)
+    _, job = progress(server_url, "app-c")
+    assert (job["stage"], job["done"]) == ("cancelling", False)
 
 
 def test_append_errors_are_400_and_a_full_queue_503(server_url, tmp_path, monkeypatch):
@@ -207,15 +207,15 @@ def test_append_errors_are_400_and_a_full_queue_503(server_url, tmp_path, monkey
         "note": "Capture/_unfiled/missing.md", "audio": "Attachments/_incoming/a.webm",
         "job_id": "app-400"})
     assert status == 400
-    _, state = progress(server_url, "app-400")
-    assert (state["stage"], state["done"]) == ("failed", True)
+    _, job = progress(server_url, "app-400")
+    assert (job["stage"], job["done"]) == ("failed", True)
 
     _full_queue(monkeypatch)
     status, _ = post(server_url, "/api/record/append", {
         "note": "x.md", "audio": "a.webm", "job_id": "app-503"})
     assert status == 503
-    _, state = progress(server_url, "app-503")
-    assert (state["stage"], state["label"]) == ("failed", "Processing queue is full")
+    _, job = progress(server_url, "app-503")
+    assert (job["stage"], job["label"]) == ("failed", "Processing queue is full")
 
 
 # --- POST /api/record/summary -----------------------------------------------------------
@@ -227,8 +227,8 @@ def test_summary_rewrites_and_ends_done(server_url, tmp_path, monkeypatch):
     status, body = post(server_url, "/api/record/summary", {
         "note": str(r.note.relative_to(tmp_path)), "job_id": "sum-ok"})
     assert status == 200 and "A fresh summary." in body["summary"]
-    _, state = progress(server_url, "sum-ok")
-    assert (state["stage"], state["label"], state["done"]) == ("done", "Summary rewritten", False)
+    _, job = progress(server_url, "sum-ok")
+    assert (job["stage"], job["label"], job["done"]) == ("done", "Summary rewritten", False)
 
 
 def test_summary_failure_is_400_and_ends_failed(server_url, tmp_path, monkeypatch):
@@ -237,8 +237,8 @@ def test_summary_failure_is_400_and_ends_failed(server_url, tmp_path, monkeypatc
     status, body = post(server_url, "/api/record/summary", {
         "note": str(r.note.relative_to(tmp_path)), "job_id": "sum-bad"})
     assert status == 400 and "untouched" in body["error"]
-    _, state = progress(server_url, "sum-bad")
-    assert (state["stage"], state["label"]) == ("failed", "Retry failed")
+    _, job = progress(server_url, "sum-bad")
+    assert (job["stage"], job["label"]) == ("failed", "Retry failed")
 
 
 def test_summary_errors_are_400_and_a_full_queue_503(server_url, monkeypatch):
@@ -248,8 +248,8 @@ def test_summary_errors_are_400_and_a_full_queue_503(server_url, monkeypatch):
     _full_queue(monkeypatch)
     status, _ = post(server_url, "/api/record/summary", {"note": "x.md", "job_id": "sum-503"})
     assert status == 503
-    _, state = progress(server_url, "sum-503")
-    assert (state["stage"], state["label"], state["done"]) == \
+    _, job = progress(server_url, "sum-503")
+    assert (job["stage"], job["label"], job["done"]) == \
         ("failed", "Processing queue is full", True)
 
 

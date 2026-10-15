@@ -104,7 +104,7 @@ def cmd_memos(args):
 def cmd_chat(args):
     """Serve the Obsidian plugin's API. Loopback-only by construction — a non-loopback
     --host is refused before a socket exists."""
-    from . import server as chat_mod
+    from . import server
     if args.parent_pid is not None and args.parent_pid <= 0:
         raise SystemExit("--parent-pid must be positive")
     identity.require_vault_dir()
@@ -113,13 +113,13 @@ def cmd_chat(args):
         identity.require_vault_identity(identity_con)
     finally:
         identity_con.close()
-    port = args.port if args.port is not None else chat_mod.DEFAULT_PORT
+    port = args.port if args.port is not None else server.DEFAULT_PORT
     if args.reload:
         from . import devserver
         return devserver.supervise(args.host, port, parent_pid=args.parent_pid)
     try:
-        chat_mod.serve(args.host, port, parent_pid=args.parent_pid)
-    except chat_mod.ChatError as e:
+        server.serve(args.host, port, parent_pid=args.parent_pid)
+    except server.ChatError as e:
         raise SystemExit(str(e))
 
 
@@ -131,14 +131,14 @@ def cmd_trace(args):
 def _staging_lines(vault: Path) -> list[str]:
     """What sits in the recorder's staging folder. Every `.webm` there is a recording that never
     finished filing; a `.webm.transcript.json` without its `.webm` is a cache that outlived it."""
-    from .recorder import note as record
-    staging = vault / record.STAGING_DIR
+    from .recorder import note as note_writer
+    staging = vault / note_writer.STAGING_DIR
     files = sorted(staging.iterdir()) if staging.is_dir() else []
     names = {f.name for f in files}
     segments: dict[str, list[Path]] = {}
     for f in files:
         if f.suffix == ".webm":
-            segments.setdefault(record.recording_id_from_staged(f.name), []).append(f)
+            segments.setdefault(note_writer.recording_id_from_staged(f.name), []).append(f)
     orphans = sum(1 for f in files if f.name.endswith(".webm.transcript.json")
                   and f.name.removesuffix(".transcript.json") not in names)
 
@@ -146,7 +146,7 @@ def _staging_lines(vault: Path) -> list[str]:
         lines = ["stranded:  none"]
     else:
         n = len(segments)
-        lines = [f"stranded:  {n} recording{'s' if n > 1 else ''} in {record.STAGING_DIR} "
+        lines = [f"stranded:  {n} recording{'s' if n > 1 else ''} in {note_writer.STAGING_DIR} "
                  "never filed  ⚠"]
         for rid, segs in segments.items():
             # The id starts with when recording began; a name without one falls back to disk.

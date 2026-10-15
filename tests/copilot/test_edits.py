@@ -3,7 +3,7 @@ applies. Nothing here writes a note. The note as blocks with handles is test_blo
 
 import pytest
 
-from slim.copilot import edits, blocks as edits_note
+from slim.copilot import edits, blocks
 from slim.index import chunk
 from slim.copilot.edits import apply, apply_splices, ollama_tools, splices
 from slim.copilot.blocks import Note, ToolError
@@ -134,7 +134,7 @@ def test_a_recordings_parts_are_refused_and_new_text_goes_after_the_meeting_bloc
         apply(note, "insert", {"before": "b1", "markdown": "x"}, change_id="c1", step=1)
     before = note.text()
     apply(note, "insert", {"after": "b3", "markdown": "## Takeaways\n\n- one"}, change_id="c1", step=1)
-    take = lambda t: [t[s:e] for s, e in edits_note.protected_ranges(t)]
+    take = lambda t: [t[s:e] for s, e in blocks.protected_ranges(t)]
     assert take(before) == take(note.text()) and note.text().endswith("## Takeaways\n\n- one\n")
 
 
@@ -436,7 +436,7 @@ LONG = "---\ntitle: x\n---\n\n## Top\n\ntop\n\n```slim-meeting\nid: 1\nkind: x\n
 
 
 def _u16_ranges(text):
-    return [(edits.u16(text[:s]), edits.u16(text[:e])) for s, e in edits_note.protected_ranges(text)]
+    return [(edits.u16(text[:s]), edits.u16(text[:e])) for s, e in blocks.protected_ranges(text)]
 
 
 def test_a_move_is_its_chunk_taken_out_and_put_back_never_a_neighbour_moved_round_it():
@@ -561,9 +561,9 @@ def test_new_html_blocks_are_refused_with_obsidians_own_ways_to_fold():
 
 
 def test_a_quote_of_long_words_is_cut_at_a_word_by_characters_too():
-    said = edits_note.quote("Use cases: sentiment/hate-speech detection, knowledge discovery, dialogue/chatbots, documents")
+    said = blocks.quote("Use cases: sentiment/hate-speech detection, knowledge discovery, dialogue/chatbots, documents")
     assert said == "“Use cases: sentiment/hate-speech detection, knowledge…”"
-    assert len(said) <= edits_note.QUOTE_CHARS + 3
+    assert len(said) <= blocks.QUOTE_CHARS + 3
 
 
 def test_html_shown_as_code_is_text_not_an_html_block():
@@ -638,7 +638,7 @@ def test_html_after_an_unmatched_backtick_is_not_code():
 
 
 def test_a_quote_of_one_long_word_is_cut_too():
-    assert len(edits_note.quote("x" * 100)) <= edits_note.QUOTE_CHARS + 3 and edits_note.quote("x" * 100).endswith("…”")
+    assert len(blocks.quote("x" * 100)) <= blocks.QUOTE_CHARS + 3 and blocks.quote("x" * 100).endswith("…”")
 
 
 # --- second review (2026-10-13) ---

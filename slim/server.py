@@ -33,8 +33,8 @@ from urllib.parse import parse_qs, urlparse
 
 from . import config, db
 from .recorder import routes
-from .copilot import (blocks, context, edits as edits_mod, images as copilot_images,
-                      skills as skills_mod, threads as threads_mod, turn as copilot_mod)
+from .copilot import (blocks, context, edits as edits_mod, images as chat_images,
+                      skills as skills_mod, threads as threads_mod, turn as copilot_turn)
 
 DEFAULT_PORT = 7546          # "slim" on a phone keypad
 MAX_QUESTION_CHARS = 4000
@@ -46,7 +46,7 @@ MAX_BODY_BYTES = 64_000
 MAX_THREAD_BODY_BYTES = threads_mod.MAX_THREAD_BYTES + 100_000
 MAX_COPILOT_STREAM_BODY_BYTES = (
     MAX_THREAD_BODY_BYTES
-    + copilot_images.MAX_IMAGES_PER_TURN * ((copilot_images.MAX_IMAGE_BYTES + 2) // 3 * 4 + 4096)
+    + chat_images.MAX_IMAGES_PER_TURN * ((chat_images.MAX_IMAGE_BYTES + 2) // 3 * 4 + 4096)
 )
 RESTORE_REFUSED = ("This recording changed since (a new transcript or card edit); restoring would remove "
                    "that. Use ↺ on the changes instead.")
@@ -117,8 +117,8 @@ def clean_history(raw) -> list[dict]:
         turn = {"role": role, "text": text.strip()}
         if role == "you" and item.get("attachments"):
             try:
-                turn["attachments"] = copilot_images.clean_refs(item.get("attachments"))
-            except copilot_images.ImageError:
+                turn["attachments"] = chat_images.clean_refs(item.get("attachments"))
+            except chat_images.ImageError:
                 pass                         # malformed history never bricks a new question
         turns.append(turn)
     return turns
@@ -278,7 +278,7 @@ class _Handler(BaseHTTPRequestHandler):
         thread_id = (query.get("thread") or [""])[0]
         image_id = (query.get("id") or [""])[0]
         try:
-            found = copilot_images.image_path(thread_id, image_id)
+            found = chat_images.image_path(thread_id, image_id)
         except threads_mod.ThreadError as exc:
             self._send_json(400, {"error": str(exc)})
             return
@@ -315,7 +315,7 @@ class _Handler(BaseHTTPRequestHandler):
         con = db.connect()
         try:
             payload = context.context_payload(con, config.VAULT, path, related=related)
-        except copilot_mod.CopilotError as exc:
+        except copilot_turn.CopilotError as exc:
             self._send_json(400, {"error": str(exc)})
             return
         except Exception as exc:
@@ -416,12 +416,12 @@ class _Handler(BaseHTTPRequestHandler):
         thread_id = data.get("thread_id")
         image_lock = None
         try:
-            image_lock = copilot_images.request_lock(thread_id)
+            image_lock = chat_images.request_lock(thread_id)
             image_lock.acquire()
-            attachments, created = copilot_images.save_images(thread_id, data.get("images"))
-            attachments, images = copilot_images.load_refs(thread_id, attachments)
-            history = copilot_images.hydrate_history(thread_id, history)
-        except (copilot_images.ImageError, threads_mod.ThreadError) as exc:
+            attachments, created = chat_images.save_images(thread_id, data.get("images"))
+            attachments, images = chat_images.load_refs(thread_id, attachments)
+            history = chat_images.hydrate_history(thread_id, history)
+        except (chat_images.ImageError, threads_mod.ThreadError) as exc:
             if image_lock is not None:
                 image_lock.release()
             self._send_json(400, {"error": str(exc)})
@@ -479,7 +479,7 @@ class _Handler(BaseHTTPRequestHandler):
         completed = False
         try:
             con = db.connect()
-            turn = copilot_mod.run_turn(
+            turn = copilot_turn.run_turn(
                 con, source_id, question, history, mode, vault=config.VAULT, images=images,
                 selection=selection, selection_from=selection_from, doc=doc, doc_hash=doc_hash,
                 on_stage=lambda stage: emit("stage", {"stage": stage}),
@@ -501,7 +501,7 @@ class _Handler(BaseHTTPRequestHandler):
             if con is not None:
                 con.close()
             if not (completed or before):       # a run that started keeps them (see on_edit)
-                copilot_images.discard_created(created)
+                chat_images.discard_created(created)
             image_lock.release()
 
     def _read_json_body(self, max_bytes: int = MAX_BODY_BYTES) -> dict | None:

@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from slim import server as chat, cli, config
+from slim import server, cli, config
 from slim.vault import identity
 
 
@@ -23,20 +23,20 @@ from slim.vault import identity
 
 @pytest.mark.parametrize("host", ["0.0.0.0", "", "192.168.1.23", "10.0.0.5", "example.com"])
 def test_non_loopback_bind_is_refused_before_a_socket_exists(host):
-    with pytest.raises(chat.ChatError):
-        chat.make_server(host, 0)
+    with pytest.raises(server.ChatError):
+        server.make_server(host, 0)
 
 
 @pytest.mark.parametrize("host", ["127.0.0.1", "localhost"])
 def test_loopback_binds_are_accepted(host):
-    server = chat.make_server(host, 0)
-    server.server_close()
+    httpd = server.make_server(host, 0)
+    httpd.server_close()
 
 
 def test_validate_accepts_the_whole_loopback_range():
     # macOS only has the 127.0.0.1 alias configured by default, so don't BIND to .5 —
     # but the validator must not be narrower than "loopback".
-    chat.validate_bind_host("127.0.0.5")
+    server.validate_bind_host("127.0.0.5")
 
 
 @pytest.mark.parametrize("value,ok", [
@@ -51,7 +51,7 @@ def test_validate_accepts_the_whole_loopback_range():
     ("", False),
 ])
 def test_host_header_gate(value, ok):
-    assert chat._host_header_allowed(value) is ok
+    assert server._host_header_allowed(value) is ok
 
 
 # --- the stale-server guard (2026-08-23) -----------------------------------------------------
@@ -60,34 +60,34 @@ def test_host_header_gate(value, ok):
 # code that had already been fixed on disk.
 
 def test_a_server_older_than_the_code_reports_itself_stale(monkeypatch):
-    monkeypatch.setattr(chat, "SERVER_STARTED", 0.0)     # started at the epoch
-    state = chat.code_state()
+    monkeypatch.setattr(server, "SERVER_STARTED", 0.0)     # started at the epoch
+    state = server.code_state()
     assert state["stale"] is True
     assert state["newest_file"].endswith(".py")
 
 
 def test_a_server_started_after_the_last_edit_is_not_stale(monkeypatch):
     import time as _time
-    monkeypatch.setattr(chat, "SERVER_STARTED", _time.time() + 3600)
-    assert chat.code_state()["stale"] is False
+    monkeypatch.setattr(server, "SERVER_STARTED", _time.time() + 3600)
+    assert server.code_state()["stale"] is False
 
 
 def test_health_never_refuses_to_serve(monkeypatch):
     """⚠ Reporting it is the whole job. Refusing on stale would turn a warning into an outage
     mid-recording — the failure this is meant to prevent, not cause."""
-    monkeypatch.setattr(chat, "SERVER_STARTED", 0.0)
-    assert chat.code_state()["ok"] is True
+    monkeypatch.setattr(server, "SERVER_STARTED", 0.0)
+    assert server.code_state()["ok"] is True
 
 
 def test_managed_health_reports_the_obsidian_parent(monkeypatch):
-    monkeypatch.setattr(chat, "_process_alive", lambda pid: pid == 4321)
-    state = chat.code_state(parent_pid=4321)
+    monkeypatch.setattr(server, "_process_alive", lambda pid: pid == 4321)
+    state = server.code_state(parent_pid=4321)
     assert state["managed_parent_pid"] == 4321
     assert state["managed_parent_alive"] is True
 
 
 def test_terminal_health_has_no_managed_parent():
-    state = chat.code_state()
+    state = server.code_state()
     assert state["managed_parent_pid"] is None
     assert state["managed_parent_alive"] is None
 
@@ -98,30 +98,30 @@ def test_health_reports_the_serving_vault(monkeypatch, tmp_path):
     vault = tmp_path / "ServedVault"
     monkeypatch.setattr(config, "VAULT", vault)
 
-    assert chat.code_state()["vault"] == str(vault)
+    assert server.code_state()["vault"] == str(vault)
 
 
 def test_parent_watch_stops_the_server_when_obisidian_exits(monkeypatch):
     stopped = threading.Event()
-    server = type("Server", (), {"shutdown": stopped.set})()
-    monkeypatch.setattr(chat, "_process_alive", lambda _pid: False)
+    httpd = type("Server", (), {"shutdown": stopped.set})()
+    monkeypatch.setattr(server, "_process_alive", lambda _pid: False)
 
-    worker = chat._stop_with_parent(server, 4321, interval=0.001)
+    worker = server._stop_with_parent(httpd, 4321, interval=0.001)
 
     worker.join(timeout=1)
     assert stopped.is_set()
 
 
 def test_a_missing_managed_parent_refuses_to_bind(monkeypatch):
-    monkeypatch.setattr(chat, "_process_alive", lambda _pid: False)
-    with pytest.raises(chat.ChatError, match="parent process 4321 is not running"):
-        chat.serve("127.0.0.1", 0, parent_pid=4321)
+    monkeypatch.setattr(server, "_process_alive", lambda _pid: False)
+    with pytest.raises(server.ChatError, match="parent process 4321 is not running"):
+        server.serve("127.0.0.1", 0, parent_pid=4321)
 
 
 @pytest.mark.parametrize("parent_pid", [0, -1])
 def test_a_managed_parent_pid_must_be_positive(parent_pid):
-    with pytest.raises(chat.ChatError, match="parent pid must be positive"):
-        chat.make_server("127.0.0.1", 0, parent_pid=parent_pid)
+    with pytest.raises(server.ChatError, match="parent pid must be positive"):
+        server.make_server("127.0.0.1", 0, parent_pid=parent_pid)
 
 
 def test_chat_cli_passes_the_managed_parent_to_the_server(monkeypatch):
@@ -129,7 +129,7 @@ def test_chat_cli_passes_the_managed_parent_to_the_server(monkeypatch):
     monkeypatch.setattr(identity, "require_vault_dir", lambda: None)
     monkeypatch.setattr(cli.db, "connect", lambda: SimpleNamespace(close=lambda: None))
     monkeypatch.setattr(identity, "require_vault_identity", lambda _con: None)
-    monkeypatch.setattr(chat, "serve", lambda host, port, *, parent_pid: called.update(
+    monkeypatch.setattr(server, "serve", lambda host, port, *, parent_pid: called.update(
         host=host, port=port, parent_pid=parent_pid))
 
     cli.cmd_chat(SimpleNamespace(host="127.0.0.1", port=7654, reload=False,
@@ -165,14 +165,14 @@ RECORD_WRITE_ROUTES = [
 
 @pytest.fixture
 def server_url():
-    server = chat.make_server("127.0.0.1", 0)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    httpd = server.make_server("127.0.0.1", 0)
+    worker = threading.Thread(target=httpd.serve_forever, daemon=True)
     worker.start()
     try:
-        yield f"http://127.0.0.1:{server.server_address[1]}"
+        yield f"http://127.0.0.1:{httpd.server_address[1]}"
     finally:
-        server.shutdown()
-        server.server_close()
+        httpd.shutdown()
+        httpd.server_close()
         worker.join(timeout=2)
 
 

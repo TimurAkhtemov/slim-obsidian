@@ -59,7 +59,7 @@ def test_the_transcript_is_untouched_by_an_edit(tmp_path, monkeypatch):
 
 
 def test_review_edits_persist_both_summary_and_notes(tmp_path, monkeypatch):
-    from slim.recorder import note as record, review
+    from slim.recorder import note as note_writer, review
     r = _existing(tmp_path, monkeypatch)
     review.handle_record_apply(note=str(r.note.relative_to(tmp_path)),
                                       dest_dir="Capture/_unfiled", type_tag="lecture",
@@ -68,7 +68,7 @@ def test_review_edits_persist_both_summary_and_notes(tmp_path, monkeypatch):
     text = r.note.read_text(encoding="utf-8")
     assert "Edited AI summary." in text
     assert "- note added during review" in text
-    block = record.split_meeting_block(text)
+    block = note_writer.split_meeting_block(text)
     assert block is not None
     assert block.body.rstrip().endswith("verbatim words")
 

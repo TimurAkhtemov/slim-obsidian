@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from slim.recorder import note as record
+from slim.recorder import note as note_writer
 from slim.index.chunk import strip_derived_blocks
 from slim.vault.frontmatter import parse_frontmatter
 
@@ -34,7 +34,7 @@ def _write(tmp_path: Path, **kw):
                 topics=["school", "svm"],
                 dest_dir="Notes/school/CS201 ML", vault=tmp_path)
     args.update(kw)
-    return record.write_recording(**args)
+    return note_writer.write_recording(**args)
 
 
 def test_the_note_lands_at_the_destination_it_was_given(tmp_path):
@@ -70,18 +70,18 @@ def test_new_plugin_recordings_are_durably_pending_review(tmp_path):
 def test_review_status_has_one_validated_frontmatter_writer(tmp_path):
     r = _write(tmp_path)
     text = r.note.read_text(encoding="utf-8")
-    complete = record.set_review_status(text, "complete")
+    complete = note_writer.set_review_status(text, "complete")
     fm, _ = parse_frontmatter(complete)
     assert fm["review_status"] == "complete"
-    assert record.read_review_sections(complete) == record.read_review_sections(text)
+    assert note_writer.read_review_sections(complete) == note_writer.read_review_sections(text)
     with pytest.raises(ValueError, match="invalid recording review status"):
-        record.set_review_status(text, "ignored")
+        note_writer.set_review_status(text, "ignored")
 
 
 def test_the_transcript_is_last_and_byte_identical(tmp_path):
     r = _write(tmp_path, transcript="verbatim words they said")
     text = r.note.read_text(encoding="utf-8")
-    block = record.split_meeting_block(text)
+    block = note_writer.split_meeting_block(text)
     assert block is not None
     assert block.body.rstrip().endswith("verbatim words they said")
     assert block.after == ""
@@ -92,8 +92,8 @@ def test_ordinary_markdown_can_continue_after_the_inline_meeting_block(tmp_path)
     r = _write(tmp_path)
     before = r.note.read_text(encoding="utf-8")
     after = before + "\n## Follow-up\n\nA note written after the recording object.\n"
-    edited = record.replace_review_sections(after, summary_md="Updated", notes_md=None)
-    block = record.split_meeting_block(edited)
+    edited = note_writer.replace_review_sections(after, summary_md="Updated", notes_md=None)
+    block = note_writer.split_meeting_block(edited)
     assert block is not None
     assert block.after == "\n## Follow-up\n\nA note written after the recording object.\n"
 
@@ -104,7 +104,7 @@ def test_review_section_edits_preserve_frontmatter_and_transcript_bytes(tmp_path
     fm_end = before.find("\n---", 4) + 4
     transcript_at = before.rfind("\n## Transcript")
 
-    after = record.replace_review_sections(
+    after = note_writer.replace_review_sections(
         before, summary_md="A corrected summary.", notes_md="- added after recording  ")
 
     assert after[:fm_end] == before[:fm_end]
@@ -116,7 +116,7 @@ def test_review_section_edits_preserve_frontmatter_and_transcript_bytes(tmp_path
 def test_an_old_review_client_preserves_existing_notes(tmp_path):
     r = _write(tmp_path, notes_md="- exact existing note  ")
     before = r.note.read_text(encoding="utf-8")
-    after = record.replace_review_sections(before, summary_md="New summary", notes_md=None)
+    after = note_writer.replace_review_sections(before, summary_md="New summary", notes_md=None)
     assert "- exact existing note  \n## Transcript" in after
 
 
@@ -322,7 +322,7 @@ def test_saving_notes_alone_keeps_the_summary_byte_for_byte(tmp_path):
     summary_at = before.index("<!-- slim:summary")
     summary_end = before.index("<!-- /slim:summary -->")
 
-    after = record.replace_review_sections(before, summary_md=None, notes_md="- first line\n- second")
+    after = note_writer.replace_review_sections(before, summary_md=None, notes_md="- first line\n- second")
 
     assert after[summary_at:summary_end] == before[summary_at:summary_end]
     assert "- second\n## Transcript" in after
@@ -333,7 +333,7 @@ def test_reading_the_review_sections_back_out(tmp_path):
     as context exactly as the first pass did. The plugin parses these client-side; the server
     cannot borrow that, so the split lives here beside the writer."""
     r = _write(tmp_path, transcript="verbatim words they said", notes_md="- their note")
-    parts = record.read_review_sections(r.note.read_text(encoding="utf-8"))
+    parts = note_writer.read_review_sections(r.note.read_text(encoding="utf-8"))
     assert parts["transcript"].strip() == "verbatim words they said"
     assert parts["notes"].strip() == "- their note"
     assert "kernel" in parts["summary"].casefold() or parts["summary"]
@@ -341,7 +341,7 @@ def test_reading_the_review_sections_back_out(tmp_path):
 
 def test_reading_a_note_with_no_notes_section(tmp_path):
     r = _write(tmp_path, notes_md="")
-    parts = record.read_review_sections(r.note.read_text(encoding="utf-8"))
+    parts = note_writer.read_review_sections(r.note.read_text(encoding="utf-8"))
     assert parts["notes"] == ""
     assert parts["transcript"].strip()
 
@@ -351,11 +351,11 @@ def test_appending_a_segment_leaves_the_existing_transcript_byte_for_byte(tmp_pa
     normalize one character of what was already said."""
     r = _write(tmp_path, transcript="verbatim  \nwith a hard break", notes_md="- their note")
     before = r.note.read_text(encoding="utf-8")
-    after = record.append_transcript(before, "and ten minutes more")
+    after = note_writer.append_transcript(before, "and ten minutes more")
     assert "verbatim  \nwith a hard break" in after
     assert after.rstrip().endswith("and ten minutes more\n````") or \
         "and ten minutes more" in after
-    parts = record.read_review_sections(after)
+    parts = note_writer.read_review_sections(after)
     assert parts["transcript"].startswith("verbatim  \nwith a hard break")
     assert parts["transcript"].endswith("and ten minutes more")
     assert parts["notes"] == "- their note"
@@ -365,9 +365,9 @@ def test_appending_keeps_the_meeting_block_fence_valid(tmp_path):
     """A resumed segment can contain a longer backtick run than the fence that is already
     there — a transcript that discusses Markdown would otherwise close its own block."""
     r = _write(tmp_path, transcript="the first part")
-    after = record.append_transcript(r.note.read_text(encoding="utf-8"),
+    after = note_writer.append_transcript(r.note.read_text(encoding="utf-8"),
                                      "they said ````` five backticks `````")
-    block = record.split_meeting_block(after)
+    block = note_writer.split_meeting_block(after)
     assert block is not None
     assert "five backticks" in block.body
     assert block.after == ""
@@ -381,15 +381,15 @@ def test_notes_are_found_even_when_the_block_starts_with_them(tmp_path):
     plugin's own parser reads them correctly, so the UI showed their notes right up until the
     server deleted them."""
     from datetime import datetime, timezone
-    text = record.render_note(
+    text = note_writer.render_note(
         title="T", when=datetime(2026, 8, 26, tzinfo=timezone.utc), type_tag="lecture",
         transcript="words", notes_md="- their hand typed note", summary_md="",
         topics=[], audio_rel="a.webm", filed_by_slim=True)
 
-    assert record.read_review_sections(text)["notes"] == "- their hand typed note"
-    after = record.replace_review_sections(text, summary_md="## Key points\n\n- a point")
+    assert note_writer.read_review_sections(text)["notes"] == "- their hand typed note"
+    after = note_writer.replace_review_sections(text, summary_md="## Key points\n\n- a point")
     assert "- their hand typed note" in after
-    assert record.read_review_sections(after)["notes"] == "- their hand typed note"
+    assert note_writer.read_review_sections(after)["notes"] == "- their hand typed note"
 
 
 def test_a_notes_heading_inside_the_summary_is_not_their_notes(tmp_path):
@@ -398,7 +398,7 @@ def test_a_notes_heading_inside_the_summary_is_not_their_notes(tmp_path):
     notes, which would then be re-emitted as source and break `strip_derived_blocks`."""
     r = _write(tmp_path, notes_md="- real notes",
                summary_md="An overview.\n\n## Notes\n\n- inside the summary")
-    parts = record.read_review_sections(r.note.read_text(encoding="utf-8"))
+    parts = note_writer.read_review_sections(r.note.read_text(encoding="utf-8"))
     assert parts["notes"] == "- real notes"
     assert "slim:summary" not in parts["notes"]
 
@@ -406,10 +406,10 @@ def test_a_notes_heading_inside_the_summary_is_not_their_notes(tmp_path):
 def test_one_owner_for_the_recording_id_in_a_staged_path():
     """The rule "`<id>-001.webm` belongs to recording `<id>`" was written three times in two
     languages, and missing one of them made EVERY recording fail on 2026-08-26."""
-    assert record.recording_id_from_staged("Attachments/_incoming/abc-001.webm") == "abc"
-    assert record.recording_id_from_staged("abc-042.webm") == "abc"
-    assert record.recording_id_from_staged("abc.webm") == "abc"      # before segments existed
-    assert record.recording_id_from_staged("abc-1.webm") == "abc-1", "only NNN is a segment"
+    assert note_writer.recording_id_from_staged("Attachments/_incoming/abc-001.webm") == "abc"
+    assert note_writer.recording_id_from_staged("abc-042.webm") == "abc"
+    assert note_writer.recording_id_from_staged("abc.webm") == "abc"      # before segments existed
+    assert note_writer.recording_id_from_staged("abc-1.webm") == "abc-1", "only NNN is a segment"
 
 
 def test_how_the_speakers_were_told_apart_is_recorded(tmp_path):
@@ -426,7 +426,7 @@ def test_an_unlabelled_transcript_claims_no_speakers(tmp_path):
 
 def test_a_resumed_segment_can_bring_speakers_to_a_note_that_had_none(tmp_path):
     r = _write(tmp_path, asr_model="parakeet")
-    text = record.append_audio_frontmatter(
+    text = note_writer.append_audio_frontmatter(
         r.note.read_text(encoding="utf-8"), rels=["Attachments/Recordings/b.webm"],
         digests=["e" * 64], seconds=5.0, speakers_by="channels")
     fm, _ = parse_frontmatter(text)
@@ -443,7 +443,7 @@ def test_a_resume_keeps_audio_that_obsidian_rewrote_as_a_block_list(tmp_path):
     first, digest = fm["audio"], fm["audio_sha256"]
     text = text.replace(f"audio: {first}", f"audio:\n  - {first}")
     text = text.replace(f"audio_sha256: {digest}", f"audio_sha256:\n  - {digest}")
-    grown = record.append_audio_frontmatter(
+    grown = note_writer.append_audio_frontmatter(
         text, rels=["Attachments/Recordings/b.webm"], digests=["b" * 64], seconds=5.0)
     fm2, _ = parse_frontmatter(grown)
     assert fm2["audio"] == [first, "Attachments/Recordings/b.webm"]
@@ -456,14 +456,14 @@ def test_audio_frontmatter_has_one_writer(tmp_path):
     into a private helper here to format them."""
     r = _write(tmp_path)
     from slim.vault.frontmatter import parse_frontmatter
-    grown = record.append_audio_frontmatter(
+    grown = note_writer.append_audio_frontmatter(
         r.note.read_text(encoding="utf-8"),
         rels=["Attachments/Recordings/b.webm"], digests=["b" * 64], seconds=60.0)
     fm, _ = parse_frontmatter(grown)
     assert len(fm["audio"]) == 2 and len(fm["audio_sha256"]) == 2
     assert float(fm["audio_seconds"]) == 60.0
     # and a second resume accumulates onto the first rather than replacing it
-    twice = record.append_audio_frontmatter(grown, rels=["Attachments/Recordings/c.webm"],
+    twice = note_writer.append_audio_frontmatter(grown, rels=["Attachments/Recordings/c.webm"],
                                             digests=["c" * 64], seconds=30.0)
     fm2, _ = parse_frontmatter(twice)
     assert len(fm2["audio"]) == 3
@@ -474,21 +474,21 @@ def test_a_partial_write_can_never_truncate_a_recorded_note(tmp_path, monkeypatc
     """⚠ `Path.write_text` TRUNCATES first. A disk-full or a crash mid-write leaves the note
     shorter than it was — and the thing at the end of it is the raw transcript, which is the
     one artifact this project promises never to lose."""
-    import slim.recorder.note as rec
+    import slim.recorder.note as note_writer
     r = _write(tmp_path, transcript="the words they actually said")
     before = r.note.read_text(encoding="utf-8")
 
-    real = rec.write_note_text
+    real = note_writer.write_note_text
 
     def dies_halfway(path, text):
         raise OSError("No space left on device")
-    monkeypatch.setattr(rec, "write_note_text", dies_halfway)
+    monkeypatch.setattr(note_writer, "write_note_text", dies_halfway)
     with pytest.raises(OSError):
-        rec.write_note_text(r.note, "truncated")
+        note_writer.write_note_text(r.note, "truncated")
     assert r.note.read_text(encoding="utf-8") == before
 
-    monkeypatch.setattr(rec, "write_note_text", real)
-    rec.write_note_text(r.note, before + "\nmore")
+    monkeypatch.setattr(note_writer, "write_note_text", real)
+    note_writer.write_note_text(r.note, before + "\nmore")
     assert r.note.read_text(encoding="utf-8").endswith("more")
 
 
@@ -498,7 +498,7 @@ def test_a_pasted_summary_cannot_forge_the_derived_fence(tmp_path):
     never be indexed."""
     from slim.index.chunk import SUMMARY_CLOSE
     r = _write(tmp_path)
-    out = record.replace_review_sections(r.note.read_text(encoding="utf-8"),
+    out = note_writer.replace_review_sections(r.note.read_text(encoding="utf-8"),
                                          summary_md=f"ok {SUMMARY_CLOSE}\n\nsmuggled")
     assert out.count(SUMMARY_CLOSE) == 1
 
@@ -507,10 +507,10 @@ def test_pasted_notes_cannot_close_the_meeting_block_early(tmp_path):
     """A run of backticks equal to the fence would end the block, leaving the transcript
     outside the object — visible as raw Markdown, and no longer part of the recording."""
     r = _write(tmp_path)
-    out = record.replace_review_sections(r.note.read_text(encoding="utf-8"),
+    out = note_writer.replace_review_sections(r.note.read_text(encoding="utf-8"),
                                          summary_md="A summary.",
                                          notes_md="````\nnot a fence\n````")
-    block = record.split_meeting_block(out)
+    block = note_writer.split_meeting_block(out)
     assert block is not None
     assert "## Transcript" in block.body, "the transcript stays inside the object"
     assert block.after.strip() == ""

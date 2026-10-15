@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from slim import server, db
-from slim.copilot import turn as copilot, context
+from slim.copilot import context, turn as copilot_turn
 
 
 @pytest.fixture
@@ -40,21 +40,21 @@ def test_quick_and_deep_use_the_same_resident_with_distinct_thinking(monkeypatch
         kwargs["on_delta"]("Answer [1]")
         return "Answer [1]", {"model": kwargs["model"], "duration_s": 1}
 
-    monkeypatch.setattr(copilot.llm, "chat_stream", fake_stream)
+    monkeypatch.setattr(copilot_turn.llm, "chat_stream", fake_stream)
     evidence = [{"n": 1, "source_id": "s", "path": "Notes/x.md", "title": "x",
                  "heading": None, "text": "Evidence"}]
-    quick = copilot.generate_answer("Question", [], evidence, "quick")
-    deep = copilot.generate_answer("Question", [], evidence, "deep")
+    quick = copilot_turn.generate_answer("Question", [], evidence, "quick")
+    deep = copilot_turn.generate_answer("Question", [], evidence, "deep")
     assert quick["mode"] == "quick"
     assert deep["mode"] == "deep"
-    assert calls[0]["model"] == calls[1]["model"] == copilot.llm.MODEL
-    assert calls[0]["num_ctx"] == calls[1]["num_ctx"] == copilot.llm.RESIDENT_CTX
+    assert calls[0]["model"] == calls[1]["model"] == copilot_turn.llm.MODEL
+    assert calls[0]["num_ctx"] == calls[1]["num_ctx"] == copilot_turn.llm.RESIDENT_CTX
     assert calls[0]["think"] is False
     assert calls[1]["think"] is True
     # Thinking tokens bill against num_predict (llm.chat's docstring): deep must budget for
     # reasoning AND the answer, the way summarize's THINKING_PREDICT_MULTIPLIER does.
-    assert calls[1]["num_predict"] == copilot.DEEP_NUM_PREDICT
-    assert copilot.DEEP_NUM_PREDICT >= 3 * calls[0]["num_predict"]
+    assert calls[1]["num_predict"] == copilot_turn.DEEP_NUM_PREDICT
+    assert copilot_turn.DEEP_NUM_PREDICT >= 3 * calls[0]["num_predict"]
 
 
 def test_auto_mode_is_refused(con, vault, monkeypatch):
@@ -64,28 +64,28 @@ def test_auto_mode_is_refused(con, vault, monkeypatch):
     write(vault, "Notes/school/lesson.md", "gradient descent")
     source = context.sync_note(con, vault, "Notes/school/lesson.md", embed=False)
     monkeypatch.setattr(context.search_mod, "hybrid", lambda *a, **k: [])
-    with pytest.raises(copilot.CopilotError, match="must be quick or deep"):
-        copilot.run_turn(con, source["id"], "q", [], "auto")
+    with pytest.raises(copilot_turn.CopilotError, match="must be quick or deep"):
+        copilot_turn.run_turn(con, source["id"], "q", [], "auto")
 
 
 def test_sources_come_from_a_bounded_follow_up_on_the_same_prefix(monkeypatch):
     # No markers in the prose and no trailer contract: the pack has no numbers to cite. After
     # the answer, one temperature-0 JSON call on the same messages names the notes used.
     calls = []
-    monkeypatch.setattr(copilot.llm, "chat_stream",
+    monkeypatch.setattr(copilot_turn.llm, "chat_stream",
                         lambda messages, **kwargs: ("Use arr[0] here; see [2019].", {"duration_s": 1}))
 
     def fake_json(messages, schema, **kwargs):
         calls.append((messages, schema, kwargs))
         return {"notes": [2]}, {"duration_s": 0.4}
 
-    monkeypatch.setattr(copilot.llm, "chat_json", fake_json)
+    monkeypatch.setattr(copilot_turn.llm, "chat_json", fake_json)
     evidence = [
         {"n": 1, "source_id": "a", "path": "Notes/a.md", "title": "Alpha", "heading": "One", "text": "E"},
         {"n": 2, "source_id": "a", "path": "Notes/a.md", "title": "Alpha", "heading": "Two", "text": "F"},
         {"n": 3, "source_id": "b", "path": "Notes/b.md", "title": "Beta", "heading": None, "text": "G"},
     ]
-    got = copilot.generate_answer("Question", [], evidence, "quick")
+    got = copilot_turn.generate_answer("Question", [], evidence, "quick")
     assert got["answer"] == "Use arr[0] here; see [2019]."          # never rewritten
     assert [item["path"] for item in got["citations"]] == ["Notes/b.md"]   # choice 2 = the second NOTE
     (messages, schema, kwargs), = calls
@@ -97,17 +97,17 @@ def test_sources_come_from_a_bounded_follow_up_on_the_same_prefix(monkeypatch):
 
 
 def test_a_failed_sources_call_leaves_the_answer_standing(monkeypatch):
-    monkeypatch.setattr(copilot.llm, "chat_stream",
+    monkeypatch.setattr(copilot_turn.llm, "chat_stream",
                         lambda messages, **kwargs: ("Answer", {"duration_s": 1}))
-    monkeypatch.setattr(copilot.llm, "chat_json",
-                        lambda *args, **kwargs: (_ for _ in ()).throw(copilot.llm.LLMError("grammar")))
+    monkeypatch.setattr(copilot_turn.llm, "chat_json",
+                        lambda *args, **kwargs: (_ for _ in ()).throw(copilot_turn.llm.LLMError("grammar")))
     evidence = [{"n": 1, "source_id": "a", "path": "Notes/a.md", "title": "Alpha", "heading": None, "text": "E"}]
-    got = copilot.generate_answer("Question", [], evidence, "quick")
+    got = copilot_turn.generate_answer("Question", [], evidence, "quick")
     assert got["answer"] == "Answer" and got["citations"] == []
     # No pack, no call at all.
     calls = []
-    monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: calls.append(1) or ({"notes": []}, {}))
-    assert copilot.generate_answer("Question", [], [], "quick")["citations"] == []
+    monkeypatch.setattr(copilot_turn.llm, "chat_json", lambda *a, **k: calls.append(1) or ({"notes": []}, {}))
+    assert copilot_turn.generate_answer("Question", [], [], "quick")["citations"] == []
     assert calls == []
 
 
@@ -118,15 +118,15 @@ def test_persona_and_notes_ride_in_the_system_message(monkeypatch):
         sent["messages"] = messages
         return "Sure.", {"duration_s": 1}
 
-    monkeypatch.setattr(copilot.llm, "chat_stream", fake_stream)
-    monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
+    monkeypatch.setattr(copilot_turn.llm, "chat_stream", fake_stream)
+    monkeypatch.setattr(copilot_turn.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
     evidence = [{"n": 1, "source_id": "s", "path": "Notes/school/CS203/Reading Notes.md",
                  "title": "Reading Notes", "heading": "Learning", "text": "Search vs learning."}]
     history = [{"role": "you", "text": "hi"}, {"role": "slim", "text": "hello"}]
-    got = copilot.generate_answer("Explain this equation.", history, evidence, "quick")
+    got = copilot_turn.generate_answer("Explain this equation.", history, evidence, "quick")
     system, *rest = sent["messages"]
     assert system["role"] == "system"
-    assert system["content"].startswith(copilot.PERSONA)
+    assert system["content"].startswith(copilot_turn.PERSONA)
     assert "About the user" not in system["content"]        # no profile passed, none injected
     assert "### Reading Notes § Learning\nSearch vs learning." in system["content"]
     assert "[1]" not in system["content"]                  # nothing numbered to cite
@@ -145,8 +145,8 @@ def _capture(monkeypatch):
         sent["messages"], sent["kwargs"] = messages, kwargs
         return "Done.", {"duration_s": 1}
 
-    monkeypatch.setattr(copilot.llm, "chat_stream", fake_stream)
-    monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
+    monkeypatch.setattr(copilot_turn.llm, "chat_stream", fake_stream)
+    monkeypatch.setattr(copilot_turn.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
     return sent
 
 
@@ -159,7 +159,7 @@ def test_a_long_answer_reaches_the_model_whole_through_the_server(monkeypatch):
     raw = [{"role": "you", "text": "How could this note be organised?"},
            {"role": "slim", "text": answer}]
     sent = _capture(monkeypatch)
-    got = copilot.generate_answer("Ok make the revisions", server.clean_history(raw), [], "quick")
+    got = copilot_turn.generate_answer("Ok make the revisions", server.clean_history(raw), [], "quick")
     assert sent["messages"][2] == {"role": "assistant", "content": answer}
     assert got["history_dropped"] == 0
 
@@ -167,47 +167,47 @@ def test_a_long_answer_reaches_the_model_whole_through_the_server(monkeypatch):
 def test_every_turn_is_sent_when_the_conversation_fits(monkeypatch):
     history = [{"role": "slim" if i % 2 else "you", "text": f"turn {i}"} for i in range(30)]
     sent = _capture(monkeypatch)
-    copilot.generate_answer("Next", server.clean_history(history), [], "quick")
+    copilot_turn.generate_answer("Next", server.clean_history(history), [], "quick")
     assert [m["content"] for m in sent["messages"][1:-1]] == [f"turn {i}" for i in range(30)]
-    assert sent["kwargs"]["num_ctx"] == copilot.llm.RESIDENT_CTX
+    assert sent["kwargs"]["num_ctx"] == copilot_turn.llm.RESIDENT_CTX
 
 
 def test_a_conversation_too_long_for_the_window_loses_its_oldest_turns_whole(monkeypatch):
-    big = copilot.llm.RESIDENT_CTX * copilot.CHARS_PER_TOKEN // 5
+    big = copilot_turn.llm.RESIDENT_CTX * copilot_turn.CHARS_PER_TOKEN // 5
     history = [{"role": "slim" if i % 2 else "you", "text": f"{i}" + "w" * big} for i in range(8)]
     sent = _capture(monkeypatch)
-    got = copilot.generate_answer("Next", history, [], "deep")
+    got = copilot_turn.generate_answer("Next", history, [], "deep")
     kept = sent["messages"][1:-1]
     assert 0 < len(kept) < len(history)
     # The newest kept, each whole, in order; the window still holds the reply's room.
     assert [m["content"] for m in kept] == [turn["text"] for turn in history[-len(kept):]]
     assert got["history_dropped"] == len(history) - len(kept)
     chars = sum(len(m["content"]) for m in sent["messages"])
-    assert chars / copilot.CHARS_PER_TOKEN + copilot.DEEP_NUM_PREDICT <= copilot.llm.RESIDENT_CTX
-    assert sent["kwargs"]["num_ctx"] == copilot.llm.RESIDENT_CTX
+    assert chars / copilot_turn.CHARS_PER_TOKEN + copilot_turn.DEEP_NUM_PREDICT <= copilot_turn.llm.RESIDENT_CTX
+    assert sent["kwargs"]["num_ctx"] == copilot_turn.llm.RESIDENT_CTX
 
 
 def test_images_count_against_the_window(monkeypatch):
-    room = copilot.llm.RESIDENT_CTX - copilot.QUICK_NUM_PREDICT
-    text = "w" * (room - 2 * copilot.IMAGE_TOKENS) * copilot.CHARS_PER_TOKEN
+    room = copilot_turn.llm.RESIDENT_CTX - copilot_turn.QUICK_NUM_PREDICT
+    text = "w" * (room - 2 * copilot_turn.IMAGE_TOKENS) * copilot_turn.CHARS_PER_TOKEN
     history = [{"role": "you", "text": "old"}, {"role": "slim", "text": text}]
     sent = _capture(monkeypatch)
-    got = copilot.generate_answer("", history, [], "quick", images=["A", "B", "C"])
+    got = copilot_turn.generate_answer("", history, [], "quick", images=["A", "B", "C"])
     assert got["history_dropped"] == 2
     assert [m["role"] for m in sent["messages"]] == ["system", "user"]
 
 
 def test_thinking_that_eats_the_budget_is_a_clear_refusal(monkeypatch):
-    monkeypatch.setattr(copilot.llm, "chat_stream", lambda messages, **kwargs: (
+    monkeypatch.setattr(copilot_turn.llm, "chat_stream", lambda messages, **kwargs: (
         "", {"thinking_chars": 9000, "thinking_ate_the_budget": True, "output_truncated": True}))
-    with pytest.raises(copilot.CopilotError, match="thinking"):
-        copilot.generate_answer("Question", [], [], "deep")
+    with pytest.raises(copilot_turn.CopilotError, match="thinking"):
+        copilot_turn.generate_answer("Question", [], [], "deep")
 
 
 def test_truncated_answer_is_reported_not_passed_off_as_complete(monkeypatch):
-    monkeypatch.setattr(copilot.llm, "chat_stream", lambda messages, **kwargs: (
+    monkeypatch.setattr(copilot_turn.llm, "chat_stream", lambda messages, **kwargs: (
         "Half an answer", {"done_reason": "length", "output_truncated": True}))
-    got = copilot.generate_answer("Question", [], [], "quick")
+    got = copilot_turn.generate_answer("Question", [], [], "quick")
     assert got["verification"]["truncated"] is True
 
 
@@ -220,10 +220,10 @@ def test_deep_thinking_heartbeats_the_stage_so_a_stopped_client_is_noticed(monke
             kwargs["on_thinking"](40)
         return "Answer", {"duration_s": 1}
 
-    monkeypatch.setattr(copilot.llm, "chat_stream", fake_stream)
-    monkeypatch.setattr(copilot, "HEARTBEAT_S", 0.0)
+    monkeypatch.setattr(copilot_turn.llm, "chat_stream", fake_stream)
+    monkeypatch.setattr(copilot_turn, "HEARTBEAT_S", 0.0)
     stages = []
-    copilot.generate_answer("Question", [], [], "deep", on_stage=stages.append)
+    copilot_turn.generate_answer("Question", [], [], "deep", on_stage=stages.append)
     assert stages == ["Thinking deeply"] * 4
 
 
@@ -240,8 +240,8 @@ def answering(monkeypatch, content="Answer", stats=None, seen=None):
         if opts.get("on_delta") and content:
             opts["on_delta"](content)
         return content, dict(stats or {"duration_s": 1})
-    monkeypatch.setattr(copilot.llm, "chat_tools", chat_tools)
-    monkeypatch.setattr(copilot.llm, "chat_stream", chat_stream)
+    monkeypatch.setattr(copilot_turn.llm, "chat_tools", chat_tools)
+    monkeypatch.setattr(copilot_turn.llm, "chat_stream", chat_stream)
 
 
 def test_run_turn_writes_a_replayable_trace(con, vault, monkeypatch):
@@ -251,10 +251,10 @@ def test_run_turn_writes_a_replayable_trace(con, vault, monkeypatch):
     source = context.sync_note(con, vault, "Notes/school/lesson.md", embed=False)
     monkeypatch.setattr(context.search_mod, "hybrid", lambda *args, **kwargs: [])
     answering(monkeypatch, stats={"duration_s": 1, "output_tokens": 5})
-    monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": [1]}, {"duration_s": 0.3}))
+    monkeypatch.setattr(copilot_turn.llm, "chat_json", lambda *a, **k: ({"notes": [1]}, {"duration_s": 0.3}))
     records = []
-    monkeypatch.setattr(copilot.trace, "record", lambda kind, payload: records.append((kind, payload)))
-    copilot.run_turn(con, source["id"], "What is this?", [{"role": "you", "text": "hi"}], "quick",
+    monkeypatch.setattr(copilot_turn.trace, "record", lambda kind, payload: records.append((kind, payload)))
+    copilot_turn.run_turn(con, source["id"], "What is this?", [{"role": "you", "text": "hi"}], "quick",
                      vault=vault)
     (kind, payload), = records
     assert kind == "copilot"
@@ -275,13 +275,13 @@ def test_the_trace_counts_the_turns_the_window_dropped(con, vault, monkeypatch):
     source = context.sync_note(con, vault, "Notes/school/lesson.md", embed=False)
     monkeypatch.setattr(context.search_mod, "hybrid", lambda *args, **kwargs: [])
     answering(monkeypatch)
-    monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
+    monkeypatch.setattr(copilot_turn.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
     records = []
-    monkeypatch.setattr(copilot.trace, "record", lambda kind, payload: records.append(payload))
-    window = "w" * (copilot.llm.RESIDENT_CTX * copilot.CHARS_PER_TOKEN)
+    monkeypatch.setattr(copilot_turn.trace, "record", lambda kind, payload: records.append(payload))
+    window = "w" * (copilot_turn.llm.RESIDENT_CTX * copilot_turn.CHARS_PER_TOKEN)
     history = [{"role": "you", "text": "a" + window}, {"role": "slim", "text": "b" + window},
                {"role": "you", "text": "short"}, {"role": "slim", "text": "reply"}]
-    got = copilot.run_turn(con, source["id"], "What is this?", history, "quick", vault=vault)
+    got = copilot_turn.run_turn(con, source["id"], "What is this?", history, "quick", vault=vault)
     assert got["history_dropped"] == 2
     assert records[0]["history_turns"] == 4 and records[0]["history_dropped"] == 2
 
@@ -292,9 +292,9 @@ def test_run_turn_traces_a_refused_turn(con, vault, monkeypatch):
     monkeypatch.setattr(context.search_mod, "hybrid", lambda *args, **kwargs: [])
     answering(monkeypatch, content="")
     records = []
-    monkeypatch.setattr(copilot.trace, "record", lambda kind, payload: records.append((kind, payload)))
-    with pytest.raises(copilot.CopilotError):
-        copilot.run_turn(con, source["id"], "What is this?", [], "quick", vault=vault)
+    monkeypatch.setattr(copilot_turn.trace, "record", lambda kind, payload: records.append((kind, payload)))
+    with pytest.raises(copilot_turn.CopilotError):
+        copilot_turn.run_turn(con, source["id"], "What is this?", [], "quick", vault=vault)
     (kind, payload), = records
     assert kind == "copilot" and payload["status"] == "failed"
     assert "no answer" in payload["error"]
@@ -308,12 +308,12 @@ def test_a_turn_that_fails_in_a_callback_is_traced_with_the_error_type(con, vaul
     monkeypatch.setattr(context.search_mod, "hybrid", lambda *a, **k: [])
     answering(monkeypatch)
     records = []
-    monkeypatch.setattr(copilot.trace, "record", lambda kind, payload: records.append((kind, payload)))
+    monkeypatch.setattr(copilot_turn.trace, "record", lambda kind, payload: records.append((kind, payload)))
 
     def gone(_stage):
         raise BrokenPipeError(32, "Broken pipe")
     with pytest.raises(BrokenPipeError):
-        copilot.run_turn(con, source["id"], "What is this?", [], "quick", vault=vault, on_stage=gone)
+        copilot_turn.run_turn(con, source["id"], "What is this?", [], "quick", vault=vault, on_stage=gone)
     (kind, payload), = records
     assert kind == "copilot" and payload["status"] == "failed" and payload["error_type"] == "BrokenPipeError"
     assert "duration_ms" in payload and payload["intent"] is False
@@ -324,7 +324,7 @@ def test_a_turn_that_fails_in_a_callback_is_traced_with_the_error_type(con, vaul
 def _answering(monkeypatch, seen: dict):
     monkeypatch.setattr(context.search_mod, "hybrid", lambda *a, **k: [])
     answering(monkeypatch, seen=seen)
-    monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
+    monkeypatch.setattr(copilot_turn.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
 
 
 def test_the_profile_is_never_injected_even_when_the_file_is_there(con, vault, monkeypatch):
@@ -338,9 +338,9 @@ def test_the_profile_is_never_injected_even_when_the_file_is_there(con, vault, m
     source = context.sync_note(con, vault, "Notes/school/lesson.md", embed=False)
     seen = {}
     _answering(monkeypatch, seen)
-    copilot.run_turn(con, source["id"], "q", [], "quick", vault=vault)
+    copilot_turn.run_turn(con, source["id"], "q", [], "quick", vault=vault)
     system = seen["messages"][0]["content"]
-    assert system.startswith(copilot.PERSONA)
+    assert system.startswith(copilot_turn.PERSONA)
     assert "I am Alex" not in system
     assert "About the user" not in system
 
@@ -370,11 +370,11 @@ def test_the_model_sees_the_images_beside_the_passages_it_reads(con, vault, monk
     monkeypatch.setattr(context.search_mod, "hybrid", lambda *args, **kwargs: [])
     sent = {}
     answering(monkeypatch, seen=sent)
-    monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
+    monkeypatch.setattr(copilot_turn.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
     records = []
-    monkeypatch.setattr(copilot.trace, "record", lambda kind, payload: records.append(payload))
+    monkeypatch.setattr(copilot_turn.trace, "record", lambda kind, payload: records.append(payload))
 
-    copilot.run_turn(con, source["id"], "What does the chain rule say?", [], "quick", vault=vault)
+    copilot_turn.run_turn(con, source["id"], "What does the chain rule say?", [], "quick", vault=vault)
 
     *_, shown, asked = sent["messages"]
     assert asked == {"role": "user", "content": "What does the chain rule say?"}
@@ -395,8 +395,8 @@ def test_a_screenshot_heavy_note_sends_only_the_capped_few(con, vault, monkeypat
     monkeypatch.setattr(context.search_mod, "hybrid", lambda *args, **kwargs: [])
     sent = {}
     answering(monkeypatch, seen=sent)
-    monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
-    copilot.run_turn(con, source["id"], "Quiz me", [], "quick", vault=vault)
+    monkeypatch.setattr(copilot_turn.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
+    copilot_turn.run_turn(con, source["id"], "Quiz me", [], "quick", vault=vault)
     shown = sent["messages"][-2]
     assert len(shown["images"]) == context.MAX_NOTE_IMAGES
     assert "`slide-00.png`" in shown["content"]
@@ -408,8 +408,8 @@ def test_a_note_without_images_adds_no_message(con, vault, monkeypatch):
     monkeypatch.setattr(context.search_mod, "hybrid", lambda *args, **kwargs: [])
     sent = {}
     answering(monkeypatch, seen=sent)
-    monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
-    copilot.run_turn(con, source["id"], "Hm?", [], "quick", vault=vault)
+    monkeypatch.setattr(copilot_turn.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
+    copilot_turn.run_turn(con, source["id"], "Hm?", [], "quick", vault=vault)
     assert [m["role"] for m in sent["messages"]] == ["system", "user"]
 
 

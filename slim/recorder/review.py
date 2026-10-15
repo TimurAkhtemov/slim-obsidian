@@ -30,15 +30,15 @@ def handle_record_notes(*, note: str, notes_md: str, vault: Path | None = None) 
     an autosave that surprises. The summary is preserved by `summary_md=None` rather than
     round-tripped through the client, which would one day hand back an empty one.
     """
-    from . import note as record_mod
+    from . import note as note_writer
     from ..config import VAULT as _VAULT
 
     vault = vault or _VAULT
     src = state._vault_path(vault, note)
     with state._note_lock(vault, note):
         text = src.read_text(encoding="utf-8")
-        record_mod.write_note_text(
-            src, record_mod.replace_review_sections(text, summary_md=None, notes_md=notes_md))
+        note_writer.write_note_text(
+            src, note_writer.replace_review_sections(text, summary_md=None, notes_md=notes_md))
     state._index_now(vault, str(src.relative_to(vault)), sweep=False)
     trace.record("record", {"stage": "notes", "note": str(src)})
     return {"note": str(src.relative_to(vault))}
@@ -55,7 +55,7 @@ def handle_record_summary(*, note: str, instructions: str = "", job_id: str = ""
     success while losing what it exists to keep, and blanking a good summary because the model
     died is that shape exactly. This raises and writes nothing.
     """
-    from . import note as record_mod
+    from . import note as note_writer
     from ..capture import summarize
     from ..vault.frontmatter import parse_frontmatter
     from ..config import VAULT as _VAULT
@@ -63,7 +63,7 @@ def handle_record_summary(*, note: str, instructions: str = "", job_id: str = ""
     vault = vault or _VAULT
     src = state._vault_path(vault, note)
     text = src.read_text(encoding="utf-8")
-    parts = record_mod.read_review_sections(text)
+    parts = note_writer.read_review_sections(text)
     if not parts["transcript"].strip():
         raise ValueError("this note has no transcript to summarize")
 
@@ -103,8 +103,8 @@ def handle_record_summary(*, note: str, instructions: str = "", job_id: str = ""
     # takes would hang their notes autosave on every blur.
     with state._note_lock(vault, note):
         current = state._reread_for_write(src, note)
-        current = record_mod.replace_review_sections(current, summary_md=summary_md)
-        record_mod.write_note_text(src, current)
+        current = note_writer.replace_review_sections(current, summary_md=summary_md)
+        note_writer.write_note_text(src, current)
     state._index_now(vault, str(src.relative_to(vault)), sweep=False)
     state._record_progress_update(job_id, stage="done", label="Summary rewritten", detail="")
     trace.record("record", {"stage": "resummarize", "note": str(src),
@@ -123,7 +123,7 @@ def handle_record_apply(*, note: str, dest_dir: str, type_tag: str, topics: list
     inferred and a later pass reverts it. Touching a field therefore also drops `filed_by`,
     whose ABSENCE is this vault's signal for "they declared this".
     """
-    from . import note as record_mod
+    from . import note as note_writer
     from ..capture import summarize
     from ..vault.frontmatter import set_frontmatter
     from ..config import VAULT as _VAULT
@@ -156,15 +156,15 @@ def handle_record_apply(*, note: str, dest_dir: str, type_tag: str, topics: list
         name = src.name
         if title.strip():
             from ..vault import notefile
-            updates["title"] = f'"{record_mod._clean_scalar(title)}"'
+            updates["title"] = f'"{note_writer._clean_scalar(title)}"'
             parts = src.stem.split("--")
             if len(parts) >= 3:
                 name = f"{parts[0]}--{notefile.slug(title)}--{parts[-1]}{src.suffix}"
 
         text = set_frontmatter(text, updates)
-        text = record_mod.set_review_status(text, "complete")
+        text = note_writer.set_review_status(text, "complete")
         text = _strip_frontmatter_key(text, "filed_by")
-        text = record_mod.replace_review_sections(
+        text = note_writer.replace_review_sections(
             text, summary_md=summary_md, notes_md=notes_md)
 
         dest = state._vault_path(vault, dest_dir) / name
@@ -173,7 +173,7 @@ def handle_record_apply(*, note: str, dest_dir: str, type_tag: str, topics: list
             # destination and one was silently lost. A third mover does not get to relearn it.
             raise ValueError(f"refusing to overwrite an existing note at {dest}")
         dest.parent.mkdir(parents=True, exist_ok=True)
-        record_mod.write_note_text(dest, text)
+        note_writer.write_note_text(dest, text)
         if dest != src:
             src.unlink()
 
@@ -188,7 +188,7 @@ def handle_record_review(*, note: str, vault: Path | None = None) -> dict:
 
     Approving the card as it stands is agreeing with where SLIM put it, so `filed_by` goes,
     as it does on apply: its presence means "SLIM guessed and nobody has looked"."""
-    from . import note as record_mod
+    from . import note as note_writer
     from ..vault.frontmatter import parse_frontmatter
     from ..config import VAULT as _VAULT
 
@@ -199,8 +199,8 @@ def handle_record_review(*, note: str, vault: Path | None = None) -> dict:
         fm, _ = parse_frontmatter(text)
         if fm.get("origin") != "recorded":
             raise ValueError("review status is only valid for recorded notes")
-        text = record_mod.set_review_status(text, "complete")
-        record_mod.write_note_text(src, _strip_frontmatter_key(text, "filed_by"))
+        text = note_writer.set_review_status(text, "complete")
+        note_writer.write_note_text(src, _strip_frontmatter_key(text, "filed_by"))
     state._index_now(vault, str(src.relative_to(vault)), sweep=False)
     trace.record("record", {"stage": "review", "note": str(src)})
     return {"note": str(src.relative_to(vault))}

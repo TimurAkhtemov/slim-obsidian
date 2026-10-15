@@ -26,7 +26,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
-from . import blocks as edits_note
+from . import blocks
 from ..index.chunk import TRANSCRIPT_MARKER
 from ..config import EXCLUDED_DIRS
 from .blocks import Block, Note, ToolError
@@ -74,7 +74,7 @@ def _clean_path(raw: str) -> str:
 
 def _markers(text: str) -> tuple[int, int]:
     lines = text.splitlines()
-    return (sum(bool(edits_note._MEETING_OPEN.match(line)) for line in lines),
+    return (sum(bool(blocks._MEETING_OPEN.match(line)) for line in lines),
             sum(line.strip() == TRANSCRIPT_MARKER for line in lines))
 
 
@@ -286,11 +286,11 @@ def _copied(note: Note, markdown: str, mine: range, place: str) -> None:
     (by `heading_key`) brought with most of its section's lines; the heading alone, over text of
     its own, is a repeat on purpose."""
     written = set(_lines(markdown))
-    for heading in edits_note.headings(markdown):
+    for heading in blocks.headings(markdown):
         for k, b in enumerate(note.blocks):
-            if k in mine or not b.level or not any(edits_note.heading_key(h) == edits_note.heading_key(heading) for h in edits_note.headings(b.text)):
+            if k in mine or not b.level or not any(blocks.heading_key(h) == blocks.heading_key(heading) for h in blocks.headings(b.text)):
                 continue
-            body = _lines("".join(c.text for c in note.blocks[k + 1:edits_note._end(note.blocks, k)]))
+            body = _lines("".join(c.text for c in note.blocks[k + 1:blocks._end(note.blocks, k)]))
             if (1 + sum(line in written for line in body)) / (1 + len(body)) < COPY_SHARE:
                 continue
             s = "s" + b.handle[1:]
@@ -300,7 +300,7 @@ def _copied(note: Note, markdown: str, mine: range, place: str) -> None:
 
 def _renames(note: Note, i: int, j: int, markdown: str) -> bool:
     """A whole section replaced by a heading alone: the model meant a rename, not to drop the text."""
-    one = edits_note._spans(markdown.splitlines(keepends=True))
+    one = blocks._spans(markdown.splitlines(keepends=True))
     return (j - i > 1 and note.blocks[i].level > 0 and (i, j) == note.span("s" + note.blocks[i].handle[1:])
             and len(one) == 1 and one[0][0] == "heading")
 
@@ -318,11 +318,11 @@ def lands(note: Note, tool: str, args: dict, markdown: str,
         i, j = note.span(anchor)
         note.check_insert(j if after else i)
         pos, said = note.below_properties(j if after else i)
-        cut = note.cut(pos, edits_note.heading_level(fold(markdown)[0]))
+        cut = note.cut(pos, blocks.heading_level(fold(markdown)[0]))
         if cut and not after:
-            raise edits_note.cut_refused(cut)
+            raise blocks.cut_refused(cut)
         if cut:                         # after a heading or inside a section: after that whole section instead
-            pos, said = cut[1], edits_note.placed(cut)
+            pos, said = cut[1], blocks.placed(cut)
             note.check_insert(pos)
         return pos, pos, anchor, said, False
     i, j, target, trimmed = note.pick(_handle(note, args, "target"), only)
@@ -331,14 +331,14 @@ def lands(note: Note, tool: str, args: dict, markdown: str,
 
 
 def _replace(note: Note, args: dict, ctx: dict):
-    markdown = edits_note.strip_labels(_text(args, "markdown"))
+    markdown = blocks.strip_labels(_text(args, "markdown"))
     i, j, target, trimmed, renames = lands(note, "replace", args, markdown, ctx["only"])
     old = "".join(b.text for b in note.blocks[i:j])
     raw, (markdown, folded) = markdown, fold(markdown, old)
     ctx["targets"] = note.changed(i, i + 1 if renames else j, markdown)
     _own(note, ctx["targets"], target, ctx)
     _written(raw, old, markdown)
-    renamed = f"Renamed {edits_note.quote(note.blocks[i].text)} to {edits_note.quote(markdown)}"
+    renamed = f"Renamed {blocks.quote(note.blocks[i].text)} to {blocks.quote(markdown)}"
     if renames:
         _copied(note, markdown, range(i, i + 1), "to where you want it")
         heading = note.blocks[i].handle
@@ -347,9 +347,9 @@ def _replace(note: Note, args: dict, ctx: dict):
         return needs, renamed, (f"renamed the heading; the section's text is kept:\n"
                                 f"{note.render(new).rstrip()}\n{note.then(i + 1)}")
     _copied(note, markdown, range(i, j), "to where you want it")
-    one = edits_note._spans(markdown.splitlines(keepends=True))
+    one = blocks._spans(markdown.splitlines(keepends=True))
     label = (renamed if j - i == 1 and note.blocks[i].level and len(one) == 1 and one[0][0] == "heading"
-             else f"Rewrote {edits_note.quote(old)}" if markdown else f"Removed {edits_note.quote(old)}")
+             else f"Rewrote {blocks.quote(old)}" if markdown else f"Removed {blocks.quote(old)}")
     needs = note.owners(i, j)
     new = note.replace(i, j, markdown, ctx["id"], keep=note.blocks[i].handle if j - i == 1 else None)
     then, done = note.then(i + len(new)), f"{target} ({trimmed})" if trimmed else target
@@ -381,12 +381,12 @@ def _edit_text(note: Note, args: dict, ctx: dict):
     made = note.replace(i, j, changed.rstrip("\n"), ctx["id"], keep=note.blocks[i].handle if j - i == 1 else None)
     then = note.then(i + len(made))
     shown = fold(new)[0] if folded else new
-    label = f"Changed {edits_note.quote(old)} to {edits_note.quote(shown)}" if new.strip() else f"Removed {edits_note.quote(old)}"
+    label = f"Changed {blocks.quote(old)} to {blocks.quote(shown)}" if new.strip() else f"Removed {blocks.quote(old)}"
     return needs, label, f"edited {target}{_callouts(folded)}; it now reads:\n{note.render(made).rstrip()}\n{then}"
 
 
 def _insert(note: Note, args: dict, ctx: dict):
-    markdown = edits_note.strip_labels(_text(args, "markdown", False) or "")
+    markdown = blocks.strip_labels(_text(args, "markdown", False) or "")
     if not markdown.strip():
         raise ToolError("markdown is empty; write the new text", "empty")
     raw, (markdown, folded) = markdown, fold(markdown)
@@ -400,7 +400,7 @@ def _insert(note: Note, args: dict, ctx: dict):
     new = note.insert(pos, markdown, ctx["id"])
     made = " ".join(b.handle for b in new if b.kind != "blank")
     then = note.then(pos + len(new))
-    return needs, f"Added {edits_note.quote(markdown)}", (f"inserted {made} {where} {anchor}{said}{_callouts(folded)}:\n"
+    return needs, f"Added {blocks.quote(markdown)}", (f"inserted {made} {where} {anchor}{said}{_callouts(folded)}:\n"
                                                f"{note.render(new).rstrip()}\n{then}")
 
 
@@ -420,15 +420,15 @@ def _move(note: Note, args: dict, ctx: dict):
     level = min((b.level for b in note.blocks[i:j] if b.level), default=0)
     cut = note.cut(pos - (j - i) if pos > i else pos, level, note.blocks[:i] + note.blocks[j:])
     if cut and not after:
-        raise edits_note.cut_refused(cut)
+        raise blocks.cut_refused(cut)
     if cut:                             # after the whole section it would cut, counted without the moved blocks
-        pos, said = (cut[1] if cut[1] <= i else cut[1] + (j - i)), edits_note.placed(cut)
+        pos, said = (cut[1] if cut[1] <= i else cut[1] + (j - i)), blocks.placed(cut)
         if pos in (i, j):
             raise ToolError(f"{target} is already right after {cut[0]}", "place")
         note.check_insert(pos)
     needs = note.owners(i, j) | note.owners(k, l)
     ctx["targets"] = [b for b in note.blocks[i:j] if b.kind != "blank"]
-    label = f"Moved {edits_note.quote(''.join(b.text for b in note.blocks[i:j]))}"
+    label = f"Moved {blocks.quote(''.join(b.text for b in note.blocks[i:j]))}"
     moved = ctx["moved"] = note.move(i, j, pos)
     then = note.then(next(n for n, b in enumerate(note.blocks) if b is moved[-1]) + 1)
     where = "after" if after else "before"
@@ -489,7 +489,7 @@ TOOLS: dict[str, dict] = {
 }
 
 
-def _move_splices(before: str, old: list[tuple[Block, str]], blocks: list[Block], moved: list[Block]) -> list[dict]:
+def _move_splices(before: str, old: list[tuple[Block, str]], after: list[Block], moved: list[Block]) -> list[dict]:
     """A move as what it is: the moved blocks taken out, and put in at their new place with the
     blank lines either side gained or lost. Never a line diff of the whole note, which keeps the
     longest run in place and can "move" a short neighbour round it — a recording's meeting block."""
@@ -505,9 +505,9 @@ def _move_splices(before: str, old: list[tuple[Block, str]], blocks: list[Block]
         edits_at[start] = (max(to, stop), said + text)
 
     put(spans[id(moved[0])][0], spans[id(moved[-1])][1], "")
-    if id(blocks[0]) in chunk:
+    if id(after[0]) in chunk:
         put(0, 0, "".join(b.text for b in moved))
-    for k, b in enumerate(blocks):
+    for k, b in enumerate(after):
         if id(b) in chunk:
             continue
         start, end = spans[id(b)]
@@ -515,7 +515,7 @@ def _move_splices(before: str, old: list[tuple[Block, str]], blocks: list[Block]
         # A blank line it gained, or lost beside a list's items: only a block's end ever changes.
         kept = start + (len(old) if b.text == old else len(os.path.commonprefix([old, b.text])))
         tail = b.text[kept - start:]
-        if k + 1 < len(blocks) and id(blocks[k + 1]) in chunk:
+        if k + 1 < len(after) and id(after[k + 1]) in chunk:
             tail += "".join(m.text for m in moved)
         put(kept, end, tail)
     return [{"from": u16(before[:start]), "to": u16(before[:stop]), "insert": text}
@@ -524,7 +524,7 @@ def _move_splices(before: str, old: list[tuple[Block, str]], blocks: list[Block]
 
 def _touches(made: list[dict], before: str) -> bool:
     """Does a splice reach into a recording's own parts? A fail-safe behind every tool's checks."""
-    for start, stop in edits_note.protected_ranges(before):
+    for start, stop in blocks.protected_ranges(before):
         lo, hi = u16(before[:start]), u16(before[:stop])
         for splice in made:
             f, t = splice["from"], splice["to"]
@@ -561,7 +561,7 @@ def apply(note: Note, name: str, args: dict, *, change_id: str, step: int,
         made = splices(before, after)
     if _touches(made, before):
         undo()
-        raise ToolError(f"that change would reach text that is {edits_note.PROTECTED}", "locked")
+        raise ToolError(f"that change would reach text that is {blocks.PROTECTED}", "locked")
     needs.discard(change_id)
     # It changed only text this run wrote whole, none of the owner's: part of the change it grew from.
     reworked = ctx.get("targets", [])
@@ -647,7 +647,7 @@ def create_note(vault: Path, raw_path: str, markdown: str, *, folder: str) -> di
                         "folder")
     if (Path(vault) / path).exists():
         raise ToolError(f"{path} already exists; give the new note a name of its own", "exists")
-    text = edits_note.strip_labels(markdown)
+    text = blocks.strip_labels(markdown)
     if not text.strip():
         raise ToolError("markdown is empty; write the new note", "empty")
     if len(text) > MAX_EDIT_CHARS:

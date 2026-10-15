@@ -17,7 +17,7 @@ _DRAFT_SUFFIX = ".slim-draft.md"
 
 def _draft_source(*, vault: Path, draft_rel: str, audio_rel: str | list[str],
                   declared_type: str) -> tuple[Path, str]:
-    from . import note as record
+    from . import note as note_writer
 
     draft = state._vault_path(vault, draft_rel)
     if not draft.is_file():
@@ -41,10 +41,10 @@ def _draft_source(*, vault: Path, draft_rel: str, audio_rel: str | list[str],
     # recording fail with "ids do not match". EVERY segment, not just the first: a request
     # naming two recordings would merge both transcripts and delete both staged files.
     rels = [audio_rel] if isinstance(audio_rel, str) else list(audio_rel)
-    if any(record.recording_id_from_staged(rel) != recording_id for rel in rels):
+    if any(note_writer.recording_id_from_staged(rel) != recording_id for rel in rels):
         raise ValueError("audio and draft recording ids do not match")
     source = draft.read_text(encoding="utf-8")
-    block = record.split_meeting_block(source)
+    block = note_writer.split_meeting_block(source)
     if block is not None and not block.before.strip() and not block.body.strip():
         # The empty block is the inline recorder's durable anchor. Notes typed in Obsidian live
         # after it and remain the only human-authored input sent to the filing pipeline.
@@ -164,7 +164,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
     been transcribed. Because `write_recording` never runs, the audio stays staged in
     `_incoming`, where the plugin's error screen names it and a retry is one button.
     """
-    from . import note as record
+    from . import note as note_writer
     from ..capture import enrich, suggest, summarize, transcribe
     from ..config import VAULT as _VAULT
 
@@ -325,7 +325,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
     # a written recording, which this never does.
     state._check_record_cancel(job_id)
     progress("saving", "Saving the note", "Archiving audio, writing Markdown and refreshing the index")
-    r = record.write_recording(
+    r = note_writer.write_recording(
         audio_src=segments, title=title, when=when, type_tag=card.type_tag, transcript=text,
         notes_md=notes_md, summary_md=summary_md,
         topics=card.topics, dest_dir=card.dest_dir, filed_by_slim=True, asr_model=asr_model,
@@ -404,7 +404,7 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
     costing a minute of model time runs unasked, and nothing overwrites a summary they may have
     edited by hand. ⚠ Silence is refused exactly as the recording path refuses it.
     """
-    from . import note as record_mod
+    from . import note as note_writer
     from ..capture import transcribe
     from ..vault.frontmatter import parse_frontmatter
     from ..config import VAULT as _VAULT
@@ -414,7 +414,7 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
     text = src.read_text(encoding="utf-8")
     rels = [audio_rel] if isinstance(audio_rel, str) else list(audio_rel)
     segments = [state._vault_path(vault, rel) for rel in rels]
-    staging = state._vault_path(vault, record_mod.STAGING_DIR)
+    staging = state._vault_path(vault, note_writer.STAGING_DIR)
     for rel, seg in zip(rels, segments):
         if not seg.is_file():
             raise FileNotFoundError(f"no audio at {rel!r}")
@@ -424,7 +424,7 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
         # had just deleted. Nothing outside _incoming is ever an input here.
         if seg.parent.resolve() != staging.resolve():
             raise ValueError(f"{rel!r} is not staged audio — append only takes files in "
-                             f"{record_mod.STAGING_DIR}")
+                             f"{note_writer.STAGING_DIR}")
 
     def progress(stage: str, label: str, detail: str = "", **extra) -> None:
         if on_progress is not None:
@@ -456,7 +456,7 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
 
         archived_rels, digests = [], []
         for seg in segments:
-            one, one_digest = record_mod.archive_audio(seg)
+            one, one_digest = note_writer.archive_audio(seg)
             try:
                 archived_rels.append(str(one.relative_to(vault)))
             except ValueError:
@@ -465,10 +465,10 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
 
         # ⚠ recorder/note.py is the sole writer of a recorded note's frontmatter (CLAUDE.md), and
         # that includes `asr_model`: it decides whether an existing model name is kept.
-        text = record_mod.append_audio_frontmatter(text, rels=archived_rels, digests=digests,
+        text = note_writer.append_audio_frontmatter(text, rels=archived_rels, digests=digests,
                                                    seconds=seconds, asr_model=asr_model,
                                                    speakers_by=speakers_by)
-        record_mod.write_note_text(src, record_mod.append_transcript(text, addition))
+        note_writer.write_note_text(src, note_writer.append_transcript(text, addition))
 
     archived_paths = {state._vault_path(vault, rel).resolve() for rel in archived_rels}
     for seg in segments:

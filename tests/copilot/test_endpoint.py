@@ -8,20 +8,20 @@ import urllib.request
 
 import pytest
 
-from slim import server as chat, db
-from slim.copilot import turn as copilot, context, images as copilot_images
+from slim import server, db
+from slim.copilot import context, images as chat_images, turn as copilot_turn
 
 
 @pytest.fixture
 def server_url():
-    server = chat.make_server("127.0.0.1", 0)
-    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    httpd = server.make_server("127.0.0.1", 0)
+    worker = threading.Thread(target=httpd.serve_forever, daemon=True)
     worker.start()
     try:
-        yield f"http://127.0.0.1:{server.server_address[1]}"
+        yield f"http://127.0.0.1:{httpd.server_address[1]}"
     finally:
-        server.shutdown()
-        server.server_close()
+        httpd.shutdown()
+        httpd.server_close()
         worker.join(timeout=2)
 
 
@@ -83,7 +83,7 @@ def test_stream_endpoint_emits_stage_delta_and_turn(server_url, monkeypatch):
         kwargs["on_delta"]("Grounded")
         return {"answer": "Grounded", "mode": "deep", "citations": []}
 
-    monkeypatch.setattr(copilot, "run_turn", fake_run)
+    monkeypatch.setattr(copilot_turn, "run_turn", fake_run)
     status, headers, body = post(server_url, "/api/copilot/stream", {
         "thread_id": "chat-1", "source_id": "source-1", "question": "Compare",
         "history": [], "reasoning_mode": "deep"})
@@ -98,7 +98,7 @@ def test_stream_endpoint_persists_images_and_passes_current_and_history_bytes(se
     png = base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
     encoded = base64.b64encode(png).decode()
-    old_refs, _created = copilot_images.save_images("chat-1", [
+    old_refs, _created = chat_images.save_images("chat-1", [
         {"name": "old.png", "mime": "image/png", "data": encoded}])
     seen = {}
 
@@ -107,7 +107,7 @@ def test_stream_endpoint_persists_images_and_passes_current_and_history_bytes(se
         seen["images"] = kwargs["images"]
         return {"answer": "Equation", "mode": "quick", "citations": []}
 
-    monkeypatch.setattr(copilot, "run_turn", fake_run)
+    monkeypatch.setattr(copilot_turn, "run_turn", fake_run)
     status, _headers, body = post(server_url, "/api/copilot/stream", {
         "thread_id": "chat-1", "source_id": "source-1", "question": "Explain",
         "history": [{"role": "you", "text": "Earlier", "attachments": old_refs}],
@@ -124,7 +124,7 @@ def test_stream_endpoint_persists_images_and_passes_current_and_history_bytes(se
 def test_image_endpoint_serves_a_stored_image_and_refuses_the_rest(server_url):
     png = base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
-    refs, _created = copilot_images.save_images("chat-1", [
+    refs, _created = chat_images.save_images("chat-1", [
         {"name": "eq.png", "mime": "image/png", "data": base64.b64encode(png).decode()}])
     with urllib.request.urlopen(f"{server_url}/api/copilot/image?thread=chat-1&id={refs[0]['id']}") as response:
         assert response.status == 200
@@ -142,8 +142,8 @@ def test_image_endpoint_serves_a_stored_image_and_refuses_the_rest(server_url):
 
 def test_stream_endpoint_emits_error_event_not_a_dead_socket(server_url, monkeypatch):
     monkeypatch.setattr(
-        copilot, "run_turn",
-        lambda *args, **kwargs: (_ for _ in ()).throw(copilot.CopilotError("local-only")))
+        copilot_turn, "run_turn",
+        lambda *args, **kwargs: (_ for _ in ()).throw(copilot_turn.CopilotError("local-only")))
     status, _headers, body = post(server_url, "/api/copilot/stream", {
         "thread_id": "chat-1", "source_id": "source-1", "question": "Question",
         "history": [], "reasoning_mode": "quick"})
@@ -256,7 +256,7 @@ def test_stream_endpoint_passes_a_bounded_selection(server_url, monkeypatch):
         seen.update(selection=kwargs["selection"], selection_from=kwargs["selection_from"], edit="edit" in kwargs)
         return {"answer": "ok", "mode": "quick", "citations": [], "edit_run": None}
 
-    monkeypatch.setattr(copilot, "run_turn", fake_run)
+    monkeypatch.setattr(copilot_turn, "run_turn", fake_run)
     post(server_url, "/api/copilot/stream", {
         "thread_id": "chat-1", "source_id": "source-1", "question": "tidy", "history": [],
         "edit": True, "selection": "x" * (context.MAX_SELECTION_CHARS + 50), "selection_from": 13})
@@ -273,7 +273,7 @@ def test_skills_endpoint_lists_builtins_and_the_vaults_own(server_url, monkeypat
     (tmp_path / "Skills").mkdir()
     (tmp_path / "Skills/standup.md").write_text("---\ndescription: Mine\n---\nDo it.\n")
     (tmp_path / "Skills/broken.md").write_text("---\noutput: somewhere\n---\nx\n")
-    monkeypatch.setattr(chat.config, "VAULT", tmp_path)
+    monkeypatch.setattr(server.config, "VAULT", tmp_path)
     with urllib.request.urlopen(server_url + "/api/copilot/skills") as response:
         listed = {item["name"]: item for item in json.load(response)["skills"]}
     assert listed["standup"]["description"] == "Mine" and listed["standup"]["origin"] == "vault"
@@ -287,7 +287,7 @@ def test_folders_endpoint_gives_a_reopened_card_its_tree_and_tags(server_url, mo
     (tmp_path / "Capture/job-search").mkdir(parents=True)
     (tmp_path / "Capture/job-search/a.md").write_text("---\ntopics: [job-search]\n---\nx\n")
     (tmp_path / "Notes/empty").mkdir(parents=True)
-    monkeypatch.setattr(chat.config, "VAULT", tmp_path)
+    monkeypatch.setattr(server.config, "VAULT", tmp_path)
     with urllib.request.urlopen(server_url + "/api/record/folders") as response:
         body = json.load(response)
     paths = {f["path"]: f["count"] for f in body["folders"]}
@@ -320,7 +320,7 @@ def a_note(tmp_path, monkeypatch):
     (vault / "Notes/n.md").write_text(NOTE, encoding="utf-8")
     monkeypatch.setattr(config, "VAULT", vault)
     monkeypatch.setattr(context.search_mod, "hybrid", lambda *a, **k: [])
-    monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
+    monkeypatch.setattr(copilot_turn.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
     con = db.connect()
     source = context.sync_note(con, vault, "Notes/n.md", embed=False)
     con.close()
@@ -339,8 +339,8 @@ def a_note(tmp_path, monkeypatch):
             opts["on_delta"](content)
             return content, {"duration_s": 1}
         script.calls = 0
-        monkeypatch.setattr(copilot.llm, "chat_tools", chat_tools)
-        monkeypatch.setattr(copilot.llm, "chat_stream", chat_stream)
+        monkeypatch.setattr(copilot_turn.llm, "chat_tools", chat_tools)
+        monkeypatch.setattr(copilot_turn.llm, "chat_stream", chat_stream)
     return source, script
 
 
@@ -435,7 +435,7 @@ def test_a_client_that_hangs_up_stops_the_run_after_the_current_call(server_url,
            ("", [("replace", {"target": "b3", "markdown": "## A renamed"})]),
            ("", [("insert", {"after": "b4", "markdown": "More."})]),
            ("", [("insert", {"after": "b4", "markdown": "Even more."})]))
-    scripted = copilot.llm.chat_tools
+    scripted = copilot_turn.llm.chat_tools
 
     def chat_tools(messages, tools=None, **opts):
         if opts.get("fmt") is not None:        # the intent gate
@@ -445,9 +445,9 @@ def test_a_client_that_hangs_up_stops_the_run_after_the_current_call(server_url,
             hung_up.wait(5)
         real.append(1)
         return scripted(messages, tools, **opts)
-    monkeypatch.setattr(copilot.llm, "chat_tools", chat_tools)
+    monkeypatch.setattr(copilot_turn.llm, "chat_tools", chat_tools)
     records = []
-    monkeypatch.setattr(copilot.trace, "record", lambda kind, payload: records.append(payload))
+    monkeypatch.setattr(copilot_turn.trace, "record", lambda kind, payload: records.append(payload))
 
     png = base64.b64encode(base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")).decode()
@@ -473,7 +473,7 @@ def test_a_client_that_hangs_up_stops_the_run_after_the_current_call(server_url,
     assert record["status"] == "edited" and record["edit_run"]["stopped"] == "stopped"
     assert record["edit_run"]["model_calls"] == 3 and record["edit_run"]["changes"] == 2
     assert not llm._CALL_LOCK.locked()
-    handler = copilot_images.request_lock("chat-1")    # held by the handler until it finishes
+    handler = chat_images.request_lock("chat-1")    # held by the handler until it finishes
     assert handler.acquire(timeout=5)
     handler.release()
     # The changes stay in the editor and the plugin keeps the turn, so its image stays too.
@@ -490,8 +490,8 @@ def test_a_run_keeps_its_images_from_its_start_and_its_start_names_them(server_u
     def run_turn(_con, _source_id, question, _history, _mode, **kwargs):
         if question == "go":
             kwargs["on_edit"]("start", {"before_text": NOTE})
-        raise copilot.CopilotError("the model failed")
-    monkeypatch.setattr(copilot, "run_turn", run_turn)
+        raise copilot_turn.CopilotError("the model failed")
+    monkeypatch.setattr(copilot_turn, "run_turn", run_turn)
 
     def image(payload: bytes) -> dict:
         data = base64.b64encode(b"\x89PNG\r\n\x1a\n" + payload).decode()
@@ -502,7 +502,7 @@ def test_a_run_keeps_its_images_from_its_start_and_its_start_names_them(server_u
     assert [e for e, _ in events] == ["edit", "error"]
     (ref,) = events[0][1]["attachments"]
     assert ref["name"] == "eq.png" and "data" not in ref
-    assert copilot_images.image_path("chat-1", ref["id"]) is not None
+    assert chat_images.image_path("chat-1", ref["id"]) is not None
     stream(server_url, source, "never started", images=[image(b"two")])
     assert len(list((threads.THREADS_DIR / "chat-1.images").glob("*.png"))) == 1
 
@@ -551,7 +551,7 @@ def test_restore_validates_its_ids_and_its_doc(server_url):
 def test_an_inserts_text_reaches_the_stream_as_a_draft_before_its_change(server_url, a_note, monkeypatch):
     source, script = a_note
     script(("", [("insert", {"after": "b2", "markdown": "More."})]))
-    scripted = copilot.llm.chat_tools
+    scripted = copilot_turn.llm.chat_tools
 
     def chat_tools(messages, tools=None, **opts):
         if opts.get("on_part"):                 # the call decodes: its place, then its text
@@ -559,7 +559,7 @@ def test_an_inserts_text_reaches_the_stream_as_a_draft_before_its_change(server_
                          ("text", 0, "markdown", "re."), ("end", 0, None, None)]:
                 opts["on_part"](*part)
         return scripted(messages, tools, **opts)
-    monkeypatch.setattr(copilot.llm, "chat_tools", chat_tools)
+    monkeypatch.setattr(copilot_turn.llm, "chat_tools", chat_tools)
     _status, _headers, body = stream(server_url, source, "add a line")
     events = events_of(body)
     assert [e for e, _ in events] == ["stage", "draft", "draft_text", "draft_text", "edit", "plan", "change", "turn"]
