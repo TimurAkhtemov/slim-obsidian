@@ -11,7 +11,7 @@ import { PLAN, change, editView, fakeLive, makeView, renderedView,
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
-const { SUGGESTED_PROMPTS, sha256Hex, stageLine } = require("../src/chat-text.js");
+const { SUGGESTED_PROMPTS, sha256Hex, stageLine } = require("../src/chat/text.js");
 
 const transcriptOf = (root) => find(root, (node) => node.cls === "slim-copilot-transcript");
 

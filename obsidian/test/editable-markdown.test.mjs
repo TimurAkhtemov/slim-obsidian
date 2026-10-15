@@ -7,7 +7,7 @@ import { view } from "./recorder-harness.mjs";
 
 const require = createRequire(import.meta.url);
 const { inlineMarkdown, markdownBlockShortcut, markdownFromEditable,
-        stampSourceAtoms } = require("../src/editable-markdown.js");
+        stampSourceAtoms } = require("../src/recorder/editable-markdown.js");
 
 test("Notion-style Markdown shortcuts map to live block formatting", () => {
   assert.deepEqual(markdownBlockShortcut("### "), { tag: "h3", kind: "block" });
@@ -130,7 +130,7 @@ test("atoms are stamped again once the async render has landed", async () => {
 });
 
 test("rendered nodes are stamped with the source they came from", () => {
-  const source = srcText("editable-markdown.js");
+  const source = srcText("recorder/editable-markdown.js");
   // The stamping pass and the serializer have to agree on one attribute name.
   assert.match(source, /data-slim-src/);
   assert.match(source, /function stampSourceAtoms/);

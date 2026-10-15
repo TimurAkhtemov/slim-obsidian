@@ -1,5 +1,5 @@
 // One recording's controller: its draft, its editor, its lifecycle. The rest of its methods are
-// in recorder-*.js and attached to its prototype at the bottom of this file.
+// in this folder (capture, live, filing, render, review) and attached to its prototype at the bottom of this file.
 "use strict";
 
 const { MarkdownView, Notice } = require("obsidian");
@@ -504,10 +504,10 @@ class RecorderView {
 }
 
 Object.assign(RecorderView.prototype,
-  require("./recorder-capture"),
-  require("./recorder-live"),
-  require("./recorder-filing"),
-  require("./recorder-render"),
-  require("./recorder-review"));
+  require("./capture"),
+  require("./live"),
+  require("./filing"),
+  require("./render"),
+  require("./review"));
 
 module.exports = { RecorderView };

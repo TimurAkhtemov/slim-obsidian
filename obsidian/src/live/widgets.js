@@ -2,7 +2,7 @@
 // calls back into the editor (hover, undo, reveal, fold, See before) at call time.
 "use strict";
 
-const { excerpt, beforeBlocks } = require("./live-diff");
+const { excerpt, beforeBlocks } = require("./diff");
 
 const DRAFT_RENDER_MS = 250;              // a draft's Markdown is drawn again at most this often
 

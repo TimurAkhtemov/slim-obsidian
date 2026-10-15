@@ -10,8 +10,8 @@ import { makeView, renderedView, text } from "./copilot-harness.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
-const { metaText } = require("../src/chat-text.js");
-const { RenameModal } = require("../src/chat-view.js");
+const { metaText } = require("../src/chat/text.js");
+const { RenameModal } = require("../src/chat/view.js");
 
 function deferred() {
   let resolve;

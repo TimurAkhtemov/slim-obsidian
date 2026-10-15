@@ -7,7 +7,7 @@ import { fileBackedView, findButton, view } from "./recorder-harness.mjs";
 
 const require = createRequire(import.meta.url);
 const PluginClass = require("../src/plugin.js");
-const { MeetingSessionManager } = require("../src/sessions.js");
+const { MeetingSessionManager } = require("../src/recorder/sessions.js");
 
 // --- a failed transcript is refused, and retrying is one button ------------------------------
 // The server used to file an empty note and return 200, so there was nothing to retry — it had
@@ -16,7 +16,7 @@ const { MeetingSessionManager } = require("../src/sessions.js");
 test("retry posts the SAME staged audio, not a new recording", async () => {
   const posted = [];
   // start() always creates a draft before recording begins, so a real submitRecording call
-  // always carries `draft`, never `notes_md` (`submitRecording` in src/recorder-filing.js, D3).
+  // always carries `draft`, never `notes_md` (`submitRecording` in src/recorder/filing.js, D3).
   const { v } = fileBackedView();
   v.audioRel = "Attachments/_incoming/2026-08-23-100356.webm";
   v.draftRel = "Capture/_unfiled/2026-08-23-100356.slim-draft.md";

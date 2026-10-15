@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { SPEECH, ZERO } from "./recorder-harness.mjs";
 
 const require = createRequire(import.meta.url);
-const { captureSilence, pcm16k } = require("../src/audio.js");
+const { captureSilence, pcm16k } = require("../src/recorder/audio.js");
 
 test("live captions downsample browser audio to local 16 kHz PCM", () => {
   const input = new Float32Array(48000).fill(0.5);

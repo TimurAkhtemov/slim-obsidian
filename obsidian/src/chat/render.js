@@ -3,7 +3,7 @@
 
 const { MarkdownRenderer, MarkdownRenderChild } = require("obsidian");
 const { groupThreads, pathStem, noteTitle, groupCitations, slashQuery, matchSkills, inputsText,
-        normalizeMath, LIVE_RENDER_MS, metaText, stageLine, SUGGESTED_PROMPTS } = require("./chat-text");
+        normalizeMath, LIVE_RENDER_MS, metaText, stageLine, SUGGESTED_PROMPTS } = require("./text");
 const { clear, create, iconButton, autoGrow, atBottom } = require("./dom");
 
 module.exports = {

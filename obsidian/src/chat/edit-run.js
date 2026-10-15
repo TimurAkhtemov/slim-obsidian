@@ -2,7 +2,7 @@
 "use strict";
 
 const { Notice } = require("obsidian");
-const { sha256Hex, metaText, runCounts, editOutcome } = require("./chat-text");
+const { sha256Hex, metaText, runCounts, editOutcome } = require("./text");
 const { clear, create, atBottom } = require("./dom");
 
 module.exports = {

@@ -2,10 +2,10 @@
 // editor showing the note, draws them, and undoes and redoes them.
 "use strict";
 
-const { changeMarks, textDiff } = require("./live-diff");
+const { changeMarks, textDiff } = require("./diff");
 const { inside, starts, place, mapMarks, dependents, holdable, same, moved, fromHistory,
-        tipFor } = require("./live-runs");
-const { makeWidgets } = require("./live-widgets");
+        tipFor } = require("./runs");
+const { makeWidgets } = require("./widgets");
 
 /* The live editor: one CodeMirror extension, the same in every Markdown editor. `cm` is the
  * CodeMirror modules (state, view and commands: Obsidian's at runtime, real ones in a browser

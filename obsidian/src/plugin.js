@@ -4,12 +4,12 @@
 const { Plugin, MarkdownView, MarkdownRenderer, MarkdownRenderChild, Notice, requestUrl, setIcon,
         editorInfoField, editorLivePreviewField } = require("obsidian");
 const nodePath = require("path");
-const { VIEW_TYPE_COPILOT, CopilotView } = require("./chat-view");
-const { makeLiveEditor } = require("./live-editor");
+const { VIEW_TYPE_COPILOT, CopilotView } = require("./chat/view");
+const { makeLiveEditor } = require("./live/editor");
 const { STAGING_DIR, DRAFT_SUFFIX, recordingIdFromStaged,
-        renderPassiveMeetingBlock } = require("./meeting-note");
+        renderPassiveMeetingBlock } = require("./recorder/meeting-note");
 const { serverMethods } = require("./server");
-const { MeetingSessionManager } = require("./sessions");
+const { MeetingSessionManager } = require("./recorder/sessions");
 const { DEFAULTS, SlimSettingTab } = require("./settings-tab");
 const { streamRequest } = require("./sse");
 

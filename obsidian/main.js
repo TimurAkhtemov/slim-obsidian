@@ -9,9 +9,9 @@ var __commonJS = (cb, mod) => function __require() {
   }
 };
 
-// src/chat-images.js
-var require_chat_images = __commonJS({
-  "src/chat-images.js"(exports2, module2) {
+// src/chat/images.js
+var require_images = __commonJS({
+  "src/chat/images.js"(exports2, module2) {
     "use strict";
     var MAX_COPILOT_IMAGES = 3;
     var MAX_COPILOT_IMAGE_BYTES = 2e6;
@@ -91,9 +91,9 @@ var require_chat_images = __commonJS({
   }
 });
 
-// src/chat-text.js
-var require_chat_text = __commonJS({
-  "src/chat-text.js"(exports2, module2) {
+// src/chat/text.js
+var require_text = __commonJS({
+  "src/chat/text.js"(exports2, module2) {
     "use strict";
     function groupThreads(threads, activeSourceId) {
       const grouped = /* @__PURE__ */ new Map();
@@ -296,9 +296,9 @@ var require_chat_text = __commonJS({
   }
 });
 
-// src/dom.js
+// src/chat/dom.js
 var require_dom = __commonJS({
-  "src/dom.js"(exports2, module2) {
+  "src/chat/dom.js"(exports2, module2) {
     "use strict";
     var { setIcon } = require("obsidian");
     function clear(element) {
@@ -336,9 +336,9 @@ var require_dom = __commonJS({
   }
 });
 
-// src/chat-render.js
-var require_chat_render = __commonJS({
-  "src/chat-render.js"(exports2, module2) {
+// src/chat/render.js
+var require_render = __commonJS({
+  "src/chat/render.js"(exports2, module2) {
     "use strict";
     var { MarkdownRenderer, MarkdownRenderChild } = require("obsidian");
     var {
@@ -354,7 +354,7 @@ var require_chat_render = __commonJS({
       metaText,
       stageLine,
       SUGGESTED_PROMPTS
-    } = require_chat_text();
+    } = require_text();
     var { clear, create, iconButton, autoGrow, atBottom } = require_dom();
     module2.exports = {
       renderSlash() {
@@ -807,12 +807,12 @@ var require_chat_render = __commonJS({
   }
 });
 
-// src/chat-edit-run.js
-var require_chat_edit_run = __commonJS({
-  "src/chat-edit-run.js"(exports2, module2) {
+// src/chat/edit-run.js
+var require_edit_run = __commonJS({
+  "src/chat/edit-run.js"(exports2, module2) {
     "use strict";
     var { Notice } = require("obsidian");
-    var { sha256Hex, metaText, runCounts, editOutcome } = require_chat_text();
+    var { sha256Hex, metaText, runCounts, editOutcome } = require_text();
     var { clear, create, atBottom } = require_dom();
     module2.exports = {
       // ---- an editing run, as it lands ------------------------------------------------------------
@@ -1183,12 +1183,12 @@ var require_chat_edit_run = __commonJS({
   }
 });
 
-// src/chat-view.js
-var require_chat_view = __commonJS({
-  "src/chat-view.js"(exports2, module2) {
+// src/chat/view.js
+var require_view = __commonJS({
+  "src/chat/view.js"(exports2, module2) {
     "use strict";
     var { ItemView, Modal } = require("obsidian");
-    var { MAX_COPILOT_IMAGES, resizeCopilotImage } = require_chat_images();
+    var { MAX_COPILOT_IMAGES, resizeCopilotImage } = require_images();
     var {
       sha256Hex,
       editorSelection,
@@ -1198,7 +1198,7 @@ var require_chat_view = __commonJS({
       threadId,
       cancelledError,
       historyText
-    } = require_chat_text();
+    } = require_text();
     var { clear, create } = require_dom();
     var VIEW_TYPE_COPILOT = "slim-copilot";
     var RenameModal = class extends Modal {
@@ -1783,16 +1783,16 @@ var require_chat_view = __commonJS({
     };
     Object.assign(
       CopilotView.prototype,
-      require_chat_render(),
-      require_chat_edit_run()
+      require_render(),
+      require_edit_run()
     );
     module2.exports = { VIEW_TYPE_COPILOT, RenameModal, CopilotView };
   }
 });
 
-// src/live-diff.js
-var require_live_diff = __commonJS({
-  "src/live-diff.js"(exports2, module2) {
+// src/live/diff.js
+var require_diff = __commonJS({
+  "src/live/diff.js"(exports2, module2) {
     "use strict";
     function wordTokens(text) {
       const s = String(text || "");
@@ -2088,9 +2088,9 @@ var require_live_diff = __commonJS({
   }
 });
 
-// src/live-runs.js
-var require_live_runs = __commonJS({
-  "src/live-runs.js"(exports2, module2) {
+// src/live/runs.js
+var require_runs = __commonJS({
+  "src/live/runs.js"(exports2, module2) {
     "use strict";
     var inside = (changes, from, to) => {
       let hit = false;
@@ -2275,11 +2275,11 @@ var require_live_runs = __commonJS({
   }
 });
 
-// src/live-widgets.js
-var require_live_widgets = __commonJS({
-  "src/live-widgets.js"(exports2, module2) {
+// src/live/widgets.js
+var require_widgets = __commonJS({
+  "src/live/widgets.js"(exports2, module2) {
     "use strict";
-    var { excerpt, beforeBlocks } = require_live_diff();
+    var { excerpt, beforeBlocks } = require_diff();
     var DRAFT_RENDER_MS = 250;
     function makeWidgets(WidgetType, host, ui) {
       class Gone extends WidgetType {
@@ -2527,11 +2527,11 @@ ${this.tip}`) return false;
   }
 });
 
-// src/live-editor.js
-var require_live_editor = __commonJS({
-  "src/live-editor.js"(exports2, module2) {
+// src/live/editor.js
+var require_editor = __commonJS({
+  "src/live/editor.js"(exports2, module2) {
     "use strict";
-    var { changeMarks, textDiff } = require_live_diff();
+    var { changeMarks, textDiff } = require_diff();
     var {
       inside,
       starts,
@@ -2543,8 +2543,8 @@ var require_live_editor = __commonJS({
       moved,
       fromHistory,
       tipFor
-    } = require_live_runs();
-    var { makeWidgets } = require_live_widgets();
+    } = require_runs();
+    var { makeWidgets } = require_widgets();
     function makeLiveEditor(cm, host) {
       const { StateField, StateEffect, ChangeSet, Text, Compartment, EditorState } = cm.state;
       const { EditorView, Decoration, WidgetType, ViewPlugin } = cm.view;
@@ -3092,9 +3092,9 @@ var require_live_editor = __commonJS({
   }
 });
 
-// src/clock.js
+// src/recorder/clock.js
 var require_clock = __commonJS({
-  "src/clock.js"(exports2, module2) {
+  "src/recorder/clock.js"(exports2, module2) {
     "use strict";
     function pad(n) {
       return String(n).padStart(2, "0");
@@ -3111,9 +3111,9 @@ var require_clock = __commonJS({
   }
 });
 
-// src/meeting-note.js
+// src/recorder/meeting-note.js
 var require_meeting_note = __commonJS({
-  "src/meeting-note.js"(exports2, module2) {
+  "src/recorder/meeting-note.js"(exports2, module2) {
     "use strict";
     var { MarkdownRenderer } = require("obsidian");
     var { randomUUID } = require("crypto");
@@ -3497,9 +3497,9 @@ ${killCmd}`
   }
 });
 
-// src/audio.js
+// src/recorder/audio.js
 var require_audio = __commonJS({
-  "src/audio.js"(exports2, module2) {
+  "src/recorder/audio.js"(exports2, module2) {
     "use strict";
     var MIC_CHANNEL = 0;
     var SYSTEM_CHANNEL = 1;
@@ -3542,9 +3542,9 @@ var require_audio = __commonJS({
   }
 });
 
-// src/recorder-capture.js
-var require_recorder_capture = __commonJS({
-  "src/recorder-capture.js"(exports2, module2) {
+// src/recorder/capture.js
+var require_capture = __commonJS({
+  "src/recorder/capture.js"(exports2, module2) {
     "use strict";
     var { Notice } = require("obsidian");
     var nodePath = require("path");
@@ -3908,9 +3908,9 @@ var require_recorder_capture = __commonJS({
   }
 });
 
-// src/recorder-live.js
-var require_recorder_live = __commonJS({
-  "src/recorder-live.js"(exports2, module2) {
+// src/recorder/live.js
+var require_live = __commonJS({
+  "src/recorder/live.js"(exports2, module2) {
     "use strict";
     var { LIVE_FLUSH_BYTES, pcm16k } = require_audio();
     module2.exports = {
@@ -4083,9 +4083,9 @@ var require_recorder_live = __commonJS({
   }
 });
 
-// src/recorder-filing.js
-var require_recorder_filing = __commonJS({
-  "src/recorder-filing.js"(exports2, module2) {
+// src/recorder/filing.js
+var require_filing = __commonJS({
+  "src/recorder/filing.js"(exports2, module2) {
     "use strict";
     var { MarkdownView, Notice } = require("obsidian");
     var nodePath = require("path");
@@ -4409,9 +4409,9 @@ var require_recorder_filing = __commonJS({
   }
 });
 
-// src/recorder-render.js
-var require_recorder_render = __commonJS({
-  "src/recorder-render.js"(exports2, module2) {
+// src/recorder/render.js
+var require_render2 = __commonJS({
+  "src/recorder/render.js"(exports2, module2) {
     "use strict";
     var { Notice } = require("obsidian");
     var { hhmmss } = require_clock();
@@ -4761,9 +4761,9 @@ var require_recorder_render = __commonJS({
   }
 });
 
-// src/editable-markdown.js
+// src/recorder/editable-markdown.js
 var require_editable_markdown = __commonJS({
-  "src/editable-markdown.js"(exports2, module2) {
+  "src/recorder/editable-markdown.js"(exports2, module2) {
     "use strict";
     function markdownBlockShortcut(text) {
       const heading = String(text || "").match(/^(#{1,6})\s$/);
@@ -4845,9 +4845,9 @@ ${node.textContent || ""}
   }
 });
 
-// src/recorder-review.js
-var require_recorder_review = __commonJS({
-  "src/recorder-review.js"(exports2, module2) {
+// src/recorder/review.js
+var require_review = __commonJS({
+  "src/recorder/review.js"(exports2, module2) {
     "use strict";
     var { MarkdownRenderer, Notice } = require("obsidian");
     var {
@@ -5255,9 +5255,9 @@ var require_recorder_review = __commonJS({
   }
 });
 
-// src/recorder-view.js
-var require_recorder_view = __commonJS({
-  "src/recorder-view.js"(exports2, module2) {
+// src/recorder/view.js
+var require_view2 = __commonJS({
+  "src/recorder/view.js"(exports2, module2) {
     "use strict";
     var { MarkdownView, Notice } = require("obsidian");
     var nodePath = require("path");
@@ -5716,22 +5716,22 @@ var require_recorder_view = __commonJS({
     };
     Object.assign(
       RecorderView.prototype,
-      require_recorder_capture(),
-      require_recorder_live(),
-      require_recorder_filing(),
-      require_recorder_render(),
-      require_recorder_review()
+      require_capture(),
+      require_live(),
+      require_filing(),
+      require_render2(),
+      require_review()
     );
     module2.exports = { RecorderView };
   }
 });
 
-// src/sessions.js
+// src/recorder/sessions.js
 var require_sessions = __commonJS({
-  "src/sessions.js"(exports2, module2) {
+  "src/recorder/sessions.js"(exports2, module2) {
     "use strict";
     var { DRAFT_SUFFIX, localDay, recordingId } = require_meeting_note();
-    var { RecorderView } = require_recorder_view();
+    var { RecorderView } = require_view2();
     var MeetingSessionManager = class {
       constructor(plugin, sessionFactory = null) {
         this.plugin = plugin;
@@ -6033,8 +6033,8 @@ var require_plugin = __commonJS({
       editorLivePreviewField
     } = require("obsidian");
     var nodePath = require("path");
-    var { VIEW_TYPE_COPILOT, CopilotView } = require_chat_view();
-    var { makeLiveEditor } = require_live_editor();
+    var { VIEW_TYPE_COPILOT, CopilotView } = require_view();
+    var { makeLiveEditor } = require_editor();
     var {
       STAGING_DIR,
       DRAFT_SUFFIX,

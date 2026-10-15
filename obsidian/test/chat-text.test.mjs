@@ -6,7 +6,7 @@ import "./copilot-harness.mjs";
 
 const require = createRequire(import.meta.url);
 const { editorSelection, groupCitations, groupThreads, inputsText, matchSkills, normalizeMath,
-        noteTitle, slashQuery } = require("../src/chat-text.js");
+        noteTitle, slashQuery } = require("../src/chat/text.js");
 
 test("thread hierarchy puts the active note first and sorts chats by recency", () => {
   const groups = groupThreads([

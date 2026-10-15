@@ -2,7 +2,7 @@
 "use strict";
 
 const { DRAFT_SUFFIX, localDay, recordingId } = require("./meeting-note");
-const { RecorderView } = require("./recorder-view");
+const { RecorderView } = require("./view");
 
 /* One durable meeting object per recording/note, with one reserved capture slot.
  *

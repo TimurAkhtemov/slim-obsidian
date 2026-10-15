@@ -18,8 +18,8 @@ import { fakeContentEl, installed, obsidianStub, resetNoticeInstances, resetNoti
 
 const require = createRequire(import.meta.url);
 const PluginClass = require("../src/plugin.js");
-const { RecorderView } = require("../src/recorder-view.js");
-const { MeetingSessionManager } = require("../src/sessions.js");
+const { RecorderView } = require("../src/recorder/view.js");
+const { MeetingSessionManager } = require("../src/recorder/sessions.js");
 
 setMarkdownRender(async (_app, markdown, el) => el.setText(markdown));
 

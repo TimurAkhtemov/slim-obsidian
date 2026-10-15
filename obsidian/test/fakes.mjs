@@ -15,9 +15,10 @@ import path from "node:path";
 export const SRC = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src");
 
 // The plugin's source text, for the few tests that assert on how the code is written: one
-// src file, or all of them joined.
+// src file ("recorder/view.js"), or all of them, in every folder, joined.
 export function srcText(file) {
-  const files = file ? [file] : readdirSync(SRC).filter((name) => name.endsWith(".js")).sort();
+  const files = file ? [file]
+    : readdirSync(SRC, { recursive: true }).filter((name) => name.endsWith(".js")).sort();
   return files.map((name) => readFileSync(path.join(SRC, name), "utf8")).join("\n");
 }
 

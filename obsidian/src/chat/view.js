@@ -1,11 +1,11 @@
-// The open-note copilot sidebar. Its rendering and editing-run methods are in chat-render.js and
-// chat-edit-run.js, attached to its prototype at the bottom of this file.
+// The open-note copilot sidebar. Its rendering and editing-run methods are in render.js and
+// edit-run.js, attached to its prototype at the bottom of this file.
 "use strict";
 
 const { ItemView, Modal } = require("obsidian");
-const { MAX_COPILOT_IMAGES, resizeCopilotImage } = require("./chat-images");
+const { MAX_COPILOT_IMAGES, resizeCopilotImage } = require("./images");
 const { sha256Hex, editorSelection, MAX_EDIT_CHARS, quickOrDeep, titleFromQuestion, threadId,
-        cancelledError, historyText } = require("./chat-text");
+        cancelledError, historyText } = require("./text");
 const { clear, create } = require("./dom");
 
 const VIEW_TYPE_COPILOT = "slim-copilot";
@@ -616,7 +616,7 @@ class CopilotView extends ItemView {
 }
 
 Object.assign(CopilotView.prototype,
-  require("./chat-render"),
-  require("./chat-edit-run"));
+  require("./render"),
+  require("./edit-run"));
 
 module.exports = { VIEW_TYPE_COPILOT, RenameModal, CopilotView };

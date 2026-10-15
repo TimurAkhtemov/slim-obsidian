@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { fakeEl, find, setMarkdownRender } from "./fakes.mjs";
 
 const require = createRequire(import.meta.url);
-const { CopilotView } = require("../src/chat-view.js");
+const { CopilotView } = require("../src/chat/view.js");
 
 // The real renderer appends the parsed tree before its promise resolves; one <p> stands in.
 setMarkdownRender(async (_app, markdown, el) => { el.createEl("p", { text: markdown }); });

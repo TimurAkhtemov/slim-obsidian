@@ -6,7 +6,7 @@ import "./copilot-harness.mjs";
 
 const require = createRequire(import.meta.url);
 const { beforeBlocks, changeMarks, excerpt, formatChange, markable, textDiff, wordOps,
-        wordTokens } = require("../src/live-diff.js");
+        wordTokens } = require("../src/live/diff.js");
 
 test("words keep math, bold, code and links whole, so a mark never splits their syntax", () => {
   assert.deepEqual(wordTokens("a $x + y$ **b c** `d e` [[f g]] h"),
