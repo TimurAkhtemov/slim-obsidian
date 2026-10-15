@@ -171,7 +171,8 @@ def test_saving_notes_touches_nothing_but_the_notes(tmp_path, monkeypatch):
 def test_retrying_the_summary_rewrites_only_the_summary(tmp_path, monkeypatch):
     """Notion's Retry summary, and their reason for wanting it: iterate on the summarizer
     without re-recording a lecture."""
-    from slim import record_review, summarize
+    from slim import record_review
+    from slim.capture import summarize
     r = _existing(tmp_path, monkeypatch)
     seen = {}
 
@@ -197,7 +198,8 @@ def test_a_failed_retry_keeps_the_summary_it_has(tmp_path, monkeypatch):
     """⚠ THE THIRD TIME THIS RULE HAS HAD TO BE WRITTEN. A recording that reports success while
     losing what it exists to keep is the recorder's worst failure, and a retry that blanks a
     good summary because the model died is the same shape. Refuse; do not write."""
-    from slim import record_review, summarize
+    from slim import record_review
+    from slim.capture import summarize
     r = _existing(tmp_path, monkeypatch)
     monkeypatch.setattr(summarize, "summarize",
                         lambda *a, **k: summarize.Summary(valid=False, error="ctx_saturated"))
@@ -210,7 +212,8 @@ def test_a_retry_on_a_lecture_still_drops_open_questions(tmp_path, monkeypatch):
     """The lecture rule lives in render(), and the retry path has to read `type` from the note
     to reach it — a rhetorical question the lecturer asked and answered reads, under an 'Open
     questions' heading, as one of THEIR confusions."""
-    from slim import record_review, summarize
+    from slim import record_review
+    from slim.capture import summarize
     r = _existing(tmp_path, monkeypatch)          # written with type_tag="lecture"
     monkeypatch.setattr(summarize, "summarize", lambda *a, **k: summarize.Summary(
         overview="o", key_points=[{"topic": "T", "points": ["p"]}],
@@ -257,7 +260,8 @@ def test_a_retry_does_not_clobber_notes_saved_while_it_ran(tmp_path, monkeypatch
     """⚠ The notes editor autosaves on blur, and a retry takes 60-300s. Reading the note at
     entry and writing that same text back at exit reverts anything they typed in between —
     silently, and only sometimes, which is the worst shape a bug can have."""
-    from slim import record_review, summarize
+    from slim import record_review
+    from slim.capture import summarize
     r = _existing(tmp_path, monkeypatch)
     note_rel = str(r.note.relative_to(tmp_path))
 
@@ -278,7 +282,8 @@ def test_a_retry_never_resurrects_a_note_that_moved(tmp_path, monkeypatch):
     """`write_text` CREATES. If `apply` moved the note while the retry was thinking, writing
     the old path would put a second, stale copy of the recording back into the vault — and
     index it."""
-    from slim import record_review, summarize
+    from slim import record_review
+    from slim.capture import summarize
     r = _existing(tmp_path, monkeypatch)
     note_rel = str(r.note.relative_to(tmp_path))
 
@@ -315,7 +320,8 @@ def test_an_empty_but_valid_summary_never_deletes_the_one_that_is_there(tmp_path
     """⚠ `valid` means SCHEMA-valid. `Summary()` passes and renders to "", which
     `replace_review_sections` writes as "no summary" — deleting the fence and its contents.
     "A failed retry keeps the summary it has" has to cover the model returning nothing."""
-    from slim import record_review, summarize
+    from slim import record_review
+    from slim.capture import summarize
     r = _existing(tmp_path, monkeypatch)
     monkeypatch.setattr(summarize, "summarize", lambda *a, **k: summarize.Summary())
     with pytest.raises(ValueError, match="empty"):

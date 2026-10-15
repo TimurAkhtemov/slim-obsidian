@@ -126,7 +126,8 @@ def test_audio_and_draft_must_describe_the_same_recording(tmp_path, monkeypatch)
 
 
 def test_a_final_note_collision_keeps_the_draft_and_staged_audio(tmp_path, monkeypatch):
-    from slim import audio, record_pipeline
+    from slim import record_pipeline
+    from slim.capture import audio
 
     staged = _staged(tmp_path)
     draft = _draft(tmp_path)
@@ -173,7 +174,8 @@ def test_the_card_carries_the_folders_and_tag_counts_the_ui_needs(tmp_path, monk
 def test_the_summary_pass_thinks(tmp_path, monkeypatch):
     """The one ratified exception to think=False. If this regresses, invention doubles in the
     text they read and trusts, silently."""
-    from slim import record_pipeline, summarize
+    from slim import record_pipeline
+    from slim.capture import summarize
     _fakes(monkeypatch)
     seen = {}
     real = summarize.Summary
@@ -188,7 +190,8 @@ def test_the_summary_pass_thinks(tmp_path, monkeypatch):
 
 
 def test_record_progress_reports_real_pipeline_and_model_activity(tmp_path, monkeypatch):
-    from slim import record_pipeline, summarize
+    from slim import record_pipeline
+    from slim.capture import summarize
 
     _fakes(monkeypatch)
     events = []
@@ -262,7 +265,8 @@ def test_a_staged_file_outside_the_vault_is_refused(tmp_path, monkeypatch):
 def test_a_missing_audio_file_fails_before_any_model_call(tmp_path, monkeypatch):
     """A bad path should cost nothing. Without an early check it burns a transcription attempt
     and a dense-model call before dying at write time."""
-    from slim import record_pipeline, transcribe
+    from slim import record_pipeline
+    from slim.capture import transcribe
     called = []
     monkeypatch.setattr(transcribe, "transcribe",
                         lambda *a, **k: called.append(1))
@@ -276,7 +280,8 @@ def test_a_failed_transcription_does_not_load_the_dense_model(tmp_path, monkeypa
     """Classifying an empty string would load ~20 GB and EVICT the resident chat model, so the
     cost of a failed ASR run would land on whatever they did next. It still must not be called —
     the request now fails before it gets there."""
-    from slim import record_pipeline, suggest
+    from slim import record_pipeline
+    from slim.capture import suggest
     _fakes(monkeypatch, transcribe_raises=True)
     monkeypatch.setattr(suggest, "build_card", lambda *a, **k: pytest.fail("must not be called"))
     with pytest.raises(ValueError):
@@ -290,7 +295,8 @@ def test_a_vault_reached_through_a_symlink_still_reports_relative_paths(tmp_path
     symlink is introduced deliberately. On macOS `/var` -> `/private/var` makes that mismatch
     the DEFAULT for any temp-dir vault, and it made apply move the note correctly and then
     return a 400 — the caller sees a failure for work that actually happened."""
-    from slim import audio, record_pipeline, record_review
+    from slim import record_pipeline, record_review
+    from slim.capture import audio
 
     real = tmp_path / "real_vault"
     (real / "Attachments" / "_incoming").mkdir(parents=True)
@@ -317,7 +323,8 @@ def test_the_note_gets_the_whole_summary_not_just_the_overview(tmp_path, monkeyp
     """⚠ Found by an end-to-end run, not by review. handle_record wrote only `s.overview`, so
     key points, decisions, action items and open questions were generated and then thrown away.
     It read as the model being lazy when the caller was discarding its work."""
-    from slim import record_pipeline, suggest, summarize, transcribe
+    from slim import record_pipeline
+    from slim.capture import suggest, summarize, transcribe
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="we discussed the export", model="fake", audio_seconds=9.0, wall_seconds=1.0))
     monkeypatch.setattr(summarize, "summarize", lambda *a, **k: summarize.Summary(
@@ -346,7 +353,8 @@ def test_the_note_gets_the_whole_summary_not_just_the_overview(tmp_path, monkeyp
 def test_an_untitled_recording_gets_a_real_title_not_a_timestamp(tmp_path, monkeypatch):
     """"Recording 2026-08-06-142530" is a timestamp in a title's slot: it names nothing, and
     the filename embeds it, so the vault fills with rows that all look alike."""
-    from slim import enrich, record_pipeline
+    from slim import record_pipeline
+    from slim.capture import enrich
     _fakes(monkeypatch)
     monkeypatch.setattr(enrich, "enrich",
                         lambda *a, **k: ({"title": "Kernel methods and the dual form",
@@ -359,7 +367,8 @@ def test_an_untitled_recording_gets_a_real_title_not_a_timestamp(tmp_path, monke
 
 def test_a_title_they_typed_is_never_overridden(tmp_path, monkeypatch):
     """Their words are testimony here exactly as a spoken type is."""
-    from slim import enrich, record_pipeline
+    from slim import record_pipeline
+    from slim.capture import enrich
     _fakes(monkeypatch)
     monkeypatch.setattr(enrich, "enrich",
                         lambda *a, **k: pytest.fail("must not be called when they gave a title"))
@@ -370,7 +379,8 @@ def test_a_title_they_typed_is_never_overridden(tmp_path, monkeypatch):
 
 
 def test_a_failed_title_call_still_files_the_recording(tmp_path, monkeypatch):
-    from slim import enrich, record_pipeline
+    from slim import record_pipeline
+    from slim.capture import enrich
     _fakes(monkeypatch)
     def boom(*a, **k):
         raise RuntimeError("model down")
@@ -420,7 +430,8 @@ def test_a_broken_index_never_costs_the_recording(tmp_path, monkeypatch):
 # substituted "Recording" too, so every recorded note was named for the clock.
 
 def test_an_untitled_recording_is_named_from_its_transcript(tmp_path, monkeypatch):
-    from slim import enrich, record_pipeline
+    from slim import record_pipeline
+    from slim.capture import enrich
     _fakes(monkeypatch)
     monkeypatch.setattr(enrich, "enrich",
                         lambda *a, **k: ({"title": "Kernel trick and the dual form"}, {}))
@@ -430,7 +441,8 @@ def test_an_untitled_recording_is_named_from_its_transcript(tmp_path, monkeypatc
 
 
 def test_a_title_they_typed_is_never_overwritten(tmp_path, monkeypatch):
-    from slim import enrich, record_pipeline
+    from slim import record_pipeline
+    from slim.capture import enrich
     _fakes(monkeypatch)
     monkeypatch.setattr(enrich, "enrich",
                         lambda *a, **k: pytest.fail("the model must not retitle their recording"))
@@ -447,7 +459,8 @@ def test_the_timestamp_name_survives_only_as_a_last_resort(tmp_path, monkeypatch
     ⚠ A FAILED TRANSCRIPT no longer reaches here at all: it is refused before filing, so the
     only route to a timestamp name is a transcript that worked and a titling call that did not.
     """
-    from slim import enrich, record_pipeline
+    from slim import record_pipeline
+    from slim.capture import enrich
     _fakes(monkeypatch)
     monkeypatch.setattr(enrich, "enrich",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("model is down")))
@@ -459,7 +472,8 @@ def test_the_timestamp_name_survives_only_as_a_last_resort(tmp_path, monkeypatch
 def test_their_title_is_passed_to_the_card_but_a_generated_one_is_not(tmp_path, monkeypatch):
     """⚠ A model-written title is derived from the same transcript the card already reads, so
     feeding it back adds no evidence and lets one guess reinforce the next."""
-    from slim import enrich, record_pipeline, suggest
+    from slim import record_pipeline
+    from slim.capture import enrich, suggest
     _fakes(monkeypatch)
     seen = []
     monkeypatch.setattr(suggest, "build_card", lambda *a, **k: (
@@ -513,7 +527,8 @@ def test_one_recording_asks_for_one_model_at_one_size(tmp_path, monkeypatch):
     set of calls one recording makes shows it, which is why this test drives `handle_record`
     and watches the llm boundary rather than any single function.
     """
-    from slim import enrich, llm, record_pipeline, transcribe
+    from slim import llm, record_pipeline
+    from slim.capture import enrich, transcribe
 
     # ⚠ ONLY transcription is faked. The real summarize/suggest/enrich must run — faking
     # them is exactly what let this through, since each one is individually correct.
@@ -551,7 +566,8 @@ def test_summary_title_and_card_all_use_the_resident_model(tmp_path, monkeypatch
     that was gemma4:31b LOADING after evicting the resident qwen3.6:35b — then decoding at
     10 tok/s. Their call: no swap. All three calls in the request move together, at the
     resident's one context size, or one recording spawns two runners."""
-    from slim import enrich, llm, record_pipeline, suggest, summarize, transcribe
+    from slim import llm, record_pipeline
+    from slim.capture import enrich, suggest, summarize, transcribe
     seen = {}
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="the kernel trick", model="fake", audio_seconds=9.0, wall_seconds=1.0))
@@ -576,7 +592,8 @@ def test_summary_title_and_card_all_use_the_resident_model(tmp_path, monkeypatch
 
 def test_their_notes_reach_the_summarizer(tmp_path, monkeypatch):
     """They tell it what they noticed and how they name things. The transcript stays the source."""
-    from slim import record_pipeline, summarize
+    from slim import record_pipeline
+    from slim.capture import summarize
     seen = {}
     _fakes(monkeypatch)
     monkeypatch.setattr(summarize, "summarize", lambda *a, **k: (
@@ -591,7 +608,8 @@ def test_a_lecture_carries_no_open_questions_section(tmp_path, monkeypatch):
     hold the LECTURER's questions — rhetorical ones they pose and answers, examples on a slide.
     Rendered under "Open questions" they read as the owner's confusions (2026-08-26, NLP lecture).
     A meeting's unresolved question is real information and stays."""
-    from slim import record_pipeline, suggest, summarize, transcribe
+    from slim import record_pipeline
+    from slim.capture import suggest, summarize, transcribe
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="does a three year old know english", model="fake", audio_seconds=9.0,
         wall_seconds=1.0))
@@ -619,7 +637,8 @@ def test_silence_is_reported_as_silence_not_as_a_failure(tmp_path, monkeypatch):
     a red screen asking whether to delete their files — a decision they should never have to make
     over a recording that simply had nothing in it. The note is still not written (an empty
     note is worthless), but the caller has to be able to tell silence from a real failure."""
-    from slim import record_pipeline, record_state, transcribe
+    from slim import record_pipeline, record_state
+    from slim.capture import transcribe
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="   ", model="fake", audio_seconds=30.0, wall_seconds=1.0))
     with pytest.raises(record_state.NoSpeech) as caught:
@@ -630,7 +649,8 @@ def test_silence_is_reported_as_silence_not_as_a_failure(tmp_path, monkeypatch):
 
 def test_a_real_transcription_failure_is_still_an_error(tmp_path, monkeypatch):
     """Silence being quiet must not make a broken ASR quiet too — that one they do need to see."""
-    from slim import record_pipeline, transcribe
+    from slim import record_pipeline
+    from slim.capture import transcribe
 
     def boom(*a, **k):
         raise RuntimeError("ASR exploded")
@@ -646,7 +666,7 @@ def test_a_leftover_live_session_never_blocks_the_next_recording(monkeypatch):
     never called stop therefore turned off live captions for every recording afterwards — with
     one line of grey status text as the only sign. A recorder has exactly one live session; a
     new one replaces whatever is there."""
-    from slim import transcribe
+    from slim.capture import transcribe
 
     class Fake:
         def __init__(self, *a, **k):

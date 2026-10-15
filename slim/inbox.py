@@ -20,7 +20,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import audio, enrich, trace, transcribe as tx, voicetags
+from . import trace
+from .capture import audio, enrich, transcribe as tx, voicetags
 from .vault import notefile
 from .config import DATA_DIR, VAULT
 

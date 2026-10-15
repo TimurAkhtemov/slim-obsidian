@@ -12,8 +12,8 @@ corpus, not one imagined:
 
 import re
 
-from slim import summarize as summarize_mod
-from slim.summarize import Summary, render
+from slim.capture import summarize as summarize_mod
+from slim.capture.summarize import Summary, render
 
 
 _OK = {"overview": "o", "key_points": [], "decisions": [],
@@ -176,7 +176,7 @@ def test_a_placeholder_owner_is_dropped_rather_than_printed():
     """The prompt says omit `owner` when nobody was named. A model that instead writes
     "unnamed" has complied on paper and produced "— **unnamed**" in the note, which is exactly
     the filler the Restraint Rule exists to prevent. Seen on a real meeting, 2026-08-05."""
-    from slim import summarize
+    from slim.capture import summarize
     s = summarize.Summary(action_items=[{"task": "Send the tables", "owner": "unnamed"},
                                         {"task": "Review it", "owner": "Unknown"},
                                         {"task": "Ship it", "owner": "Sarah"}])
@@ -189,7 +189,7 @@ def test_a_placeholder_owner_is_dropped_rather_than_printed():
 def test_key_points_are_rendered_when_nothing_was_decided():
     """A working session with no decisions still has substance. An empty `key_points` beside a
     populated transcript was the defect that lost a 37-minute engineering meeting."""
-    from slim import summarize
+    from slim.capture import summarize
     s = summarize.Summary(overview="A review.",
                           key_points=_groups(("Refresh cadence",
                                               ["Tableau refreshes hourly, too slow for headcount"])),
@@ -326,7 +326,7 @@ def test_the_prompt_says_what_the_speaker_labels_mean():
     """This is INFORMATION the model cannot get anywhere else — who `Me` is — not a rider
     asking it to behave. The old sentence said transcripts have no speaker labels, which is
     now false for every call."""
-    from slim import speakers, summarize
+    from slim.capture import speakers, summarize
 
     assert f"**{speakers.ME}:**" in summarize.SYSTEM
     assert f"**{speakers.THEM}:**" in summarize.SYSTEM
@@ -346,7 +346,7 @@ def test_latex_mangled_by_json_escaping_is_repaired():
     it is the `\\t` of a command that lost its backslash, and putting the backslash back
     reverses the decode character for character. Same for \\f (\\frac), \\b (\\beta), \\r (\\rho).
     A real newline is left alone — that one is genuinely ambiguous."""
-    from slim.summarize import _unmangle_latex as fix
+    from slim.capture.summarize import _unmangle_latex as fix
     assert fix("$P(\text{positive})$") == "$P(" + chr(92) + "text{positive})$"
     assert fix("$" + chr(12) + "rac{a}{b}$") == "$" + chr(92) + "frac{a}{b}$"
     assert fix("a\nb") == "a\nb", "a real newline is not a mangled command"
@@ -441,7 +441,7 @@ def test_the_latex_repair_leaves_ordinary_text_alone():
     """Found in the second review: the repair was context-free, so a legitimate tab anywhere in
     any field became the visible characters `\\t`. LaTeX only ever lives between dollar signs
     here, so that is the only place a control character is evidence of damage."""
-    from slim.summarize import _unmangle_latex as fix
+    from slim.capture.summarize import _unmangle_latex as fix
     assert fix("a\tb") == "a\tb", "an ordinary tab is an ordinary tab"
     assert fix("$P(\ta)$") == "$P(" + chr(92) + "ta)$"
 

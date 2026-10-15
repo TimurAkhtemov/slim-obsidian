@@ -101,7 +101,8 @@ def test_cancelling_a_job_stops_the_pass_and_writes_nothing(tmp_path, monkeypatc
     """Their case: Stop is hit 40 minutes into a lecture by accident. Cancel has to leave the
     recording exactly as it was — ⚠ NOTHING WRITTEN, NOTHING DELETED — because the draft note
     and the staged audio are the only copies of what they said."""
-    from slim import record_pipeline, record_state, summarize, transcribe
+    from slim import record_pipeline, record_state
+    from slim.capture import summarize, transcribe
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="forty minutes of lecture", model="fake", audio_seconds=2400.0, wall_seconds=30.0))
 
@@ -126,7 +127,8 @@ def test_cancelling_a_job_stops_the_pass_and_writes_nothing(tmp_path, monkeypatc
 def test_cancelling_before_the_expensive_part_is_honoured(tmp_path, monkeypatch):
     """The stages that are not streaming — transcription, the card, the title — are blocking
     calls, so cancel lands at the next boundary. It must at least be CHECKED at each one."""
-    from slim import record_pipeline, record_state, transcribe
+    from slim import record_pipeline, record_state
+    from slim.capture import transcribe
     calls = []
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: (
         calls.append(p), transcribe.Transcript(text="x", model="f", audio_seconds=1.0,

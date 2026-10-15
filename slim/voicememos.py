@@ -24,7 +24,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import audio, inbox, trace
+from . import inbox, trace
+from .capture import audio
 from .vault import notefile
 from .config import DATA_DIR
 

@@ -100,7 +100,7 @@ def record(h, data: dict) -> None:
 
 def live(h, data: dict) -> None:
     """Local incremental captions. Audio arrives as bounded 16 kHz PCM, never leaves loopback."""
-    from . import transcribe
+    from .capture import transcribe
 
     session_id = str(data.get("session_id") or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", session_id):

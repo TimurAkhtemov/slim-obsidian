@@ -54,7 +54,8 @@ def handle_record_summary(*, note: str, instructions: str = "", job_id: str = ""
     success while losing what it exists to keep, and blanking a good summary because the model
     died is that shape exactly. This raises and writes nothing.
     """
-    from . import record as record_mod, summarize
+    from . import record as record_mod
+    from .capture import summarize
     from .vault.frontmatter import parse_frontmatter
     from .config import VAULT as _VAULT
 
@@ -122,7 +123,7 @@ def handle_record_apply(*, note: str, dest_dir: str, type_tag: str, topics: list
     whose ABSENCE is this vault's signal for "they declared this".
     """
     from . import record as record_mod
-    from . import summarize
+    from .capture import summarize
     from .vault.frontmatter import set_frontmatter
     from .config import VAULT as _VAULT
 

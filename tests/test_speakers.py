@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from slim import speakers
+from slim.capture import speakers
 
 QUIET, LOUD = -90.0, -20.0
 

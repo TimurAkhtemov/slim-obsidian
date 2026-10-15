@@ -215,7 +215,8 @@ def transcribe(path: Path, model: str | None = None) -> Transcript:
         )
     text, speakers_by = result.text.strip(), ""
     # Outside the ASR lock: this is ffmpeg and numpy, and must not hold up live captions.
-    from . import speakers, trace
+    from . import speakers
+    from .. import trace
     try:
         labelled, solo = speakers.label(path, result.tokens)
     except Exception as exc:                       # noqa: BLE001 - labels decorate, never gate

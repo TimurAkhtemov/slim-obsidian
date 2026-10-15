@@ -1,5 +1,5 @@
 """Enrichment's schema: what the model may answer is the vocabulary code already holds."""
-from slim import enrich, voicetags
+from slim.capture import enrich, voicetags
 
 REGISTRY = {
     "beacon": {"name": "Beacon"},

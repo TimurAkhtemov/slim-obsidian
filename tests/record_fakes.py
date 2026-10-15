@@ -12,7 +12,7 @@ NOW = datetime(2026, 8, 4, 14, 30, tzinfo=timezone.utc)
 
 @pytest.fixture(autouse=True)
 def _archive_in_tmp(tmp_path, monkeypatch):
-    from slim import audio
+    from slim.capture import audio
     monkeypatch.setattr(audio, "AUDIO_ARCHIVE", tmp_path / "Attachments" / "Recordings")
 
 
@@ -35,7 +35,7 @@ def _draft(tmp_path: Path, *, recording_id: str = "t", type_tag: str = "lecture"
 def _fakes(monkeypatch, *, transcript="the kernel trick", summary="Derived the kernel trick.",
            dest="Notes/school/CS201 ML",
            transcribe_raises=False, summarize_raises=False):
-    from slim import suggest, summarize, transcribe
+    from slim.capture import suggest, summarize, transcribe
 
     def fake_tx(p, model=None):
         if transcribe_raises:
@@ -68,7 +68,7 @@ def _existing(tmp_path, monkeypatch, dest="Capture/_unfiled"):
 
 def _segments_tx(monkeypatch, *results):
     """One Transcript per segment, in order: (text, speakers_by, solo_speaker)."""
-    from slim import transcribe
+    from slim.capture import transcribe
     queue = list(results)
 
     def fake_tx(p, model=None):

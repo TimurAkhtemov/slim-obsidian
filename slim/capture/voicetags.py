@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 from typing import NamedTuple
 
-from . import config
+from .. import config
 
 # Only the opening words carry the spoken tag. 120 chars is a few seconds of speech: long
 # enough for a full declaration, short enough that a tag word used later in the memo's own

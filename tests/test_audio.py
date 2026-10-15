@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from slim import audio
+from slim.capture import audio
 
 needs_ffmpeg = pytest.mark.skipif(shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
                                 reason="ffmpeg/ffprobe not installed")

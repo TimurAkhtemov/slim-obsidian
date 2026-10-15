@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from slim import audio, speakers, transcribe
+from slim.capture import audio, speakers, transcribe
 
 
 class _FakeASR:

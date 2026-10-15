@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from slim import transcribe
+from slim.capture import transcribe
 
 parakeet_mlx = pytest.importorskip("parakeet_mlx")
 

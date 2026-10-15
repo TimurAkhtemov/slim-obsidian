@@ -12,8 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from slim import audio, inbox as inbox_mod, voicetags
-from slim import transcribe as tx
+from slim import inbox as inbox_mod
+from slim.capture import audio, voicetags
+from slim.capture import transcribe as tx
 
 
 @pytest.fixture

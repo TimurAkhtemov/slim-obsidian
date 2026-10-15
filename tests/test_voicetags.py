@@ -5,7 +5,7 @@ Pure functions, regex only — never a model. The spoken TYPE vocabulary itself 
 """
 import pytest
 
-from slim import voicetags
+from slim.capture import voicetags
 
 
 # --- determinism ----------------------------------------------------------------------------

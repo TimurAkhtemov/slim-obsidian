@@ -6,7 +6,7 @@ what they said it was. Tagging without routing is filing metadata into a pile.
 """
 import pytest
 
-from slim import voicetags
+from slim.capture import voicetags
 
 REGISTRY = {
     "beacon": {"name": "Beacon", "vault_path": "Notes/beacon"},
@@ -47,7 +47,7 @@ def test_spoken_type_is_detected_from_the_opening(opening, expected):
 def test_learning_is_not_a_type():
     """`lecture` vs `learning` was a distinction the model and the owner both drew unstably.
     One word, so the card, `enrich` and the spoken vocabulary cannot disagree about it."""
-    from slim import enrich
+    from slim.capture import enrich
     assert "learning" not in voicetags.ROUTING_TYPES
     assert "learning" not in voicetags.TYPE_FRONTMATTER.values()
     assert "learning" not in enrich.TYPE_TAGS
@@ -279,7 +279,7 @@ def test_an_invented_project_is_rejected_rather_than_creating_a_folder():
 def test_the_models_none_is_honoured_instead_of_being_guessed_past():
     """`none` must be a real option. A required enum with no null forces a project onto every
     recording — grammar-guaranteed false positives no prompt wording can prevent."""
-    from slim import enrich
+    from slim.capture import enrich
     assert enrich.NO_PROJECT in enrich._schema(REGISTRY)["properties"]["project"]["enum"]
     r = route("Some rambling.", inferred_type="lecture", inferred_project=enrich.NO_PROJECT)
     assert (r.subject, r.folder) == (None, "Capture/_unfiled")

@@ -95,7 +95,7 @@ def _join_segments(gots: list[dict], labelled: bool = False) -> str:
     for a lecture, wrong beside a labelled call, where it reads as the last speaker still
     talking. So once anything is labelled (a segment here, or the note it is resumed onto),
     a one-sided segment carries its one label."""
-    from . import speakers
+    from .capture import speakers
 
     labelled = labelled or any(got.get("speakers_by") for got in gots)
     parts = []
@@ -116,7 +116,7 @@ def _transcribe_segment(staged: Path, transcribe_mod) -> tuple[dict, bool]:
     trusted by name alone hands back the previous recording's words with no transcription at
     all — the quietest way imaginable to file the wrong transcript.
     """
-    from . import audio
+    from .capture import audio
 
     cache = _segment_cache(staged)
     digest = ""
@@ -163,7 +163,8 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
     been transcribed. Because `write_recording` never runs, the audio stays staged in
     `_incoming`, where the plugin's error screen names it and a retry is one button.
     """
-    from . import enrich, record, suggest, summarize, transcribe
+    from . import record
+    from .capture import enrich, suggest, summarize, transcribe
     from .config import VAULT as _VAULT
 
     vault = vault or _VAULT
@@ -359,7 +360,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
 def _card_lists(vault: Path) -> dict:
     """What the card browses and badges: every folder a note may go to, every tag in use.
     Also served alone, for a pending card reopened after a reload (`/api/record/folders`)."""
-    from . import suggest
+    from .capture import suggest
     return {"tag_counts": suggest.tag_counts(vault),
             "folders": [{"path": f.path, "count": f.count} for f in suggest.folder_tree(vault)]}
 
@@ -402,7 +403,8 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
     costing a minute of model time runs unasked, and nothing overwrites a summary they may have
     edited by hand. ⚠ Silence is refused exactly as the recording path refuses it.
     """
-    from . import record as record_mod, transcribe
+    from . import record as record_mod
+    from .capture import transcribe
     from .vault.frontmatter import parse_frontmatter
     from .config import VAULT as _VAULT
 

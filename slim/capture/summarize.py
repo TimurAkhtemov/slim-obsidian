@@ -10,8 +10,8 @@ so an empty `action_items` is the schema working, not a degenerate case.
 
 from dataclasses import dataclass, field
 
-from . import llm, trace
-from .config import OWNER
+from .. import llm, trace
+from ..config import OWNER
 
 # The version tracks the SHAPE as well as the wording — a v3 summary is a flat list of key
 # points and a v4 summary groups them — so summaries written under different versions are

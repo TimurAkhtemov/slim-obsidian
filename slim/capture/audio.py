@@ -12,7 +12,7 @@ import subprocess
 from functools import lru_cache
 from pathlib import Path
 
-from .config import VAULT
+from ..config import VAULT
 
 AUDIO_ARCHIVE = VAULT / "Attachments" / "Recordings"
 

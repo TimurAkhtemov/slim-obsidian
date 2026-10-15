@@ -15,7 +15,8 @@ import urllib.request
 
 import pytest
 
-from slim import embed, enrich, db, llm, threads, trace
+from slim import embed, db, llm, threads, trace
+from slim.capture import enrich
 
 
 def ollama_available() -> bool:

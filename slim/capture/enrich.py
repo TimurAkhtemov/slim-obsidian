@@ -10,8 +10,9 @@ recorder's filing card and by the memo sweep.
 
 import re
 
-from . import config, llm, voicetags
-from .config import OWNER
+from .. import config, llm
+from . import voicetags
+from ..config import OWNER
 
 PROMPT_VERSION = "enrich-v4"   # v4: + `project`, chosen against the registry's descriptions
 

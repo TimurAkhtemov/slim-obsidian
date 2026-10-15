@@ -13,7 +13,8 @@ def test_a_resumed_recording_is_one_note_from_several_segments(tmp_path, monkeyp
     """A second MediaRecorder session writes its own container header, so appending to one
     .webm risks a file nothing can play. Segments sidestep that: several audio files, one
     recording id, one note, transcripts joined in order."""
-    from slim import record_pipeline, transcribe
+    from slim import record_pipeline
+    from slim.capture import transcribe
     seen = []
 
     def fake_tx(p, model=None):
@@ -64,7 +65,8 @@ def test_a_transcribed_segment_is_not_transcribed_twice(tmp_path, monkeypatch):
     """⚠ THE REASON CANCEL IS AFFORDABLE. Without a cache, cancelling after a 40-minute
     transcription makes them pay for that transcription again on resume — which is most of the
     wait they cancelled to avoid."""
-    from slim import record_pipeline, record_state, transcribe
+    from slim import record_pipeline, record_state
+    from slim.capture import transcribe
     calls = []
 
     def fake_tx(p, model=None):
@@ -72,7 +74,7 @@ def test_a_transcribed_segment_is_not_transcribed_twice(tmp_path, monkeypatch):
         return transcribe.Transcript(text="the first forty minutes", model="fake",
                                      audio_seconds=2400.0, wall_seconds=90.0)
     monkeypatch.setattr(transcribe, "transcribe", fake_tx)
-    from slim import summarize as summarize_mod
+    from slim.capture import summarize as summarize_mod
     monkeypatch.setattr(summarize_mod, "summarize",
                         lambda *a, **k: (_ for _ in ()).throw(record_state.RecordCancelled()))
     first = _staged(tmp_path, "r-001.webm")
@@ -143,7 +145,8 @@ def test_the_transcript_so_far_can_be_read_back_without_transcribing(tmp_path, m
     """The paused screen has to show what was captured, or "1 segment saved" is a claim they have
     no way to check — and after a cancel that claim is the whole point. Reads the per-segment
     caches ONLY: asking for a transcript must never start a transcription."""
-    from slim import record_pipeline, transcribe
+    from slim import record_pipeline
+    from slim.capture import transcribe
     calls = []
     monkeypatch.setattr(transcribe, "transcribe", lambda *a, **k: calls.append(1))
     first, second = _staged(tmp_path, "r-001.webm"), _staged(tmp_path, "r-002.webm")
@@ -161,7 +164,8 @@ def test_resuming_a_filed_note_appends_audio_and_words(tmp_path, monkeypatch):
     """Their ask: resume should be available when the review card is waiting, and on any note
     that is already finished. The note exists, its audio is archived and staging is clear, so
     this is an APPEND — not a second recording, and not a rewrite."""
-    from slim import record_pipeline, transcribe
+    from slim import record_pipeline
+    from slim.capture import transcribe
     from slim.vault.frontmatter import parse_frontmatter
     r = _existing(tmp_path, monkeypatch)
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
@@ -182,7 +186,8 @@ def test_resuming_a_filed_note_appends_audio_and_words(tmp_path, monkeypatch):
 def test_an_appended_segment_leaves_the_summary_alone(tmp_path, monkeypatch):
     """Their call: the summary keeps describing what it described until they presse Retry summary.
     Nothing that costs a minute of model time runs unasked."""
-    from slim import record_pipeline, transcribe
+    from slim import record_pipeline
+    from slim.capture import transcribe
     r = _existing(tmp_path, monkeypatch)     # written with summary_md="s"
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="more words", model="fake", audio_seconds=60.0, wall_seconds=1.0))
@@ -194,7 +199,8 @@ def test_an_appended_segment_leaves_the_summary_alone(tmp_path, monkeypatch):
 
 def test_appending_silence_is_refused_and_keeps_the_audio(tmp_path, monkeypatch):
     """Same rule as the recording path: a transcript with no words is refused, not filed."""
-    from slim import record_pipeline, record_state, transcribe
+    from slim import record_pipeline, record_state
+    from slim.capture import transcribe
     r = _existing(tmp_path, monkeypatch)
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="   ", model="fake", audio_seconds=60.0, wall_seconds=1.0))
@@ -207,7 +213,8 @@ def test_appending_silence_is_refused_and_keeps_the_audio(tmp_path, monkeypatch)
 
 
 def test_appending_silence_is_the_same_quiet_outcome(tmp_path, monkeypatch):
-    from slim import record_pipeline, record_state, transcribe
+    from slim import record_pipeline, record_state
+    from slim.capture import transcribe
     r = _existing(tmp_path, monkeypatch)
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="", model="fake", audio_seconds=9.0, wall_seconds=1.0))
@@ -219,7 +226,8 @@ def test_appending_silence_is_the_same_quiet_outcome(tmp_path, monkeypatch):
 
 
 def test_an_append_does_not_clobber_notes_saved_while_it_ran(tmp_path, monkeypatch):
-    from slim import record_pipeline, record_review, transcribe
+    from slim import record_pipeline, record_review
+    from slim.capture import transcribe
     r = _existing(tmp_path, monkeypatch)
     note_rel = str(r.note.relative_to(tmp_path))
 
@@ -242,7 +250,8 @@ def test_cancelling_a_one_segment_resume_actually_cancels(tmp_path, monkeypatch)
     """⚠ Cancel was checked only at the top of the per-segment loop, and a resume normally has
     exactly ONE segment — so the check ran once, before a transcription that can take forty
     minutes, and never again. They were told "nothing is written or deleted" and the note grew."""
-    from slim import record_pipeline, record_state, transcribe
+    from slim import record_pipeline, record_state
+    from slim.capture import transcribe
 
     def cancel_during(p, model=None):
         record_state.request_record_cancel("job-append")
@@ -267,7 +276,8 @@ def test_append_never_deletes_the_audio_it_just_recorded(tmp_path, monkeypatch):
     """⚠ The cleanup unlinked every input path. Point `audio` at a file that is ALREADY its
     content-addressed archive and `archive_audio` returns that same path — so the note ends up
     naming a recording the same request deleted."""
-    from slim import record_pipeline, transcribe
+    from slim import record_pipeline
+    from slim.capture import transcribe
     r = _existing(tmp_path, monkeypatch)
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="more words", model="fake", audio_seconds=9.0, wall_seconds=1.0))
@@ -298,7 +308,8 @@ def test_every_segment_must_belong_to_the_same_recording(tmp_path, monkeypatch):
 def test_a_transcript_cache_is_bound_to_the_audio_it_transcribed(tmp_path, monkeypatch):
     """The cache was trusted by PATH. Different bytes at the same staged name returned the old
     words with no transcription at all."""
-    from slim import audio, record_pipeline, transcribe
+    from slim import record_pipeline
+    from slim.capture import audio, transcribe
     calls = []
 
     def tx(p, model=None):
@@ -325,7 +336,8 @@ def test_speaker_provenance_survives_the_segment_cache(tmp_path, monkeypatch):
     """The cache hands back the words without transcribing. It must hand back how their
     speakers were decided too, or a Try again files a labelled transcript that says nothing
     about where its labels came from."""
-    from slim import audio, record_pipeline, transcribe
+    from slim import record_pipeline
+    from slim.capture import audio, transcribe
 
     _fakes(monkeypatch)
     monkeypatch.setattr(audio, "normalize_container", lambda p: p)
@@ -343,7 +355,8 @@ def test_speaker_provenance_survives_the_segment_cache(tmp_path, monkeypatch):
 
 
 def test_the_one_speaker_survives_the_segment_cache(tmp_path, monkeypatch):
-    from slim import audio, record_pipeline, transcribe
+    from slim import record_pipeline
+    from slim.capture import audio, transcribe
 
     _fakes(monkeypatch)
     monkeypatch.setattr(audio, "normalize_container", lambda p: p)
