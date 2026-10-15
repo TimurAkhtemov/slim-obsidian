@@ -308,11 +308,12 @@ sweep every five minutes, the reflection nightly, and a restic backup of the vau
 - `slim/vault/` — `frontmatter.py` (the frontmatter reader and writer), `notefile.py` (slugs,
   safe writes), `note_images.py` (a note's embedded images), `identity.py` (the vault pin).
 - `slim/capture/` — audio to labelled text, for both lanes: `transcribe.py` (two speech lanes),
-  `audio.py` (ffmpeg, hashing, archive), `speakers.py`, `summarize.py`, `suggest.py` (the
-  filing card), `enrich.py` and `voicetags.py` (labelling).
+  `audio.py` (ffmpeg, hashing, archive), `speakers.py`, `summarize.py`, `enrich.py` and
+  `voicetags.py` (labelling).
 - `slim/recorder/` — the desktop lane: `routes.py` (the server's record routes), `pipeline.py`
   (audio to a filed note), `review.py` (edits to a filed note), `state.py` (the job queue,
-  progress, locks), `note.py` (the sole writer of a recorded note).
+  progress, locks), `note.py` (the sole writer of a recorded note), `suggest.py` (the filing
+  card).
 - `slim/memos/` — the phone lane: `voicememos.py` (the sweep) and `inbox.py` (filing a memo).
 - `slim/index/` — `ingest.py`, `chunk.py` (fragments), `embed.py`, `search.py`.
 - `slim/copilot/` — `turn.py` (one turn: the gate and the Ask path), `context.py` (what it

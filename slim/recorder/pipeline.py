@@ -165,7 +165,8 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
     `_incoming`, where the plugin's error screen names it and a retry is one button.
     """
     from . import note as note_writer
-    from ..capture import enrich, suggest, summarize, transcribe
+    from ..capture import enrich, summarize, transcribe
+    from . import suggest
     from ..config import VAULT as _VAULT
 
     vault = vault or _VAULT
@@ -361,7 +362,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
 def _card_lists(vault: Path) -> dict:
     """What the card browses and badges: every folder a note may go to, every tag in use.
     Also served alone, for a pending card reopened after a reload (`/api/record/folders`)."""
-    from ..capture import suggest
+    from . import suggest
     return {"tag_counts": suggest.tag_counts(vault),
             "folders": [{"path": f.path, "count": f.count} for f in suggest.folder_tree(vault)]}
 

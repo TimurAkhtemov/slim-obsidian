@@ -16,7 +16,7 @@ from pathlib import Path
 from ..config import VAULT
 from ..vault.frontmatter import parse_frontmatter
 from .. import llm
-from . import voicetags
+from ..capture import voicetags
 
 # Derived or binary; never a filing destination and never a source of tags or counts.
 _NEVER = {"_reflections", "profile", "attachments"}

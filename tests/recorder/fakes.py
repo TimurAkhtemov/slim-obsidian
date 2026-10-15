@@ -35,7 +35,8 @@ def _draft(tmp_path: Path, *, recording_id: str = "t", type_tag: str = "lecture"
 def _fakes(monkeypatch, *, transcript="the kernel trick", summary="Derived the kernel trick.",
            dest="Notes/school/CS201 ML",
            transcribe_raises=False, summarize_raises=False):
-    from slim.capture import suggest, summarize, transcribe
+    from slim.capture import summarize, transcribe
+    from slim.recorder import suggest
 
     def fake_tx(p, model=None):
         if transcribe_raises:

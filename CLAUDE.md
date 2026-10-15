@@ -95,7 +95,7 @@ note loses its id. Embedding is part of ingest; `slim status` reports `unembedde
    collapses to its deepest existing ancestor, else `Capture/_unfiled`, and a journal is
    forced flat to `Journal/`. The owner can edit it, and `/api/record/apply` moves the note.
    A later move is a drag in Obsidian. ⚠ The card offers folders under `Capture/` and `Notes/`
-   only (`capture.suggest.FILING_ROOTS`) — never the owner's other top-level folders.
+   only (`recorder.suggest.FILING_ROOTS`) — never the owner's other top-level folders.
 4. **Reflect** — `slim reflect` writes ONE journal-synthesis note into `_Reflections/`,
    nightly. **This is the part the owner reads.** Judge changes by whether the note is worth
    reading, nothing else.
@@ -177,9 +177,10 @@ slim/            entry points and seams: cli, server (`slim chat`'s HTTP), confi
                  llm, llm_render, reflect, devserver; vaultpath (stdlib only, loaded BY PATH)
 slim/vault/      reading and writing notes: frontmatter, notefile, note_images, identity (the pin)
 slim/capture/    audio to labelled text, both lanes: audio, transcribe, speakers, summarize,
-                 enrich, voicetags, suggest
+                 enrich, voicetags
 slim/memos/      the phone lane: voicememos (the sweep), inbox (files a memo)
-slim/recorder/   the desktop lane: routes, pipeline, review, state, note (the note's sole writer)
+slim/recorder/   the desktop lane: routes, pipeline, review, state, note (the note's sole writer),
+                 suggest (the filing card)
 slim/index/      ingest, chunk, embed, search
 slim/copilot/    Talk: turn, context, run, edits, blocks (the note as handled blocks), threads,
                  images, skills; the built-in skill templates are `slim/skills/`

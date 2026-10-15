@@ -281,7 +281,7 @@ def test_a_failed_transcription_does_not_load_the_dense_model(tmp_path, monkeypa
     cost of a failed ASR run would land on whatever they did next. It still must not be called —
     the request now fails before it gets there."""
     from slim.recorder import pipeline
-    from slim.capture import suggest
+    from slim.recorder import suggest
     _fakes(monkeypatch, transcribe_raises=True)
     monkeypatch.setattr(suggest, "build_card", lambda *a, **k: pytest.fail("must not be called"))
     with pytest.raises(ValueError):
@@ -324,7 +324,8 @@ def test_the_note_gets_the_whole_summary_not_just_the_overview(tmp_path, monkeyp
     key points, decisions, action items and open questions were generated and then thrown away.
     It read as the model being lazy when the caller was discarding its work."""
     from slim.recorder import pipeline
-    from slim.capture import suggest, summarize, transcribe
+    from slim.capture import summarize, transcribe
+    from slim.recorder import suggest
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="we discussed the export", model="fake", audio_seconds=9.0, wall_seconds=1.0))
     monkeypatch.setattr(summarize, "summarize", lambda *a, **k: summarize.Summary(
@@ -474,7 +475,8 @@ def test_their_title_is_passed_to_the_card_but_a_generated_one_is_not(tmp_path, 
     """⚠ A model-written title is derived from the same transcript the card already reads, so
     feeding it back adds no evidence and lets one guess reinforce the next."""
     from slim.recorder import pipeline
-    from slim.capture import enrich, suggest
+    from slim.capture import enrich
+    from slim.recorder import suggest
     _fakes(monkeypatch)
     seen = []
     monkeypatch.setattr(suggest, "build_card", lambda *a, **k: (
@@ -570,7 +572,8 @@ def test_summary_title_and_card_all_use_the_resident_model(tmp_path, monkeypatch
     resident's one context size, or one recording spawns two runners."""
     from slim import llm
     from slim.recorder import pipeline
-    from slim.capture import enrich, suggest, summarize, transcribe
+    from slim.capture import enrich, summarize, transcribe
+    from slim.recorder import suggest
     seen = {}
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="the kernel trick", model="fake", audio_seconds=9.0, wall_seconds=1.0))
@@ -612,7 +615,8 @@ def test_a_lecture_carries_no_open_questions_section(tmp_path, monkeypatch):
     Rendered under "Open questions" they read as the owner's confusions (2026-08-26, NLP lecture).
     A meeting's unresolved question is real information and stays."""
     from slim.recorder import pipeline
-    from slim.capture import suggest, summarize, transcribe
+    from slim.capture import summarize, transcribe
+    from slim.recorder import suggest
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="does a three year old know english", model="fake", audio_seconds=9.0,
         wall_seconds=1.0))

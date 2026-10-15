@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from slim.capture import suggest
+from slim.recorder import suggest
 
 
 def _note(vault: Path, rel: str, topics: list[str] | None = None):

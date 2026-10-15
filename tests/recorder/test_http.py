@@ -13,7 +13,8 @@ import pytest
 
 from slim import server, config
 from slim.recorder import state
-from slim.capture import suggest, summarize, transcribe
+from slim.capture import summarize, transcribe
+from slim.recorder import suggest
 from tests.recorder.fakes import _archive_in_tmp, _draft, _existing, _fakes, _staged  # noqa: F401
 
 
