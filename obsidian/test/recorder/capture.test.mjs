@@ -1,8 +1,8 @@
 // Capture: system audio with no device picker, the stereo split, the silence watch, the clock.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fakeContentEl, findClass, installed, notices } from "./fakes.mjs";
-import { FakeStream, SPEECH, ZERO, view, wiring } from "./recorder-harness.mjs";
+import { fakeContentEl, findClass, installed, notices } from "../fakes.mjs";
+import { FakeStream, SPEECH, ZERO, view, wiring } from "../recorder-harness.mjs";
 
 const okDisplay = async () => new FakeStream(["video", "audio"]);
 

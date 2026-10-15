@@ -2,12 +2,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { find } from "./fakes.mjs";
-import { PLAN, change, editView, fakeLive, makeView, renderedView } from "./copilot-harness.mjs";
+import { find } from "../fakes.mjs";
+import { PLAN, change, editView, fakeLive, makeView, renderedView } from "../copilot-harness.mjs";
 
 const require = createRequire(import.meta.url);
-const { editOutcome, historyText, sha256Hex } = require("../src/chat/text.js");
-const SlimRecorderPlugin = require("../src/plugin.js");
+const { editOutcome, historyText, sha256Hex } = require("../../src/chat/text.js");
+const SlimRecorderPlugin = require("../../src/plugin.js");
 
 test("a question sends the open note's text and its hash; there is no toggle and no edit flag", async () => {
   const { live, editor } = fakeLive();

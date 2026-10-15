@@ -2,12 +2,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { fakeContentEl, findClass, notices, resetNotices } from "./fakes.mjs";
-import { fileBackedView, findButton, view } from "./recorder-harness.mjs";
+import { fakeContentEl, findClass, notices, resetNotices } from "../fakes.mjs";
+import { fileBackedView, findButton, view } from "../recorder-harness.mjs";
 
 const require = createRequire(import.meta.url);
-const PluginClass = require("../src/plugin.js");
-const { MeetingSessionManager } = require("../src/recorder/sessions.js");
+const PluginClass = require("../../src/plugin.js");
+const { MeetingSessionManager } = require("../../src/recorder/sessions.js");
 
 // --- a failed transcript is refused, and retrying is one button ------------------------------
 // The server used to file an empty note and return 200, so there was nothing to retry — it had

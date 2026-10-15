@@ -2,12 +2,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { obsidianStub, srcText } from "./fakes.mjs";
-import { view } from "./recorder-harness.mjs";
+import { obsidianStub, srcText } from "../fakes.mjs";
+import { view } from "../recorder-harness.mjs";
 
 const require = createRequire(import.meta.url);
 const { inlineMarkdown, markdownBlockShortcut, markdownFromEditable,
-        stampSourceAtoms } = require("../src/recorder/editable-markdown.js");
+        stampSourceAtoms } = require("../../src/recorder/editable-markdown.js");
 
 test("Notion-style Markdown shortcuts map to live block formatting", () => {
   assert.deepEqual(markdownBlockShortcut("### "), { tag: "h3", kind: "block" });

@@ -5,13 +5,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import { find } from "./fakes.mjs";
+import { find } from "../fakes.mjs";
 import { PLAN, change, editView, fakeLive, makeView, renderedView,
-         text } from "./copilot-harness.mjs";
+         text } from "../copilot-harness.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
-const { SUGGESTED_PROMPTS, sha256Hex, stageLine } = require("../src/chat/text.js");
+const { SUGGESTED_PROMPTS, sha256Hex, stageLine } = require("../../src/chat/text.js");
 
 const transcriptOf = (root) => find(root, (node) => node.cls === "slim-copilot-transcript");
 
@@ -227,7 +227,7 @@ test("an empty thread offers suggested prompts, and one click sends it", () => {
 });
 
 test("their turn is a bubble on the right and the composer starts as one line", () => {
-  const styles = fs.readFileSync(path.join(HERE, "..", "styles.css"), "utf8");
+  const styles = fs.readFileSync(path.join(HERE, "..", "..", "styles.css"), "utf8");
   assert.match(styles, /\.slim-message\.is-you\s*\{[^}]*align-self:\s*flex-end/s);
   assert.match(styles, /\.slim-message\.is-you\s*\{[^}]*border-radius/s);
   assert.match(styles, /\.slim-copilot-input\s*\{[^}]*min-height:\s*36px/s);
@@ -316,7 +316,7 @@ test("completed chat text can be selected and copied in Obsidian's ItemView", ()
   // Obsidian gives custom ItemViews `user-select: none`. Textareas remain editable because
   // Chromium treats form controls specially, but ordinary question and answer text inherits
   // the prohibition unless the plugin explicitly restores selection on the transcript.
-  const styles = fs.readFileSync(path.join(HERE, "..", "styles.css"), "utf8");
+  const styles = fs.readFileSync(path.join(HERE, "..", "..", "styles.css"), "utf8");
   assert.match(styles, /\.slim-copilot-transcript\s*\{[^}]*user-select:\s*text\s*;/s);
 });
 

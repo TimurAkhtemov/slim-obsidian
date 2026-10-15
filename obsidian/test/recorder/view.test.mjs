@@ -4,8 +4,8 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { obsidianStub, srcText } from "./fakes.mjs";
-import { fileBackedView } from "./recorder-harness.mjs";
+import { obsidianStub, srcText } from "../fakes.mjs";
+import { fileBackedView } from "../recorder-harness.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
@@ -179,13 +179,13 @@ test("processing freezes the native editor and an error unlocks it", () => {
 });
 
 test("processing freezes only the native editor, never the meeting controls", () => {
-  const css = readFileSync(path.join(HERE, "..", "styles.css"), "utf8");
+  const css = readFileSync(path.join(HERE, "..", "..", "styles.css"), "utf8");
   assert.match(css, /\.slim-recorder-draft-frozen \.cm-line:not\(:has\(\.slim-meeting-block\)\)[^{]*\{[^}]*pointer-events:\s*none/s);
   assert.match(css, /\.slim-recorder-draft-frozen \.slim-meeting-block[^{]*\{[^}]*pointer-events:\s*auto/s);
 });
 
 test("review panes own their scroll instead of painting over filing controls", () => {
-  const css = readFileSync(path.join(HERE, "..", "styles.css"), "utf8");
+  const css = readFileSync(path.join(HERE, "..", "..", "styles.css"), "utf8");
   assert.match(css, /\.slim-recorder\s*>\s*\*\s*\{[^}]*flex:\s*0 0 auto/s);
   assert.match(css, /\.slim-summary-editor,[^{]*\.slim-notes-editor\s*\{[^}]*width:\s*100%[^}]*overflow:\s*auto[^}]*resize:\s*none/s);
 });

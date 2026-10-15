@@ -2,12 +2,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { fakeContentEl, findClass, srcText } from "./fakes.mjs";
-import "./recorder-harness.mjs";
+import { fakeContentEl, findClass, srcText } from "../fakes.mjs";
+import "../recorder-harness.mjs";
 
 const require = createRequire(import.meta.url);
 const { embedLegacyMeetingBlock, renderPassiveMeetingBlock,
-        splitMeetingNote } = require("../src/recorder/meeting-note.js");
+        splitMeetingNote } = require("../../src/recorder/meeting-note.js");
 
 test("the meeting parser retains the complete existing frontmatter byte-for-byte", () => {
   // `index_terms` is RETIRED (deleted 2026-08-26) and stays in this fixture on purpose: the

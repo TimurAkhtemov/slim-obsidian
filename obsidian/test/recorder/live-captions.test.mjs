@@ -1,7 +1,7 @@
 // Live captions while recording: flushing, restarts, coalescing, carrying across segments.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { view } from "./recorder-harness.mjs";
+import { view } from "../recorder-harness.mjs";
 
 test("resuming carries the earlier transcript and the elapsed time forward", () => {
   // Seen live: resume showed an empty transcript pane and a timer back at 00:00:00, so the

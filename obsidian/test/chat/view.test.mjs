@@ -5,13 +5,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import { find, obsidianStub, srcText } from "./fakes.mjs";
-import { makeView, renderedView, text } from "./copilot-harness.mjs";
+import { find, obsidianStub, srcText } from "../fakes.mjs";
+import { makeView, renderedView, text } from "../copilot-harness.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
-const { metaText } = require("../src/chat/text.js");
-const { RenameModal } = require("../src/chat/view.js");
+const { metaText } = require("../../src/chat/text.js");
+const { RenameModal } = require("../../src/chat/view.js");
 
 function deferred() {
   let resolve;
@@ -222,7 +222,7 @@ test("the main plugin registers the copilot view and follows active notes", () =
   assert.match(source, /registerView\(VIEW_TYPE_COPILOT/);
   assert.match(source, /active-leaf-change/);
   assert.match(source, /activateCopilot/);
-  const manifest = JSON.parse(fs.readFileSync(path.join(HERE, "..", "manifest.json"), "utf8"));
+  const manifest = JSON.parse(fs.readFileSync(path.join(HERE, "..", "..", "manifest.json"), "utf8"));
   assert.equal(manifest.name, "SLIM");
 });
 

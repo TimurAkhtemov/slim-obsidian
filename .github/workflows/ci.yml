@@ -34,4 +34,4 @@ jobs:
         with:
           node-version: '22'
       - run: npm ci --prefix obsidian   # esbuild, for the test that main.js is what src builds to
-      - run: node --test obsidian/test/*.test.mjs
+      - run: node --test "obsidian/test/**/*.test.mjs"   # quoted: node expands the glob itself

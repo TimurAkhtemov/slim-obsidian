@@ -2,11 +2,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { fileBackedView, sessionManagerHarness, view } from "./recorder-harness.mjs";
+import { fileBackedView, sessionManagerHarness, view } from "../recorder-harness.mjs";
 
 const require = createRequire(import.meta.url);
-const { RecorderView } = require("../src/recorder/view.js");
-const { MeetingSessionManager } = require("../src/recorder/sessions.js");
+const { RecorderView } = require("../../src/recorder/view.js");
+const { MeetingSessionManager } = require("../../src/recorder/sessions.js");
 
 // --- several durable meeting sessions, one capture ------------------------------------------
 

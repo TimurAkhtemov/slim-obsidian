@@ -1,8 +1,8 @@
 // The meeting block's screens: processing, review, errors, the card.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fakeContentEl, findClass } from "./fakes.mjs";
-import { fileBackedView, findButton, view } from "./recorder-harness.mjs";
+import { fakeContentEl, findClass } from "../fakes.mjs";
+import { fileBackedView, findButton, view } from "../recorder-harness.mjs";
 
 test("AI summary renders as Markdown until the user enters edit mode", () => {
   const v = view();
