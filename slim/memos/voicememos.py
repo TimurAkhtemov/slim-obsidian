@@ -1,9 +1,9 @@
 """Copy-only sweep of Apple's Voice Memos container into the journal inbox.
 
 The owner records in the iOS Voice Memos app; iCloud syncs the recordings to this Mac's group
-container. This module copies NEW recordings out of that container into the content-addressed
-inbox flow (`inbox.process`), where they become Journal transcripts. Driven by launchd every
-five minutes. The machinery here is only the copy: it calls no model and writes no prose.
+container. This module copies NEW recordings out of that container into `Inbox/Journal`;
+`slim memos` then hands them to `inbox.process`, where they become Journal transcripts. Driven
+by launchd every five minutes. The machinery here is only the copy: it calls no model and writes no prose.
 
 The container is Apple's app data, so this reads only: nothing there is ever renamed, moved,
 rewritten or deleted, and the title db is opened read-only AND immutable (`mode=ro&immutable=1`)

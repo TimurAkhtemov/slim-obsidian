@@ -382,7 +382,7 @@ class CopilotView extends ItemView {
       await this.plugin.streamCopilot({
         thread_id: thread.id, source_id: this.context.source.id, question,
         // Role, text and small image refs only, every turn whole: the server fits the
-        // conversation to the model's window (copilot.fit_window). Slim turns also carry
+        // conversation to the model's window (copilot.turn.fit_window). Slim turns also carry
         // evidence and stats; re-uploading those on every question grew with the square of the
         // thread. Image bytes stay server-side. A question with no answer after it (a chat
         // saved before a failed one came off) is not history.

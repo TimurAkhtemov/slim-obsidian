@@ -1,8 +1,8 @@
 """The Obsidian plugin's local API server — `slim chat`, 127.0.0.1:7546.
 
-Twenty-two routes, called by `obsidian/main.js` (and `GET /api/health` also by the stale-server
-hook): the health guard, eleven `/api/record*` routes for the recorder and ten `/api/copilot*`
-routes for the open-note sidebar. The copilot never writes a note: an edit streams back as
+Twenty-two routes, called by the plugin in `obsidian/src/` (and `GET /api/health` also by the
+stale-server hook): the health guard, eleven `/api/record*` routes for the recorder and ten
+`/api/copilot*` routes for the open-note sidebar. The copilot never writes a note: an edit streams back as
 changes, and the plugin applies each one through the editor.
 
 Loopback-only and Host/Origin-gated because this server moves and overwrites vault files. Two

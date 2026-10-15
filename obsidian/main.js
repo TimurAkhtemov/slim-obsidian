@@ -1552,7 +1552,7 @@ var require_view = __commonJS({
             source_id: this.context.source.id,
             question,
             // Role, text and small image refs only, every turn whole: the server fits the
-            // conversation to the model's window (copilot.fit_window). Slim turns also carry
+            // conversation to the model's window (copilot.turn.fit_window). Slim turns also carry
             // evidence and stats; re-uploading those on every question grew with the square of the
             // thread. Image bytes stay server-side. A question with no answer after it (a chat
             // saved before a failed one came off) is not history.
@@ -3619,9 +3619,9 @@ var require_capture = __commonJS({
        * It degrades honestly: system audio can fail and you still get the mic, with a Notice
        * saying so.
        *
-       * ⚠ LEFT IS THE MICROPHONE, RIGHT IS THE MACHINE — `slim/speakers.py` reads them that way.
-       * They used to be summed, and once summed nobody can say who spoke. Apart, "me or them" is
-       * a fact of the capture, decided on the server with no model. A missing source leaves its
+       * ⚠ LEFT IS THE MICROPHONE, RIGHT IS THE MACHINE — `slim/capture/speakers.py` reads them
+       * that way. They used to be summed, and once summed nobody can say who spoke. Apart, "me or
+       * them" is a fact of the capture, decided on the server with no model. A missing source leaves its
        * channel silent; it never moves to the other side. The caption tap and the level meter
        * each ask for ONE channel, so Web Audio downmixes for them — leave them alone. The downmix
        * is half of each side, so the level bar reads ~6 dB lower than before for the same voice.
@@ -6304,7 +6304,7 @@ var require_plugin = __commonJS({
         for (const leaf of this.app.workspace?.getLeavesOfType?.(VIEW_TYPE_COPILOT) || []) leaf.view?.runChanged?.(view, runId);
       }
       /* Writing chunks to disk is only half a guarantee if the survivor is never mentioned again.
-       * `record.write_recording` unlinks the staged file once the audio is archived, so anything
+       * `recorder.note.write_recording` unlinks the staged file once the audio is archived, so anything
        * non-empty still sitting here is a recording that never finished being filed. */
       async warnAboutStrandedAudio() {
         try {

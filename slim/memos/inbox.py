@@ -129,7 +129,7 @@ def _render_note(title: str, when: datetime, t: tx.Transcript, digest: str,
         f"transcribed_at: {datetime.now(timezone.utc).isoformat(timespec='seconds')}",
         "---",
     ]
-    # The `## Transcript` H2 is the marker `summarize.py` splits on. One convention, whatever
+    # The `## Transcript` H2 is `index/chunk.py`'s TRANSCRIPT_MARKER. One convention, whatever
     # the source.
     return "\n".join(fm) + f"\n\n# {title}\n\n## Transcript\n\n{t.text}\n"
 

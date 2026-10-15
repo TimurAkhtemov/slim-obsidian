@@ -51,7 +51,7 @@ FRAG_SELECT = """
 
 
 _MATRIX = {"key": None, "ids": [], "mat": None}
-# `chat` is a ThreadingHTTPServer and every handler opens its own connection, so two copilot
+# `server` is a ThreadingHTTPServer and every handler opens its own connection, so two copilot
 # turns reach this cache at once. Without the lock a reader can take `ids` from one generation
 # and `mat` from the next, and the mismatched pair indexes out of range in `vector`.
 _MATRIX_LOCK = threading.Lock()

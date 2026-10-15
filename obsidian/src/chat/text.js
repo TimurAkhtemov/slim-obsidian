@@ -114,7 +114,7 @@ function editorSelection(app, path) {
   return { text: "" };
 }
 
-// Mirrors copilot.py MAX_SELECTION_CHARS.
+// Mirrors copilot/context.py MAX_SELECTION_CHARS.
 const MAX_SELECTION_CHARS = 20_000;
 // Mirrors edits.MAX_EDIT_CHARS: a longer note is still asked about, from the file, but not edited.
 const MAX_EDIT_CHARS = 400_000;

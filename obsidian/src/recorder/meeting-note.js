@@ -11,8 +11,9 @@ const RECORDER_ATTACHMENTS = "Attachments/Recorder";
 const DRAFT_SUFFIX = ".slim-draft.md";
 const EMPTY_MEETING_BLOCK = "````slim-meeting\n\n````\n\n";
 
-// Matches slim/voicetags.py TYPE_FRONTMATTER. A type they PICKS is testimony: the pipeline never
-// overrides a declared type, so choosing here removes the whole axis from guesswork.
+// Matches slim/capture/voicetags.py TYPE_FRONTMATTER. A type they PICKS is testimony: the
+// pipeline never overrides a declared type, so choosing here removes the whole axis from
+// guesswork.
 const TYPES = [
   ["meeting-note", "Meeting"],
   ["lecture", "Lecture"],
@@ -42,8 +43,8 @@ function recordingId() {
 
 /* Presentation-only parser for the finished meeting object.
  *
- * It NEVER writes the note. `slim/record.py` remains the sole owner of frontmatter and of the
- * Summary / Notes / Transcript boundaries. Keeping the complete frontmatter block here is a
+ * It NEVER writes the note. `slim/recorder/note.py` remains the sole owner of frontmatter and of
+ * the Summary / Notes / Transcript boundaries. Keeping the complete frontmatter block here is a
  * regression seam: the tabbed object may hide it visually, but it must never normalize, reorder,
  * or replace a byte of it.
  */

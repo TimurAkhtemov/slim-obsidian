@@ -25,7 +25,7 @@ EXCLUDED_DIRS = {".obsidian", ".trash"}
 # 2026-09-03 nothing reads it at all. `_Reflections/` is `slim reflect`'s own output: the brain
 # must never retrieve its opinions back as evidence, and `reflect` reads that folder from disk
 # rather than the DB to find its last window. `Skills/` holds the copilot's prompt templates
-# (`skills.py`): instructions, not evidence.
+# (`copilot/skills.py`): instructions, not evidence.
 EXCLUDED_TOP = {"Attachments", "Profile", "Skills", "_Reflections"}
 
 def _load() -> dict:

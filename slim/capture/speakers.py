@@ -1,8 +1,8 @@
 """Who was speaking when — for a recording whose two sides were captured apart.
 
 The recorder plugin writes the microphone to the LEFT channel and the machine's own audio to
-the RIGHT (`obsidian/main.js: buildStream`). So "me or them" is a fact about the capture: look
-at which channel was making sound while a word was spoken. No model, nothing to hallucinate.
+the RIGHT (`obsidian/src/recorder/capture.js: buildStream`). So "me or them" is a fact about
+the capture: look at which channel was making sound while a word was spoken. No model, nothing to hallucinate.
 
 The system channel decides, because it is a digital copy: when nobody on the call is talking
 it is silent, with no room in it. The microphone is a room — and on speakers it also hears

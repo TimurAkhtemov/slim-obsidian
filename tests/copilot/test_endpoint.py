@@ -167,7 +167,7 @@ def test_context_endpoint_can_skip_the_nearby_notes_search(server_url, monkeypat
     assert seen["related"] is False
 
 
-# --- per-thread delete (the sidebar's table stake; only obsidian/main.js calls it) -----------
+# --- per-thread delete (the sidebar's table stake; only the plugin calls it) ----------------
 
 def _save(url, thread_id):
     status, _headers, body = post(url, "/api/copilot/thread/save", {

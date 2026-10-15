@@ -28,7 +28,8 @@ from ..config import VAULT
 RECORD_PROMPT_VERSION = "record-v2"
 MEETING_BLOCK_LANGUAGE = "slim-meeting"
 # Where the plugin writes audio while a recording is in progress, and the ONLY directory whose
-# files a server-side path is allowed to consume and unlink. Mirrors STAGING_DIR in main.js.
+# files a server-side path is allowed to consume and unlink. Mirrors STAGING_DIR in
+# obsidian/src/recorder/meeting-note.js.
 STAGING_DIR = "Attachments/_incoming"
 
 

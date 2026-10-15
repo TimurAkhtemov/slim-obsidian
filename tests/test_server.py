@@ -7,8 +7,8 @@
    the newest edit under `slim/`, and it never refuses to serve.
 
 The route contracts themselves live beside their callers: `recorder/test_http.py` for
-`/api/record*` (and `test_record_pipeline/segments/review/state.py` for the recorder behind
-them) and `copilot/test_endpoint.py` for `/api/copilot*`.
+`/api/record*` (and `recorder/test_pipeline/segments/review/state.py` for the recorder
+behind them) and `copilot/test_endpoint.py` for `/api/copilot*`.
 """
 
 from types import SimpleNamespace

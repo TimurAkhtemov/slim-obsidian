@@ -290,7 +290,7 @@ class SlimRecorderPlugin extends Plugin {
   }
 
   /* Writing chunks to disk is only half a guarantee if the survivor is never mentioned again.
-   * `record.write_recording` unlinks the staged file once the audio is archived, so anything
+   * `recorder.note.write_recording` unlinks the staged file once the audio is archived, so anything
    * non-empty still sitting here is a recording that never finished being filed. */
   async warnAboutStrandedAudio() {
     try {
