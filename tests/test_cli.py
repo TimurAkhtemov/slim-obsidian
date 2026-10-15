@@ -9,8 +9,8 @@ from slim import cli, db
 from slim.memos import inbox, voicememos
 from slim.vault import identity
 from slim.index.ingest import ingest
-from tests.test_ingest import counts
-from tests.test_vaultidentity import stub_ingest, use_vault
+from tests.index.test_ingest import counts
+from tests.vault.test_identity import stub_ingest, use_vault
 
 
 def test_cmd_status_missing_vault(monkeypatch, tmp_path, capsys):

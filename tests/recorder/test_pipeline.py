@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.record_fakes import NOW, _archive_in_tmp, _draft, _fakes, _staged  # noqa: F401
+from tests.recorder.fakes import NOW, _archive_in_tmp, _draft, _fakes, _staged  # noqa: F401
 
 
 # --- POST /api/record -------------------------------------------------------------------

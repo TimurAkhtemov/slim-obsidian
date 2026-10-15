@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from tests.record_fakes import (  # noqa: F401
+from tests.recorder.fakes import (  # noqa: F401
     NOW, _archive_in_tmp, _draft, _existing, _fakes, _staged)
 
 

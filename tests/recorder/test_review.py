@@ -2,7 +2,7 @@
 autosave and the summary retry, none of which may lose what the note already holds."""
 import pytest
 
-from tests.record_fakes import _archive_in_tmp, _existing  # noqa: F401
+from tests.recorder.fakes import _archive_in_tmp, _existing  # noqa: F401
 
 
 # --- POST /api/record/apply -------------------------------------------------------------
