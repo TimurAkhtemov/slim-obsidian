@@ -27,10 +27,11 @@ jobs:
       - run: uv run pytest -q
 
   plugin:
-    runs-on: ubuntu-latest   # plain CommonJS, no build step, no MLX
+    runs-on: ubuntu-latest   # CommonJS in obsidian/src/, bundled by esbuild; no MLX
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
           node-version: '22'
-      - run: node --test obsidian/*.test.mjs
+      - run: npm ci --prefix obsidian   # esbuild, for the test that main.js is what src builds to
+      - run: node --test obsidian/test/*.test.mjs

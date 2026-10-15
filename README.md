@@ -350,7 +350,8 @@ node --test obsidian/test/*.test.mjs   # the plugin (esbuild builds main.js: npm
 ```
 
 That property is deliberate — it is what keeps the system inspectable, and it is what CI runs
-on every push. The plugin suite needs nothing but Node.
+on every push. The plugin suite needs Node and, for the test that the committed `main.js` is
+what `obsidian/src/` builds to, esbuild (`npm ci --prefix obsidian`).
 
 ## License
 
