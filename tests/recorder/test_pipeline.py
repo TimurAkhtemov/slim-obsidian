@@ -708,7 +708,7 @@ def test_an_evening_recording_is_dated_today_not_tomorrow():
     """
     import os, time
     from datetime import datetime, timedelta, timezone
-    from slim.memos import inbox
+    from slim.vault import notefile
 
     previous = os.environ.get("TZ")
     os.environ["TZ"] = "America/New_York"
@@ -718,10 +718,10 @@ def test_an_evening_recording_is_dated_today_not_tomorrow():
         evening = datetime(2026, 8, 26, 21, 17, tzinfo=eastern)     # 2026-08-27T01:17Z
 
         assert evening.astimezone(timezone.utc).strftime("%Y-%m-%d") == "2026-08-27"  # the old bug
-        assert inbox.local_date(evening) == "2026-08-26"        # their day, and their sort order
+        assert notefile.local_date(evening) == "2026-08-26"        # their day, and their sort order
 
         # A UTC-aware instant for the same moment must resolve to the same LOCAL day.
-        assert inbox.local_date(evening.astimezone(timezone.utc)) == \
+        assert notefile.local_date(evening.astimezone(timezone.utc)) == \
             evening.astimezone().strftime("%Y-%m-%d")
     finally:
         if previous is None:

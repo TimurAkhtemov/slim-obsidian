@@ -3,9 +3,8 @@
 `process()` transcribes every audio file the Voice Memos sweep dropped in `Inbox/Journal` into
 a note in `Journal/` — the phone lane writes JOURNALS, and only journals (2026-09-03). A spoken
 opening can still carry one out of the floor (`voicetags.route`); nothing else can. Both lanes
-hash and archive through `audio`, name and write through `notefile`, and date through
-`local_date` below; `recorder/note.py` keeps `_render_note`'s key order, so both write one vocabulary
-in one order.
+hash and archive through `audio`, and name, date and write through `notefile`; `recorder/note.py`
+keeps `_render_note`'s key order, so both write one vocabulary in one order.
 
 Hard rules honored here: raw audio is never destroyed (content-addressed under the synced
 vault, idempotent by SHA-256); a note is never overwritten, only refused; hash, duration,
@@ -68,20 +67,8 @@ def _default_dir() -> str:
     return voicetags.folder_for(voicetags.JOURNAL, None)
 
 
-def local_date(when: datetime) -> str:
-    """The LOCAL calendar date of an instant — for filenames and the `date:` field.
-
-    ⚠ NEVER `when.strftime("%Y-%m-%d")` DIRECTLY. `when` is `datetime.now(timezone.utc)`, so a
-    bare strftime yields the UTC date and every recording made after 20:00 local is stamped
-    TOMORROW — measured 2026-08-27 on three evening lectures that carried the next day's date.
-    It also MISSORTS: the date is the filename prefix, so an evening lecture sorts ahead of the
-    following morning's. `recorded_at` stays the UTC instant, which is a point in time and
-    correct as stored. This is the CALENDAR DAY, which only exists in a timezone."""
-    return when.astimezone().strftime("%Y-%m-%d")
-
-
 def _note_path(when: datetime, title: str, digest: str, folder: str | None = None) -> Path:
-    date = local_date(when)
+    date = notefile.local_date(when)
     name = f"{date}--{notefile.slug(title)}--{digest[:8]}.md"
     return VAULT / (folder or _default_dir()) / name
 
@@ -95,7 +82,7 @@ def _render_note(title: str, when: datetime, t: tx.Transcript, digest: str,
     fm = [
         "---",
         f'title: "{title}"',
-        f"date: {local_date(when)}",
+        f"date: {notefile.local_date(when)}",
         f"type: {note_type}",
     ]
     # LEVEL 1 — the type tag. `detect_type` is the whole classifier, so `type:` and `tags:` are

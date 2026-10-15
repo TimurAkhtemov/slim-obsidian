@@ -328,13 +328,13 @@ def render_note(*, title: str, when: datetime, type_tag: str, transcript: str,
     alike in the one place they read them. Nothing in SLIM parses key order; THEY do. Fields
     inbox derives from spoken routing stay absent here, because the recorder has none.
     """
-    from ..memos import inbox
+    from ..vault import notefile
 
     # The title arrives from the plugin. A newline in it would end the `title:` line and leave
     # the rest of the string sitting in the frontmatter block as a stray, unparseable line.
     fm = ["---",
           f'title: "{_clean_scalar(title).replace(chr(34), "")}"',
-          f"date: {inbox.local_date(when)}",
+          f"date: {notefile.local_date(when)}",
           f"type: {type_tag}",
           # For OBSIDIAN's tag pane, graph and search — nothing in SLIM reads this. Without it
           # a recorded note is invisible where every memo note shows up, which is exactly the
@@ -391,7 +391,6 @@ def write_recording(*, audio_src: Path | list[Path], title: str, when: datetime,
                     transcribed_at: datetime | None = None,
                     draft_src: Path | None = None,
                     vault: Path = VAULT) -> Recorded:
-    from ..memos import inbox
     from ..vault import notefile
 
     sources = [audio_src] if isinstance(audio_src, Path) else list(audio_src)
@@ -417,7 +416,7 @@ def write_recording(*, audio_src: Path | list[Path], title: str, when: datetime,
                        asr_model=asr_model, speakers_by=speakers_by, audio_seconds=audio_seconds,
                        transcribed_at=transcribed_at)
 
-    name = f"{inbox.local_date(when)}--{notefile.slug(title)}--{digest[:8]}.md"
+    name = f"{notefile.local_date(when)}--{notefile.slug(title)}--{digest[:8]}.md"
     note = vault / dest_dir / name
     if note.exists() and (draft_src is None or note.resolve() != draft_src.resolve()):
         raise ValueError(f"refusing to overwrite an existing note at {note}")

@@ -169,8 +169,8 @@ journals by `type = 'journal'` with no path filter, so a `type: journal` note pl
 a misfile costs one drag, and ingest tracks it by hash.
 
 The code, `slim/`: subpackages are feature folders, not abstraction layers. Imports run one way:
-`vault <- index <- copilot`, `vault <- capture <- memos <- recorder` (which also uses `index`);
-`server` joins `recorder` and `copilot`; the seams (config, db, trace, llm) import no package.
+`vault <- index <- copilot`, `vault <- capture <- memos`, `capture <- recorder` (which also uses
+`index`); `server` joins `recorder` and `copilot`; the seams (config, db, trace, llm) import no package.
 
 ```
 slim/            entry points and seams: cli, server (`slim chat`'s HTTP), config, db, trace,
