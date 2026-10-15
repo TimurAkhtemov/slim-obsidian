@@ -56,7 +56,7 @@ def cmd_memos(args):
     every five minutes — quiet when there is nothing new, loud (verbatim) when it is refused."""
     from types import SimpleNamespace
 
-    from . import inbox as inbox_mod, voicememos
+    from .memos import inbox as inbox_mod, voicememos
 
     identity.require_vault_dir()
     identity_con = db.connect()

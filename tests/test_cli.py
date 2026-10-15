@@ -5,7 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from slim import cli, db, inbox, voicememos
+from slim import cli, db
+from slim.memos import inbox, voicememos
 from slim.vault import identity
 from slim.ingest import ingest
 from tests.test_ingest import counts

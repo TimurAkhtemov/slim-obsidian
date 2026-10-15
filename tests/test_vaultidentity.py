@@ -172,7 +172,7 @@ def test_vault_moved_repoints_the_pin(monkeypatch, tmp_path):
 
 
 def test_memos_refuses_a_mismatched_vault_before_copying(monkeypatch, tmp_path):
-    from slim import inbox, voicememos
+    from slim.memos import inbox, voicememos
 
     first = tmp_path / "First"
     first.mkdir()

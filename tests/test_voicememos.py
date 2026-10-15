@@ -13,7 +13,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from slim import inbox, trace, voicememos
+from slim import trace
+from slim.memos import inbox, voicememos
 
 
 @pytest.fixture

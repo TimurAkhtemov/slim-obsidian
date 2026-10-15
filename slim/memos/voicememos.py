@@ -24,10 +24,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import inbox, trace
-from .capture import audio
-from .vault import notefile
-from .config import DATA_DIR
+from . import inbox
+from .. import trace
+from ..capture import audio
+from ..vault import notefile
+from ..config import DATA_DIR
 
 # Apple's synced Voice Memos recordings folder. Overridable everywhere via `container=` so the
 # tests can point at a fake dir — the real one is TCC-protected and cannot be touched from here.

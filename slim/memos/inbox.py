@@ -20,10 +20,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import trace
-from .capture import audio, enrich, transcribe as tx, voicetags
-from .vault import notefile
-from .config import DATA_DIR, VAULT
+from .. import trace
+from ..capture import audio, enrich, transcribe as tx, voicetags
+from ..vault import notefile
+from ..config import DATA_DIR, VAULT
 
 INBOX = {"journal": VAULT / "Inbox" / "Journal"}
 TMP_AUDIO_DIR = DATA_DIR / "audio" / "tmp"

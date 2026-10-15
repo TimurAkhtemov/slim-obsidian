@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from slim import inbox as inbox_mod
+from slim.memos import inbox as inbox_mod
 from slim.capture import audio, voicetags
 from slim.capture import transcribe as tx
 

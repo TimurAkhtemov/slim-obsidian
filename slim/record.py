@@ -328,7 +328,7 @@ def render_note(*, title: str, when: datetime, type_tag: str, transcript: str,
     alike in the one place they read them. Nothing in SLIM parses key order; THEY do. Fields
     inbox derives from spoken routing stay absent here, because the recorder has none.
     """
-    from . import inbox
+    from .memos import inbox
 
     # The title arrives from the plugin. A newline in it would end the `title:` line and leave
     # the rest of the string sitting in the frontmatter block as a stray, unparseable line.
@@ -391,7 +391,7 @@ def write_recording(*, audio_src: Path | list[Path], title: str, when: datetime,
                     transcribed_at: datetime | None = None,
                     draft_src: Path | None = None,
                     vault: Path = VAULT) -> Recorded:
-    from . import inbox
+    from .memos import inbox
     from .vault import notefile
 
     sources = [audio_src] if isinstance(audio_src, Path) else list(audio_src)

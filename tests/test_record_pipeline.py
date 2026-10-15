@@ -705,7 +705,7 @@ def test_an_evening_recording_is_dated_today_not_tomorrow():
     """
     import os, time
     from datetime import datetime, timedelta, timezone
-    from slim import inbox
+    from slim.memos import inbox
 
     previous = os.environ.get("TZ")
     os.environ["TZ"] = "America/New_York"
