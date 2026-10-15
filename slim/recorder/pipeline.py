@@ -463,7 +463,7 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
                 archived_rels.append(one.name)
             digests.append(one_digest)
 
-        # ⚠ record.py is the sole writer of a recorded note's frontmatter (CLAUDE.md), and
+        # ⚠ recorder/note.py is the sole writer of a recorded note's frontmatter (CLAUDE.md), and
         # that includes `asr_model`: it decides whether an existing model name is kept.
         text = record_mod.append_audio_frontmatter(text, rels=archived_rels, digests=digests,
                                                    seconds=seconds, asr_model=asr_model,

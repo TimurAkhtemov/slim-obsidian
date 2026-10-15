@@ -1,7 +1,7 @@
 """Transcript -> structured summary: overview, key points, decisions, actions, questions.
 
 One JSON-grammar call to the resident model, plus `render` for the markdown. Called by
-`record_pipeline` and `record_review` for the recorder's summary and its retry. Writes
+`recorder.pipeline` and `recorder.review` for the recorder's summary and its retry. Writes
 nothing: the caller decides where the markdown goes.
 
 One schema for every kind of recording — nothing tells the model "this is a lecture",

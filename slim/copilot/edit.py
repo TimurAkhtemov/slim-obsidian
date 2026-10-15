@@ -1,5 +1,5 @@
 """The copilot's editing run: one model call at a time against the open note's handles, code
-holding the plan and every limit, each change handed to the plugin as it lands. `copilot.py`
+holding the plan and every limit, each change handed to the plugin as it lands. `copilot/turn.py`
 decides a turn edits and builds its messages; `edits.py` applies each call."""
 from __future__ import annotations
 

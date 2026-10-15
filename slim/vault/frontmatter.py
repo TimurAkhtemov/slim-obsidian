@@ -1,5 +1,6 @@
-"""The frontmatter reader and writer. Used by `chunk`, `ingest`, `record`, `record_pipeline`,
-`record_review`, `reflect`, `suggest`, `edits`, `edits_note` and `copilot_context`."""
+"""The frontmatter reader and writer. Used by `index.chunk`, `index.ingest`, `recorder.note`,
+`recorder.pipeline`, `recorder.review`, `reflect`, `capture.suggest`, `copilot.edits`,
+`copilot.blocks` and `copilot.context`."""
 
 import re
 
@@ -40,8 +41,8 @@ def body_after_frontmatter(text: str) -> str:
 
 # The one statement of frontmatter key order. Nothing PARSES it — the owner reads it, and 27
 # recorded notes had grown 15 different shapes because every pass appended its fields at the
-# end. Every key `record.render_note` writes appears here, in this order, enforced by
-# `tests/test_frontmatter.py::test_record_renders_a_subsequence_of_the_canonical_order`.
+# end. Every key `recorder.note.render_note` writes appears here, in this order, enforced by
+# `tests/vault/test_frontmatter.py::test_record_renders_a_subsequence_of_the_canonical_order`.
 FRONTMATTER_ORDER = (
     "title", "date", "type", "tags", "subject_by", "topics",
     "origin", "review_status", "source", "asr_model", "asr_selected", "speakers_by", "audio",

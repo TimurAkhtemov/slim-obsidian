@@ -30,7 +30,7 @@ _EXCLUDED_TOP_CF = frozenset(name.casefold() for name in EXCLUDED_TOP)
 
 
 # The recorder's working copy: `<recording id>.slim-draft.md` directly under Journal/ or
-# Capture/_unfiled/ (obsidian/main.js DRAFT_SUFFIX). `record.write_recording` files it as a
+# Capture/_unfiled/ (obsidian/main.js DRAFT_SUFFIX). `recorder.note.write_recording` files it as a
 # real note, so indexing the draft gives the finished note a same-content rival. A
 # `.slim-draft.md` anywhere else is the user's own file and is indexed like any other.
 DRAFT_SUFFIX = ".slim-draft.md"

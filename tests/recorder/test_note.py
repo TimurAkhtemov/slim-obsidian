@@ -13,7 +13,7 @@ NOW = datetime(2026, 8, 4, 14, 30, tzinfo=timezone.utc)
 @pytest.fixture(autouse=True)
 def _isolate_audio_archive(tmp_path, monkeypatch):
     """`audio.AUDIO_ARCHIVE` is bound to the real VAULT at import time. Redirect it into the
-    test's tmp_path so archiving never touches the real vault. Do NOT edit slim/audio.py."""
+    test's tmp_path so archiving never touches the real vault. Do NOT edit slim/capture/audio.py."""
     from slim.capture import audio
 
     monkeypatch.setattr(audio, "AUDIO_ARCHIVE", tmp_path / "Attachments/Recordings")
@@ -38,7 +38,7 @@ def _write(tmp_path: Path, **kw):
 
 
 def test_the_note_lands_at_the_destination_it_was_given(tmp_path):
-    """The card decides the path. record.py obeys it — it makes no routing judgement of its
+    """The card decides the path. recorder/note.py obeys it — it makes no routing judgement of its
     own, which is what keeps it a pure function."""
     r = _write(tmp_path)
     assert r.note.parent == tmp_path / "Notes/school/CS201 ML"
@@ -451,8 +451,8 @@ def test_a_resume_keeps_audio_that_obsidian_rewrote_as_a_block_list(tmp_path):
 
 
 def test_audio_frontmatter_has_one_writer(tmp_path):
-    """CLAUDE.md: record.py remains the sole writer of a recorded note's frontmatter. The
-    append path was setting `audio`, `audio_sha256` and `audio_seconds` from chat.py, reaching
+    """CLAUDE.md: recorder/note.py remains the sole writer of a recorded note's frontmatter. The
+    append path was setting `audio`, `audio_sha256` and `audio_seconds` from server.py, reaching
     into a private helper here to format them."""
     r = _write(tmp_path)
     from slim.vault.frontmatter import parse_frontmatter

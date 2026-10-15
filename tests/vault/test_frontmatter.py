@@ -98,7 +98,7 @@ def test_an_unknown_key_still_goes_to_the_end():
 
 
 def test_record_renders_a_subsequence_of_the_canonical_order():
-    """One statement of the order. If record.py drifts from it, this fails rather than two
+    """One statement of the order. If recorder/note.py drifts from it, this fails rather than two
     modules quietly disagreeing about what a recording looks like."""
     from datetime import datetime, timezone
 

@@ -68,7 +68,7 @@ def _isolate_default_db(tmp_path, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _finish_sweeps(monkeypatch):
-    """A recorder test starts a background vault sweep (`record_state._schedule_sweep`). One
+    """A recorder test starts a background vault sweep (`recorder.state._schedule_sweep`). One
     still running when the test ends outlives the patches above: its trace landed in the live
     file (~700 `record/sweep` records in 2026-09), and a later `db.connect()` would open the
     live brain with a tmp vault, whose removal pass deletes every source. Torn down before

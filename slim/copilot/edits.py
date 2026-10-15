@@ -4,13 +4,13 @@ Code cuts the note into blocks (a heading, a paragraph, a list item, a table, a 
 or `$$` math) and gives each a handle the model points at: [b12] is that block, s7 is the section
 under the heading [b7], and b11-b15 is those blocks and everything between them. Handles never
 change during a run; blocks an edit makes get new ones. The model calls the tools in `TOOLS`
-with handles; code applies each call to a draft (`edits_note.Note`), refuses what it must not do
+with handles; code applies each call to a draft (`copilot.blocks.Note`), refuses what it must not do
 with a reason the model reads back, and hands each change on as splices — {from, to, insert} in
 UTF-16 units of the text just before it, which the plugin applies through the editor. Nothing
 here writes a note.
 
 What may be touched is decided here, not by the model. A recorded note's frontmatter, its
-`slim-meeting` block and its transcript are `record.py`'s and the raw source: their blocks are
+`slim-meeting` block and its transcript are `recorder/note.py`'s and the raw source: their blocks are
 [locked] and every call that touches them is refused. A new note goes in a folder that already
 exists, never into `Journal/`, and a Journal note's text never leaves it (`create_note`).
 """
@@ -308,7 +308,7 @@ def _renames(note: Note, i: int, j: int, markdown: str) -> bool:
 def lands(note: Note, tool: str, args: dict, markdown: str,
           only: set[str] | None = None) -> tuple[int, int, str, str, bool]:
     """Where a replace or an insert puts `markdown` (as the model wrote it, labels stripped): for
-    the tool, and for its draft while the text is still coming (`copilot_edit._Drafts`). The blocks
+    the tool, and for its draft while the text is still coming (`copilot.edit._Drafts`). The blocks
     i..j it changes, i == j where an insert goes in; its target or anchor as named back; what the
     result adds about the place; and whether a replace renames: a whole section replaced by one
     heading line changes that heading alone, block i, and the section's text stays. Raises
@@ -466,7 +466,7 @@ TOOLS: dict[str, dict] = {
     "insert": {
         "description": "Insert new markdown after or before a block or section. Give exactly one of after or before.",
         # The place before the text: the model writes them in this order, so the text can show
-        # where it goes as it is written (`copilot_edit._Drafts`).
+        # where it goes as it is written (`copilot.edit._Drafts`).
         "parameters": {"type": "object", "properties": {"after": _HANDLE_ARG, "before": _HANDLE_ARG,
                                                        "markdown": {"type": "string"}}, "required": ["markdown"]},
         "apply": _insert},

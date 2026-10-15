@@ -25,21 +25,21 @@ def _touch(path, text="x = 1\n"):
 # --- what the watcher sees --------------------------------------------------------------
 
 def test_snapshot_covers_python_files_at_any_depth(tmp_path):
-    _touch(tmp_path / "chat.py")
+    _touch(tmp_path / "server.py")
     _touch(tmp_path / "nested" / "deep" / "llm.py")
 
     seen = devserver.snapshot(tmp_path)
 
-    assert set(seen) == {tmp_path / "chat.py", tmp_path / "nested" / "deep" / "llm.py"}
+    assert set(seen) == {tmp_path / "server.py", tmp_path / "nested" / "deep" / "llm.py"}
 
 
 def test_snapshot_ignores_pycache_and_non_python_files(tmp_path):
-    _touch(tmp_path / "chat.py")
+    _touch(tmp_path / "server.py")
     _touch(tmp_path / "__pycache__" / "chat.cpython-313.pyc", "junk")
     _touch(tmp_path / "notes.md", "# not code")
     _touch(tmp_path / "projects.yaml", "a: 1")
 
-    assert set(devserver.snapshot(tmp_path)) == {tmp_path / "chat.py"}
+    assert set(devserver.snapshot(tmp_path)) == {tmp_path / "server.py"}
 
 
 def test_snapshot_of_a_missing_root_is_empty_not_an_error(tmp_path):
@@ -49,14 +49,14 @@ def test_snapshot_of_a_missing_root_is_empty_not_an_error(tmp_path):
 # --- what counts as a change ------------------------------------------------------------
 
 def test_an_unchanged_tree_reports_nothing(tmp_path):
-    _touch(tmp_path / "chat.py")
+    _touch(tmp_path / "server.py")
     before = devserver.snapshot(tmp_path)
 
     assert devserver.changed(before, devserver.snapshot(tmp_path)) == []
 
 
 def test_a_rewrite_is_detected(tmp_path):
-    path = _touch(tmp_path / "chat.py")
+    path = _touch(tmp_path / "server.py")
     before = devserver.snapshot(tmp_path)
     # Written, not slept for: mtime_ns resolution is finer than any edit cadence, but the
     # test must not depend on that, so the timestamp is moved explicitly.
@@ -68,7 +68,7 @@ def test_a_rewrite_is_detected(tmp_path):
 
 
 def test_a_new_file_is_detected(tmp_path):
-    _touch(tmp_path / "chat.py")
+    _touch(tmp_path / "server.py")
     before = devserver.snapshot(tmp_path)
     _touch(tmp_path / "devserver.py")
 
@@ -77,7 +77,7 @@ def test_a_new_file_is_detected(tmp_path):
 
 
 def test_a_deletion_is_detected(tmp_path):
-    _touch(tmp_path / "chat.py")
+    _touch(tmp_path / "server.py")
     doomed = _touch(tmp_path / "gone.py")
     before = devserver.snapshot(tmp_path)
     doomed.unlink()

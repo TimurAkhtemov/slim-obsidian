@@ -1,5 +1,5 @@
-"""RECORD — turn one finished recording into ONE note on disk. Called by `record_pipeline`
-and `record_review`.
+"""RECORD — turn one finished recording into ONE note on disk. Called by `recorder.pipeline`
+and `recorder.review`.
 
 The sole writer of a recorded note's frontmatter and managed sections. A pure function of its
 inputs — a path and strings in, a file out, and NO routing judgement, since the destination
@@ -198,7 +198,7 @@ def append_audio_frontmatter(text: str, *, rels: list[str], digests: list[str],
                              speakers_by: str = "") -> str:
     """Add a resumed segment's audio to a recorded note's frontmatter.
 
-    Here rather than in `record_pipeline`: these are `render_note`'s keys and the scalar-or-list rule
+    Here rather than in `recorder.pipeline`: these are `render_note`'s keys and the scalar-or-list rule
     that shapes them is this module's. A second writer is a second place to get it wrong.
 
     `asr_model` is written only when the note has none: a note first transcribed by one model

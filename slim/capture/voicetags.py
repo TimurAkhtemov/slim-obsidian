@@ -55,7 +55,7 @@ _TYPE_VOCAB: list[tuple[re.Pattern[str], str]] = [
 # (measured 2026-08-03). Type, year and course live in frontmatter, where they are queryable.
 #
 # TWO SEGMENTS IS THE CEILING, enforced rather than intended:
-# tests/test_voicetags.py::test_no_route_ever_has_more_than_two_path_segments.
+# tests/capture/test_voicetags.py::test_no_route_ever_has_more_than_two_path_segments.
 NAMESPACE = "Capture"
 
 # The floor is its own top-level, a SIBLING of Capture/ rather than a hole punched inside it,

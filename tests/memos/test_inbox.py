@@ -60,7 +60,7 @@ def test_a_memo_lands_in_the_floor_with_its_transcript(vault):
 
     text = r.note.read_text()
     assert "type: journal" in text
-    assert "## Transcript" in text          # the marker `record.py` and `chunk.py` split on
+    assert "## Transcript" in text          # the marker `recorder/note.py` and `chunk.py` split on
     assert "Priya would send the roster" in text
 
 

@@ -13,9 +13,9 @@ one way a remote page reaches a loopback server. Mutating routes additionally re
 `Origin` and any non-JSON body (`_refuse_cross_site_write`): a blind cross-site POST cannot
 read the response, but a write does not need reading.
 
-The `/api/record*` routes are adapters in `chat_record`, past the same gates. The recorder
-itself is `record_pipeline` (segment-cached transcription, so a resumed recording never pays
-twice), `record_review` (the card's edits) and `record_state` (one bounded FIFO for the heavy
+The `/api/record*` routes are adapters in `recorder.routes`, past the same gates. The recorder
+itself is `recorder.pipeline` (segment-cached transcription, so a resumed recording never pays
+twice), `recorder.review` (the card's edits) and `recorder.state` (one bounded FIFO for the heavy
 model jobs, a job-local progress registry the plugin polls, cooperative cancel).
 """
 
@@ -103,7 +103,7 @@ def _origin_allowed(value: str) -> bool:
 
 def clean_history(raw) -> list[dict]:
     """Sanitize the page-supplied transcript: keep only well-formed turns, each whole; what fits
-    the model's window is `copilot.fit_window`'s call. Bad history is DROPPED, never a 400 — a
+    the model's window is `copilot.turn.fit_window`'s call. Bad history is DROPPED, never a 400 — a
     broken transcript must not brick the chat."""
     if not isinstance(raw, list):
         return []

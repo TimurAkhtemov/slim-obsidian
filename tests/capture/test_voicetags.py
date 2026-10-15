@@ -1,7 +1,7 @@
 """Tests for deterministic spoken routing (P2).
 
 Pure functions, regex only — never a model. The spoken TYPE vocabulary itself is pinned in
-`tests/test_voice_routing.py`; these cover determinism and the path invariants around it.
+`tests/capture/test_voice_routing.py`; these cover determinism and the path invariants around it.
 """
 import pytest
 

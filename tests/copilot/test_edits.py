@@ -1,5 +1,5 @@
 """The editing tools: what they change in a draft, what code refuses, and the splices the plugin
-applies. Nothing here writes a note. The note as blocks with handles is test_edits_note.py's."""
+applies. Nothing here writes a note. The note as blocks with handles is test_blocks.py's."""
 
 import pytest
 

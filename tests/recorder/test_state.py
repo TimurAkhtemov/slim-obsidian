@@ -1,4 +1,4 @@
-"""The recorder's shared state (`record_state`): indexing and the background sweep, cancel,
+"""The recorder's shared state (`recorder.state`): indexing and the background sweep, cancel,
 one writer per note, the bounded job queue and job-local progress."""
 import json
 import threading

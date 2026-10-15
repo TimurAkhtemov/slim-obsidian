@@ -1,4 +1,4 @@
-"""One recording through `record_pipeline.handle_record`, with the slow parts faked.
+"""One recording through `recorder.pipeline.handle_record`, with the slow parts faked.
 
 Transcription and the dense model have their own suites. What matters here is the PROMISE:
 a recording that reaches the server is never lost. A summary or title failure still files the

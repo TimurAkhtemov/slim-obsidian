@@ -51,19 +51,19 @@ note loses its id. Embedding is part of ingest; `slim status` reports `unembedde
      setup → recording → processing → review → finished.
    - ONE CLICK, no settings: system audio comes from macOS's Core Audio tap via
      `audio: "loopback"`. No BlackHole, no Multi-Output, no device pickers.
-   - The file is STEREO ON PURPOSE: microphone left, system audio right. `slim/speakers.py`
+   - The file is STEREO ON PURPOSE: microphone left, system audio right. `slim/capture/speakers.py`
      labels each word Me or Them by which side was making sound — a measurement, no model —
      and writes `speakers_by: channels`. One speaker (a lecture, a video) or a mono file stays
      unlabelled. `speakers.label_tokens` is the seam a voice-clustering model would replace.
      Labels are decided per segment; once anything is labelled, a one-sided segment carries
-     its one label (`record_pipeline._join_segments`). ⚠ A transcript already filed unlabelled stays so
+     its one label (`recorder.pipeline._join_segments`). ⚠ A transcript already filed unlabelled stays so
      when a resume brings a second speaker: the words on disk are never relabelled.
      Live, the card raises an alarm when BOTH sides are digital zeros (`captureSilence`). One
      side alone never warns: a zero mic beside playing audio is echo cancellation working.
    - The plugin owns the UI and writes files through the Vault API; every judgement —
      transcribe, summarize, suggest a path — is the Python server's. Audio is appended to
      `Attachments/_incoming` in 5 s chunks as `<id>-NNN.webm`; a `.webm` left there is a
-     recording that never finished filing. `slim/record.py` is the sole writer of the note's
+     recording that never finished filing. `slim/recorder/note.py` is the sole writer of the note's
      frontmatter and managed sections.
    - **The note is filed before the card is shown. Nothing ever waits for approval.** A
      confirmation is an action, and actions die; the card adjusts a note that is already on
@@ -83,10 +83,10 @@ note loses its id. Embedding is part of ingest; `slim status` reports `unembedde
      session names the path it is moving (`filingFrom`) and treats that delete as its own.
 2. **Label** — what a recording IS (type) and what it is ABOUT (subject). ⚠ THE TWO LANES DO
    THIS DIFFERENTLY, and conflating them has caused wrong reasoning more than once:
-   - **Memo lane** (`inbox.py`) is deterministic first — `voicetags.detect_type` parses the
+   - **Memo lane** (`memos/inbox.py`) is deterministic first — `voicetags.detect_type` parses the
      spoken opening and `voicetags.route` decides the folder; `enrich` only fills a silence.
-   - **Recorder lane** (`chat_record.py`, `record_*.py`) never calls `detect_type`, `detect_subject` or `route` at
-     all (no `chat*.py` or `record_*.py` module imports `voicetags`). `enrich` supplies the title and `suggest`
+   - **Recorder lane** (`slim/recorder/`, `server.py`) never calls `detect_type`, `detect_subject` or
+     `route` at all (neither imports `voicetags`). `enrich` supplies the title and `suggest`
      builds the card; `voicetags` contributes constants and `registered_project` only.
 
    Labels are written once, at capture, with `tagged_by`/`routed_by`/`subject_by` recording
@@ -95,7 +95,7 @@ note loses its id. Embedding is part of ingest; `slim status` reports `unembedde
    collapses to its deepest existing ancestor, else `Capture/_unfiled`, and a journal is
    forced flat to `Journal/`. The owner can edit it, and `/api/record/apply` moves the note.
    A later move is a drag in Obsidian. ⚠ The card offers folders under `Capture/` and `Notes/`
-   only (`suggest.FILING_ROOTS`) — never the owner's other top-level folders.
+   only (`capture.suggest.FILING_ROOTS`) — never the owner's other top-level folders.
 4. **Reflect** — `slim reflect` writes ONE journal-synthesis note into `_Reflections/`,
    nightly. **This is the part the owner reads.** Judge changes by whether the note is worth
    reading, nothing else.
@@ -104,40 +104,40 @@ note loses its id. Embedding is part of ingest; `slim status` reports `unembedde
    with the vault as context: the notes pack rides in the system message with titles only,
    so prose cannot cite, and sources come from a bounded follow-up call after the answer.
    Quick or Deep (thinking on). The open note's embedded images ride with every turn, at most 6
-   (`copilot_context.MAX_NOTE_IMAGES`), those beside the pack's passages first: what an image says is
+   (`copilot.context.MAX_NOTE_IMAGES`), those beside the pack's passages first: what an image says is
    not searchable. Per-note chat history and pasted images live outside the vault. There is
    no vault-wide Q&A lane and no profile injection (it pandered, measured).
    - **Skills** are `/commands`: prompt templates in `slim/skills/` and the vault's `Skills/`
-     (same name wins; `skills.py`). A skill reads WHOLE notes chosen by code
-     (`copilot_context.gather`: the open note, the selection, the folder filtered by frontmatter and
+     (same name wins; `copilot/skills.py`). A skill reads WHOLE notes chosen by code
+     (`copilot.context.gather`: the open note, the selection, the folder filtered by frontmatter and
      cut to one section, `[[links]]`), inside a fixed budget, and names what it left out.
      Code knows what it read, so a skill turn makes no sources call.
    - **Answer or edit** — one chat, no mode. A question first meets the intent gate: one small
      JSON call on its own short prompt (SLIM's last answer and the question, never the note)
      asks whether the owner wants the note changed. No: the Ask path above, unchanged. Yes, or
-     it can't tell: the model edits the open note through tools (`edits.TOOLS`: `replace`,
+     it can't tell: the model edits the open note through tools (`copilot.edits.TOOLS`: `replace`,
      `edit_text`, `insert`, `move`, `plan`) that point at block handles — [b12] a block, s7 the
      section under heading b7, b11-b15 a range — at temperature 0.0. A small change is one
      call; a larger one is a plan carried out one call per step, and nothing after the steps
      (fix-ups for the plan's outline were cut: they only ever wasted calls or undid work). Code
-     holds the plan and the limits (`copilot_edit.py`: 8 steps, 30 calls, 3 refusals in a row, 12k
+     holds the plan and the limits (`copilot/edit.py`: 8 steps, 30 calls, 3 refusals in a row, 12k
      output tokens) and refuses what a call must not do, with a reason the model reads back:
      among them, a later step rewriting what an earlier step wrote, and new HTML blocks, which
      Obsidian renders no Markdown inside (a new `<details>` is written as a folded callout instead,
-     `edits.fold`). A change that reworks only the run's own text is
+     `copilot.edits.fold`). A change that reworks only the run's own text is
      `part_of` the change it grew from, so the owner never sees SLIM's drafts as removals. What
-     the owner reads (steps, labels, summary) names text, never a handle (`edits_note.Note.plain`,
-     `edits_note.quote`). `llm.hold()` keeps the model lock for the run. An `edit` skill runs the same loop (tidy: the selection's blocks
+     the owner reads (steps, labels, summary) names text, never a handle (`copilot.blocks.Note.plain`,
+     `copilot.blocks.quote`). `llm.hold()` keeps the model lock for the run. An `edit` skill runs the same loop (tidy: the selection's blocks
      only); a `new-note` skill only `create_note`s, in existing folders, never `Journal/`.
      **The server never writes the note.** It works on the editor's text (`doc` + its hash) and
      streams each change as UTF-16 splices; the plugin applies them through the editor as they
      land (`makeLiveEditor`). While a call writes an insert or a replace, its text shows where it
-     will go as a draft, never the note's text (`copilot_edit._Drafts`), and the change that lands
+     will go as a draft, never the note's text (`copilot.edit._Drafts`), and the change that lands
      takes its place; the chat counts each call's seconds. The plugin skips a change whose text
      the owner typed into meanwhile, draws the marks, then syncs and embeds the note. ↺ undoes a
      change and those built on it; Undo all and Redo; Cmd-Z is the editor's own. The note as it
      was before the run is kept beside the chat,
-     outside the vault (`threads.save_before`), so See before and Restore work after the note
+     outside the vault (`copilot.threads.save_before`), so See before and Restore work after the note
      is closed; Restore warns when the note has changed since, and is refused when a recording's
      own parts have (`/api/copilot/restore`). A recording's frontmatter, `slim-meeting` block and
      transcript are [locked] blocks no call may touch, and no change's splices may reach them.
@@ -159,7 +159,7 @@ The file also carries `owner`, the name the prompts address; nothing else reads 
 
 **Subject is the ONLY folder axis.** A path encodes one fact; type, course and status are
 frontmatter. ⚠ Two path segments is the ceiling and it is ENFORCED —
-`tests/test_voicetags.py::test_no_route_ever_has_more_than_two_path_segments`.
+`tests/capture/test_voicetags.py::test_no_route_ever_has_more_than_two_path_segments`.
 
 ⚠ **`Journal/` is the floor, and the floor is a path.** Permanent, flat, a top-level sibling
 of `Capture/`; no route ever carries a note out of it (test-enforced). If a cloud provider
@@ -167,6 +167,23 @@ ever lands, the one check is "is the path under `Journal/`". Honest limit: `refl
 journals by `type = 'journal'` with no path filter, so a `type: journal` note placed outside
 `Journal/` by hand IS read by the nightly synthesis. Inferred routing is the accepted trade:
 a misfile costs one drag, and ingest tracks it by hash.
+
+The code, `slim/`: subpackages are feature folders, not abstraction layers. Imports run one way:
+`vault <- index <- copilot`, `vault <- capture <- memos <- recorder` (which also uses `index`);
+`server` joins `recorder` and `copilot`; the seams (config, db, trace, llm) import no package.
+
+```
+slim/            entry points and seams: cli, server (`slim chat`'s HTTP), config, db, trace,
+                 llm, llm_render, reflect, devserver; vaultpath (stdlib only, loaded BY PATH)
+slim/vault/      reading and writing notes: frontmatter, notefile, note_images, identity (the pin)
+slim/capture/    audio to labelled text, both lanes: audio, transcribe, speakers, summarize,
+                 enrich, voicetags, suggest
+slim/memos/      the phone lane: voicememos (the sweep), inbox (files a memo)
+slim/recorder/   the desktop lane: routes, pipeline, review, state, note (the note's sole writer)
+slim/index/      ingest, chunk, embed, search
+slim/copilot/    Talk: turn, context, edit, edits, blocks (the note as handled blocks), threads,
+                 images, skills; the built-in skill templates are `slim/skills/`
+```
 
 ## What was cut
 
@@ -201,7 +218,7 @@ by default and thinking tokens count against `num_predict`, so an unset `think` 
 the copilot's Deep mode). Greedy decoding into a JSON grammar loops forever on an unbounded
 string: cap `num_predict`, put `maxLength` on short fields (Ollama cannot compile one above
 ~1500). LaTeX does not survive JSON — `\b \f \n \r \t` collide with `\beta \frac \nabla \rho
-\text` — so the summarizer bans backslashes and `summarize._repair` reverses the decode.
+\text` — so the summarizer bans backslashes and `capture.summarize._repair` reverses the decode.
 `llm.py` serializes live calls; temperature 0.0 for structured work, 0.7 for prose a person
 reads. /api/chat parses a tool call itself and holds it back until it is whole, tools= or not, so
 a call with tools goes RAW to /api/generate, its prompt built by `llm_render.render` byte for byte as
@@ -212,7 +229,7 @@ Ollama's parser `_Reader` keeps a text parameter written `null` as the word.
 
 **A note can be filed and still be unreachable.** Filing is a markdown file; the copilot and
 `reflect` read SQLite. Anything that writes a note must ingest AND embed, or say plainly
-that it did not. A machine transcript has no blank lines; `chunk._split_prose` splits at
+that it did not. A machine transcript has no blank lines; `index.chunk._split_prose` splits at
 sentences as a last resort so a 37-minute meeting is not one fragment.
 
 **Do not answer a non-similarity question with a similarity score.** "When did I first…" →
@@ -257,10 +274,10 @@ reacts to a vault `delete` must first ask whether the server caused it (2026-09-
   model: `qwen3.6:35b` (`llm.MODEL`) for everything — the owner's call, against the
   summarization experiment's evidence (best at grounding, worst at summarization; do not call
   it "the model the bake-off chose"). Embedder `embeddinggemma`: its task prefixes are
-  load-bearing (`slim/embed.py`); changing it means deleting the brain DB and re-ingesting.
+  load-bearing (`slim/index/embed.py`); changing it means deleting the brain DB and re-ingesting.
 - Vault: `SLIM_VAULT`, else DISCOVERED (`vaultpath.py`): Obsidian's own registry, then
   iCloud's Obsidian container, then `~/Documents/Obsidian Vault` (iCloud-synced is fine).
-  ⚠ The index is PINNED to the vault it was built from (`SLIM_DATA_DIR/vault_pin`, `vaultidentity.py`), because
+  ⚠ The index is PINNED to the vault it was built from (`SLIM_DATA_DIR/vault_pin`, `vault/identity.py`), because
   ingest's removal sweep deletes every source it cannot find under the current vault and
   discovery can change that path with nobody asking. Every command that can write to the vault
   checks that identity first. A real move, or adoption of an index made before the pin existed,

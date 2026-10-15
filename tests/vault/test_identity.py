@@ -10,7 +10,7 @@ from slim.vault import identity
 
 
 def use_vault(monkeypatch, vault):
-    """The CLI reports the vault and vaultidentity guards it; each reads it at import."""
+    """The CLI reports the vault and vault.identity guards it; each reads it at import."""
     monkeypatch.setattr(cli, "VAULT", vault)
     monkeypatch.setattr(identity, "VAULT", vault)
 

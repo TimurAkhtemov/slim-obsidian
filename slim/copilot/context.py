@@ -1,6 +1,6 @@
 """What the copilot reads: the open note synced into the index, the notes around it by scope, the
 passages a question retrieves, the open note's images, and the whole notes a skill reads
-(`gather`). `copilot.py` runs the turn."""
+(`gather`). `copilot/turn.py` runs the turn."""
 from __future__ import annotations
 
 import re

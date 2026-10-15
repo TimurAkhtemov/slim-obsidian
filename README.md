@@ -54,7 +54,7 @@ flowchart TB
     subgraph P["Pipeline"]
         direction LR
         CAP["CAPTURE<br/>transcribe.py"] --> LAB["LABEL<br/>voicetags / enrich"]
-        LAB --> FIL["FILE<br/>suggest / record.py"]
+        LAB --> FIL["FILE<br/>suggest / recorder/note.py"]
         FIL --> IDX["INDEX<br/>ingest / chunk / embed"]
         IDX --> ANS["ANSWER<br/>search / copilot / reflect"]
     end
@@ -301,22 +301,24 @@ sweep every five minutes, the reflection nightly, and a restic backup of the vau
 
 ## Code map
 
-- `slim/cli.py` — the entry point; six commands. `vaultidentity.py` — the vault pin.
-- **Capture** — `chat.py` (the plugin's API server) and `chat_record.py` (its record routes);
-  `record_pipeline.py` (audio to a filed note), `record_review.py` (edits to a filed note),
-  `record_state.py` (the job queue, progress, locks); `record.py` (the sole writer of a
-  recorded note), `transcribe.py` (two speech lanes), `audio.py` (ffmpeg, hashing, archive),
-  `speakers.py`, `summarize.py`, `suggest.py` (the filing card), `enrich.py` and `voicetags.py`
-  (labelling), `inbox.py` and `voicememos.py` (the memo lane), `notefile.py` (slugs, safe writes).
-- **Index** — `ingest.py`, `chunk.py` (fragments), `frontmatter.py` (the frontmatter reader and
-  writer), `embed.py`, `db.py`.
-- **Answer** — `search.py`; `copilot.py` (one turn: the gate and the Ask path),
-  `copilot_context.py` (what it reads), `copilot_edit.py` (the editing run), `edits.py` (the
-  tools) and `edits_note.py` (the note as blocks with handles); `threads.py`,
-  `copilot_images.py` (chat attachments), `note_images.py` (a note's embedded images),
-  `skills.py`, `reflect.py`.
-- **Seams** — `llm.py` (never call Ollama directly) and `llm_render.py` (the raw tool-call
-  prompt and reply format), `trace.py`, `config.py`, `vaultpath.py`.
+- `slim/` — the entry points and seams: `cli.py` (six commands), `server.py` (the plugin's API
+  server, run as `slim chat`), `reflect.py`, `db.py`, `llm.py` (never call Ollama directly) and
+  `llm_render.py` (the raw tool-call prompt and reply format), `trace.py`, `config.py`,
+  `vaultpath.py`. Each subpackage below is a feature folder, not a layer.
+- `slim/vault/` — `frontmatter.py` (the frontmatter reader and writer), `notefile.py` (slugs,
+  safe writes), `note_images.py` (a note's embedded images), `identity.py` (the vault pin).
+- `slim/capture/` — audio to labelled text, for both lanes: `transcribe.py` (two speech lanes),
+  `audio.py` (ffmpeg, hashing, archive), `speakers.py`, `summarize.py`, `suggest.py` (the
+  filing card), `enrich.py` and `voicetags.py` (labelling).
+- `slim/recorder/` — the desktop lane: `routes.py` (the server's record routes), `pipeline.py`
+  (audio to a filed note), `review.py` (edits to a filed note), `state.py` (the job queue,
+  progress, locks), `note.py` (the sole writer of a recorded note).
+- `slim/memos/` — the phone lane: `voicememos.py` (the sweep) and `inbox.py` (filing a memo).
+- `slim/index/` — `ingest.py`, `chunk.py` (fragments), `embed.py`, `search.py`.
+- `slim/copilot/` — `turn.py` (one turn: the gate and the Ask path), `context.py` (what it
+  reads), `edit.py` (the editing run), `edits.py` (the tools) and `blocks.py` (the note as
+  blocks with handles); `threads.py`, `images.py` (chat attachments), `skills.py`; the built-in
+  skill templates are `slim/skills/`.
 - `obsidian/src/` — the plugin: `recorder-*`, `chat-*` and `live-*` files, one job each, bundled
   by esbuild (`npm run build`) into the committed `obsidian/main.js` that Obsidian loads.
 - `CLAUDE.md` — the operating brief, including the traps that cost real debugging time.

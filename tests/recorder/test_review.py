@@ -1,4 +1,4 @@
-"""The card's edits to a filed recording (`record_review`): apply, approval, the notes
+"""The card's edits to a filed recording (`recorder.review`): apply, approval, the notes
 autosave and the summary retry, none of which may lose what the note already holds."""
 import pytest
 

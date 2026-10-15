@@ -4,7 +4,7 @@
 a note in `Journal/` — the phone lane writes JOURNALS, and only journals (2026-09-03). A spoken
 opening can still carry one out of the floor (`voicetags.route`); nothing else can. Both lanes
 hash and archive through `audio`, name and write through `notefile`, and date through
-`local_date` below; `record.py` keeps `_render_note`'s key order, so both write one vocabulary
+`local_date` below; `recorder/note.py` keeps `_render_note`'s key order, so both write one vocabulary
 in one order.
 
 Hard rules honored here: raw audio is never destroyed (content-addressed under the synced

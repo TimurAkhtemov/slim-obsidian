@@ -1,7 +1,7 @@
 """The open-note copilot: gather the notes around the one they have open, run one turn against
 them, and name which notes the answer used — or, when the turn edits, carry out the edit one
-model call at a time and hand each change to the plugin as it lands. Called by `chat.py`'s
-sidebar routes. What it reads is `copilot_context.py`'s; the editing run is `copilot_edit.py`'s."""
+model call at a time and hand each change to the plugin as it lands. Called by `server.py`'s
+sidebar routes. What it reads is `copilot/context.py`'s; the editing run is `copilot/edit.py`'s."""
 from __future__ import annotations
 
 import json
@@ -99,7 +99,7 @@ HEARTBEAT_S = 1.0
 CHARS_PER_TOKEN = 3
 # The most an image can cost: the model reads 32-pixel squares (patch 16, merge 2) and every
 # image arrives at most 1600 pixels on a side (`note_images.NOTE_IMAGE_MAX_EDGE`, and the
-# plugin's resize of a paste). A typical screenshot costs ~450 (`copilot_context.MAX_NOTE_IMAGES`).
+# plugin's resize of a paste). A typical screenshot costs ~450 (`copilot.context.MAX_NOTE_IMAGES`).
 IMAGE_TOKENS = (1600 // 32) ** 2
 
 

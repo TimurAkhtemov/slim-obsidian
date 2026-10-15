@@ -1,4 +1,4 @@
-"""Local per-note copilot threads: save, load, list, delete. Called by `chat.py`.
+"""Local per-note copilot threads: save, load, list, delete. Called by `server.py`.
 
 Threads persist so reopening a note resumes its conversation, and **persistence is not
 evidence** — chat transcripts never enter ingestion or retrieval. The store lives under

@@ -1,8 +1,8 @@
 """The `/api/record*` routes: thin HTTP adapters over the recorder, which lives in
-`record_pipeline` (a recording, a resume), `record_review` (the card's edits) and
-`record_state` (the job queue and the progress the plugin polls).
+`recorder.pipeline` (a recording, a resume), `recorder.review` (the card's edits) and
+`recorder.state` (the job queue and the progress the plugin polls).
 
-A POST adapter is `fn(h, data)`: `chat._Handler` has already refused a foreign Host and a
+A POST adapter is `fn(h, data)`: `server._Handler` has already refused a foreign Host and a
 cross-site write, and read the JSON body under the cap `POST` names for the route. `h` is
 the handler, for its `_send_json`.
 """

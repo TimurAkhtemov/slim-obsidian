@@ -56,7 +56,7 @@ CONTAINER="${CONTAINER:-$HOME/Library/Application Support/slim/voicememo-drop}"
 
 [[ -f "$TEMPLATE" ]] || die "missing template: $TEMPLATE"
 command -v uv >/dev/null 2>&1 || die "uv is not installed (see https://docs.astral.sh/uv/)"
-# ffprobe/ffmpeg are what transcription (slim/transcribe.py, slim/inbox.py) shells out to, and
+# ffprobe/ffmpeg are what transcription (slim/capture/transcribe.py, slim/memos/inbox.py) shells out to, and
 # they live in Homebrew too — the ORIGINAL install pinned uv's dir but not this one, so the
 # launchd sweep failed every tick on `FileNotFoundError: 'ffprobe'` the moment memos landed
 # (worked by hand only because an interactive shell has Homebrew on PATH). Pin its dir as well.
