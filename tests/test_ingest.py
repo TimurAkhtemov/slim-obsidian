@@ -3,7 +3,7 @@
 import pytest
 
 from slim import db
-from slim.ingest import ingest, ingest_note
+from slim.index.ingest import ingest, ingest_note
 
 
 @pytest.fixture
@@ -108,7 +108,7 @@ def test_lowercase_profile_folder_is_excluded_too(tmp_path):
 def test_managed_recorder_drafts_are_not_ingested(tmp_path):
     """A live draft changes on every keystroke and has no transcript yet. Indexing it would
     create source versions mid-recording and let an incomplete journal reach reflection."""
-    from slim import ingest as ingest_mod
+    from slim.index import ingest as ingest_mod
 
     vault = tmp_path / "draft-vault"
     journal = vault / "Journal" / "2026-08-23--recording--abc.slim-draft.md"
@@ -124,7 +124,7 @@ def test_managed_recorder_drafts_are_not_ingested(tmp_path):
 def test_draft_exclusion_is_narrow_to_the_two_managed_locations(tmp_path):
     """The suffix is lifecycle state only where the recorder owns it. A similarly named
     human note elsewhere must not become an undocumented opt-out of indexing."""
-    from slim import ingest as ingest_mod
+    from slim.index import ingest as ingest_mod
 
     vault = tmp_path / "draft-vault"
     ordinary = vault / "Notes" / "work" / "idea.slim-draft.md"
@@ -148,7 +148,7 @@ def test_source_fields_keeps_only_what_something_reads():
     """Schema v12 cut every other column. `reflect` selects on `type` and `authored_at`, the
     copilot shows `title`; anything else a note declares is Obsidian's business, so it must not
     silently reappear as a source column."""
-    from slim import ingest as ingest_mod
+    from slim.index import ingest as ingest_mod
     out = ingest_mod.source_fields({
         "title": "A", "type": "journal", "date": "2026-07-22",
         "topics": ["work"], "tags": ["idea"], "origin": "recorded"})
@@ -158,7 +158,7 @@ def test_source_fields_keeps_only_what_something_reads():
 def test_authored_at_falls_back_to_created_time():
     """Imported notes carry `created_time` where recorded ones carry `date`; `reflect`'s window
     reads one column, so the fallback lives here."""
-    from slim import ingest as ingest_mod
+    from slim.index import ingest as ingest_mod
     assert ingest_mod.source_fields({"created_time": "2026-07-01"})["authored_at"] == "2026-07-01"
     assert ingest_mod.source_fields({})["authored_at"] is None
 
@@ -202,7 +202,7 @@ def test_a_source_under_an_excluded_dir_is_evicted_even_though_the_file_exists(v
 
 
 def test_ingest_note_claims_a_moved_vault_note_like_the_sweep(tmp_path):
-    from slim.ingest import ingest_note
+    from slim.index.ingest import ingest_note
     vault = tmp_path / "vault"
     (vault / "Notes/a").mkdir(parents=True)
     (vault / "Notes/b").mkdir(parents=True)
@@ -217,7 +217,7 @@ def test_ingest_note_claims_a_moved_vault_note_like_the_sweep(tmp_path):
 
 
 def test_sweep_skips_managed_recorder_drafts_like_the_single_note_path(tmp_path):
-    from slim.ingest import ingest_note, IngestError
+    from slim.index.ingest import ingest_note, IngestError
     vault = tmp_path / "vault"
     for rel in ["Journal/2026-08-25.slim-draft.md", "Capture/_unfiled/x.slim-draft.md",
                 "Notes/own.slim-draft.md", "Notes/kept.md"]:

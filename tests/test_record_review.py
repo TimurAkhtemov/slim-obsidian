@@ -128,7 +128,8 @@ def test_filing_keeps_the_source_id_a_copilot_chat_was_opened_on(tmp_path, monke
     keyed by source id. Apply changes content AND path in one ingest — the one sequence the
     hash rename rule cannot follow — so without a hint the note is re-minted and every chat
     on it is orphaned (2026-09-22)."""
-    from slim import db, embed, ingest, record_review, record_state
+    from slim import db, record_review, record_state
+    from slim.index import embed, ingest
     r = _existing(tmp_path, monkeypatch)
     monkeypatch.setattr(embed, "embed_source", lambda con, sid: 0)
     monkeypatch.setattr(record_state, "_schedule_sweep", lambda vault: None)

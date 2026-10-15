@@ -15,7 +15,8 @@ import urllib.request
 
 import pytest
 
-from slim import embed, db, llm, threads, trace
+from slim import db, llm, threads, trace
+from slim.index import embed
 from slim.capture import enrich
 
 

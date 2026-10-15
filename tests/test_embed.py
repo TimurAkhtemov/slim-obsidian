@@ -4,8 +4,9 @@ embedder. The vector cache and retrieval are tested with `search`."""
 import numpy as np
 import pytest
 
-from slim import db, embed as embed_mod, search as search_mod
-from slim.ingest import ingest
+from slim import db
+from slim.index import embed as embed_mod, search as search_mod
+from slim.index.ingest import ingest
 from tests.conftest import ollama_available
 
 

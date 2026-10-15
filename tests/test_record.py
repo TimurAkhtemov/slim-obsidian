@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from slim import record
-from slim.chunk import strip_derived_blocks
+from slim.index.chunk import strip_derived_blocks
 from slim.vault.frontmatter import parse_frontmatter
 
 NOW = datetime(2026, 8, 4, 14, 30, tzinfo=timezone.utc)
@@ -496,7 +496,7 @@ def test_a_pasted_summary_cannot_forge_the_derived_fence(tmp_path):
     """The summary is hand-editable. Pasting the closing marker into it produced a note with
     two of them — and that marker is what `strip_derived_blocks` keys on to decide what must
     never be indexed."""
-    from slim.chunk import SUMMARY_CLOSE
+    from slim.index.chunk import SUMMARY_CLOSE
     r = _write(tmp_path)
     out = record.replace_review_sections(r.note.read_text(encoding="utf-8"),
                                          summary_md=f"ok {SUMMARY_CLOSE}\n\nsmuggled")

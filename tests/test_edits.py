@@ -3,7 +3,8 @@ applies. Nothing here writes a note. The note as blocks with handles is test_edi
 
 import pytest
 
-from slim import chunk, edits, edits_note
+from slim import edits, edits_note
+from slim.index import chunk
 from slim.edits import apply, apply_splices, ollama_tools, splices
 from slim.edits_note import Note, ToolError
 

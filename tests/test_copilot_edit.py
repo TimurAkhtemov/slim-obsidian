@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from slim import chunk, copilot, copilot_context, copilot_edit, db, edits, llm
+from slim import copilot, copilot_context, copilot_edit, db, edits, llm
+from slim.index import chunk
 
 
 @pytest.fixture

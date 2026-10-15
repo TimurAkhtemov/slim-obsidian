@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from . import edits_note
-from .chunk import TRANSCRIPT_MARKER
+from .index.chunk import TRANSCRIPT_MARKER
 from .config import EXCLUDED_DIRS
 from .edits_note import Block, Note, ToolError
 from .vault.frontmatter import parse_frontmatter, set_frontmatter

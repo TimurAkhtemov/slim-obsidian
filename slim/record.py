@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from .chunk import SUMMARY_CLOSE, SUMMARY_OPEN, TRANSCRIPT_MARKER
+from .index.chunk import SUMMARY_CLOSE, SUMMARY_OPEN, TRANSCRIPT_MARKER
 from .config import VAULT
 
 RECORD_PROMPT_VERSION = "record-v2"

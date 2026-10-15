@@ -8,9 +8,10 @@ stay testable without a running model server.
 import numpy as np
 import pytest
 
-from slim import db, embed as embed_mod, search as search_mod
-from slim.ingest import ingest
-from slim.search import Hit, _rrf
+from slim import db
+from slim.index import embed as embed_mod, search as search_mod
+from slim.index.ingest import ingest
+from slim.index.search import Hit, _rrf
 from tests.conftest import ollama_available
 
 

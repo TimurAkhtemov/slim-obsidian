@@ -8,7 +8,7 @@ import pytest
 from slim import cli, db
 from slim.memos import inbox, voicememos
 from slim.vault import identity
-from slim.ingest import ingest
+from slim.index.ingest import ingest
 from tests.test_ingest import counts
 from tests.test_vaultidentity import stub_ingest, use_vault
 

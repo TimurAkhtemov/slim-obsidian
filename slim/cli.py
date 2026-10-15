@@ -6,7 +6,8 @@ import re
 import time
 from pathlib import Path
 
-from . import db, embed as embed_mod, ingest as ingest_mod, trace
+from . import db, trace
+from .index import embed as embed_mod, ingest as ingest_mod
 from .vault import identity
 from .config import DB_PATH, VAULT
 

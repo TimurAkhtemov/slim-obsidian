@@ -17,7 +17,8 @@ def test_the_request_indexes_only_its_note_and_sweeps_the_vault_afterwards(tmp_p
     ~50-fragment note — a backlog from 11 other edited notes — and the recording waited for
     it. `ingest_note` + `embed_source` share the sweep's code, so the docstring's old
     objection (a second, less-tested copy) no longer holds."""
-    from slim import embed as embed_mod, ingest as ingest_mod, record_pipeline, record_state
+    from slim import record_pipeline, record_state
+    from slim.index import embed as embed_mod, ingest as ingest_mod
     _fakes(monkeypatch)
     seen = {"note": [], "source": [], "sweep_ingest": 0, "sweep_embed": 0}
     monkeypatch.setattr(ingest_mod, "ingest_note",
@@ -43,7 +44,8 @@ def test_the_request_indexes_only_its_note_and_sweeps_the_vault_afterwards(tmp_p
 
 def test_a_quiet_sweep_writes_no_trace(tmp_path, monkeypatch):
     """776 `record/sweep` records in a month, all but a few with nothing changed."""
-    from slim import embed as embed_mod, ingest as ingest_mod, record_state, trace
+    from slim import record_state, trace
+    from slim.index import embed as embed_mod, ingest as ingest_mod
     quiet = {"unchanged": 3, "new": 0, "edited": 0, "renamed": 0, "removed": 0}
     results = iter([(quiet, {"embedded": 0, "already": 3}),
                     ({**quiet, "removed": 1}, {"embedded": 0, "already": 3}),
@@ -83,7 +85,8 @@ def test_the_sweep_runs_on_a_daemon_thread_and_sweeps_serialize(tmp_path, monkey
 
 
 def test_a_broken_single_note_index_never_costs_the_recording(tmp_path, monkeypatch):
-    from slim import ingest as ingest_mod, record_pipeline, record_state
+    from slim import record_pipeline, record_state
+    from slim.index import ingest as ingest_mod
     _fakes(monkeypatch)
     def boom(con, vault, rel):
         raise RuntimeError("index exploded")
