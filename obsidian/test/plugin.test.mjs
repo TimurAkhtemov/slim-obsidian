@@ -2,12 +2,37 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { fakeContentEl, noticeInstances, notices, obsidianStub, setRequestUrl,
-         srcText } from "./fakes.mjs";
+import { fakeContentEl, noticeInstances, notices, obsidianStub,
+         setRequestUrl } from "./fakes.mjs";
 import { findButton, plugin, sessionManagerHarness, view } from "./recorder-harness.mjs";
 
 const require = createRequire(import.meta.url);
 const PluginClass = require("../src/plugin.js");
+const { VIEW_TYPE_COPILOT, CopilotView } = require("../src/chat/view.js");
+const { MeetingSessionManager } = require("../src/recorder/sessions.js");
+const manifest = require("../manifest.json");
+
+// The plugin after `onload`, against a workspace that records what was registered. No server
+// is spawned and no live editor is built: neither is what these tests are about.
+async function loadedPlugin(leavesOfType = () => []) {
+  const p = Object.create(PluginClass.prototype);
+  const got = { views: {}, commands: [], handlers: {}, blocks: {}, layoutReady: [] };
+  const on = (name, fn) => { got.handlers[name] = fn; return name; };
+  p.app = {
+    workspace: { on, getActiveFile: () => null, getLeavesOfType: (type) => leavesOfType(type),
+                 onLayoutReady: (fn) => got.layoutReady.push(fn) },
+    vault: { on },
+  };
+  Object.assign(p, {
+    loadData: async () => ({}), setupLive() {}, ensureServer: async () => {},
+    registerMarkdownCodeBlockProcessor: (lang, fn) => { got.blocks[lang] = fn; },
+    registerView: (type, factory) => { got.views[type] = factory; },
+    addCommand: (command) => got.commands.push(command.id),
+    addRibbonIcon() {}, registerEvent() {}, addSettingTab() {},
+  });
+  await p.onload();
+  return { p, got };
+}
 
 test("startup reports a recoverable draft and audio pair by recording ID", async () => {
   const id = "20260823T143000-abcd1234";
@@ -61,13 +86,6 @@ test("startup reports paired and unpaired stranded recordings separately", async
   assert.match(notices[1], /never finished filing/);
 });
 
-test("plugin reload adopts every already-visible meeting note", () => {
-  const source = srcText("plugin.js");
-  assert.match(source,
-               /onLayoutReady\(\(\) => \{[\s\S]*getLeavesOfType\("markdown"\)[\s\S]*meetings\.adoptFile\(file, leaf\)/);
-  assert.match(source, /meetingBlockFor\(path\)[\s\S]*return el \|\| null/);
-});
-
 test("recording progress tolerates the initial race and streams the live state", async () => {
   const plugin = Object.create(PluginClass.prototype);
   plugin.settings = { port: 7546 };
@@ -90,11 +108,6 @@ test("recording progress tolerates the initial race and streams the live state",
   assert.equal(calls, 2);
   assert.equal(states.length, 1);
   assert.equal(states[0].thinking, "actual token");
-});
-
-test("quitting Obsidian flushes every meeting's notes", () => {
-  const source = srcText("plugin.js");
-  assert.match(source, /workspace\.on\("quit",\s*\(tasks\)\s*=>\s*\{\s*tasks\.add\(\(\)\s*=>\s*this\.meetings\.flushNotes\(\)\)/);
 });
 
 test("plugin microphone activation delegates to the meeting manager", async () => {
@@ -204,8 +217,70 @@ test("plugin reload adopts every visible recorded block into its own session", a
   assert.deepEqual(adopted, [a.path, b.path]);
 });
 
-test("the plugin owns a meeting-session manager, not one global recorder", () => {
-  assert.match(srcText("plugin.js"), /this\.meetings\s*=\s*new MeetingSessionManager\(this\)/);
-  // the whole plugin, as before the split: no module may hold one global recorder
-  assert.doesNotMatch(srcText(), /this\.recorder\s*=\s*new RecorderView\(null, this\)/);
+test("onload registers the copilot view and its command", async () => {
+  const { got } = await loadedPlugin();
+  assert.ok(got.views[VIEW_TYPE_COPILOT]({}) instanceof CopilotView);
+  assert.ok(got.commands.includes("open-note-copilot"));
+  assert.ok(got.commands.includes("start-recording"));
+  assert.equal(manifest.name, "SLIM");
+});
+
+test("the copilot follows the active note", async () => {
+  const seen = [];
+  const copilot = { view: { setActiveFile: (file) => seen.push(file) } };
+  const { p, got } = await loadedPlugin((type) => (type === VIEW_TYPE_COPILOT ? [copilot] : []));
+  const note = { path: "Notes/a.md" };
+  p.app.workspace.getActiveFile = () => note;
+
+  got.handlers["active-leaf-change"]();
+
+  assert.deepEqual(seen, [note]);
+});
+
+test("plugin reload adopts every already-visible meeting note", async () => {
+  const leafFor = (path) => {
+    const leaf = { view: new obsidianStub.MarkdownView({}) };
+    leaf.view.file = { path };
+    return leaf;
+  };
+  const leaves = [leafFor("Capture/a.md"), leafFor("Capture/b.md"), { view: {} }];
+  const { p, got } = await loadedPlugin((type) => (type === "markdown" ? leaves : []));
+  const adopted = [];
+  p.meetings.adoptFile = async (file, leaf) => { adopted.push([file.path, leaf]); };
+  p.warnAboutStrandedAudio = async () => {};
+
+  got.layoutReady.forEach((fn) => fn());
+
+  assert.deepEqual(adopted, [["Capture/a.md", leaves[0]], ["Capture/b.md", leaves[1]]]);
+});
+
+test("a meeting block is found while Live Preview is still building it", async () => {
+  // At reload the code-block processor runs before its element is in the document; refusing
+  // a disconnected element loses the only mount and leaves the block empty.
+  const { p, got } = await loadedPlugin();
+  const el = fakeContentEl();
+  el.isConnected = false;
+
+  got.blocks["slim-meeting"]("", el, { sourcePath: "Capture/a.md" });
+
+  assert.equal(p.meetingBlockFor("Capture/a.md"), el);
+  assert.equal(p.meetingBlockFor("Capture/other.md"), null);
+});
+
+test("quitting Obsidian flushes every meeting's notes", async () => {
+  const { p, got } = await loadedPlugin();
+  let flushed = 0;
+  p.meetings.flushNotes = async () => { flushed += 1; };
+  const tasks = [];
+
+  got.handlers.quit({ add: (task) => tasks.push(task) });
+  await Promise.all(tasks.map((task) => task()));
+
+  assert.equal(flushed, 1);
+});
+
+test("the plugin owns a meeting-session manager, not one global recorder", async () => {
+  const { p } = await loadedPlugin();
+  assert.ok(p.meetings instanceof MeetingSessionManager);
+  assert.equal(p.recorder, undefined);
 });

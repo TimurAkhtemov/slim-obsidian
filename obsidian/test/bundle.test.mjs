@@ -23,7 +23,10 @@ test("main.js is exactly what src/ builds to", async () => {
 test("the bundle requires only what Obsidian's loader serves", () => {
   // Obsidian's shim `require` serves `obsidian`, CodeMirror and Electron, and hands the rest to
   // the renderer's global require, which knows Node's builtins and nothing in the plugin folder.
+  // A relative `require("./chat/view")` throws before the plugin class exists, which takes the
+  // RECORDER down with it; Node resolves relative paths, so only this assertion sees it.
   const source = fs.readFileSync(BUNDLE, "utf8");
+  assert.doesNotMatch(source, /require\(\s*["']\.\.?\//);
   const required = [...source.matchAll(/\brequire\(\s*["']([^"']+)["']\s*\)/g)].map((m) => m[1]);
   assert.ok(required.length > 0);
   const served = (name) => name === "obsidian" || name === "electron" || name === "@electron/remote"
@@ -37,15 +40,4 @@ test("the bundle loads as the plugin class, and it is the only plugin code Obsid
   assert.equal(typeof Plugin.prototype.onload, "function");
   const scripts = fs.readdirSync(OBSIDIAN).filter((name) => name.endsWith(".js")).sort();
   assert.deepEqual(scripts, ["main.js"]);
-});
-
-test("the plugin is ONE file: Obsidian's loader cannot resolve a relative require", () => {
-  // Obsidian evals main.js with a shim `require` that serves `obsidian` and CodeMirror and
-  // hands everything else to the renderer's global require — bound to Obsidian's bundle,
-  // not the plugin folder. `require("./copilot")` throws before the plugin class exists,
-  // which takes the RECORDER down with it. Node resolves relative paths, so only this
-  // assertion sees it.
-  const source = fs.readFileSync(BUNDLE, "utf8");
-  assert.doesNotMatch(source, /require\(\s*["']\.\.?\//);
-  assert.equal(fs.existsSync(path.join(OBSIDIAN, "copilot.js")), false);
 });

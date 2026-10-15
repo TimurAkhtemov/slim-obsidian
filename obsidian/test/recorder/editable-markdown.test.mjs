@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { obsidianStub, srcText } from "../fakes.mjs";
+import { obsidianStub } from "../fakes.mjs";
 import { view } from "../recorder-harness.mjs";
 
 const require = createRequire(import.meta.url);
@@ -127,11 +127,4 @@ test("atoms are stamped again once the async render has landed", async () => {
   } finally {
     obsidianStub.MarkdownRenderer.render = original;
   }
-});
-
-test("rendered nodes are stamped with the source they came from", () => {
-  const source = srcText("recorder/editable-markdown.js");
-  // The stamping pass and the serializer have to agree on one attribute name.
-  assert.match(source, /data-slim-src/);
-  assert.match(source, /function stampSourceAtoms/);
 });

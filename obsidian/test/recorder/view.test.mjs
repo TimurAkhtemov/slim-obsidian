@@ -4,7 +4,7 @@ import test from "node:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { obsidianStub, srcText } from "../fakes.mjs";
+import { obsidianStub } from "../fakes.mjs";
 import { fileBackedView } from "../recorder-harness.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -156,11 +156,6 @@ test("delete and start over removes only the managed failed-session sources", as
   assert.equal(files.has("Attachments/_incoming/20260824T210000-deadbeef.webm"), false);
   assert.equal(files.has("Capture/keep.md"), true);
   assert.equal(v.state, "idle");
-});
-
-test("the inline object has no raw-Markdown escape hatch", () => {
-  const source = srcText();
-  assert.doesNotMatch(source, /Open raw Markdown/);
 });
 
 test("processing freezes the native editor and an error unlocks it", () => {
