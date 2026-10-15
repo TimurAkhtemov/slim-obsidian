@@ -15,9 +15,9 @@ def test_an_edit_moves_the_note_and_marks_the_fields_as_theirs(tmp_path, monkeyp
     from slim.vault.frontmatter import parse_frontmatter
     r = _existing(tmp_path, monkeypatch)
     out = review.handle_record_apply(note=str(r.note.relative_to(tmp_path)),
-                                            dest_dir="Notes/school/CS201 ML", type_tag="lecture",
-                                            topics=["school", "svm"], summary_md="s",
-                                            vault=tmp_path)
+                                     dest_dir="Notes/school/CS201 ML", type_tag="lecture",
+                                     topics=["school", "svm"], summary_md="s",
+                                     vault=tmp_path)
     moved = tmp_path / out["note"]
     assert moved.exists() and not r.note.exists()
     fm, _ = parse_frontmatter(moved.read_text(encoding="utf-8"))
@@ -53,8 +53,8 @@ def test_the_transcript_is_untouched_by_an_edit(tmp_path, monkeypatch):
     from slim.recorder import review
     r = _existing(tmp_path, monkeypatch)
     review.handle_record_apply(note=str(r.note.relative_to(tmp_path)),
-                                      dest_dir="Capture/_unfiled", type_tag="idea", topics=["x"],
-                                      summary_md="s", vault=tmp_path)
+                               dest_dir="Capture/_unfiled", type_tag="idea", topics=["x"],
+                               summary_md="s", vault=tmp_path)
     assert "verbatim words" in r.note.read_text(encoding="utf-8")
 
 
@@ -62,9 +62,9 @@ def test_review_edits_persist_both_summary_and_notes(tmp_path, monkeypatch):
     from slim.recorder import note as note_writer, review
     r = _existing(tmp_path, monkeypatch)
     review.handle_record_apply(note=str(r.note.relative_to(tmp_path)),
-                                      dest_dir="Capture/_unfiled", type_tag="lecture",
-                                      topics=["school"], summary_md="Edited AI summary.",
-                                      notes_md="- note added during review", vault=tmp_path)
+                               dest_dir="Capture/_unfiled", type_tag="lecture",
+                               topics=["school"], summary_md="Edited AI summary.",
+                               notes_md="- note added during review", vault=tmp_path)
     text = r.note.read_text(encoding="utf-8")
     assert "Edited AI summary." in text
     assert "- note added during review" in text
@@ -83,8 +83,8 @@ def test_applying_never_silently_overwrites_another_note(tmp_path, monkeypatch):
     victim.write_text("I was here first", encoding="utf-8")
     with pytest.raises(ValueError):
         review.handle_record_apply(note=str(r.note.relative_to(tmp_path)),
-                                          dest_dir="Notes/school/CS201 ML", type_tag="lecture",
-                                          topics=[], summary_md="s", vault=tmp_path)
+                                   dest_dir="Notes/school/CS201 ML", type_tag="lecture",
+                                   topics=[], summary_md="s", vault=tmp_path)
     assert victim.read_text(encoding="utf-8") == "I was here first"
 
 
@@ -96,9 +96,9 @@ def test_editing_the_title_renames_the_file_and_keeps_date_and_digest(tmp_path, 
     r = _existing(tmp_path, monkeypatch)
     date, _slug, digest = r.note.stem.split("--")
     out = review.handle_record_apply(note=str(r.note.relative_to(tmp_path)),
-                                            dest_dir="Capture/_unfiled", type_tag="lecture",
-                                            topics=[], summary_md="s", title="Contoso Screen",
-                                            vault=tmp_path)
+                                     dest_dir="Capture/_unfiled", type_tag="lecture",
+                                     topics=[], summary_md="s", title="Contoso Screen",
+                                     vault=tmp_path)
     new = tmp_path / out["note"]
     assert new.exists() and not r.note.exists()
     assert new.stem.startswith(date) and new.stem.endswith(digest)   # both preserved
@@ -113,12 +113,12 @@ def test_the_card_reindexes_after_it_commits(tmp_path, monkeypatch):
     from slim.recorder import review, state
     r = _existing(tmp_path, monkeypatch)
     called = []
-    monkeypatch.setattr(state, "_index_now",
+    monkeypatch.setattr(state, "index_now",
                         lambda v, note, **kw: called.append((v, note, kw.get("moved_from"))) or {})
     original = str(r.note.relative_to(tmp_path))
     moved = review.handle_record_apply(note=original, dest_dir="Capture/work",
-                                              type_tag="lecture", topics=[], summary_md="s",
-                                              vault=tmp_path)
+                                       type_tag="lecture", topics=[], summary_md="s",
+                                       vault=tmp_path)
     # The MOVED path, and where it came from: the index keeps the note's id through the move.
     assert called == [(tmp_path, moved["note"], original)]
 
@@ -139,8 +139,8 @@ def test_filing_keeps_the_source_id_a_copilot_chat_was_opened_on(tmp_path, monke
     draft_id = ingest.ingest_note(con, tmp_path, original)["id"]
     con.close()
     out = review.handle_record_apply(note=original, dest_dir="Notes/school",
-                                            type_tag="lecture", topics=["school"],
-                                            summary_md="new summary", vault=tmp_path)
+                                     type_tag="lecture", topics=["school"],
+                                     summary_md="new summary", vault=tmp_path)
     con = db.connect()
     rows = con.execute("SELECT id, path FROM sources WHERE deleted=0").fetchall()
     con.close()
@@ -159,7 +159,7 @@ def test_saving_notes_touches_nothing_but_the_notes(tmp_path, monkeypatch):
     before = r.note.read_text(encoding="utf-8")
 
     out = review.handle_record_notes(note=str(r.note.relative_to(tmp_path)),
-                                            notes_md="- typed after the fact", vault=tmp_path)
+                                     notes_md="- typed after the fact", vault=tmp_path)
 
     after = (tmp_path / out["note"]).read_text(encoding="utf-8")
     assert (tmp_path / out["note"]) == r.note, "the note does not move"
@@ -185,7 +185,7 @@ def test_retrying_the_summary_rewrites_only_the_summary(tmp_path, monkeypatch):
     monkeypatch.setattr(summarize, "summarize", fake_sum)
 
     out = review.handle_record_summary(note=str(r.note.relative_to(tmp_path)),
-                                              instructions="organise by concept", vault=tmp_path)
+                                       instructions="organise by concept", vault=tmp_path)
 
     after = r.note.read_text(encoding="utf-8")
     assert "A better summary." in after and "### Kernels" in after
@@ -235,8 +235,8 @@ def test_correcting_the_type_to_a_lecture_drops_its_open_questions(tmp_path, mon
                "## Open questions\n- What is understanding?\n")
 
     review.handle_record_apply(note=str(r.note.relative_to(tmp_path)),
-                                      dest_dir="Capture/school", type_tag="lecture", topics=[],
-                                      summary_md=summary, vault=tmp_path)
+                               dest_dir="Capture/school", type_tag="lecture", topics=[],
+                               summary_md=summary, vault=tmp_path)
 
     after = (tmp_path / "Capture/school" / r.note.name).read_text(encoding="utf-8")
     assert "## Open questions" not in after
@@ -249,9 +249,9 @@ def test_a_meeting_keeps_the_open_questions_it_was_given(tmp_path, monkeypatch):
     from slim.recorder import review
     r = _existing(tmp_path, monkeypatch)
     review.handle_record_apply(note=str(r.note.relative_to(tmp_path)),
-                                      dest_dir="Capture/work", type_tag="meeting-note", topics=[],
-                                      summary_md="o\n\n## Open questions\n- who owns it?",
-                                      vault=tmp_path)
+                               dest_dir="Capture/work", type_tag="meeting-note", topics=[],
+                               summary_md="o\n\n## Open questions\n- who owns it?",
+                               vault=tmp_path)
     after = (tmp_path / "Capture/work" / r.note.name).read_text(encoding="utf-8")
     assert "## Open questions" in after and "who owns it?" in after
 
@@ -270,7 +270,7 @@ def test_a_retry_does_not_clobber_notes_saved_while_it_ran(tmp_path, monkeypatch
     def slow_summary(*a, **k):
         # what the blur-autosave does while the model is thinking
         review.handle_record_notes(note=note_rel, notes_md="- typed while it ran",
-                                          vault=tmp_path)
+                                   vault=tmp_path)
         return summarize.Summary(overview="A new summary.")
     monkeypatch.setattr(summarize, "summarize", slow_summary)
 
@@ -291,8 +291,8 @@ def test_a_retry_never_resurrects_a_note_that_moved(tmp_path, monkeypatch):
 
     def moves_it(*a, **k):
         review.handle_record_apply(note=note_rel, dest_dir="Capture/work",
-                                          type_tag="meeting-note", topics=[], summary_md="s",
-                                          vault=tmp_path)
+                                   type_tag="meeting-note", topics=[], summary_md="s",
+                                   vault=tmp_path)
         return summarize.Summary(overview="A new summary.")
     monkeypatch.setattr(summarize, "summarize", moves_it)
 
@@ -302,7 +302,7 @@ def test_a_retry_never_resurrects_a_note_that_moved(tmp_path, monkeypatch):
 
 
 def test_an_autosave_does_not_sweep_the_vault(tmp_path, monkeypatch):
-    """⚠ `_index_now`'s tail schedules a full-vault ingest + embed. On a note that is seconds
+    """⚠ `index_now`'s tail schedules a full-vault ingest + embed. On a note that is seconds
     old that is right — the sweep retires the old path's row. On every blur of the notes field
     it is a dozen full-vault hash-and-embed passes for a dozen click-aways, each competing with
     the resident model for the box. Index the note; leave the vault alone."""
@@ -312,7 +312,7 @@ def test_an_autosave_does_not_sweep_the_vault(tmp_path, monkeypatch):
     monkeypatch.setattr(state, "_schedule_sweep", lambda v: sweeps.append(v))
 
     review.handle_record_notes(note=str(r.note.relative_to(tmp_path)), notes_md="- typed",
-                                      vault=tmp_path)
+                               vault=tmp_path)
     assert sweeps == [], "typing a note is not a reason to re-embed the vault"
 
 

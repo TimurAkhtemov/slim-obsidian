@@ -401,7 +401,7 @@ def _insert(note: Note, args: dict, ctx: dict):
     made = " ".join(b.handle for b in new if b.kind != "blank")
     then = note.then(pos + len(new))
     return needs, f"Added {blocks.quote(markdown)}", (f"inserted {made} {where} {anchor}{said}{_callouts(folded)}:\n"
-                                               f"{note.render(new).rstrip()}\n{then}")
+                                                      f"{note.render(new).rstrip()}\n{then}")
 
 
 def _move(note: Note, args: dict, ctx: dict):

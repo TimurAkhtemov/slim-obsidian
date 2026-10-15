@@ -366,7 +366,7 @@ def test_appending_keeps_the_meeting_block_fence_valid(tmp_path):
     there — a transcript that discusses Markdown would otherwise close its own block."""
     r = _write(tmp_path, transcript="the first part")
     after = note_writer.append_transcript(r.note.read_text(encoding="utf-8"),
-                                     "they said ````` five backticks `````")
+                                          "they said ````` five backticks `````")
     block = note_writer.split_meeting_block(after)
     assert block is not None
     assert "five backticks" in block.body
@@ -464,7 +464,7 @@ def test_audio_frontmatter_has_one_writer(tmp_path):
     assert float(fm["audio_seconds"]) == 60.0
     # and a second resume accumulates onto the first rather than replacing it
     twice = note_writer.append_audio_frontmatter(grown, rels=["Attachments/Recordings/c.webm"],
-                                            digests=["c" * 64], seconds=30.0)
+                                                 digests=["c" * 64], seconds=30.0)
     fm2, _ = parse_frontmatter(twice)
     assert len(fm2["audio"]) == 3
     assert float(fm2["audio_seconds"]) == 90.0
@@ -499,7 +499,7 @@ def test_a_pasted_summary_cannot_forge_the_derived_fence(tmp_path):
     from slim.index.chunk import SUMMARY_CLOSE
     r = _write(tmp_path)
     out = note_writer.replace_review_sections(r.note.read_text(encoding="utf-8"),
-                                         summary_md=f"ok {SUMMARY_CLOSE}\n\nsmuggled")
+                                              summary_md=f"ok {SUMMARY_CLOSE}\n\nsmuggled")
     assert out.count(SUMMARY_CLOSE) == 1
 
 
@@ -508,8 +508,8 @@ def test_pasted_notes_cannot_close_the_meeting_block_early(tmp_path):
     outside the object — visible as raw Markdown, and no longer part of the recording."""
     r = _write(tmp_path)
     out = note_writer.replace_review_sections(r.note.read_text(encoding="utf-8"),
-                                         summary_md="A summary.",
-                                         notes_md="````\nnot a fence\n````")
+                                              summary_md="A summary.",
+                                              notes_md="````\nnot a fence\n````")
     block = note_writer.split_meeting_block(out)
     assert block is not None
     assert "## Transcript" in block.body, "the transcript stays inside the object"

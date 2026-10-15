@@ -169,7 +169,7 @@ def test_an_overflowing_prompt_never_makes_a_note(con, vault, monkeypatch):
     events = []
     with pytest.raises(copilot_turn.CopilotError, match="too long for one request"):
         copilot_turn.run_turn(con, source["id"], "/consolidate-my-notes", [], "quick", vault=vault,
-                         on_edit=lambda *event: events.append(event))
+                              on_edit=lambda *event: events.append(event))
     assert events == []
 
 
@@ -205,7 +205,7 @@ def test_a_question_never_sends_the_selection(con, vault, monkeypatch):
     monkeypatch.setattr(copilot_turn.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
     seen = tooled(monkeypatch, ("ok", []))
     copilot_turn.run_turn(con, source["id"], "what does this mean?", [], "quick",
-                     selection="leftover", vault=vault)
+                          selection="leftover", vault=vault)
     assert seen[0]["messages"][-1]["content"] == "what does this mean?"
     assert "leftover" not in str(seen[0]["messages"])
 
@@ -222,7 +222,7 @@ def test_a_turn_that_may_edit_sees_the_open_notes_images(con, vault, monkeypatch
     monkeypatch.setattr(copilot_turn.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
     seen = tooled(monkeypatch, ("Nothing to change.", []), ("Still nothing.", []), intent=True)
     copilot_turn.run_turn(con, source["id"], "write the equation under its screenshot", [], "quick",
-                     vault=vault)
+                          vault=vault)
     assert seen[0]["tools"]                                        # the edit path
     shown = seen[0]["messages"][-2]
     assert len(shown["images"]) == 2
@@ -241,7 +241,7 @@ def test_consolidation_makes_a_new_note_as_a_change_and_writes_nothing(con, vaul
                                      ("done", {"summary": "Merged your two meetings."})]))
     events = []
     turn = copilot_turn.run_turn(con, source["id"], "/consolidate-my-notes focus on dates", [], "deep",
-                            vault=vault, on_edit=lambda event, payload: events.append((event, payload)))
+                                 vault=vault, on_edit=lambda event, payload: events.append((event, payload)))
     system, user = seen[0]["messages"][0]["content"], seen[0]["messages"][-1]["content"]
     assert seen[0]["tools"] == ["create_note", "done"] and len(seen) == 1
     assert seen[0]["opts"]["temperature"] == edit_run.FIRST_TEMPERATURE     # a new note is prose they read
@@ -271,7 +271,7 @@ def test_a_selection_skill_changes_only_the_selected_blocks_and_only_with_replac
                                      ("replace", {"target": "b2", "markdown": "- **Lexical**: bank"}),
                                      ("replace", {"target": "b3", "markdown": "- **Pragmatics**: salt"})]))
     turn = copilot_turn.run_turn(con, source["id"], "/tidy", [], "quick", vault=vault, selection=selected,
-                            doc=LIST_NOTE, doc_hash=edits.digest(LIST_NOTE))
+                                 doc=LIST_NOTE, doc_hash=edits.digest(LIST_NOTE))
     assert seen[0]["tools"] == ["plan", "replace", "edit_text"] and seen[0]["opts"]["temperature"] == 0.0
     assert seen[0]["messages"][-1]["content"].endswith("Selected text:\n" + selected)
     run = turn["edit_run"]
@@ -298,7 +298,7 @@ def test_a_selection_is_the_one_made_when_its_words_are_in_the_note_twice(con, v
     tooled(monkeypatch, ("", [("replace", {"target": "b2", "markdown": "- [x] review chapter"}),
                               ("replace", {"target": "b4", "markdown": "- [x] review chapter"})]))
     turn = copilot_turn.run_turn(con, source["id"], "/tidy", [], "quick", vault=vault, selection=selected,
-                            selection_from=edits.u16(TWICE[:second]), doc=TWICE, doc_hash=edits.digest(TWICE))
+                                 selection_from=edits.u16(TWICE[:second]), doc=TWICE, doc_hash=edits.digest(TWICE))
     text = TWICE
     for change in turn["edit_run"]["changes"]:
         text = edits.apply_splices(text, change["splices"])
@@ -306,7 +306,7 @@ def test_a_selection_is_the_one_made_when_its_words_are_in_the_note_twice(con, v
     for where in (None, second):        # no place, or one in code points: one unit short of it
         with pytest.raises(copilot_turn.CopilotError, match="appears 2 times in the note"):
             copilot_turn.run_turn(con, source["id"], "/tidy", [], "quick", vault=vault, selection=selected,
-                             selection_from=where, doc=TWICE, doc_hash=edits.digest(TWICE))
+                                  selection_from=where, doc=TWICE, doc_hash=edits.digest(TWICE))
 
 
 def test_a_new_note_call_that_could_not_be_read_is_asked_for_once_more(con, vault, monkeypatch):
@@ -338,7 +338,7 @@ def test_brief_makes_one_new_note_in_the_open_notes_folder(con, vault, monkeypat
                                      ("done", {"summary": "Wrote the brief."})]))
     events = []
     turn = copilot_turn.run_turn(con, source["id"], "/brief", [], "quick", vault=vault,
-                            on_edit=lambda event, payload: events.append((event, payload)))
+                                 on_edit=lambda event, payload: events.append((event, payload)))
     assert seen[0]["tools"] == ["create_note", "done"] and seen[0]["opts"]["think"] is True    # its own depth
     assert "ONE new note in this folder" in seen[0]["messages"][-1]["content"]
     assert "the open note's folder is `Capture/work/`" in seen[0]["messages"][0]["content"]

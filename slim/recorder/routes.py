@@ -25,7 +25,7 @@ def progress(h, query: dict) -> None:
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", job_id):
         h._send_json(400, {"error": "a valid job_id is required"})
         return
-    snapshot = state.record_progress(job_id)
+    snapshot = state.progress(job_id)
     if snapshot is None:
         h._send_json(404, {"error": "no such recording job"})
     else:
@@ -43,18 +43,18 @@ def record(h, data: dict) -> None:
     if job_id and not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", job_id):
         h._send_json(400, {"error": "job_id is invalid"})
         return
-    state._record_progress_start(job_id)
-    update = ((lambda **event: state._record_progress_update(job_id, **event))
+    state.progress_start(job_id)
+    update = ((lambda **event: state.progress_update(job_id, **event))
               if job_id else None)
     try:
         # Blank title stays blank. `handle_record` owns the transcript-derived fallback,
         # and only after the model has had its turn.
-        with state._record_pipeline_slot(job_id):
+        with state.pipeline_slot(job_id):
             result = pipeline.handle_record(**pipeline._record_args(data),
-                                                   on_progress=update, job_id=job_id)
+                                            on_progress=update, job_id=job_id)
     except state.RecordQueueFull as e:
         if job_id:
-            state._record_progress_update(
+            state.progress_update(
                 job_id, stage="failed", label="Processing queue is full",
                 detail=str(e), done=True, error=str(e))
         h._send_json(503, {"error": str(e)})
@@ -63,39 +63,39 @@ def record(h, data: dict) -> None:
         # 422 and `silent: true`: the plugin shows a calm line and the ordinary way
         # forward, never the red "delete or keep your files?" screen.
         if job_id:
-            state._record_progress_update(job_id, stage="silent",
-                                                 label="No words captured",
-                                                 detail=str(e), done=True)
+            state.progress_update(job_id, stage="silent",
+                                  label="No words captured",
+                                  detail=str(e), done=True)
         h._send_json(422, {"silent": True, "error": str(e)})
         return
     except state.RecordCancelled:
         # 409, and a body that says nothing was lost: the plugin returns to the paused
         # state with the draft and the audio exactly where they were.
         if job_id:
-            state._record_progress_update(job_id, stage="cancelled", label="Cancelled",
-                                                 detail="Your recording and notes are untouched",
-                                                 done=True)
+            state.progress_update(job_id, stage="cancelled", label="Cancelled",
+                                  detail="Your recording and notes are untouched",
+                                  done=True)
         h._send_json(409, {"cancelled": True,
                            "error": "cancelled — nothing was written or deleted"})
         return
     except (ValueError, FileNotFoundError) as e:
         if job_id:
-            state._record_progress_update(job_id, stage="failed",
-                                                 label="Processing stopped",
-                                                 detail=str(e), done=True, error=str(e))
+            state.progress_update(job_id, stage="failed",
+                                  label="Processing stopped",
+                                  detail=str(e), done=True, error=str(e))
         h._send_json(400, {"error": str(e)})
         return
     except Exception as e:  # noqa: BLE001 - surface the local failure and finish progress
         if job_id:
-            state._record_progress_update(job_id, stage="failed",
-                                                 label="Processing stopped",
-                                                 detail=str(e), done=True, error=str(e))
+            state.progress_update(job_id, stage="failed",
+                                  label="Processing stopped",
+                                  detail=str(e), done=True, error=str(e))
         h._send_json(500, {"error": f"{type(e).__name__}: {e}"})
         return
     if job_id:
-        state._record_progress_update(job_id, stage="complete", label="AI review ready",
-                                             detail="The note is filed and ready for approval",
-                                             done=True)
+        state.progress_update(job_id, stage="complete", label="AI review ready",
+                              detail="The note is filed and ready for approval",
+                              done=True)
     h._send_json(200, result)
 
 
@@ -172,7 +172,7 @@ def cancel(h, data: dict) -> None:
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", job_id or ""):
         h._send_json(400, {"error": "a valid job_id is required"})
         return
-    h._send_json(200, {"cancelling": state.request_record_cancel(job_id)})
+    h._send_json(200, {"cancelling": state.request_cancel(job_id)})
 
 
 def append(h, data: dict) -> None:
@@ -187,25 +187,25 @@ def append(h, data: dict) -> None:
     if job_id and not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", job_id):
         h._send_json(400, {"error": "job_id is invalid"})
         return
-    state._record_progress_start(job_id)
-    update = ((lambda **event: state._record_progress_update(job_id, **event))
+    state.progress_start(job_id)
+    update = ((lambda **event: state.progress_update(job_id, **event))
               if job_id else None)
     try:
-        with state._record_pipeline_slot(job_id):
+        with state.pipeline_slot(job_id):
             result = pipeline.handle_record_append(note=note, audio_rel=rels,
-                                                          job_id=job_id, on_progress=update)
+                                                   job_id=job_id, on_progress=update)
     except state.RecordQueueFull as e:
         if job_id:
-            state._record_progress_update(
+            state.progress_update(
                 job_id, stage="failed", label="Processing queue is full",
                 detail=str(e), done=True, error=str(e))
         h._send_json(503, {"error": str(e)})
         return
     except state.NoSpeech as e:
         if job_id:
-            state._record_progress_update(job_id, stage="silent",
-                                                 label="No words captured",
-                                                 detail=str(e), done=True)
+            state.progress_update(job_id, stage="silent",
+                                  label="No words captured",
+                                  detail=str(e), done=True)
         h._send_json(422, {"silent": True, "error": str(e)})
         return
     except state.RecordCancelled:
@@ -214,15 +214,15 @@ def append(h, data: dict) -> None:
         return
     except (ValueError, FileNotFoundError) as e:
         if job_id:
-            state._record_progress_update(job_id, stage="failed",
-                                                 label="Processing stopped",
-                                                 detail=str(e), done=True, error=str(e))
+            state.progress_update(job_id, stage="failed",
+                                  label="Processing stopped",
+                                  detail=str(e), done=True, error=str(e))
         h._send_json(400, {"error": str(e)})
         return
     if job_id:
-        state._record_progress_update(job_id, stage="complete",
-                                             label="Added to the note",
-                                             detail=f"{result['words']} more words", done=True)
+        state.progress_update(job_id, stage="complete",
+                              label="Added to the note",
+                              detail=f"{result['words']} more words", done=True)
     h._send_json(200, result)
 
 
@@ -246,7 +246,7 @@ def notes(h, data: dict) -> None:
         return
     try:
         result = review.handle_record_notes(note=note,
-                                                   notes_md=str(data.get("notes_md") or ""))
+                                            notes_md=str(data.get("notes_md") or ""))
     except (ValueError, FileNotFoundError) as e:
         h._send_json(400, {"error": str(e)})
         return
@@ -262,14 +262,14 @@ def summary(h, data: dict) -> None:
     if job_id and not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", job_id):
         h._send_json(400, {"error": "job_id is invalid"})
         return
-    state._record_progress_start(job_id)
+    state.progress_start(job_id)
     try:
-        with state._record_pipeline_slot(job_id):
+        with state.pipeline_slot(job_id):
             result = review.handle_record_summary(
                 note=note, instructions=str(data.get("instructions") or ""), job_id=job_id)
     except state.RecordQueueFull as e:
         if job_id:
-            state._record_progress_update(
+            state.progress_update(
                 job_id, stage="failed", label="Processing queue is full",
                 detail=str(e), done=True, error=str(e))
         h._send_json(503, {"error": str(e)})

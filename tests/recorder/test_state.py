@@ -32,8 +32,8 @@ def test_the_request_indexes_only_its_note_and_sweeps_the_vault_afterwards(tmp_p
     scheduled = []
     monkeypatch.setattr(state, "_schedule_sweep", lambda vault: scheduled.append(vault))
     out = pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="",
-                                        declared_type="meeting-note", title="T", when=NOW,
-                                        vault=tmp_path)
+                                 declared_type="meeting-note", title="T", when=NOW,
+                                 vault=tmp_path)
     assert seen["note"] == [out["note"]]
     assert seen["source"] == ["src-1"]
     assert seen["sweep_ingest"] == 0                     # nothing vault-wide inside the request
@@ -94,8 +94,8 @@ def test_a_broken_single_note_index_never_costs_the_recording(tmp_path, monkeypa
     monkeypatch.setattr(ingest_mod, "ingest_note", boom)
     monkeypatch.setattr(state, "_schedule_sweep", lambda vault: None)
     out = pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="",
-                                        declared_type="meeting-note", title="T", when=NOW,
-                                        vault=tmp_path)
+                                 declared_type="meeting-note", title="T", when=NOW,
+                                 vault=tmp_path)
     assert (tmp_path / out["note"]).exists()
 
 
@@ -111,16 +111,16 @@ def test_cancelling_a_job_stops_the_pass_and_writes_nothing(tmp_path, monkeypatc
         text="forty minutes of lecture", model="fake", audio_seconds=2400.0, wall_seconds=30.0))
 
     def cancel_midway(*a, **k):
-        state.request_record_cancel("job-1")
+        state.request_cancel("job-1")
         return summarize.Summary(overview="never used")
     monkeypatch.setattr(summarize, "summarize", cancel_midway)
 
     audio = _staged(tmp_path)
     draft = _draft(tmp_path)
-    state._record_progress_start("job-1")
+    state.progress_start("job-1")
     with pytest.raises(state.RecordCancelled):
         pipeline.handle_record(audio_rel=audio, draft_rel=draft, declared_type="lecture",
-                                      title="T", when=NOW, vault=tmp_path, job_id="job-1")
+                               title="T", when=NOW, vault=tmp_path, job_id="job-1")
 
     assert (tmp_path / audio).is_file(), "the audio is the recording; cancel never deletes it"
     assert (tmp_path / draft).is_file(), "their typed notes survive a cancel"
@@ -137,18 +137,18 @@ def test_cancelling_before_the_expensive_part_is_honoured(tmp_path, monkeypatch)
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: (
         calls.append(p), transcribe.Transcript(text="x", model="f", audio_seconds=1.0,
                                                wall_seconds=1.0))[1])
-    state._record_progress_start("job-2")
-    state.request_record_cancel("job-2")
+    state.progress_start("job-2")
+    state.request_cancel("job-2")
     with pytest.raises(state.RecordCancelled):
         pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="",
-                                      declared_type="lecture", title="T", when=NOW, vault=tmp_path,
-                                      job_id="job-2")
+                               declared_type="lecture", title="T", when=NOW, vault=tmp_path,
+                               job_id="job-2")
     assert calls == [], "a cancel before transcription does not pay for a transcription"
 
 
 def test_cancelling_an_unknown_job_says_so(tmp_path):
     from slim.recorder import state
-    assert state.request_record_cancel("no-such-job") is False
+    assert state.request_cancel("no-such-job") is False
 
 
 def test_two_writers_on_one_note_take_turns(tmp_path, monkeypatch):
@@ -163,7 +163,7 @@ def test_two_writers_on_one_note_take_turns(tmp_path, monkeypatch):
 
     def notes(text, delay):
         try:
-            with state._note_lock(tmp_path, note_rel):
+            with state.note_lock(tmp_path, note_rel):
                 order.append(f"enter {text}")
                 time.sleep(delay)
                 review.handle_record_notes(note=note_rel, notes_md=text, vault=tmp_path)
@@ -182,9 +182,9 @@ def test_two_writers_on_one_note_take_turns(tmp_path, monkeypatch):
 
 def test_the_lock_is_per_note_not_global(tmp_path, monkeypatch):
     from slim.recorder import state
-    a = state._note_lock(tmp_path, "Capture/a.md")
-    b = state._note_lock(tmp_path, "Capture/b.md")
-    again = state._note_lock(tmp_path, "Capture/a.md")
+    a = state.note_lock(tmp_path, "Capture/a.md")
+    b = state.note_lock(tmp_path, "Capture/b.md")
+    again = state.note_lock(tmp_path, "Capture/a.md")
     assert a is again and a is not b
 
 
@@ -193,17 +193,17 @@ def test_the_lock_is_per_note_not_global(tmp_path, monkeypatch):
 def test_recording_progress_is_job_local_and_never_exposes_private_reasoning():
     from slim.recorder import state
 
-    state._record_progress_start("meeting-a")
-    state._record_progress_start("meeting-b")
-    state._record_progress_update("meeting-a", stage="summarizing", label="Writing A",
-                                         kind="thinking", text="private reasoning for A",
-                                         metrics={"transcript_words": 41}, )
-    state._record_progress_update("meeting-b", stage="queued",
-                                         label="Queued behind 1 recording",
-                                         detail="Waiting for the local recording pipeline", )
+    state.progress_start("meeting-a")
+    state.progress_start("meeting-b")
+    state.progress_update("meeting-a", stage="summarizing", label="Writing A",
+                          kind="thinking", text="private reasoning for A",
+                          metrics={"transcript_words": 41}, )
+    state.progress_update("meeting-b", stage="queued",
+                          label="Queued behind 1 recording",
+                          detail="Waiting for the local recording pipeline", )
 
-    a = state.record_progress("meeting-a")
-    b = state.record_progress("meeting-b")
+    a = state.progress("meeting-a")
+    b = state.progress("meeting-b")
     assert a["stage"] == "summarizing" and a["metrics"]["transcript_words"] == 41
     assert b["stage"] == "queued" and b["label"] == "Queued behind 1 recording"
     assert "thinking" not in a and "draft" not in a
@@ -211,8 +211,8 @@ def test_recording_progress_is_job_local_and_never_exposes_private_reasoning():
     assert "private reasoning" not in json.dumps(a)
 
     a["metrics"]["transcript_words"] = 999
-    assert state.record_progress("meeting-a")["metrics"]["transcript_words"] == 41
-    assert state.record_progress("meeting-b")["metrics"] == {}
+    assert state.progress("meeting-a")["metrics"]["transcript_words"] == 41
+    assert state.progress("meeting-b")["metrics"] == {}
 
 
 def test_recording_pipeline_is_fifo_and_an_exception_releases_the_next_job():
@@ -295,22 +295,22 @@ def test_waiting_recording_job_reports_its_own_queue_position(monkeypatch):
     entered = {"a": threading.Event(), "b": threading.Event()}
 
     def run(name):
-        with state._record_pipeline_slot(name):
+        with state.pipeline_slot(name):
             entered[name].set()
             if name == "a":
                 release.wait(2)
 
-    state._record_progress_start("a")
-    state._record_progress_start("b")
+    state.progress_start("a")
+    state.progress_start("b")
     a = threading.Thread(target=run, args=("a",))
     b = threading.Thread(target=run, args=("b",))
     a.start(); assert entered["a"].wait(1)
     b.start()
     deadline = time.time() + 1
-    while time.time() < deadline and state.record_progress("b")["label"] == "Queued":
+    while time.time() < deadline and state.progress("b")["label"] == "Queued":
         time.sleep(0.005)
 
-    queued_state = state.record_progress("b")
+    queued_state = state.progress("b")
     assert queued_state["stage"] == "queued"
     assert queued_state["label"] == "Queued behind 1 recording"
     assert entered["b"].is_set() is False

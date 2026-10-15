@@ -69,11 +69,11 @@ _RECORD_PIPELINE = RecordingPipelineQueue()
 
 
 @contextmanager
-def _record_pipeline_slot(job_id: str):
+def pipeline_slot(job_id: str):
     """Admit one heavy recorder job and publish a job-local queued state while it waits."""
     def queued(position: int) -> None:
         noun = "recording" if position == 1 else "recordings"
-        _record_progress_update(
+        progress_update(
             job_id,
             stage="queued",
             label=f"Queued behind {position} {noun}",
@@ -84,7 +84,7 @@ def _record_pipeline_slot(job_id: str):
         yield
 
 
-def _record_progress_start(job_id: str) -> None:
+def progress_start(job_id: str) -> None:
     if not job_id:
         return
     with _RECORD_PROGRESS_LOCK:
@@ -99,9 +99,9 @@ def _record_progress_start(job_id: str) -> None:
         }
 
 
-def _record_progress_update(job_id: str, *, stage: str, label: str, detail: str = "",
-                            kind: str = "", text: str = "", metrics: dict | None = None,
-                            done: bool = False, error: str = "") -> None:
+def progress_update(job_id: str, *, stage: str, label: str, detail: str = "",
+                    kind: str = "", text: str = "", metrics: dict | None = None,
+                    done: bool = False, error: str = "") -> None:
     if not job_id:
         return
     with _RECORD_PROGRESS_LOCK:
@@ -135,7 +135,7 @@ class RecordCancelled(Exception):
     """They asked for this pass to stop. Not an error: nothing is wrong and nothing is lost."""
 
 
-def request_record_cancel(job_id: str) -> bool:
+def request_cancel(job_id: str) -> bool:
     """Flag a running pass. Returns False if there is no such job to flag.
 
     ⚠ COOPERATIVE, and it has to be. The summary is a STREAMING call, so the flag raises out of
@@ -163,12 +163,12 @@ def _record_cancelled(job_id: str) -> bool:
         return bool(state and state.get("cancelled"))
 
 
-def _check_record_cancel(job_id: str) -> None:
+def check_cancel(job_id: str) -> None:
     if _record_cancelled(job_id):
         raise RecordCancelled("cancelled")
 
 
-def record_progress(job_id: str) -> dict | None:
+def progress(job_id: str) -> dict | None:
     with _RECORD_PROGRESS_LOCK:
         state = _RECORD_PROGRESS.get(job_id)
         if state is None:
@@ -177,7 +177,7 @@ def record_progress(job_id: str) -> dict | None:
                 "metrics": dict(state["metrics"])}
 
 
-def _vault_path(vault: Path, rel: str) -> Path:
+def vault_path(vault: Path, rel: str) -> Path:
     """Resolve a caller-supplied vault-relative path, refusing anything that escapes.
 
     `rel` arrives over HTTP: without this a caller could name `../../etc/passwd`. Loopback-only
@@ -195,8 +195,8 @@ def _vault_path(vault: Path, rel: str) -> Path:
     return target
 
 
-def _index_now(vault: Path, note_rel: str, *, sweep: bool = True,
-               moved_from: str | None = None) -> dict:
+def index_now(vault: Path, note_rel: str, *, sweep: bool = True,
+              moved_from: str | None = None) -> dict:
     """Make THIS note reachable by everything that reads the INDEX rather than the vault.
 
     Filing makes a note findable in Obsidian immediately; it does NOT reach the two readers of
@@ -294,8 +294,8 @@ _NOTE_LOCKS_GUARD = threading.Lock()
 _NOTE_LOCKS: dict[str, threading.RLock] = {}
 
 
-def _note_lock(vault: Path, note: str) -> threading.RLock:
-    key = str(_vault_path(vault, note).resolve())
+def note_lock(vault: Path, note: str) -> threading.RLock:
+    key = str(vault_path(vault, note).resolve())
     with _NOTE_LOCKS_GUARD:
         lock = _NOTE_LOCKS.get(key)
         if lock is None:
@@ -305,7 +305,7 @@ def _note_lock(vault: Path, note: str) -> threading.RLock:
         return lock
 
 
-def _reread_for_write(src: Path, note: str) -> str:
+def reread_for_write(src: Path, note: str) -> str:
     """The note as it stands RIGHT NOW, for a job that has been thinking for minutes.
 
     ⚠ A summary retry takes minutes and the notes editor autosaves on blur the whole time, so

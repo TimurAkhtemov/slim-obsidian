@@ -34,12 +34,12 @@ def handle_record_notes(*, note: str, notes_md: str, vault: Path | None = None) 
     from ..config import VAULT as _VAULT
 
     vault = vault or _VAULT
-    src = state._vault_path(vault, note)
-    with state._note_lock(vault, note):
+    src = state.vault_path(vault, note)
+    with state.note_lock(vault, note):
         text = src.read_text(encoding="utf-8")
         note_writer.write_note_text(
             src, note_writer.replace_review_sections(text, summary_md=None, notes_md=notes_md))
-    state._index_now(vault, str(src.relative_to(vault)), sweep=False)
+    state.index_now(vault, str(src.relative_to(vault)), sweep=False)
     trace.record("record", {"stage": "notes", "note": str(src)})
     return {"note": str(src.relative_to(vault))}
 
@@ -61,17 +61,17 @@ def handle_record_summary(*, note: str, instructions: str = "", job_id: str = ""
     from ..config import VAULT as _VAULT
 
     vault = vault or _VAULT
-    src = state._vault_path(vault, note)
+    src = state.vault_path(vault, note)
     text = src.read_text(encoding="utf-8")
     parts = note_writer.read_review_sections(text)
     if not parts["transcript"].strip():
         raise ValueError("this note has no transcript to summarize")
 
-    state._record_progress_start(job_id)
-    state._record_progress_update(job_id, stage="summarizing",
-                                         label="Reasoning about the summary",
-                                         detail="The local model is re-reading the transcript")
-    activity = (lambda kind, chunk: state._record_progress_update(
+    state.progress_start(job_id)
+    state.progress_update(job_id, stage="summarizing",
+                          label="Reasoning about the summary",
+                          detail="The local model is re-reading the transcript")
+    activity = (lambda kind, chunk: state.progress_update(
         job_id, stage="summarizing", label="Reasoning about the summary",
         detail="Live local-model activity", kind=kind, text=chunk)) if job_id else None
 
@@ -83,8 +83,8 @@ def handle_record_summary(*, note: str, instructions: str = "", job_id: str = ""
                             notes=clean_notes, instructions=instructions,
                             images=note_images or None)
     if not s.valid:
-        state._record_progress_update(job_id, stage="failed", label="Retry failed",
-                                             detail=s.error)
+        state.progress_update(job_id, stage="failed", label="Retry failed",
+                              detail=s.error)
         raise ValueError(f"the summary could not be rewritten: {s.error}")
 
     fm, _ = parse_frontmatter(text)
@@ -94,19 +94,19 @@ def handle_record_summary(*, note: str, instructions: str = "", job_id: str = ""
     # to "". Writing that removes the summary and its fence, which is the one thing a failed
     # retry promises not to do. An empty answer is a failed answer.
     if not summary_md.strip():
-        state._record_progress_update(job_id, stage="failed", label="Retry failed",
-                                             detail="the model returned an empty summary")
+        state.progress_update(job_id, stage="failed", label="Retry failed",
+                              detail="the model returned an empty summary")
         raise ValueError("the summary could not be rewritten: the model returned an empty "
                          "summary, so the one you had is untouched")
     # The note as it stands NOW, not as it stood before the model started thinking. The lock
     # covers the read and the write, never the model call: holding it for the minutes a summary
     # takes would hang their notes autosave on every blur.
-    with state._note_lock(vault, note):
-        current = state._reread_for_write(src, note)
+    with state.note_lock(vault, note):
+        current = state.reread_for_write(src, note)
         current = note_writer.replace_review_sections(current, summary_md=summary_md)
         note_writer.write_note_text(src, current)
-    state._index_now(vault, str(src.relative_to(vault)), sweep=False)
-    state._record_progress_update(job_id, stage="done", label="Summary rewritten", detail="")
+    state.index_now(vault, str(src.relative_to(vault)), sweep=False)
+    state.progress_update(job_id, stage="done", label="Summary rewritten", detail="")
     trace.record("record", {"stage": "resummarize", "note": str(src),
                             "instructions": bool(instructions.strip()), "stats": s.stats})
     return {"note": str(src.relative_to(vault)), "summary": summary_md}
@@ -129,10 +129,10 @@ def handle_record_apply(*, note: str, dest_dir: str, type_tag: str, topics: list
     from ..config import VAULT as _VAULT
 
     vault = vault or _VAULT
-    src = state._vault_path(vault, note)
+    src = state.vault_path(vault, note)
     # ⚠ Held across read, write AND move: apply is the one writer that can invalidate another
     # endpoint's path, and a bare acquire/release would leak the lock on the raise paths below.
-    with state._note_lock(vault, note):
+    with state.note_lock(vault, note):
         text = src.read_text(encoding="utf-8")
 
         # ⚠ The summary was rendered against the type the CARD guessed, and this is where they
@@ -167,7 +167,7 @@ def handle_record_apply(*, note: str, dest_dir: str, type_tag: str, topics: list
         text = note_writer.replace_review_sections(
             text, summary_md=summary_md, notes_md=notes_md)
 
-        dest = state._vault_path(vault, dest_dir) / name
+        dest = state.vault_path(vault, dest_dir) / name
         if dest != src and dest.exists():
             # Both movers grew this guard on 2026-08-04 after two notes could resolve to one
             # destination and one was silently lost. A third mover does not get to relearn it.
@@ -177,8 +177,8 @@ def handle_record_apply(*, note: str, dest_dir: str, type_tag: str, topics: list
         if dest != src:
             src.unlink()
 
-    state._index_now(vault, str(dest.relative_to(vault)),
-                            moved_from=str(src.relative_to(vault)) if dest != src else None)
+    state.index_now(vault, str(dest.relative_to(vault)),
+                    moved_from=str(src.relative_to(vault)) if dest != src else None)
     trace.record("record", {"stage": "apply", "note": str(dest), "moved": dest != src})
     return {"note": str(dest.relative_to(vault))}
 
@@ -193,14 +193,14 @@ def handle_record_review(*, note: str, vault: Path | None = None) -> dict:
     from ..config import VAULT as _VAULT
 
     vault = vault or _VAULT
-    src = state._vault_path(vault, note)
-    with state._note_lock(vault, note):
+    src = state.vault_path(vault, note)
+    with state.note_lock(vault, note):
         text = src.read_text(encoding="utf-8")
         fm, _ = parse_frontmatter(text)
         if fm.get("origin") != "recorded":
             raise ValueError("review status is only valid for recorded notes")
         text = note_writer.set_review_status(text, "complete")
         note_writer.write_note_text(src, _strip_frontmatter_key(text, "filed_by"))
-    state._index_now(vault, str(src.relative_to(vault)), sweep=False)
+    state.index_now(vault, str(src.relative_to(vault)), sweep=False)
     trace.record("record", {"stage": "review", "note": str(src)})
     return {"note": str(src.relative_to(vault))}

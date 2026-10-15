@@ -19,16 +19,16 @@ def test_the_http_contract_accepts_exactly_one_notes_source():
     from slim.recorder import pipeline
 
     legacy = pipeline._record_args({"audio": "a.webm", "notes_md": "- old client",
-                                           "type": "lecture", "title": "T"})
+                                    "type": "lecture", "title": "T"})
     assert legacy["notes_md"] == "- old client" and legacy["draft_rel"] is None
 
     draft = pipeline._record_args({"audio": "a.webm", "draft": "d.slim-draft.md",
-                                          "type": "lecture", "title": "T"})
+                                   "type": "lecture", "title": "T"})
     assert draft["draft_rel"] == "d.slim-draft.md" and draft["notes_md"] is None
 
     with pytest.raises(ValueError, match="exactly one"):
         pipeline._record_args({"audio": "a.webm", "draft": "d.slim-draft.md",
-                                      "notes_md": "two truths", "type": "lecture"})
+                               "notes_md": "two truths", "type": "lecture"})
 
 
 def test_a_saved_draft_is_the_only_source_of_typed_notes(tmp_path, monkeypatch):
@@ -38,8 +38,8 @@ def test_a_saved_draft_is_the_only_source_of_typed_notes(tmp_path, monkeypatch):
     draft = _draft(tmp_path, text=notes)
     _fakes(monkeypatch)
     out = pipeline.handle_record(audio_rel=_staged(tmp_path), draft_rel=draft, notes_md=None,
-                                        declared_type="lecture", title="SVMs", when=NOW,
-                                        vault=tmp_path)
+                                 declared_type="lecture", title="SVMs", when=NOW,
+                                 vault=tmp_path)
 
     body = (tmp_path / out["note"]).read_text(encoding="utf-8")
     start = body.index("## Notes\n\n") + len("## Notes\n\n")
@@ -54,8 +54,8 @@ def test_inline_draft_anchor_is_not_mistaken_for_their_notes(tmp_path, monkeypat
     draft = _draft(tmp_path, text="````slim-meeting\n\n````\n\n" + notes)
     _fakes(monkeypatch)
     out = pipeline.handle_record(audio_rel=_staged(tmp_path), draft_rel=draft,
-                                        declared_type="lecture", title="SVMs", when=NOW,
-                                        vault=tmp_path)
+                                 declared_type="lecture", title="SVMs", when=NOW,
+                                 vault=tmp_path)
     body = (tmp_path / out["note"]).read_text(encoding="utf-8")
     assert body.count("slim-meeting") == 1
     assert notes.rstrip() in body
@@ -72,8 +72,8 @@ def test_a_successful_draft_recording_removes_only_its_staging_files(tmp_path, m
     _fakes(monkeypatch)
 
     out = pipeline.handle_record(audio_rel=staged, draft_rel=draft, notes_md=None,
-                                        declared_type="lecture", title="SVMs", when=NOW,
-                                        vault=tmp_path)
+                                 declared_type="lecture", title="SVMs", when=NOW,
+                                 vault=tmp_path)
 
     assert not (tmp_path / staged).exists()
     assert not (tmp_path / draft).exists()
@@ -90,7 +90,7 @@ def test_a_failed_draft_transcript_keeps_both_sources_for_retry(tmp_path, monkey
 
     with pytest.raises(ValueError, match="transcription failed"):
         pipeline.handle_record(audio_rel=staged, draft_rel=draft, notes_md=None,
-                                      declared_type="lecture", title="T", when=NOW, vault=tmp_path)
+                               declared_type="lecture", title="T", when=NOW, vault=tmp_path)
 
     assert (tmp_path / staged).exists()
     assert (tmp_path / draft).read_text(encoding="utf-8") == "- a draft note\n"
@@ -107,9 +107,9 @@ def test_a_draft_cannot_cross_the_journal_floor(tmp_path, monkeypatch,
     _fakes(monkeypatch)
     with pytest.raises(ValueError, match=message):
         pipeline.handle_record(audio_rel=_staged(tmp_path),
-                                      draft_rel=_draft(tmp_path, type_tag=draft_type),
-                                      notes_md=None, declared_type=type_tag, title="T", when=NOW,
-                                      vault=tmp_path)
+                               draft_rel=_draft(tmp_path, type_tag=draft_type),
+                               notes_md=None, declared_type=type_tag, title="T", when=NOW,
+                               vault=tmp_path)
 
 
 def test_audio_and_draft_must_describe_the_same_recording(tmp_path, monkeypatch):
@@ -120,7 +120,7 @@ def test_audio_and_draft_must_describe_the_same_recording(tmp_path, monkeypatch)
     draft = _draft(tmp_path, recording_id="draft-id")
     with pytest.raises(ValueError, match="recording id"):
         pipeline.handle_record(audio_rel=staged, draft_rel=draft, notes_md=None,
-                                      declared_type="lecture", title="T", when=NOW, vault=tmp_path)
+                               declared_type="lecture", title="T", when=NOW, vault=tmp_path)
 
     assert (tmp_path / staged).exists() and (tmp_path / draft).exists()
 
@@ -139,8 +139,8 @@ def test_a_final_note_collision_keeps_the_draft_and_staged_audio(tmp_path, monke
 
     with pytest.raises(ValueError, match="overwrite"):
         pipeline.handle_record(audio_rel=staged, draft_rel=draft, notes_md=None,
-                                      declared_type="lecture", title="SVMs", when=NOW,
-                                      vault=tmp_path)
+                               declared_type="lecture", title="SVMs", when=NOW,
+                               vault=tmp_path)
 
     assert victim.read_text(encoding="utf-8") == "I was here first"
     assert (tmp_path / staged).exists() and (tmp_path / draft).exists()
@@ -150,8 +150,8 @@ def test_the_note_is_filed_and_the_card_describes_it(tmp_path, monkeypatch):
     from slim.recorder import pipeline
     _fakes(monkeypatch)
     out = pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="- dual form",
-                                        declared_type="lecture", title="SVMs", when=NOW,
-                                        vault=tmp_path)
+                                 declared_type="lecture", title="SVMs", when=NOW,
+                                 vault=tmp_path)
     note = tmp_path / out["note"]
     assert note.exists()
     assert out["card"]["dest_dir"] == "Notes/school/CS201 ML"
@@ -165,8 +165,8 @@ def test_the_card_carries_the_folders_and_tag_counts_the_ui_needs(tmp_path, monk
     from slim.recorder import pipeline
     _fakes(monkeypatch)
     out = pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="",
-                                        declared_type="lecture", title="SVMs", when=NOW,
-                                        vault=tmp_path)
+                                 declared_type="lecture", title="SVMs", when=NOW,
+                                 vault=tmp_path)
     assert isinstance(out["card"]["folders"], list)
     assert isinstance(out["card"]["tag_counts"], dict)
 
@@ -185,7 +185,7 @@ def test_the_summary_pass_thinks(tmp_path, monkeypatch):
         return real(overview="s")
     monkeypatch.setattr(summarize, "summarize", spy)
     pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
-                                  title="T", when=NOW, vault=tmp_path)
+                           title="T", when=NOW, vault=tmp_path)
     assert seen.get("think") is True
 
 
@@ -207,8 +207,8 @@ def test_record_progress_reports_real_pipeline_and_model_activity(tmp_path, monk
 
     monkeypatch.setattr(summarize, "summarize", streaming_summary)
     pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
-                                  title="SVMs", when=NOW, vault=tmp_path,
-                                  on_progress=lambda **event: events.append(event), )
+                           title="SVMs", when=NOW, vault=tmp_path,
+                           on_progress=lambda **event: events.append(event), )
 
     stages = [event["stage"] for event in events]
     assert stages[0:3] == ["preparing", "transcribing", "transcribed"]
@@ -226,8 +226,8 @@ def test_a_dead_model_still_files_the_recording(tmp_path, monkeypatch):
     from slim.recorder import pipeline
     _fakes(monkeypatch, summarize_raises=True)
     out = pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="- my notes",
-                                        declared_type="lecture", title="T", when=NOW,
-                                        vault=tmp_path)
+                                 declared_type="lecture", title="T", when=NOW,
+                                 vault=tmp_path)
     note = tmp_path / out["note"]
     assert note.exists()
     assert "- my notes" in note.read_text(encoding="utf-8")     # their words survived
@@ -247,7 +247,7 @@ def test_failed_transcription_refuses_and_keeps_the_audio_staged(tmp_path, monke
     staged = _staged(tmp_path)
     with pytest.raises(ValueError, match="transcription failed"):
         pipeline.handle_record(audio_rel=staged, notes_md="- my notes",
-                                      declared_type="lecture", title="T", when=NOW, vault=tmp_path)
+                               declared_type="lecture", title="T", when=NOW, vault=tmp_path)
     assert (tmp_path / staged).exists(), "the audio must stay staged so a retry is possible"
     assert not list(tmp_path.rglob("*.md")), "no half-note may be left behind"
 
@@ -259,7 +259,7 @@ def test_a_staged_file_outside_the_vault_is_refused(tmp_path, monkeypatch):
     _fakes(monkeypatch)
     with pytest.raises(ValueError):
         pipeline.handle_record(audio_rel="../../etc/passwd", notes_md="",
-                                      declared_type="lecture", title="T", when=NOW, vault=tmp_path)
+                               declared_type="lecture", title="T", when=NOW, vault=tmp_path)
 
 
 def test_a_missing_audio_file_fails_before_any_model_call(tmp_path, monkeypatch):
@@ -272,7 +272,7 @@ def test_a_missing_audio_file_fails_before_any_model_call(tmp_path, monkeypatch)
                         lambda *a, **k: called.append(1))
     with pytest.raises(FileNotFoundError):
         pipeline.handle_record(audio_rel="Attachments/_incoming/nope.webm", notes_md="",
-                                      declared_type="lecture", title="T", when=NOW, vault=tmp_path)
+                               declared_type="lecture", title="T", when=NOW, vault=tmp_path)
     assert called == []
 
 
@@ -286,7 +286,7 @@ def test_a_failed_transcription_does_not_load_the_dense_model(tmp_path, monkeypa
     monkeypatch.setattr(suggest, "build_card", lambda *a, **k: pytest.fail("must not be called"))
     with pytest.raises(ValueError):
         pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="",
-                                      declared_type="lecture", title="T", when=NOW, vault=tmp_path)
+                               declared_type="lecture", title="T", when=NOW, vault=tmp_path)
 
 
 def test_a_vault_reached_through_a_symlink_still_reports_relative_paths(tmp_path, monkeypatch):
@@ -309,13 +309,13 @@ def test_a_vault_reached_through_a_symlink_still_reports_relative_paths(tmp_path
     (real / "Attachments" / "_incoming" / "s.webm").write_bytes(b"bytes")
 
     out = pipeline.handle_record(audio_rel="Attachments/_incoming/s.webm", notes_md="",
-                                        declared_type="lecture", title="T", when=NOW, vault=link)
+                                 declared_type="lecture", title="T", when=NOW, vault=link)
     assert not Path(out["note"]).is_absolute()      # relative, not an absolute leak
     assert not Path(out["audio"]).is_absolute()
 
     moved = review.handle_record_apply(note=out["note"], dest_dir="Notes/school",
-                                              type_tag="lecture", topics=["school"], summary_md="s",
-                                              vault=link)
+                                       type_tag="lecture", topics=["school"], summary_md="s",
+                                       vault=link)
     assert not Path(moved["note"]).is_absolute()
 
 
@@ -338,8 +338,8 @@ def test_the_note_gets_the_whole_summary_not_just_the_overview(tmp_path, monkeyp
         topics=[]))
 
     out = pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="",
-                                        declared_type="meeting-note", title="T", when=NOW,
-                                        vault=tmp_path)
+                                 declared_type="meeting-note", title="T", when=NOW,
+                                 vault=tmp_path)
     body = (tmp_path / out["note"]).read_text(encoding="utf-8")
     assert "## Key points" in body
     assert "Tableau extracts refresh hourly" in body
@@ -360,7 +360,7 @@ def test_an_untitled_recording_gets_a_real_title_not_a_timestamp(tmp_path, monke
                         lambda *a, **k: ({"title": "Kernel methods and the dual form",
                                           "type_tag": "lecture", "topics": [], "project": ""}, {}))
     out = pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="",
-                                        declared_type="lecture", title="", when=NOW, vault=tmp_path)
+                                 declared_type="lecture", title="", when=NOW, vault=tmp_path)
     assert "Kernel-methods" in out["note"]
     assert "Recording 2026" not in (tmp_path / out["note"]).read_text(encoding="utf-8")
 
@@ -373,8 +373,8 @@ def test_a_title_they_typed_is_never_overridden(tmp_path, monkeypatch):
     monkeypatch.setattr(enrich, "enrich",
                         lambda *a, **k: pytest.fail("must not be called when they gave a title"))
     out = pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="",
-                                        declared_type="lecture", title="My Own Title", when=NOW,
-                                        vault=tmp_path)
+                                 declared_type="lecture", title="My Own Title", when=NOW,
+                                 vault=tmp_path)
     assert "My-Own-Title" in out["note"]
 
 
@@ -386,7 +386,7 @@ def test_a_failed_title_call_still_files_the_recording(tmp_path, monkeypatch):
         raise RuntimeError("model down")
     monkeypatch.setattr(enrich, "enrich", boom)
     out = pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="",
-                                        declared_type="lecture", title="", when=NOW, vault=tmp_path)
+                                 declared_type="lecture", title="", when=NOW, vault=tmp_path)
     assert (tmp_path / out["note"]).exists()
 
 
@@ -400,11 +400,11 @@ def test_a_filed_recording_is_indexed_so_the_brain_can_reach_it(tmp_path, monkey
     from slim.recorder import pipeline, state
     _fakes(monkeypatch)
     called = {}
-    monkeypatch.setattr(state, "_index_now",
+    monkeypatch.setattr(state, "index_now",
                         lambda v, note: called.update(vault=v, note=note) or {})
     out = pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="",
-                                        declared_type="meeting-note", title="T", when=NOW,
-                                        vault=tmp_path)
+                                 declared_type="meeting-note", title="T", when=NOW,
+                                 vault=tmp_path)
     assert called.get("vault") == tmp_path
     assert called.get("note") == out["note"]
 
@@ -419,8 +419,8 @@ def test_a_broken_index_never_costs_the_recording(tmp_path, monkeypatch):
         raise RuntimeError("database is locked")
     monkeypatch.setattr(db, "connect", boom)
     out = pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="- notes",
-                                        declared_type="meeting-note", title="T", when=NOW,
-                                        vault=tmp_path)
+                                 declared_type="meeting-note", title="T", when=NOW,
+                                 vault=tmp_path)
     assert (tmp_path / out["note"]).exists()
     assert "- notes" in (tmp_path / out["note"]).read_text(encoding="utf-8")
 
@@ -437,7 +437,7 @@ def test_an_untitled_recording_is_named_from_its_transcript(tmp_path, monkeypatc
     monkeypatch.setattr(enrich, "enrich",
                         lambda *a, **k: ({"title": "Kernel trick and the dual form"}, {}))
     out = pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="",
-                                        declared_type="lecture", title="", when=NOW, vault=tmp_path)
+                                 declared_type="lecture", title="", when=NOW, vault=tmp_path)
     assert out["title"] == "Kernel trick and the dual form"
 
 
@@ -448,8 +448,8 @@ def test_a_title_they_typed_is_never_overwritten(tmp_path, monkeypatch):
     monkeypatch.setattr(enrich, "enrich",
                         lambda *a, **k: pytest.fail("the model must not retitle their recording"))
     out = pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="",
-                                        declared_type="lecture", title="SVMs", when=NOW,
-                                        vault=tmp_path)
+                                 declared_type="lecture", title="SVMs", when=NOW,
+                                 vault=tmp_path)
     assert out["title"] == "SVMs"
 
 
@@ -466,7 +466,7 @@ def test_the_timestamp_name_survives_only_as_a_last_resort(tmp_path, monkeypatch
     monkeypatch.setattr(enrich, "enrich",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("model is down")))
     out = pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="",
-                                        declared_type="lecture", title="", when=NOW, vault=tmp_path)
+                                 declared_type="lecture", title="", when=NOW, vault=tmp_path)
     assert out["title"] == "Recording 2026-08-04 1430"
 
 
@@ -484,9 +484,9 @@ def test_their_title_is_passed_to_the_card_but_a_generated_one_is_not(tmp_path, 
     monkeypatch.setattr(enrich, "enrich", lambda *a, **k: ({"title": "Generated Name"}, {}))
 
     pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
-                                  title="My Own Title", when=NOW, vault=tmp_path)
+                           title="My Own Title", when=NOW, vault=tmp_path)
     pipeline.handle_record(audio_rel=_staged(tmp_path, "u.webm"), notes_md="",
-                                  declared_type="lecture", title="", when=NOW, vault=tmp_path)
+                           declared_type="lecture", title="", when=NOW, vault=tmp_path)
     assert seen == ["My Own Title", ""]
 
 
@@ -499,7 +499,7 @@ def test_a_silent_recording_is_refused_the_same_way(tmp_path, monkeypatch):
     staged = _staged(tmp_path)
     with pytest.raises(state.NoSpeech, match="no words"):
         pipeline.handle_record(audio_rel=staged, notes_md="", declared_type="lecture",
-                                      title="T", when=NOW, vault=tmp_path)
+                               title="T", when=NOW, vault=tmp_path)
     assert (tmp_path / staged).exists()
 
 
@@ -509,8 +509,8 @@ def test_a_failed_SUMMARY_still_files_the_note(tmp_path, monkeypatch):
     from slim.recorder import pipeline
     _fakes(monkeypatch, summarize_raises=True)
     out = pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="",
-                                        declared_type="lecture", title="T", when=NOW,
-                                        vault=tmp_path)
+                                 declared_type="lecture", title="T", when=NOW,
+                                 vault=tmp_path)
     assert (tmp_path / out["note"]).exists()
     assert "the kernel trick" in (tmp_path / out["note"]).read_text(encoding="utf-8")
 
@@ -548,8 +548,8 @@ def test_one_recording_asks_for_one_model_at_one_size(tmp_path, monkeypatch):
     monkeypatch.setattr(llm, "chat_json", spy)
 
     pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="",
-                                  declared_type="lecture", title="",
-                                  when=NOW, vault=tmp_path)   # ⚠ no title → enrich runs
+                           declared_type="lecture", title="",
+                           when=NOW, vault=tmp_path)   # ⚠ no title → enrich runs
 
     sizes = {}
     for model, num_ctx in calls:
@@ -584,7 +584,7 @@ def test_summary_title_and_card_all_use_the_resident_model(tmp_path, monkeypatch
                                                candidates=[], type_tag="lecture",
                                                topics=[]))[1])
     pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
-                                  title="", when=NOW, vault=tmp_path)
+                           title="", when=NOW, vault=tmp_path)
     assert llm.RECORD_MODEL == llm.MODEL                      # the decision, stated once
     assert seen["summarize"]["model"] == llm.RECORD_MODEL
     assert seen["summarize"]["num_ctx"] == llm.RESIDENT_CTX
@@ -602,7 +602,7 @@ def test_their_notes_reach_the_summarizer(tmp_path, monkeypatch):
     monkeypatch.setattr(summarize, "summarize", lambda *a, **k: (
         seen.update(k), summarize.Summary(overview="s"))[1])
     pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="- dual form\n- RBF case",
-                                  declared_type="lecture", title="T", when=NOW, vault=tmp_path)
+                           declared_type="lecture", title="T", when=NOW, vault=tmp_path)
     assert seen["notes"] == "- dual form\n- RBF case"
 
 
@@ -625,8 +625,8 @@ def test_a_lecture_carries_no_open_questions_section(tmp_path, monkeypatch):
         dest_dir="Capture/school", confident_depth=1, candidates=[], type_tag="lecture",
         topics=[]))
     out = pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="",
-                                        declared_type="lecture", title="T", when=NOW,
-                                        vault=tmp_path)
+                                 declared_type="lecture", title="T", when=NOW,
+                                 vault=tmp_path)
     body = (tmp_path / out["note"]).read_text(encoding="utf-8")
     assert "## Key points" in body
     assert "## Open questions" not in body
@@ -646,7 +646,7 @@ def test_silence_is_reported_as_silence_not_as_a_failure(tmp_path, monkeypatch):
         text="   ", model="fake", audio_seconds=30.0, wall_seconds=1.0))
     with pytest.raises(state.NoSpeech) as caught:
         pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="",
-                                      declared_type="lecture", title="T", when=NOW, vault=tmp_path)
+                               declared_type="lecture", title="T", when=NOW, vault=tmp_path)
     assert "no words" in str(caught.value).casefold()
 
 
@@ -660,7 +660,7 @@ def test_a_real_transcription_failure_is_still_an_error(tmp_path, monkeypatch):
     monkeypatch.setattr(transcribe, "transcribe", boom)
     with pytest.raises(ValueError, match="transcription failed"):
         pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="",
-                                      declared_type="lecture", title="T", when=NOW, vault=tmp_path)
+                               declared_type="lecture", title="T", when=NOW, vault=tmp_path)
 
 
 def test_a_leftover_live_session_never_blocks_the_next_recording(monkeypatch):

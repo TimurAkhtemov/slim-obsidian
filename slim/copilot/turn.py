@@ -374,7 +374,7 @@ def _answer_or_edit(con, vault: Path, source: dict, question: str, history: list
                 new = edits_mod.create_note(vault, path, markdown, folder=folder)
                 if new["path"].casefold() in made:
                     raise blocks.ToolError(f"{new['path']} is already made in this turn; give the next "
-                                               "note a name of its own", "exists")
+                                           "note a name of its own", "exists")
                 made.add(new["path"].casefold())
                 return new
         else:
@@ -401,10 +401,10 @@ def _answer_or_edit(con, vault: Path, source: dict, question: str, history: list
         recent = fit_window(transcript, [system_turn, *embedded, current], room)
         messages = [system_turn, *recent, *embedded, current]
         out = edit_run._turn(list(messages), think=mode == "deep", tools=tools, step_tools=step_tools,
-                                 note=note, before_text=text, only=only, create=create,
-                                 temperature=temperature, first_predict=room, nudge=intent is True,
-                                 on_edit=on_edit or (lambda _event, _payload: None),
-                                 should_stop=should_stop, on_stage=stage)
+                             note=note, before_text=text, only=only, create=create,
+                             temperature=temperature, first_predict=room, nudge=intent is True,
+                             on_edit=on_edit or (lambda _event, _payload: None),
+                             should_stop=should_stop, on_stage=stage)
     last = out["timing"][-1] if out["timing"] else {}
     run = None
     if out["kind"] == "answer":     # a text reply on the edit path: said once, whole

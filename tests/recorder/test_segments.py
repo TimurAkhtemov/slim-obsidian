@@ -26,7 +26,7 @@ def test_a_resumed_recording_is_one_note_from_several_segments(tmp_path, monkeyp
     monkeypatch.setattr(transcribe, "transcribe", fake_tx)
 
     out = pipeline.handle_record(audio_rel=[_staged(tmp_path, "r-001.webm"),
-                                                   _staged(tmp_path, "r-002.webm")],
+                                            _staged(tmp_path, "r-002.webm")],
                                         notes_md="", declared_type="lecture", title="T", when=NOW,
                                         vault=tmp_path)
     body = (tmp_path / out["note"]).read_text(encoding="utf-8")
@@ -39,7 +39,7 @@ def test_every_segment_is_archived_and_named_in_the_note(tmp_path, monkeypatch):
     from slim.vault.frontmatter import parse_frontmatter
     _fakes(monkeypatch)
     out = pipeline.handle_record(audio_rel=[_staged(tmp_path, "r-001.webm"),
-                                                   _staged(tmp_path, "r-002.webm")],
+                                            _staged(tmp_path, "r-002.webm")],
                                         notes_md="", declared_type="lecture", title="T", when=NOW,
                                         vault=tmp_path)
     fm, _ = parse_frontmatter((tmp_path / out["note"]).read_text(encoding="utf-8"))
@@ -55,8 +55,8 @@ def test_one_segment_still_writes_a_plain_scalar(tmp_path, monkeypatch):
     from slim.vault.frontmatter import parse_frontmatter
     _fakes(monkeypatch)
     out = pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="",
-                                        declared_type="lecture", title="T", when=NOW,
-                                        vault=tmp_path)
+                                 declared_type="lecture", title="T", when=NOW,
+                                 vault=tmp_path)
     fm, _ = parse_frontmatter((tmp_path / out["note"]).read_text(encoding="utf-8"))
     assert isinstance(fm.get("audio"), str)
 
@@ -78,17 +78,17 @@ def test_a_transcribed_segment_is_not_transcribed_twice(tmp_path, monkeypatch):
     monkeypatch.setattr(summarize_mod, "summarize",
                         lambda *a, **k: (_ for _ in ()).throw(state.RecordCancelled()))
     first = _staged(tmp_path, "r-001.webm")
-    state._record_progress_start("job-3")
+    state.progress_start("job-3")
     with pytest.raises(state.RecordCancelled):
         pipeline.handle_record(audio_rel=first, notes_md="", declared_type="lecture",
-                                      title="T", when=NOW, vault=tmp_path, job_id="job-3")
+                               title="T", when=NOW, vault=tmp_path, job_id="job-3")
     assert calls == ["r-001.webm"]
 
     _fakes(monkeypatch)
     monkeypatch.setattr(transcribe, "transcribe", fake_tx)
     out = pipeline.handle_record(audio_rel=[first, _staged(tmp_path, "r-002.webm")],
-                                        notes_md="", declared_type="lecture", title="T", when=NOW,
-                                        vault=tmp_path)
+                                 notes_md="", declared_type="lecture", title="T", when=NOW,
+                                 vault=tmp_path)
     assert calls == ["r-001.webm", "r-002.webm"], "the cancelled segment is reused, not redone"
     body = (tmp_path / out["note"]).read_text(encoding="utf-8")
     assert "the first forty minutes" in body
@@ -172,8 +172,8 @@ def test_resuming_a_filed_note_appends_audio_and_words(tmp_path, monkeypatch):
         text="and ten minutes more", model="fake", audio_seconds=600.0, wall_seconds=5.0))
 
     out = pipeline.handle_record_append(note=str(r.note.relative_to(tmp_path)),
-                                               audio_rel=[_staged(tmp_path, "more-001.webm")],
-                                               vault=tmp_path)
+                                        audio_rel=[_staged(tmp_path, "more-001.webm")],
+                                        vault=tmp_path)
 
     body = r.note.read_text(encoding="utf-8")
     assert "verbatim words" in body and "and ten minutes more" in body
@@ -192,8 +192,8 @@ def test_an_appended_segment_leaves_the_summary_alone(tmp_path, monkeypatch):
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="more words", model="fake", audio_seconds=60.0, wall_seconds=1.0))
     pipeline.handle_record_append(note=str(r.note.relative_to(tmp_path)),
-                                         audio_rel=[_staged(tmp_path, "more-001.webm")],
-                                         vault=tmp_path)
+                                  audio_rel=[_staged(tmp_path, "more-001.webm")],
+                                  vault=tmp_path)
     assert "\ns\n" in r.note.read_text(encoding="utf-8").replace("\r\n", "\n")
 
 
@@ -207,7 +207,7 @@ def test_appending_silence_is_refused_and_keeps_the_audio(tmp_path, monkeypatch)
     staged = _staged(tmp_path, "more-001.webm")
     with pytest.raises(state.NoSpeech, match="no words"):
         pipeline.handle_record_append(note=str(r.note.relative_to(tmp_path)),
-                                             audio_rel=[staged], vault=tmp_path)
+                                      audio_rel=[staged], vault=tmp_path)
     assert (tmp_path / staged).is_file(), "the audio stays staged for a retry"
     assert "and ten minutes" not in r.note.read_text(encoding="utf-8")
 
@@ -221,7 +221,7 @@ def test_appending_silence_is_the_same_quiet_outcome(tmp_path, monkeypatch):
     staged = _staged(tmp_path, "more-001.webm")
     with pytest.raises(state.NoSpeech):
         pipeline.handle_record_append(note=str(r.note.relative_to(tmp_path)),
-                                             audio_rel=[staged], vault=tmp_path)
+                                      audio_rel=[staged], vault=tmp_path)
     assert (tmp_path / staged).is_file()
 
 
@@ -233,14 +233,14 @@ def test_an_append_does_not_clobber_notes_saved_while_it_ran(tmp_path, monkeypat
 
     def slow_tx(p, model=None):
         review.handle_record_notes(note=note_rel, notes_md="- typed while it ran",
-                                          vault=tmp_path)
+                                   vault=tmp_path)
         return transcribe.Transcript(text="more words", model="fake", audio_seconds=9.0,
                                      wall_seconds=1.0)
     monkeypatch.setattr(transcribe, "transcribe", slow_tx)
 
     pipeline.handle_record_append(note=note_rel,
-                                         audio_rel=[_staged(tmp_path, "more-001.webm")],
-                                         vault=tmp_path)
+                                  audio_rel=[_staged(tmp_path, "more-001.webm")],
+                                  vault=tmp_path)
     body = r.note.read_text(encoding="utf-8")
     assert "- typed while it ran" in body
     assert "more words" in body
@@ -254,19 +254,19 @@ def test_cancelling_a_one_segment_resume_actually_cancels(tmp_path, monkeypatch)
     from slim.capture import transcribe
 
     def cancel_during(p, model=None):
-        state.request_record_cancel("job-append")
+        state.request_cancel("job-append")
         return transcribe.Transcript(text="more words", model="fake", audio_seconds=9.0,
                                      wall_seconds=1.0)
     monkeypatch.setattr(transcribe, "transcribe", cancel_during)
     r = _existing(tmp_path, monkeypatch)
     before = r.note.read_text(encoding="utf-8")
     staged = _staged(tmp_path, "more-001.webm")
-    state._record_progress_start("job-append")
+    state.progress_start("job-append")
 
     with pytest.raises(state.RecordCancelled):
         pipeline.handle_record_append(note=str(r.note.relative_to(tmp_path)),
-                                             audio_rel=[staged], job_id="job-append",
-                                             vault=tmp_path)
+                                      audio_rel=[staged], job_id="job-append",
+                                      vault=tmp_path)
 
     assert r.note.read_text(encoding="utf-8") == before, "nothing written, as promised"
     assert (tmp_path / staged).is_file(), "nothing deleted, as promised"
@@ -287,8 +287,8 @@ def test_append_never_deletes_the_audio_it_just_recorded(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="staged"):
         pipeline.handle_record_append(note=str(r.note.relative_to(tmp_path)),
-                                             audio_rel=[str(archived.relative_to(tmp_path))],
-                                             vault=tmp_path)
+                                      audio_rel=[str(archived.relative_to(tmp_path))],
+                                      vault=tmp_path)
     assert archived.is_file(), "an archived recording is never an input to append"
 
 
@@ -300,7 +300,7 @@ def test_every_segment_must_belong_to_the_same_recording(tmp_path, monkeypatch):
     draft = _draft(tmp_path, recording_id="alpha")
     with pytest.raises(ValueError, match="do not match"):
         pipeline.handle_record(audio_rel=[_staged(tmp_path, "alpha-001.webm"),
-                                                 _staged(tmp_path, "bravo-001.webm")],
+                                          _staged(tmp_path, "bravo-001.webm")],
                                       draft_rel=draft, declared_type="lecture", title="T", when=NOW,
                                       vault=tmp_path)
 
@@ -380,7 +380,7 @@ def test_a_one_speaker_segment_in_a_labelled_recording_carries_its_label(tmp_pat
                  ("and one more thing", "", "Me"))
 
     out = pipeline.handle_record(audio_rel=[_staged(tmp_path, "r-001.webm"),
-                                                   _staged(tmp_path, "r-002.webm")],
+                                            _staged(tmp_path, "r-002.webm")],
                                         notes_md="", declared_type="meeting-note", title="T",
                                         when=NOW, vault=tmp_path)
     body = (tmp_path / out["note"]).read_text(encoding="utf-8")
@@ -394,7 +394,7 @@ def test_the_labelled_segment_can_come_second(tmp_path, monkeypatch):
                  ("**Me:** so\n\n**Them:** yes", "channels", ""))
 
     out = pipeline.handle_record(audio_rel=[_staged(tmp_path, "r-001.webm"),
-                                                   _staged(tmp_path, "r-002.webm")],
+                                            _staged(tmp_path, "r-002.webm")],
                                         notes_md="", declared_type="meeting-note", title="T",
                                         when=NOW, vault=tmp_path)
     body = (tmp_path / out["note"]).read_text(encoding="utf-8")
@@ -408,7 +408,7 @@ def test_a_lecture_in_two_segments_stays_unlabelled(tmp_path, monkeypatch):
     _segments_tx(monkeypatch, ("part one", "", "Them"), ("part two", "", "Them"))
 
     out = pipeline.handle_record(audio_rel=[_staged(tmp_path, "r-001.webm"),
-                                                   _staged(tmp_path, "r-002.webm")],
+                                            _staged(tmp_path, "r-002.webm")],
                                         notes_md="", declared_type="lecture", title="T", when=NOW,
                                         vault=tmp_path)
     body = (tmp_path / out["note"]).read_text(encoding="utf-8")
@@ -424,8 +424,8 @@ def test_resuming_a_labelled_note_labels_a_one_speaker_segment(tmp_path, monkeyp
     _segments_tx(monkeypatch, ("and one more thing", "", "Me"))
 
     pipeline.handle_record_append(note=str(r.note.relative_to(tmp_path)),
-                                         audio_rel=[_staged(tmp_path, "more-001.webm")],
-                                         vault=tmp_path)
+                                  audio_rel=[_staged(tmp_path, "more-001.webm")],
+                                  vault=tmp_path)
     assert "**Me:** and one more thing" in r.note.read_text(encoding="utf-8")
 
 
@@ -435,8 +435,8 @@ def test_resuming_an_unlabelled_note_adds_no_label(tmp_path, monkeypatch):
     _segments_tx(monkeypatch, ("and ten minutes more", "", "Them"))
 
     pipeline.handle_record_append(note=str(r.note.relative_to(tmp_path)),
-                                         audio_rel=[_staged(tmp_path, "more-001.webm")],
-                                         vault=tmp_path)
+                                  audio_rel=[_staged(tmp_path, "more-001.webm")],
+                                  vault=tmp_path)
     body = r.note.read_text(encoding="utf-8")
     assert "and ten minutes more" in body and "**Them:**" not in body
 

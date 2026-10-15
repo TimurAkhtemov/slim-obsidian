@@ -255,7 +255,7 @@ def test_run_turn_writes_a_replayable_trace(con, vault, monkeypatch):
     records = []
     monkeypatch.setattr(copilot_turn.trace, "record", lambda kind, payload: records.append((kind, payload)))
     copilot_turn.run_turn(con, source["id"], "What is this?", [{"role": "you", "text": "hi"}], "quick",
-                     vault=vault)
+                          vault=vault)
     (kind, payload), = records
     assert kind == "copilot"
     assert payload["source"] == "Notes/school/lesson.md"

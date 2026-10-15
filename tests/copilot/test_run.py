@@ -110,9 +110,9 @@ def turn(con, vault, monkeypatch):
         events, deltas, stages = [], [], []
         sent = {"doc": text, "doc_hash": edits.digest(text)} if doc else {}
         result = copilot_turn.run_turn(con, source["id"], question, list(history), mode, vault=vault,
-                                  on_edit=lambda event, payload: events.append((event, payload)),
-                                  on_delta=deltas.append, on_stage=stages.append, should_stop=should_stop,
-                                  selection=selection, **sent)
+                                       on_edit=lambda event, payload: events.append((event, payload)),
+                                       on_delta=deltas.append, on_stage=stages.append, should_stop=should_stop,
+                                       selection=selection, **sent)
         result["deltas"], result["stages"] = deltas, stages
         result["final"] = text if result["edit_run"] is None else _final(text, result)
         return result, events
@@ -147,7 +147,7 @@ def test_an_answer_reaches_the_chat_through_on_delta(con, vault, monkeypatch):
     scripted(monkeypatch, ("It descends.", []), intent=False)
     deltas, stages = [], []
     copilot_turn.run_turn(con, source["id"], "What is it?", [], "quick", vault=vault,
-                     on_delta=deltas.append, on_stage=stages.append)
+                          on_delta=deltas.append, on_stage=stages.append)
     assert deltas == ["It descends."] and stages[0] == "Writing"
 
 
@@ -410,7 +410,7 @@ def test_outline_entries_are_cleaned_of_what_the_model_wrote_around_them():
     assert edit_run._outline({"outline": ["## Toolkit (New Section)", "## Tools (added)", "## Bag of Words (BoW)"]}) == [
         "## Toolkit", "## Tools", "## Bag of Words (BoW)"]                         # annotations, not words
     assert edit_run._outline({"outline": ["# <the note's headings, one per line, in their final order>", "## <…>",
-                                         "## Formula"]}) == ["## Formula"]         # the rider's placeholder copied
+                                             "## Formula"]}) == ["## Formula"]         # the rider's placeholder copied
 
 
 def _misses(now, want):
@@ -864,7 +864,7 @@ def test_no_call_follows_the_steps_when_the_outline_misses_a_heading(turn, monke
 
 def test_the_outline_holds_headings_only():
     assert edit_run._outline({"outline": ["## QF 6", "### <details><summary>Why</summary>",
-                                         "The core principle is that a dollar today", "Formula: $PV$"]}) == [
+                                             "The core principle is that a dollar today", "Formula: $PV$"]}) == [
         "## QF 6"]                                  # a <…> heading reads as the rider's placeholder: dropped too
 
 
@@ -1122,5 +1122,5 @@ def test_a_draft_end_that_cannot_be_sent_is_counted_and_the_run_goes_on(con, vau
             raise RuntimeError("the chat is gone")
         events.append(event)
     got = copilot_turn.run_turn(con, source["id"], "add", [], "quick", vault=vault, doc=NOTE,
-                           doc_hash=edits.digest(NOTE), on_edit=on_edit)
+                                doc_hash=edits.digest(NOTE), on_edit=on_edit)
     assert len(got["edit_run"]["changes"]) == 1 and records[-1]["edit_run"]["draft_failures"] == 1
