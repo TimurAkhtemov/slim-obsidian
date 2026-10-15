@@ -132,5 +132,5 @@ def test_reload_supervisor_rejects_a_nonpositive_parent(parent_pid):
 def test_the_watch_root_is_the_package_not_the_repo():
     # The repo root holds .venv/ and other large trees; walking it per tick is much slower.
     assert devserver.PACKAGE_ROOT.name == "slim"
-    assert (devserver.PACKAGE_ROOT / "chat.py").exists()
+    assert (devserver.PACKAGE_ROOT / "server.py").exists()
     assert not (devserver.PACKAGE_ROOT / ".venv").exists()

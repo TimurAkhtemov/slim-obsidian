@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from slim import record
+from slim.recorder import note as record
 from slim.index.chunk import strip_derived_blocks
 from slim.vault.frontmatter import parse_frontmatter
 
@@ -474,7 +474,7 @@ def test_a_partial_write_can_never_truncate_a_recorded_note(tmp_path, monkeypatc
     """⚠ `Path.write_text` TRUNCATES first. A disk-full or a crash mid-write leaves the note
     shorter than it was — and the thing at the end of it is the raw transcript, which is the
     one artifact this project promises never to lose."""
-    import slim.record as rec
+    import slim.recorder.note as rec
     r = _write(tmp_path, transcript="the words they actually said")
     before = r.note.read_text(encoding="utf-8")
 

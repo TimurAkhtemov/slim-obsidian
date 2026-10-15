@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from slim import chat, db
+from slim import server, db
 from slim.copilot import turn as copilot, context
 
 
@@ -159,7 +159,7 @@ def test_a_long_answer_reaches_the_model_whole_through_the_server(monkeypatch):
     raw = [{"role": "you", "text": "How could this note be organised?"},
            {"role": "slim", "text": answer}]
     sent = _capture(monkeypatch)
-    got = copilot.generate_answer("Ok make the revisions", chat.clean_history(raw), [], "quick")
+    got = copilot.generate_answer("Ok make the revisions", server.clean_history(raw), [], "quick")
     assert sent["messages"][2] == {"role": "assistant", "content": answer}
     assert got["history_dropped"] == 0
 
@@ -167,7 +167,7 @@ def test_a_long_answer_reaches_the_model_whole_through_the_server(monkeypatch):
 def test_every_turn_is_sent_when_the_conversation_fits(monkeypatch):
     history = [{"role": "slim" if i % 2 else "you", "text": f"turn {i}"} for i in range(30)]
     sent = _capture(monkeypatch)
-    copilot.generate_answer("Next", chat.clean_history(history), [], "quick")
+    copilot.generate_answer("Next", server.clean_history(history), [], "quick")
     assert [m["content"] for m in sent["messages"][1:-1]] == [f"turn {i}" for i in range(30)]
     assert sent["kwargs"]["num_ctx"] == copilot.llm.RESIDENT_CTX
 

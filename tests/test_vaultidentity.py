@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from slim import chat as chat_mod, cli, config
+from slim import server as chat_mod, cli, config
 from slim.vault import identity
 
 

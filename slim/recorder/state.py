@@ -8,7 +8,7 @@ from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
 
-from . import trace
+from .. import trace
 
 # Recorder progress is local, short-lived diagnostic state. The recording request remains the
 # source of truth; this registry only lets the Obsidian object observe a long synchronous job.
@@ -219,8 +219,8 @@ def _index_now(vault: Path, note_rel: str, *, sweep: bool = True,
     Never raises: a note filed but not indexed is recoverable by the sweep. One that failed to
     file is not.
     """
-    from . import db
-    from .index import embed as embed_mod, ingest as ingest_mod
+    from .. import db
+    from ..index import embed as embed_mod, ingest as ingest_mod
 
     try:
         con = db.connect()
@@ -253,8 +253,8 @@ def _sweep_vault(vault: Path) -> dict:
     """The full incremental pass — hash every note, index what changed, embed what has no
     vector — off the request path. WAL lets the sidebar keep reading while it runs; a sidebar
     WRITE (ingest_note on the note they just opened) waits on the lock like any other writer."""
-    from . import db
-    from .index import embed as embed_mod, ingest as ingest_mod
+    from .. import db
+    from ..index import embed as embed_mod, ingest as ingest_mod
 
     def pass_once(vault):
         try:

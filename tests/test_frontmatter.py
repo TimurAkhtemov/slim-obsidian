@@ -102,9 +102,9 @@ def test_record_renders_a_subsequence_of_the_canonical_order():
     modules quietly disagreeing about what a recording looks like."""
     from datetime import datetime, timezone
 
-    from slim import record
+    from slim.recorder import note
 
-    text = record.render_note(
+    text = note.render_note(
         title="t", when=datetime(2026, 8, 6, tzinfo=timezone.utc), type_tag="idea",
         transcript="x", notes_md="", summary_md="", topics=["b"],
         audio_rel="Attachments/Recordings/x.webm", filed_by_slim=True,

@@ -104,7 +104,7 @@ def cmd_memos(args):
 def cmd_chat(args):
     """Serve the Obsidian plugin's API. Loopback-only by construction — a non-loopback
     --host is refused before a socket exists."""
-    from . import chat as chat_mod
+    from . import server as chat_mod
     if args.parent_pid is not None and args.parent_pid <= 0:
         raise SystemExit("--parent-pid must be positive")
     identity.require_vault_dir()
@@ -131,7 +131,7 @@ def cmd_trace(args):
 def _staging_lines(vault: Path) -> list[str]:
     """What sits in the recorder's staging folder. Every `.webm` there is a recording that never
     finished filing; a `.webm.transcript.json` without its `.webm` is a cache that outlived it."""
-    from . import record
+    from .recorder import note as record
     staging = vault / record.STAGING_DIR
     files = sorted(staging.iterdir()) if staging.is_dir() else []
     names = {f.name for f in files}

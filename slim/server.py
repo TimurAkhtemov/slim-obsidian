@@ -31,7 +31,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import chat_record, config, db
+from . import config, db
+from .recorder import routes
 from .copilot import (blocks, context, edits as edits_mod, images as copilot_images,
                       skills as skills_mod, threads as threads_mod, turn as copilot_mod)
 
@@ -196,8 +197,8 @@ class _Handler(BaseHTTPRequestHandler):
         if url.path == "/api/health":
             self._send_json(200, code_state(getattr(self.server, "managed_parent_pid", None)))
             return
-        if url.path in chat_record.GET:
-            chat_record.GET[url.path](self, parse_qs(url.query))
+        if url.path in routes.GET:
+            routes.GET[url.path](self, parse_qs(url.query))
             return
         if url.path == "/api/copilot/threads":
             listed = threads_mod.list_copilot_threads()
@@ -261,8 +262,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_copilot_thread_save()
         elif path == "/api/copilot/thread/delete":
             self._handle_copilot_thread_delete()
-        elif path in chat_record.POST:
-            handle, max_bytes = chat_record.POST[path]
+        elif path in routes.POST:
+            handle, max_bytes = routes.POST[path]
             if self._refuse_cross_site_write():
                 return
             data = self._read_json_body(max_bytes or MAX_BODY_BYTES)

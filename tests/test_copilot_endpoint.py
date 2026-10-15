@@ -8,7 +8,7 @@ import urllib.request
 
 import pytest
 
-from slim import chat, db
+from slim import server as chat, db
 from slim.copilot import turn as copilot, context, images as copilot_images
 
 

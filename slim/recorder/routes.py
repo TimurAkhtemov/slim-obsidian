@@ -11,7 +11,8 @@ import base64
 import binascii
 import re
 
-from . import config, record_pipeline, record_review, record_state
+from .. import config
+from . import pipeline, review as record_review, state as record_state
 
 # The recorder body carries notes they TYPED during a recording, plus a path — never the audio,
 # which the plugin writes into the vault itself precisely because a recording dwarfs any
@@ -32,7 +33,7 @@ def progress(h, query: dict) -> None:
 
 
 def folders(h, query: dict) -> None:
-    h._send_json(200, record_pipeline._card_lists(config.VAULT))
+    h._send_json(200, pipeline._card_lists(config.VAULT))
 
 
 def record(h, data: dict) -> None:
@@ -49,7 +50,7 @@ def record(h, data: dict) -> None:
         # Blank title stays blank. `handle_record` owns the transcript-derived fallback,
         # and only after the model has had its turn.
         with record_state._record_pipeline_slot(job_id):
-            result = record_pipeline.handle_record(**record_pipeline._record_args(data),
+            result = pipeline.handle_record(**pipeline._record_args(data),
                                                    on_progress=update, job_id=job_id)
     except record_state.RecordQueueFull as e:
         if job_id:
@@ -100,7 +101,7 @@ def record(h, data: dict) -> None:
 
 def live(h, data: dict) -> None:
     """Local incremental captions. Audio arrives as bounded 16 kHz PCM, never leaves loopback."""
-    from .capture import transcribe
+    from ..capture import transcribe
 
     session_id = str(data.get("session_id") or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", session_id):
@@ -191,7 +192,7 @@ def append(h, data: dict) -> None:
               if job_id else None)
     try:
         with record_state._record_pipeline_slot(job_id):
-            result = record_pipeline.handle_record_append(note=note, audio_rel=rels,
+            result = pipeline.handle_record_append(note=note, audio_rel=rels,
                                                           job_id=job_id, on_progress=update)
     except record_state.RecordQueueFull as e:
         if job_id:
@@ -233,7 +234,7 @@ def transcript(h, data: dict) -> None:
         h._send_json(400, {"error": "audio (a vault-relative path) is required"})
         return
     try:
-        h._send_json(200, record_pipeline.handle_record_transcript(audio_rel=rels))
+        h._send_json(200, pipeline.handle_record_transcript(audio_rel=rels))
     except (ValueError, FileNotFoundError) as e:
         h._send_json(400, {"error": str(e)})
 

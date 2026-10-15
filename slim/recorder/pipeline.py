@@ -8,17 +8,18 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import config, llm, record_state, trace
-from .vault import note_images
+from .. import config, llm, trace
+from . import state
+from ..vault import note_images
 
 _DRAFT_SUFFIX = ".slim-draft.md"
 
 
 def _draft_source(*, vault: Path, draft_rel: str, audio_rel: str | list[str],
                   declared_type: str) -> tuple[Path, str]:
-    from . import record
+    from . import note as record
 
-    draft = record_state._vault_path(vault, draft_rel)
+    draft = state._vault_path(vault, draft_rel)
     if not draft.is_file():
         raise FileNotFoundError(f"no draft at {draft_rel!r}")
     if not draft.name.endswith(_DRAFT_SUFFIX):
@@ -95,7 +96,7 @@ def _join_segments(gots: list[dict], labelled: bool = False) -> str:
     for a lecture, wrong beside a labelled call, where it reads as the last speaker still
     talking. So once anything is labelled (a segment here, or the note it is resumed onto),
     a one-sided segment carries its one label."""
-    from .capture import speakers
+    from ..capture import speakers
 
     labelled = labelled or any(got.get("speakers_by") for got in gots)
     parts = []
@@ -116,7 +117,7 @@ def _transcribe_segment(staged: Path, transcribe_mod) -> tuple[dict, bool]:
     trusted by name alone hands back the previous recording's words with no transcription at
     all — the quietest way imaginable to file the wrong transcript.
     """
-    from .capture import audio
+    from ..capture import audio
 
     cache = _segment_cache(staged)
     digest = ""
@@ -163,9 +164,9 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
     been transcribed. Because `write_recording` never runs, the audio stays staged in
     `_incoming`, where the plugin's error screen names it and a retry is one button.
     """
-    from . import record
-    from .capture import enrich, suggest, summarize, transcribe
-    from .config import VAULT as _VAULT
+    from . import note as record
+    from ..capture import enrich, suggest, summarize, transcribe
+    from ..config import VAULT as _VAULT
 
     vault = vault or _VAULT
     when = when or datetime.now(timezone.utc)
@@ -174,7 +175,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
     audio_rels = [audio_rel] if isinstance(audio_rel, str) else list(audio_rel)
     if not audio_rels:
         raise ValueError("audio (a vault-relative path) is required")
-    segments = [record_state._vault_path(vault, rel) for rel in audio_rels]
+    segments = [state._vault_path(vault, rel) for rel in audio_rels]
     # ⚠ THEIR title, captured before any fallback overwrites it. A title they typed is TESTIMONY,
     # so `build_card` gets it. A title the MODEL just wrote must never be fed back in: it is
     # derived from the same transcript the card reads, so one bad guess would reinforce the
@@ -193,7 +194,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
     # ⚠ CANCEL IS CHECKED BEFORE EVERY EXPENSIVE STEP AND WRITES NOTHING WHEN IT FIRES. The
     # draft note and the staged audio are the only copies of what they said, so a cancelled pass
     # leaves the recording exactly as it found it — they resume into the same draft.
-    record_state._check_record_cancel(job_id)
+    state._check_record_cancel(job_id)
 
     draft: Path | None = None
     if draft_rel is not None:
@@ -209,7 +210,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
     # and left Obsidian's own player unable to seek the file. A 0.12 s lossless remux fixes
     # both, and doing it HERE means every reader downstream gets a sane file. `_transcribe_segment`
     # does it per segment, right before reading each one.
-    record_state._check_record_cancel(job_id)
+    state._check_record_cancel(job_id)
     progress("preparing", "Preparing audio", "Making the recording seekable and readable")
 
     # Keep the Transcript, not just its text: `asr_model` and `audio_seconds` are deterministic
@@ -219,7 +220,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
     gots, words, seconds, wall = [], 0, 0.0, 0.0
     try:
         for i, seg in enumerate(segments, start=1):
-            record_state._check_record_cancel(job_id)
+            state._check_record_cancel(job_id)
             of = f" ({i} of {len(segments)})" if len(segments) > 1 else ""
             progress("transcribing", f"Transcribing{of}",
                      "Converting the local audio into exact source text")
@@ -237,7 +238,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
                  metrics={"transcript_words": words, "audio_seconds": seconds,
                           "transcription_seconds": wall, "segments": len(segments),
                           "transcription_realtime_factor": round(seconds / wall, 2) if wall else 0})
-    except record_state.RecordCancelled:
+    except state.RecordCancelled:
         raise
     except Exception as exc:                       # noqa: BLE001 - re-raised, see below
         trace.record("record", {"stage": "transcribe", "status": "failed", "error": str(exc)})
@@ -247,7 +248,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
         # Silence is the same outcome by a different route — a muted mic, the wrong input — and
         # it produces exactly the same worthless note. Saying so is the point.
         trace.record("record", {"stage": "transcribe", "status": "empty"})
-        raise record_state.NoSpeech("no words were captured — nothing was filed, and your audio "
+        raise state.NoSpeech("no words were captured — nothing was filed, and your audio "
                                     "and notes are exactly where they were")
 
     summary = None
@@ -259,11 +260,11 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
             # response line by line, so raising from here stops a summary that is already
             # generating instead of waiting out its remaining minutes.
             def activity_fn(kind, chunk):
-                record_state._check_record_cancel(job_id)
+                state._check_record_cancel(job_id)
                 progress("summarizing", "Reasoning about the summary",
                          "Live local-model activity", kind=kind, text=chunk)
             activity = activity_fn if on_progress is not None else None
-            record_state._check_record_cancel(job_id)
+            state._check_record_cancel(job_id)
             # ⚠ RECORD_MODEL is the resident (llm.py says why). Their notes ride along as
             # context — what they noticed, how they spell things — never as a filter.
             clean_notes, embedded = _extract_note_images(notes_md or "", vault)
@@ -282,7 +283,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
                               "summary_seconds": s.stats.get("duration_s"),
                               "summary_output_tokens": s.stats.get("output_tokens"),
                               "summary_decode_tok_s": s.stats.get("decode_tok_s")})
-        except record_state.RecordCancelled:
+        except state.RecordCancelled:
             # ⚠ NOT swallowed by the summary's catch-all. A cancel is their instruction, not a
             # degraded summary, and continuing on to file the note would ignore it.
             raise
@@ -312,7 +313,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
     # No empty-transcript branch: it was unreachable once an empty transcript became an error,
     # and its job — keeping a failed journal inside the privacy floor — belongs to `build_card`,
     # which returns `JOURNAL_FOLDER` for a declared journal before it consults the model at all.
-    record_state._check_record_cancel(job_id)
+    state._check_record_cancel(job_id)
     progress("filing", "Choosing filing details", "Comparing the recording with the vault's existing structure")
     card = suggest.build_card(text, declared_type=declared_type, title=declared_title,
                               notes=notes_md, vault=vault, model=llm.RECORD_MODEL)
@@ -322,7 +323,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
 
     # The last chance: past this line the note is on disk and cancelling would mean deleting
     # a written recording, which this never does.
-    record_state._check_record_cancel(job_id)
+    state._check_record_cancel(job_id)
     progress("saving", "Saving the note", "Archiving audio, writing Markdown and refreshing the index")
     r = record.write_recording(
         audio_src=segments, title=title, when=when, type_tag=card.type_tag, transcript=text,
@@ -341,7 +342,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
             except OSError:
                 pass                  # visible in _incoming, harmless, removable by hand
 
-    record_state._index_now(vault, str(r.note.relative_to(vault)))
+    state._index_now(vault, str(r.note.relative_to(vault)))
     trace.record("record", {"note": str(r.note), "dest": card.dest_dir,
                             "type": card.type_tag, "has_summary": bool(summary_md),
                             "speakers_by": speakers_by})
@@ -360,7 +361,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
 def _card_lists(vault: Path) -> dict:
     """What the card browses and badges: every folder a note may go to, every tag in use.
     Also served alone, for a pending card reopened after a reload (`/api/record/folders`)."""
-    from .capture import suggest
+    from ..capture import suggest
     return {"tag_counts": suggest.tag_counts(vault),
             "folders": [{"path": f.path, "count": f.count} for f in suggest.folder_tree(vault)]}
 
@@ -403,17 +404,17 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
     costing a minute of model time runs unasked, and nothing overwrites a summary they may have
     edited by hand. ⚠ Silence is refused exactly as the recording path refuses it.
     """
-    from . import record as record_mod
-    from .capture import transcribe
-    from .vault.frontmatter import parse_frontmatter
-    from .config import VAULT as _VAULT
+    from . import note as record_mod
+    from ..capture import transcribe
+    from ..vault.frontmatter import parse_frontmatter
+    from ..config import VAULT as _VAULT
 
     vault = vault or _VAULT
-    src = record_state._vault_path(vault, note)
+    src = state._vault_path(vault, note)
     text = src.read_text(encoding="utf-8")
     rels = [audio_rel] if isinstance(audio_rel, str) else list(audio_rel)
-    segments = [record_state._vault_path(vault, rel) for rel in rels]
-    staging = record_state._vault_path(vault, record_mod.STAGING_DIR)
+    segments = [state._vault_path(vault, rel) for rel in rels]
+    staging = state._vault_path(vault, record_mod.STAGING_DIR)
     for rel, seg in zip(rels, segments):
         if not seg.is_file():
             raise FileNotFoundError(f"no audio at {rel!r}")
@@ -431,7 +432,7 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
 
     gots, seconds, asr_model, speakers_by = [], 0.0, "", ""
     for i, seg in enumerate(segments, start=1):
-        record_state._check_record_cancel(job_id)
+        state._check_record_cancel(job_id)
         of = f" ({i} of {len(segments)})" if len(segments) > 1 else ""
         progress("transcribing", f"Transcribing{of}", "Adding the new words to this note")
         got, _cached = _transcribe_segment(seg, transcribe)
@@ -442,16 +443,16 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
     fm, _ = parse_frontmatter(text)
     addition = _join_segments(gots, labelled=bool(fm.get("speakers_by")))
     if not addition:
-        raise record_state.NoSpeech("no words were captured — nothing was added, and your audio "
+        raise state.NoSpeech("no words were captured — nothing was added, and your audio "
                                     "is exactly where it was")
 
     # ⚠ PAST THE LOOP, AND BEFORE ARCHIVING. A resume normally has ONE segment, so a check
     # only at the top of the loop ran once and never again — they were told "nothing is written"
     # and the note grew anyway. `archive_audio` writes durable files, so a cancel landing after
     # it left orphan copies. This is the last boundary; nothing durable happens before it.
-    record_state._check_record_cancel(job_id)
-    with record_state._note_lock(vault, note):
-        text = record_state._reread_for_write(src, note)
+    state._check_record_cancel(job_id)
+    with state._note_lock(vault, note):
+        text = state._reread_for_write(src, note)
 
         archived_rels, digests = [], []
         for seg in segments:
@@ -469,7 +470,7 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
                                                    speakers_by=speakers_by)
         record_mod.write_note_text(src, record_mod.append_transcript(text, addition))
 
-    archived_paths = {record_state._vault_path(vault, rel).resolve() for rel in archived_rels}
+    archived_paths = {state._vault_path(vault, rel).resolve() for rel in archived_rels}
     for seg in segments:
         cache = _segment_cache(seg)
         # Belt as well as braces: never unlink a file that IS the archive it was copied to.
@@ -480,7 +481,7 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
                     path.unlink()
                 except OSError:
                     pass
-    record_state._index_now(vault, str(src.relative_to(vault)), sweep=False)
+    state._index_now(vault, str(src.relative_to(vault)), sweep=False)
     trace.record("record", {"stage": "append", "note": str(src), "segments": len(segments),
                             "words": len(addition.split())})
     return {"note": str(src.relative_to(vault)), "words": len(addition.split()),
@@ -494,13 +495,13 @@ def handle_record_transcript(*, audio_rel: str | list[str],
     ⚠ READS, NEVER TRANSCRIBES. This serves a screen meant to be instant. A segment with no
     cache yet is COUNTED, not invented.
     """
-    from .config import VAULT as _VAULT
+    from ..config import VAULT as _VAULT
 
     vault = vault or _VAULT
     rels = [audio_rel] if isinstance(audio_rel, str) else list(audio_rel)
     gots, pending = [], 0
     for rel in rels:
-        cache = _segment_cache(record_state._vault_path(vault, rel))
+        cache = _segment_cache(state._vault_path(vault, rel))
         if not cache.is_file():
             pending += 1
             continue

@@ -22,8 +22,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from .index.chunk import SUMMARY_CLOSE, SUMMARY_OPEN, TRANSCRIPT_MARKER
-from .config import VAULT
+from ..index.chunk import SUMMARY_CLOSE, SUMMARY_OPEN, TRANSCRIPT_MARKER
+from ..config import VAULT
 
 RECORD_PROMPT_VERSION = "record-v2"
 MEETING_BLOCK_LANGUAGE = "slim-meeting"
@@ -205,7 +205,7 @@ def append_audio_frontmatter(text: str, *, rels: list[str], digests: list[str],
     keeps that provenance, and a resume that produced no model name never blanks it. `speakers_by`
     follows the same rule.
     """
-    from .vault.frontmatter import parse_frontmatter, set_frontmatter
+    from ..vault.frontmatter import parse_frontmatter, set_frontmatter
 
     fm, _ = parse_frontmatter(text)
 
@@ -239,7 +239,7 @@ def write_note_text(path: Path, text: str) -> None:
     transcript. Every derived edit (notes autosave, retry, append) goes through here so an
     interrupted write leaves the previous note intact rather than half a recording.
     """
-    from .vault import notefile
+    from ..vault import notefile
     notefile.atomic_write_text(path, text)
 
 
@@ -251,7 +251,7 @@ def set_review_status(text: str, status: str) -> str:
     """
     if status not in {"pending", "complete"}:
         raise ValueError(f"invalid recording review status: {status!r}")
-    from .vault.frontmatter import set_frontmatter
+    from ..vault.frontmatter import set_frontmatter
     return set_frontmatter(text, {"review_status": status})
 
 
@@ -277,7 +277,7 @@ def append_transcript(text: str, addition: str) -> str:
 def archive_audio(src: Path) -> tuple[Path, str]:
     """Archive a staged file content-addressed, returning (path, sha256). Reuses `audio`'s
     hash-verified copier so there is exactly one implementation of 'the audio is safe'."""
-    from .capture import audio
+    from ..capture import audio
 
     digest = audio.sha256(src)
     archived = audio.archive_audio(src, digest)
@@ -328,7 +328,7 @@ def render_note(*, title: str, when: datetime, type_tag: str, transcript: str,
     alike in the one place they read them. Nothing in SLIM parses key order; THEY do. Fields
     inbox derives from spoken routing stay absent here, because the recorder has none.
     """
-    from .memos import inbox
+    from ..memos import inbox
 
     # The title arrives from the plugin. A newline in it would end the `title:` line and leave
     # the rest of the string sitting in the frontmatter block as a stray, unparseable line.
@@ -391,8 +391,8 @@ def write_recording(*, audio_src: Path | list[Path], title: str, when: datetime,
                     transcribed_at: datetime | None = None,
                     draft_src: Path | None = None,
                     vault: Path = VAULT) -> Recorded:
-    from .memos import inbox
-    from .vault import notefile
+    from ..memos import inbox
+    from ..vault import notefile
 
     sources = [audio_src] if isinstance(audio_src, Path) else list(audio_src)
     archived_all, digests = [], []

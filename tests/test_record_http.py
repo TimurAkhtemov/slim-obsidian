@@ -11,7 +11,8 @@ import urllib.request
 
 import pytest
 
-from slim import chat, config, record_state
+from slim import server as chat, config
+from slim.recorder import state as record_state
 from slim.capture import suggest, summarize, transcribe
 from tests.record_fakes import _archive_in_tmp, _draft, _existing, _fakes, _staged  # noqa: F401
 

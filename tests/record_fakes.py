@@ -56,11 +56,11 @@ def _fakes(monkeypatch, *, transcript="the kernel trick", summary="Derived the k
 
 
 def _existing(tmp_path, monkeypatch, dest="Capture/_unfiled"):
-    from slim import record
+    from slim.recorder import note
     src = tmp_path / "Attachments" / "_incoming" / "a.webm"
     src.parent.mkdir(parents=True, exist_ok=True)
     src.write_bytes(b"audio")
-    return record.write_recording(
+    return note.write_recording(
         audio_src=src, title="T", when=NOW, type_tag="lecture", transcript="verbatim words",
         notes_md="", summary_md="s", topics=["school"],
         dest_dir=dest, filed_by_slim=True, vault=tmp_path)
