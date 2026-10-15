@@ -301,16 +301,24 @@ sweep every five minutes, the reflection nightly, and a restic backup of the vau
 
 ## Code map
 
-- `slim/cli.py` — the entry point; six commands.
-- **Capture** — `chat.py` (the plugin's API server), `record.py` (the sole writer of a
-  recorded note), `transcribe.py` (two speech lanes), `summarize.py`, `suggest.py` (the filing
-  card), `enrich.py` and `voicetags.py` (labelling), `inbox.py` and `voicememos.py` (the memo
-  lane).
-- **Index** — `ingest.py`, `chunk.py` (fragments; the frontmatter reader and writer),
-  `embed.py`, `db.py`.
-- **Answer** — `search.py`, `copilot.py`, `threads.py`, `copilot_images.py`, `reflect.py`.
-- **Seams** — `llm.py` (never call Ollama directly), `trace.py`, `config.py`, `vaultpath.py`.
-- `obsidian/main.js` — the entire plugin: recorder and copilot, plain CommonJS, no build step.
+- `slim/cli.py` — the entry point; six commands. `vaultidentity.py` — the vault pin.
+- **Capture** — `chat.py` (the plugin's API server) and `chat_record.py` (its record routes);
+  `record_pipeline.py` (audio to a filed note), `record_review.py` (edits to a filed note),
+  `record_state.py` (the job queue, progress, locks); `record.py` (the sole writer of a
+  recorded note), `transcribe.py` (two speech lanes), `audio.py` (ffmpeg, hashing, archive),
+  `speakers.py`, `summarize.py`, `suggest.py` (the filing card), `enrich.py` and `voicetags.py`
+  (labelling), `inbox.py` and `voicememos.py` (the memo lane), `notefile.py` (slugs, safe writes).
+- **Index** — `ingest.py`, `chunk.py` (fragments), `frontmatter.py` (the frontmatter reader and
+  writer), `embed.py`, `db.py`.
+- **Answer** — `search.py`; `copilot.py` (one turn: the gate and the Ask path),
+  `copilot_context.py` (what it reads), `copilot_edit.py` (the editing run), `edits.py` (the
+  tools) and `edits_note.py` (the note as blocks with handles); `threads.py`,
+  `copilot_images.py` (chat attachments), `note_images.py` (a note's embedded images),
+  `skills.py`, `reflect.py`.
+- **Seams** — `llm.py` (never call Ollama directly) and `llm_render.py` (the raw tool-call
+  prompt and reply format), `trace.py`, `config.py`, `vaultpath.py`.
+- `obsidian/src/` — the plugin: `recorder-*`, `chat-*` and `live-*` files, one job each, bundled
+  by esbuild (`npm run build`) into the committed `obsidian/main.js` that Obsidian loads.
 - `CLAUDE.md` — the operating brief, including the traps that cost real debugging time.
 - `BACKLOG.md` — what is next. Open items only.
 
@@ -338,7 +346,7 @@ binary the recorder tests genuinely need, because they exercise real container h
 ```bash
 brew install ffmpeg               # ffprobe is a real dependency of the recorder tests
 uv run pytest -q                  # the Python side
-node --test obsidian/*.test.mjs   # the plugin; no build step, no dependencies at all
+node --test obsidian/test/*.test.mjs   # the plugin (esbuild builds main.js: npm install, npm run build)
 ```
 
 That property is deliberate — it is what keeps the system inspectable, and it is what CI runs

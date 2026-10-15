@@ -16,8 +16,9 @@ outsiders and an AGENTS.md pointer.
 ## Commands
 
 ```bash
-uv run pytest -q                        # ~625 tests; `uv` always — the system python may be 3.9
-node --test obsidian/*.test.mjs         # plugin tests; no build step
+uv run pytest -q                        # ~875 tests; `uv` always — the system python may be 3.9
+node --test obsidian/test/*.test.mjs    # plugin tests; they load obsidian/src/ directly
+(cd obsidian && npm install && npm run build)   # src/ -> the committed main.js; bundle.test.mjs fails if stale
 uv run slim chat --reload               # dev server; respawns on any slim/**/*.py save (not .yaml)
 uv run slim ingest                      # index the vault; embeds at the end; exits non-zero if vectors are missing
 uv run slim status                      # counts, including `unembedded`
@@ -40,8 +41,9 @@ audio  ->  transcript  ->  LABEL  ->  FILE  ->  INDEX  ->  (REFLECT, TALK)
 rename by content hash; an edit and a move before one ingest read as delete + create and the
 note loses its id. Embedding is part of ingest; `slim status` reports `unembedded`.
 
-1. **Capture.** The Obsidian recorder plugin (`obsidian/main.js`, one file, no build) is the
-   desktop lane and the reason the project exists; `slim memos` (launchd, every 5 min) sweeps
+1. **Capture.** The Obsidian recorder plugin (`obsidian/src/`, bundled by esbuild into the
+   committed `obsidian/main.js`, the one file Obsidian loads) is the desktop lane and the reason
+   the project exists; `slim memos` (launchd, every 5 min) sweeps
    the phone's Voice Memos into `Journal/`. Recorder invariants:
    - The meeting object is a `slim-meeting` fenced block inside a standard `MarkdownView` —
      never a custom view, private editor internals or an overlay (a custom view was built,
@@ -54,7 +56,7 @@ note loses its id. Embedding is part of ingest; `slim status` reports `unembedde
      and writes `speakers_by: channels`. One speaker (a lecture, a video) or a mono file stays
      unlabelled. `speakers.label_tokens` is the seam a voice-clustering model would replace.
      Labels are decided per segment; once anything is labelled, a one-sided segment carries
-     its one label (`chat._join_segments`). ⚠ A transcript already filed unlabelled stays so
+     its one label (`record_pipeline._join_segments`). ⚠ A transcript already filed unlabelled stays so
      when a resume brings a second speaker: the words on disk are never relabelled.
      Live, the card raises an alarm when BOTH sides are digital zeros (`captureSilence`). One
      side alone never warns: a zero mic beside playing audio is echo cancellation working.
@@ -83,8 +85,8 @@ note loses its id. Embedding is part of ingest; `slim status` reports `unembedde
    THIS DIFFERENTLY, and conflating them has caused wrong reasoning more than once:
    - **Memo lane** (`inbox.py`) is deterministic first — `voicetags.detect_type` parses the
      spoken opening and `voicetags.route` decides the folder; `enrich` only fills a silence.
-   - **Recorder lane** (`chat.py`) never calls `detect_type`, `detect_subject` or `route` at
-     all (`chat.py` has no `voicetags` import). `enrich` supplies the title and `suggest`
+   - **Recorder lane** (`chat_record.py`, `record_*.py`) never calls `detect_type`, `detect_subject` or `route` at
+     all (no `chat*.py` or `record_*.py` module imports `voicetags`). `enrich` supplies the title and `suggest`
      builds the card; `voicetags` contributes constants and `registered_project` only.
 
    Labels are written once, at capture, with `tagged_by`/`routed_by`/`subject_by` recording
@@ -102,12 +104,12 @@ note loses its id. Embedding is part of ingest; `slim status` reports `unembedde
    with the vault as context: the notes pack rides in the system message with titles only,
    so prose cannot cite, and sources come from a bounded follow-up call after the answer.
    Quick or Deep (thinking on). The open note's embedded images ride with every turn, at most 6
-   (`copilot.MAX_NOTE_IMAGES`), those beside the pack's passages first: what an image says is
+   (`copilot_context.MAX_NOTE_IMAGES`), those beside the pack's passages first: what an image says is
    not searchable. Per-note chat history and pasted images live outside the vault. There is
    no vault-wide Q&A lane and no profile injection (it pandered, measured).
    - **Skills** are `/commands`: prompt templates in `slim/skills/` and the vault's `Skills/`
      (same name wins; `skills.py`). A skill reads WHOLE notes chosen by code
-     (`copilot.gather`: the open note, the selection, the folder filtered by frontmatter and
+     (`copilot_context.gather`: the open note, the selection, the folder filtered by frontmatter and
      cut to one section, `[[links]]`), inside a fixed budget, and names what it left out.
      Code knows what it read, so a skill turn makes no sources call.
    - **Answer or edit** — one chat, no mode. A question first meets the intent gate: one small
@@ -118,19 +120,19 @@ note loses its id. Embedding is part of ingest; `slim status` reports `unembedde
      section under heading b7, b11-b15 a range — at temperature 0.0. A small change is one
      call; a larger one is a plan carried out one call per step, and nothing after the steps
      (fix-ups for the plan's outline were cut: they only ever wasted calls or undid work). Code
-     holds the plan and the limits (`copilot.py`: 8 steps, 30 calls, 3 refusals in a row, 12k
+     holds the plan and the limits (`copilot_edit.py`: 8 steps, 30 calls, 3 refusals in a row, 12k
      output tokens) and refuses what a call must not do, with a reason the model reads back:
      among them, a later step rewriting what an earlier step wrote, and new HTML blocks, which
      Obsidian renders no Markdown inside (a new `<details>` is written as a folded callout instead,
      `edits.fold`). A change that reworks only the run's own text is
      `part_of` the change it grew from, so the owner never sees SLIM's drafts as removals. What
-     the owner reads (steps, labels, summary) names text, never a handle (`Note.plain`,
-     `edits.quote`). `llm.hold()` keeps the model lock for the run. An `edit` skill runs the same loop (tidy: the selection's blocks
+     the owner reads (steps, labels, summary) names text, never a handle (`edits_note.Note.plain`,
+     `edits_note.quote`). `llm.hold()` keeps the model lock for the run. An `edit` skill runs the same loop (tidy: the selection's blocks
      only); a `new-note` skill only `create_note`s, in existing folders, never `Journal/`.
      **The server never writes the note.** It works on the editor's text (`doc` + its hash) and
      streams each change as UTF-16 splices; the plugin applies them through the editor as they
      land (`makeLiveEditor`). While a call writes an insert or a replace, its text shows where it
-     will go as a draft, never the note's text (`copilot._Drafts`), and the change that lands
+     will go as a draft, never the note's text (`copilot_edit._Drafts`), and the change that lands
      takes its place; the chat counts each call's seconds. The plugin skips a change whose text
      the owner typed into meanwhile, draws the marks, then syncs and embeds the note. ↺ undoes a
      change and those built on it; Undo all and Redo; Cmd-Z is the editor's own. The note as it
@@ -182,7 +184,8 @@ memory is `Profile/me.md`, and today nothing reads it.
 7546; `uv run` imports from disk at spawn and never reloads. Plugin-started servers exit with
 Obsidian's PID. `GET /api/health` reports staleness and the SessionStart hook calls it — but
 a server whose `uv` parent was adopted by PID 1 reports fresh and still fails; when in doubt,
-kill the port. The vault holds a COPY of `main.js`: the same trap.
+kill the port. The vault holds a COPY of `main.js`: the same trap. And `main.js` is built from
+`obsidian/src/`: an edit there without `npm run build` is not in it (`bundle.test.mjs` catches that).
 
 **Memory is the binding constraint, and macOS kills silently.** On a 48 GB machine
 `qwen3.6:35b` (MoE) takes ~25 GB at `RESIDENT_CTX = 131072`, ~16 MB per 1k tokens. Ollama
@@ -201,9 +204,9 @@ string: cap `num_predict`, put `maxLength` on short fields (Ollama cannot compil
 \text` — so the summarizer bans backslashes and `summarize._repair` reverses the decode.
 `llm.py` serializes live calls; temperature 0.0 for structured work, 0.7 for prose a person
 reads. /api/chat parses a tool call itself and holds it back until it is whole, tools= or not, so
-a call with tools goes RAW to /api/generate, its prompt built by `llm.render` byte for byte as
+a call with tools goes RAW to /api/generate, its prompt built by `llm_render.render` byte for byte as
 Ollama 0.35's `qwen3.5` renderer builds it (`tests/test_llm_render.py` holds Ollama's own
-rendering) and its reply read by `llm._Reader`. ⚠ A model with another renderer needs its own.
+rendering) and its reply read by `llm_render._Reader`. ⚠ A model with another renderer needs its own.
 A tool call's text is XML, taken as written: the JSON trap above never touches it, and unlike
 Ollama's parser `_Reader` keeps a text parameter written `null` as the word.
 
@@ -257,7 +260,7 @@ reacts to a vault `delete` must first ask whether the server caused it (2026-09-
   load-bearing (`slim/embed.py`); changing it means deleting the brain DB and re-ingesting.
 - Vault: `SLIM_VAULT`, else DISCOVERED (`vaultpath.py`): Obsidian's own registry, then
   iCloud's Obsidian container, then `~/Documents/Obsidian Vault` (iCloud-synced is fine).
-  ⚠ The index is PINNED to the vault it was built from (`SLIM_DATA_DIR/vault_pin`), because
+  ⚠ The index is PINNED to the vault it was built from (`SLIM_DATA_DIR/vault_pin`, `vaultidentity.py`), because
   ingest's removal sweep deletes every source it cannot find under the current vault and
   discovery can change that path with nobody asking. Every command that can write to the vault
   checks that identity first. A real move, or adoption of an index made before the pin existed,
