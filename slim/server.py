@@ -584,16 +584,18 @@ def code_state(parent_pid: int | None = None) -> dict:
     previous afternoon survived a full Cmd+Q. The plugin then REUSES whatever is on the port
     (deliberately, so a terminal `--reload` server is not killed), so a stale server is silently
     PREFERRED over a correct one. A timestamp comparison, not a hash: mtime is what a save
-    changes.
+    changes. `newest_file` is relative to `slim/` ("recorder/pipeline.py"): a bare name no
+    longer says which file.
     """
+    root = Path(__file__).resolve().parent
     newest, newest_file = 0.0, ""
-    for path in Path(__file__).resolve().parent.rglob("*.py"):
+    for path in root.rglob("*.py"):
         try:
             m = path.stat().st_mtime
         except OSError:                  # a file vanishing mid-walk is not an error here
             continue
         if m > newest:
-            newest, newest_file = m, path.name
+            newest, newest_file = m, path.relative_to(root).as_posix()
     return {
         "ok": True,
         "pid": os.getpid(),

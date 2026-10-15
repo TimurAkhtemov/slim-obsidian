@@ -36,18 +36,18 @@ test("a stale server produces a warning naming the file and how to restart", asy
   setRequestUrl(async () => ({
     status: 200,
     json: { stale: true, started_at: "2026-08-22T18:05:38Z",
-            newest_source: "2026-08-23T14:00:00Z", newest_file: "transcribe.py" },
+            newest_source: "2026-08-23T14:00:00Z", newest_file: "capture/transcribe.py" },
   }));
   await plugin().warnIfStale();
   assert.equal(notices.length, 1);
-  assert.match(notices[0], /transcribe\.py/);
+  assert.match(notices[0], /capture\/transcribe\.py/);
   assert.match(notices[0], /lsof -tiTCP:7546/);
 });
 
 test("one stale server is said ONCE, not on every request that reuses it", async () => {
   // 2026-09-29: every copilot call re-ran the check and stacked another 30 s notice.
   const health = { pid: 40828, stale: true, started_at: "2026-09-28T11:19:26Z",
-                   newest_source: "2026-09-29T13:14:20Z", newest_file: "skills.py" };
+                   newest_source: "2026-09-29T13:14:20Z", newest_file: "copilot/skills.py" };
   setRequestUrl(async () => ({ status: 200, json: health }));
   const p = plugin();
   await p.warnIfStale();

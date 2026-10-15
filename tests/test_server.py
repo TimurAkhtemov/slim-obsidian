@@ -66,6 +66,16 @@ def test_a_server_older_than_the_code_reports_itself_stale(monkeypatch):
     assert state["newest_file"].endswith(".py")
 
 
+def test_the_newest_file_is_named_by_its_path_under_slim(tmp_path, monkeypatch):
+    import os
+    (tmp_path / "recorder").mkdir()
+    (tmp_path / "server.py").write_text("")
+    (tmp_path / "recorder" / "pipeline.py").write_text("")
+    os.utime(tmp_path / "server.py", (1, 1))
+    monkeypatch.setattr(server, "__file__", str(tmp_path / "server.py"))
+    assert server.code_state()["newest_file"] == "recorder/pipeline.py"
+
+
 def test_a_server_started_after_the_last_edit_is_not_stale(monkeypatch):
     import time as _time
     monkeypatch.setattr(server, "SERVER_STARTED", _time.time() + 3600)
