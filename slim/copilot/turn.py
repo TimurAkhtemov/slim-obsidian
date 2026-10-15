@@ -1,7 +1,7 @@
 """The open-note copilot: gather the notes around the one they have open, run one turn against
 them, and name which notes the answer used — or, when the turn edits, carry out the edit one
 model call at a time and hand each change to the plugin as it lands. Called by `server.py`'s
-sidebar routes. What it reads is `copilot/context.py`'s; the editing run is `copilot/edit.py`'s."""
+sidebar routes. What it reads is `copilot/context.py`'s; the editing run is `copilot/run.py`'s."""
 from __future__ import annotations
 
 import json
@@ -10,7 +10,7 @@ import time
 from pathlib import Path, PurePosixPath
 
 from .. import config as config_mod, llm, trace
-from . import blocks, context, edit, edits as edits_mod, skills as skills_mod
+from . import blocks, context, edits as edits_mod, run as edit_run, skills as skills_mod
 from .context import CopilotError
 
 # The persona is short on purpose: ~3,800 words of prompt read as lobotomized (2026-07-31), and
@@ -350,17 +350,17 @@ def _answer_or_edit(con, vault: Path, source: dict, question: str, history: list
             result["edit_run"] = None
             return result, levels, evidence
 
-        text = doc if doc is not None else edit._note_text(vault, source["path"])
+        text = doc if doc is not None else edit_run._note_text(vault, source["path"])
         # A note too big to edit here is still asked about (the Ask path above never reads it).
         if len(text) > edits_mod.MAX_EDIT_CHARS and not (skill and skill.output == "new-note"):
             raise CopilotError(f"this note is too long to edit here "
                                f"(over {edits_mod.MAX_EDIT_CHARS:,} characters)")
         prompt = skills_mod.render_prompt(skill, args) if skill else question
         note, only, create, inputs, cited = blocks.Note(text), None, None, None, None
-        tools, step_tools = ["plan", *edit.STEP_TOOLS], edit.STEP_TOOLS
+        tools, step_tools = ["plan", *edit_run.STEP_TOOLS], edit_run.STEP_TOOLS
         # A change the gate wanted, or an edit skill's, is written at STEP_TEMPERATURE.
-        temperature = (edit.STEP_TEMPERATURE if not skill and INTENT_GATE
-                       else edit.FIRST_TEMPERATURE)
+        temperature = (edit_run.STEP_TEMPERATURE if not skill and INTENT_GATE
+                       else edit_run.FIRST_TEMPERATURE)
         if skill and skill.output == "new-note":
             pack = context.gather(con, vault, source, skill=skill, links_from=args, selection=selection)
             system = pack_message(pack, NEW_NOTE_RIDER.format(folder=folder))
@@ -383,9 +383,9 @@ def _answer_or_edit(con, vault: Path, source: dict, question: str, history: list
                 # open note), so it makes no sources call.
                 cited, temperature = ([{"n": 1, "path": source["path"],
                                         "title": PurePosixPath(source["path"]).stem}],
-                                      edit.STEP_TEMPERATURE)
+                                      edit_run.STEP_TEMPERATURE)
                 if skill.input == "selection":
-                    only = edit._selected(note, text, selection, skill, selection_from)
+                    only = edit_run._selected(note, text, selection, skill, selection_from)
                     prompt += f"\n\nSelected text:\n{selection.strip()}"
                     tools, step_tools = ["plan", "replace", "edit_text"], ("replace", "edit_text")
             system = edit_message(source["path"], note)
@@ -395,12 +395,12 @@ def _answer_or_edit(con, vault: Path, source: dict, question: str, history: list
 
         transcript, embedded, current = _conversation(history, prompt, images, shown)
         system_turn = {"role": "system", "content": system}
-        room = QUICK_NUM_PREDICT + (edit.THINK_BUDGET if mode == "deep" else 0)
+        room = QUICK_NUM_PREDICT + (edit_run.THINK_BUDGET if mode == "deep" else 0)
         if sum(map(_tokens, [system_turn, *embedded, current])) + room > llm.RESIDENT_CTX:
             raise CopilotError("this note is too long for one request; edit it in Obsidian")
         recent = fit_window(transcript, [system_turn, *embedded, current], room)
         messages = [system_turn, *recent, *embedded, current]
-        out = edit._turn(list(messages), think=mode == "deep", tools=tools, step_tools=step_tools,
+        out = edit_run._turn(list(messages), think=mode == "deep", tools=tools, step_tools=step_tools,
                                  note=note, before_text=text, only=only, create=create,
                                  temperature=temperature, first_predict=room, nudge=intent is True,
                                  on_edit=on_edit or (lambda _event, _payload: None),
@@ -422,7 +422,7 @@ def _answer_or_edit(con, vault: Path, source: dict, question: str, history: list
                "hash_after": edits_mod.digest(note.text() if note is not None else text),
                "summary": out["summary"]}
         answer = out["summary"] or out["plan"]["intro"]
-        entry["edit_run"] = edit._facts(out, run)
+        entry["edit_run"] = edit_run._facts(out, run)
     result = {
         "answer": answer,
         "mode": mode,

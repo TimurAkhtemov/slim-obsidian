@@ -316,7 +316,7 @@ sweep every five minutes, the reflection nightly, and a restic backup of the vau
 - `slim/memos/` — the phone lane: `voicememos.py` (the sweep) and `inbox.py` (filing a memo).
 - `slim/index/` — `ingest.py`, `chunk.py` (fragments), `embed.py`, `search.py`.
 - `slim/copilot/` — `turn.py` (one turn: the gate and the Ask path), `context.py` (what it
-  reads), `edit.py` (the editing run), `edits.py` (the tools) and `blocks.py` (the note as
+  reads), `run.py` (the editing run), `edits.py` (the tools) and `blocks.py` (the note as
   blocks with handles); `threads.py`, `images.py` (chat attachments), `skills.py`; the built-in
   skill templates are `slim/skills/`.
 - `obsidian/src/` — the plugin: `recorder/`, `chat/` and `live/` feature folders, with the entry,

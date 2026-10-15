@@ -120,7 +120,7 @@ note loses its id. Embedding is part of ingest; `slim status` reports `unembedde
      section under heading b7, b11-b15 a range — at temperature 0.0. A small change is one
      call; a larger one is a plan carried out one call per step, and nothing after the steps
      (fix-ups for the plan's outline were cut: they only ever wasted calls or undid work). Code
-     holds the plan and the limits (`copilot/edit.py`: 8 steps, 30 calls, 3 refusals in a row, 12k
+     holds the plan and the limits (`copilot/run.py`: 8 steps, 30 calls, 3 refusals in a row, 12k
      output tokens) and refuses what a call must not do, with a reason the model reads back:
      among them, a later step rewriting what an earlier step wrote, and new HTML blocks, which
      Obsidian renders no Markdown inside (a new `<details>` is written as a folded callout instead,
@@ -132,7 +132,7 @@ note loses its id. Embedding is part of ingest; `slim status` reports `unembedde
      **The server never writes the note.** It works on the editor's text (`doc` + its hash) and
      streams each change as UTF-16 splices; the plugin applies them through the editor as they
      land (`makeLiveEditor`). While a call writes an insert or a replace, its text shows where it
-     will go as a draft, never the note's text (`copilot.edit._Drafts`), and the change that lands
+     will go as a draft, never the note's text (`copilot.run._Drafts`), and the change that lands
      takes its place; the chat counts each call's seconds. The plugin skips a change whose text
      the owner typed into meanwhile, draws the marks, then syncs and embeds the note. ↺ undoes a
      change and those built on it; Undo all and Redo; Cmd-Z is the editor's own. The note as it
@@ -181,7 +181,7 @@ slim/capture/    audio to labelled text, both lanes: audio, transcribe, speakers
 slim/memos/      the phone lane: voicememos (the sweep), inbox (files a memo)
 slim/recorder/   the desktop lane: routes, pipeline, review, state, note (the note's sole writer)
 slim/index/      ingest, chunk, embed, search
-slim/copilot/    Talk: turn, context, edit, edits, blocks (the note as handled blocks), threads,
+slim/copilot/    Talk: turn, context, run, edits, blocks (the note as handled blocks), threads,
                  images, skills; the built-in skill templates are `slim/skills/`
 ```
 
