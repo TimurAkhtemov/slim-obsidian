@@ -17,7 +17,7 @@ outsiders and an AGENTS.md pointer.
 
 ```bash
 uv run pytest -q                        # ~875 tests; `uv` always — the system python may be 3.9
-node --test obsidian/test/*.test.mjs    # plugin tests; they load obsidian/src/ directly
+node --test "obsidian/test/**/*.test.mjs"   # plugin tests; they load obsidian/src/ directly
 (cd obsidian && npm install && npm run build)   # src/ -> the committed main.js; bundle.test.mjs fails if stale
 uv run slim chat --reload               # dev server; respawns on any slim/**/*.py save (not .yaml)
 uv run slim ingest                      # index the vault; embeds at the end; exits non-zero if vectors are missing
@@ -184,6 +184,9 @@ slim/index/      ingest, chunk, embed, search
 slim/copilot/    Talk: turn, context, edit, edits, blocks (the note as handled blocks), threads,
                  images, skills; the built-in skill templates are `slim/skills/`
 ```
+
+The plugin, `obsidian/src/`, has the same shape: `recorder/`, `chat/` and `live/` feature folders;
+the entry, `plugin.js`, `server.js`, `settings-tab.js` and `sse.js` at the top. Tests mirror both trees.
 
 ## What was cut
 

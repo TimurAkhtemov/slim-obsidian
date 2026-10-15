@@ -319,8 +319,10 @@ sweep every five minutes, the reflection nightly, and a restic backup of the vau
   reads), `edit.py` (the editing run), `edits.py` (the tools) and `blocks.py` (the note as
   blocks with handles); `threads.py`, `images.py` (chat attachments), `skills.py`; the built-in
   skill templates are `slim/skills/`.
-- `obsidian/src/` — the plugin: `recorder-*`, `chat-*` and `live-*` files, one job each, bundled
-  by esbuild (`npm run build`) into the committed `obsidian/main.js` that Obsidian loads.
+- `obsidian/src/` — the plugin: `recorder/`, `chat/` and `live/` feature folders, with the entry,
+  `plugin.js`, `server.js`, `settings-tab.js` and `sse.js` at the top; one job per file, bundled by
+  esbuild (`npm run build`) into the committed `obsidian/main.js` that Obsidian loads. `obsidian/test/`
+  mirrors it.
 - `CLAUDE.md` — the operating brief, including the traps that cost real debugging time.
 - `BACKLOG.md` — what is next. Open items only.
 
@@ -348,7 +350,7 @@ binary the recorder tests genuinely need, because they exercise real container h
 ```bash
 brew install ffmpeg               # ffprobe is a real dependency of the recorder tests
 uv run pytest -q                  # the Python side
-node --test obsidian/test/*.test.mjs   # the plugin (esbuild builds main.js: npm install, npm run build)
+node --test "obsidian/test/**/*.test.mjs"   # the plugin (esbuild builds main.js: npm install, npm run build)
 ```
 
 That property is deliberate — it is what keeps the system inspectable, and it is what CI runs
