@@ -3,10 +3,10 @@ applies. Nothing here writes a note. The note as blocks with handles is test_edi
 
 import pytest
 
-from slim import edits, edits_note
+from slim.copilot import edits, blocks as edits_note
 from slim.index import chunk
-from slim.edits import apply, apply_splices, ollama_tools, splices
-from slim.edits_note import Note, ToolError
+from slim.copilot.edits import apply, apply_splices, ollama_tools, splices
+from slim.copilot.blocks import Note, ToolError
 
 NOTE = "# Title\n\nIntro para.\n\n## A\n\nText a.\n- one\n- two\n\n## B\n\nText b.\n"
 RECORDING = "---\ntitle: x\n---\n\n````slim-meeting\nid: 1\n````\n\nMy notes.\n"

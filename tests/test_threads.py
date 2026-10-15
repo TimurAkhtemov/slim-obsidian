@@ -10,7 +10,8 @@ paths, so these tests exercise the real store without reaching production state.
 """
 import pytest
 
-from slim import threads, trace
+from slim import trace
+from slim.copilot import threads
 
 
 def test_delete_removes_the_file_and_reports_true():

@@ -3,9 +3,9 @@ how a target is read. Nothing here writes a note."""
 
 import pytest
 
-from slim import edits_note
+from slim.copilot import blocks as edits_note
 from slim.index import chunk
-from slim.edits_note import Note, ToolError, strip_labels
+from slim.copilot.blocks import Note, ToolError, strip_labels
 
 NOTE = "# Title\n\nIntro para.\n\n## A\n\nText a.\n- one\n- two\n\n## B\n\nText b.\n"
 RECORDING = "---\ntitle: x\n---\n\n````slim-meeting\nid: 1\n````\n\nMy notes.\n"

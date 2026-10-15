@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from slim import chat, copilot, copilot_context, db
+from slim import chat, db
+from slim.copilot import turn as copilot, context
 
 
 @pytest.fixture
@@ -61,8 +62,8 @@ def test_auto_mode_is_refused(con, vault, monkeypatch):
     something they can say in one click, and resolved to Quick nearly every time — so the cost
     was real and the choice was not. Anything but quick/deep is refused before any work."""
     write(vault, "Notes/school/lesson.md", "gradient descent")
-    source = copilot_context.sync_note(con, vault, "Notes/school/lesson.md", embed=False)
-    monkeypatch.setattr(copilot_context.search_mod, "hybrid", lambda *a, **k: [])
+    source = context.sync_note(con, vault, "Notes/school/lesson.md", embed=False)
+    monkeypatch.setattr(context.search_mod, "hybrid", lambda *a, **k: [])
     with pytest.raises(copilot.CopilotError, match="must be quick or deep"):
         copilot.run_turn(con, source["id"], "q", [], "auto")
 
@@ -247,8 +248,8 @@ def test_run_turn_writes_a_replayable_trace(con, vault, monkeypatch):
     # CLAUDE.md: every query writes a replayable trace. The thread JSON keeps only turns
     # that COMPLETED; a trace is the one record of a failed or stopped turn.
     write(vault, "Notes/school/lesson.md", "gradient descent")
-    source = copilot_context.sync_note(con, vault, "Notes/school/lesson.md", embed=False)
-    monkeypatch.setattr(copilot_context.search_mod, "hybrid", lambda *args, **kwargs: [])
+    source = context.sync_note(con, vault, "Notes/school/lesson.md", embed=False)
+    monkeypatch.setattr(context.search_mod, "hybrid", lambda *args, **kwargs: [])
     answering(monkeypatch, stats={"duration_s": 1, "output_tokens": 5})
     monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": [1]}, {"duration_s": 0.3}))
     records = []
@@ -271,8 +272,8 @@ def test_run_turn_writes_a_replayable_trace(con, vault, monkeypatch):
 
 def test_the_trace_counts_the_turns_the_window_dropped(con, vault, monkeypatch):
     write(vault, "Notes/school/lesson.md", "gradient descent")
-    source = copilot_context.sync_note(con, vault, "Notes/school/lesson.md", embed=False)
-    monkeypatch.setattr(copilot_context.search_mod, "hybrid", lambda *args, **kwargs: [])
+    source = context.sync_note(con, vault, "Notes/school/lesson.md", embed=False)
+    monkeypatch.setattr(context.search_mod, "hybrid", lambda *args, **kwargs: [])
     answering(monkeypatch)
     monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
     records = []
@@ -287,8 +288,8 @@ def test_the_trace_counts_the_turns_the_window_dropped(con, vault, monkeypatch):
 
 def test_run_turn_traces_a_refused_turn(con, vault, monkeypatch):
     write(vault, "Notes/school/lesson.md", "gradient descent")
-    source = copilot_context.sync_note(con, vault, "Notes/school/lesson.md", embed=False)
-    monkeypatch.setattr(copilot_context.search_mod, "hybrid", lambda *args, **kwargs: [])
+    source = context.sync_note(con, vault, "Notes/school/lesson.md", embed=False)
+    monkeypatch.setattr(context.search_mod, "hybrid", lambda *args, **kwargs: [])
     answering(monkeypatch, content="")
     records = []
     monkeypatch.setattr(copilot.trace, "record", lambda kind, payload: records.append((kind, payload)))
@@ -303,8 +304,8 @@ def test_run_turn_traces_a_refused_turn(con, vault, monkeypatch):
 
 def test_a_turn_that_fails_in_a_callback_is_traced_with_the_error_type(con, vault, monkeypatch):
     write(vault, "Notes/school/lesson.md", "gradient descent")
-    source = copilot_context.sync_note(con, vault, "Notes/school/lesson.md", embed=False)
-    monkeypatch.setattr(copilot_context.search_mod, "hybrid", lambda *a, **k: [])
+    source = context.sync_note(con, vault, "Notes/school/lesson.md", embed=False)
+    monkeypatch.setattr(context.search_mod, "hybrid", lambda *a, **k: [])
     answering(monkeypatch)
     records = []
     monkeypatch.setattr(copilot.trace, "record", lambda kind, payload: records.append((kind, payload)))
@@ -321,7 +322,7 @@ def test_a_turn_that_fails_in_a_callback_is_traced_with_the_error_type(con, vaul
 # --- nothing rides in the system prompt but the persona and the notes ----------------------
 
 def _answering(monkeypatch, seen: dict):
-    monkeypatch.setattr(copilot_context.search_mod, "hybrid", lambda *a, **k: [])
+    monkeypatch.setattr(context.search_mod, "hybrid", lambda *a, **k: [])
     answering(monkeypatch, seen=seen)
     monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
 
@@ -334,7 +335,7 @@ def test_the_profile_is_never_injected_even_when_the_file_is_there(con, vault, m
     (vault / "Profile/me.md").write_text(
         "---\ntitle: me\n---\n\nI am Alex. Terse answers.\n")
     write(vault, "Notes/school/lesson.md", "gradient descent")
-    source = copilot_context.sync_note(con, vault, "Notes/school/lesson.md", embed=False)
+    source = context.sync_note(con, vault, "Notes/school/lesson.md", embed=False)
     seen = {}
     _answering(monkeypatch, seen)
     copilot.run_turn(con, source["id"], "q", [], "quick", vault=vault)
@@ -360,13 +361,13 @@ def test_the_model_sees_the_images_beside_the_passages_it_reads(con, vault, monk
     _png(vault, "Notes/school/Attachements/chain.png")
     _png(vault, "Notes/school/figs/bayes rule.png")
     _png(vault, "Notes/school/other.png")
-    source = copilot_context.sync_note(con, vault, "Notes/school/lesson.md", embed=False)
+    source = context.sync_note(con, vault, "Notes/school/lesson.md", embed=False)
     sibling = {"n": 9, "source_id": "sib", "path": "Notes/school/b.md", "title": "b",
                "heading": None, "text": "![[other.png]]"}
-    real_collect = copilot_context.collect_evidence
-    monkeypatch.setattr(copilot_context, "collect_evidence", lambda *a, **k: (
+    real_collect = context.collect_evidence
+    monkeypatch.setattr(context, "collect_evidence", lambda *a, **k: (
         lambda got: ([*got[0], sibling], got[1]))(real_collect(*a, **k)))
-    monkeypatch.setattr(copilot_context.search_mod, "hybrid", lambda *args, **kwargs: [])
+    monkeypatch.setattr(context.search_mod, "hybrid", lambda *args, **kwargs: [])
     sent = {}
     answering(monkeypatch, seen=sent)
     monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
@@ -390,21 +391,21 @@ def test_a_screenshot_heavy_note_sends_only_the_capped_few(con, vault, monkeypat
     write(vault, "Notes/school/lecture.md", body)
     for i in range(20):
         _png(vault, f"Notes/school/Attachements/slide-{i:02d}.png")
-    source = copilot_context.sync_note(con, vault, "Notes/school/lecture.md", embed=False)
-    monkeypatch.setattr(copilot_context.search_mod, "hybrid", lambda *args, **kwargs: [])
+    source = context.sync_note(con, vault, "Notes/school/lecture.md", embed=False)
+    monkeypatch.setattr(context.search_mod, "hybrid", lambda *args, **kwargs: [])
     sent = {}
     answering(monkeypatch, seen=sent)
     monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
     copilot.run_turn(con, source["id"], "Quiz me", [], "quick", vault=vault)
     shown = sent["messages"][-2]
-    assert len(shown["images"]) == copilot_context.MAX_NOTE_IMAGES
+    assert len(shown["images"]) == context.MAX_NOTE_IMAGES
     assert "`slide-00.png`" in shown["content"]
 
 
 def test_a_note_without_images_adds_no_message(con, vault, monkeypatch):
     write(vault, "Notes/school/plain.md", "just words")
-    source = copilot_context.sync_note(con, vault, "Notes/school/plain.md", embed=False)
-    monkeypatch.setattr(copilot_context.search_mod, "hybrid", lambda *args, **kwargs: [])
+    source = context.sync_note(con, vault, "Notes/school/plain.md", embed=False)
+    monkeypatch.setattr(context.search_mod, "hybrid", lambda *args, **kwargs: [])
     sent = {}
     answering(monkeypatch, seen=sent)
     monkeypatch.setattr(copilot.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
@@ -420,8 +421,8 @@ def test_an_image_whose_passage_retrieval_missed_still_rides_after_the_packs(con
           "## Scoring\n![[psi.png]] for each label\n\n## Naive Bayes\nMLE ![[mle.png]]")
     _png(vault, "Notes/school/psi.png")
     _png(vault, "Notes/school/mle.png")
-    source = copilot_context.sync_note(con, vault, "Notes/school/ch2.md", embed=False)
+    source = context.sync_note(con, vault, "Notes/school/ch2.md", embed=False)
     evidence = [{"n": 1, "source_id": source["id"], "path": source["path"], "title": "ch2",
                  "heading": "Naive Bayes", "text": "MLE ![[mle.png]]"}]
-    shown, _ = copilot_context.open_note_images(vault, source, evidence)
+    shown, _ = context.open_note_images(vault, source, evidence)
     assert [name for name, _ in shown] == ["mle.png", "psi.png"]

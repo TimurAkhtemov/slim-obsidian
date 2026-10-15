@@ -8,13 +8,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 
-from . import config as config_mod, edits as edits_mod
-from .index import embed as embed_mod, ingest as ingest_mod
-from . import llm, skills as skills_mod
-from .index import search as search_mod
-from .vault import note_images
-from .index.chunk import HEADING, source_text
-from .vault.frontmatter import body_after_frontmatter, parse_frontmatter
+from .. import config as config_mod, llm
+from . import edits as edits_mod, skills as skills_mod
+from ..index import embed as embed_mod, ingest as ingest_mod, search as search_mod
+from ..vault import note_images
+from ..index.chunk import HEADING, source_text
+from ..vault.frontmatter import body_after_frontmatter, parse_frontmatter
 
 # Skills read WHOLE notes, chosen by code. Half the resident window in chars/4, so
 # the answer and the thinking keep room and every call still uses num_ctx=RESIDENT_CTX (a

@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from slim import skills
+from slim.copilot import skills
 
 
 def write_skill(vault: Path, name: str, text: str) -> None:

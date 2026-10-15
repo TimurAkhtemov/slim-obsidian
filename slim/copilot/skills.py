@@ -26,7 +26,7 @@ from pathlib import Path
 import yaml
 
 VAULT_DIR = "Skills"
-BUILTIN_DIR = Path(__file__).with_name("skills")
+BUILTIN_DIR = Path(__file__).parent.parent / "skills"
 INPUTS = ("note", "selection", "folder")
 OUTPUTS = ("chat", "edit", "new-note")
 MODES = ("quick", "deep")

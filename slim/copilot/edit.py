@@ -7,8 +7,9 @@ import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from . import edits as edits_mod, edits_note, llm, skills as skills_mod
-from .copilot_context import CopilotError
+from .. import llm
+from . import blocks as edits_note, edits as edits_mod, skills as skills_mod
+from .context import CopilotError
 
 # THE EDITING RUN (`_turn`). Measured on the prototype (2026-10-12, 13 cases, 5 runs each):
 # prompt instructions hold this model to no limit, so every limit is code.

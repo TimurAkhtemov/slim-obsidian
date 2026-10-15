@@ -31,8 +31,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import (chat_record, config, copilot as copilot_mod, copilot_context, copilot_images, db,
-               edits as edits_mod, edits_note, skills as skills_mod, threads as threads_mod)
+from . import chat_record, config, db
+from .copilot import (blocks, context, edits as edits_mod, images as copilot_images,
+                      skills as skills_mod, threads as threads_mod, turn as copilot_mod)
 
 DEFAULT_PORT = 7546          # "slim" on a phone keypad
 MAX_QUESTION_CHARS = 4000
@@ -312,7 +313,7 @@ class _Handler(BaseHTTPRequestHandler):
         related = bool(data.get("related", True))
         con = db.connect()
         try:
-            payload = copilot_context.context_payload(con, config.VAULT, path, related=related)
+            payload = context.context_payload(con, config.VAULT, path, related=related)
         except copilot_mod.CopilotError as exc:
             self._send_json(400, {"error": str(exc)})
             return
@@ -373,7 +374,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if before is None:
             self._send_json(404, {"error": "no such copy"})
-        elif edits_note.same_recording(before, doc):
+        elif blocks.same_recording(before, doc):
             self._send_json(200, {"text": before})
         else:
             self._send_json(200, {"refused": RESTORE_REFUSED})
@@ -401,7 +402,7 @@ class _Handler(BaseHTTPRequestHandler):
         # The selection is the input of a selection skill; it writes nothing here. Where it
         # starts, in the editor's UTF-16 units: the same words can be in the note twice.
         selection = data.get("selection")
-        selection = selection[:copilot_context.MAX_SELECTION_CHARS] if isinstance(selection, str) else ""
+        selection = selection[:context.MAX_SELECTION_CHARS] if isinstance(selection, str) else ""
         selection_from = data.get("selection_from")
         if type(selection_from) is not int or selection_from < 0:
             selection_from = None

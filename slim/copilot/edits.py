@@ -26,11 +26,11 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
-from . import edits_note
-from .index.chunk import TRANSCRIPT_MARKER
-from .config import EXCLUDED_DIRS
-from .edits_note import Block, Note, ToolError
-from .vault.frontmatter import parse_frontmatter, set_frontmatter
+from . import blocks as edits_note
+from ..index.chunk import TRANSCRIPT_MARKER
+from ..config import EXCLUDED_DIRS
+from .blocks import Block, Note, ToolError
+from ..vault.frontmatter import parse_frontmatter, set_frontmatter
 
 # A lone `...` in new text is the model's "the rest as before", and it would delete the rest.
 _ELISION = re.compile(r"^[ \t]*(?:\.\.\.|…)[ \t]*$", re.MULTILINE)

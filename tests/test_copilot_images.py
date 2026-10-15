@@ -3,7 +3,7 @@ import base64
 
 import pytest
 
-from slim import copilot, copilot_images, threads
+from slim.copilot import turn as copilot, images as copilot_images, threads
 
 
 PNG = base64.b64decode(

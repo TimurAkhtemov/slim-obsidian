@@ -13,8 +13,8 @@ import difflib
 import re
 from dataclasses import dataclass
 
-from .index.chunk import TRANSCRIPT_MARKER
-from .vault.frontmatter import parse_frontmatter
+from ..index.chunk import TRANSCRIPT_MARKER
+from ..vault.frontmatter import parse_frontmatter
 
 _MEETING_OPEN = re.compile(r"^\s*(`{3,})slim-meeting")
 

@@ -23,8 +23,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import PurePosixPath
 
-from . import trace
-from .config import DATA_DIR
+from .. import trace
+from ..config import DATA_DIR
 
 THREADS_DIR = DATA_DIR / "threads"
 MAX_TURNS = 500
@@ -72,7 +72,7 @@ def _clean_turns(raw) -> list[dict]:
         if role == "you" and item.get("attachments"):
             # Import here to keep the thread store usable on its own while letting the image
             # contract own the exact MIME/id/size whitelist.
-            from .copilot_images import ImageError, clean_refs
+            from .images import ImageError, clean_refs
             try:
                 turn["attachments"] = clean_refs(item.get("attachments"))
             except ImageError as exc:
