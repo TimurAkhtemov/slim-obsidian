@@ -5,7 +5,7 @@ import pytest
 
 from slim import record
 from slim.chunk import strip_derived_blocks
-from slim.frontmatter import parse_frontmatter
+from slim.vault.frontmatter import parse_frontmatter
 
 NOW = datetime(2026, 8, 4, 14, 30, tzinfo=timezone.utc)
 
@@ -237,7 +237,7 @@ def test_a_comma_inside_a_topic_does_not_split_it_in_two(tmp_path):
     unsanitised value silently becomes two — measured on the index_terms field that used to
     sit beside this one: "Mercer's condition, restated" parsed as ["Mercer's condition",
     "restated"]. Quoting cannot fix it; the value must be clean."""
-    from slim.frontmatter import parse_frontmatter
+    from slim.vault.frontmatter import parse_frontmatter
     r = _write(tmp_path, topics=["Mercer's condition, restated", "school"])
     fm, _ = parse_frontmatter(r.note.read_text(encoding="utf-8"))
     assert len(fm["topics"]) == 2
@@ -245,7 +245,7 @@ def test_a_comma_inside_a_topic_does_not_split_it_in_two(tmp_path):
 
 
 def test_a_bracket_in_a_topic_cannot_truncate_the_list(tmp_path):
-    from slim.frontmatter import parse_frontmatter
+    from slim.vault.frontmatter import parse_frontmatter
     r = _write(tmp_path, topics=["kernel [trick]", "school"])
     fm, _ = parse_frontmatter(r.note.read_text(encoding="utf-8"))
     assert len(fm["topics"]) == 2
@@ -254,7 +254,7 @@ def test_a_bracket_in_a_topic_cannot_truncate_the_list(tmp_path):
 def test_a_newline_or_quote_in_the_title_cannot_break_the_frontmatter(tmp_path):
     """The title arrives from the plugin. A stray quote or newline must not corrupt the
     block — every later pass reads this note's frontmatter."""
-    from slim.frontmatter import parse_frontmatter
+    from slim.vault.frontmatter import parse_frontmatter
     r = _write(tmp_path, title='They said "hello"\nthen left')
     text = r.note.read_text(encoding="utf-8")
     fm, skip = parse_frontmatter(text)
@@ -455,7 +455,7 @@ def test_audio_frontmatter_has_one_writer(tmp_path):
     append path was setting `audio`, `audio_sha256` and `audio_seconds` from chat.py, reaching
     into a private helper here to format them."""
     r = _write(tmp_path)
-    from slim.frontmatter import parse_frontmatter
+    from slim.vault.frontmatter import parse_frontmatter
     grown = record.append_audio_frontmatter(
         r.note.read_text(encoding="utf-8"),
         rels=["Attachments/Recordings/b.webm"], digests=["b" * 64], seconds=60.0)

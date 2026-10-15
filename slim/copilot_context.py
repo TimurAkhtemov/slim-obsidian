@@ -9,9 +9,10 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 
 from . import config as config_mod, edits as edits_mod, embed as embed_mod, ingest as ingest_mod
-from . import llm, note_images, search as search_mod, skills as skills_mod
+from . import llm, search as search_mod, skills as skills_mod
+from .vault import note_images
 from .chunk import HEADING, source_text
-from .frontmatter import body_after_frontmatter, parse_frontmatter
+from .vault.frontmatter import body_after_frontmatter, parse_frontmatter
 
 # Skills read WHOLE notes, chosen by code. Half the resident window in chars/4, so
 # the answer and the thinking keep room and every call still uses num_ctx=RESIDENT_CTX (a

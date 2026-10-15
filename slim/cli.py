@@ -6,7 +6,8 @@ import re
 import time
 from pathlib import Path
 
-from . import db, embed as embed_mod, ingest as ingest_mod, trace, vaultidentity
+from . import db, embed as embed_mod, ingest as ingest_mod, trace
+from .vault import identity
 from .config import DB_PATH, VAULT
 
 
@@ -20,14 +21,14 @@ def unembedded_count(con) -> int:
 
 
 def cmd_ingest(args):
-    vaultidentity.require_vault_dir()
+    identity.require_vault_dir()
     con = db.connect()
     # ⚠ The removal sweep marks every source it cannot find under the CURRENT vault deleted.
     # That was safe while the path only moved when someone changed the env by hand; discovery
     # can now change it with nobody asking (a second vault opened in Obsidian, an iCloud copy
     # found), and one such run would empty the index — and a rebuild mints new source ids,
     # which orphans every saved copilot chat. So: index one vault, or say the move was meant.
-    vaultidentity.require_vault_identity(con, allow_move=getattr(args, "vault_moved", False))
+    identity.require_vault_identity(con, allow_move=getattr(args, "vault_moved", False))
     t0 = time.time()
     stats = ingest_mod.ingest(con, verbose=args.verbose)
     # Embedding is PART of indexing, never a second command someone must run: vectors are keyed on
@@ -57,10 +58,10 @@ def cmd_memos(args):
 
     from . import inbox as inbox_mod, voicememos
 
-    vaultidentity.require_vault_dir()
+    identity.require_vault_dir()
     identity_con = db.connect()
     try:
-        vaultidentity.require_vault_identity(identity_con)
+        identity.require_vault_identity(identity_con)
     finally:
         identity_con.close()
 
@@ -105,10 +106,10 @@ def cmd_chat(args):
     from . import chat as chat_mod
     if args.parent_pid is not None and args.parent_pid <= 0:
         raise SystemExit("--parent-pid must be positive")
-    vaultidentity.require_vault_dir()
+    identity.require_vault_dir()
     identity_con = db.connect()
     try:
-        vaultidentity.require_vault_identity(identity_con)
+        identity.require_vault_identity(identity_con)
     finally:
         identity_con.close()
     port = args.port if args.port is not None else chat_mod.DEFAULT_PORT
@@ -173,7 +174,7 @@ def cmd_status(args):
 
     vault_status = "" if VAULT.is_dir() else "  ⚠ directory not found"
     print(f"vault:     {VAULT}{vault_status}")
-    print(f"pin:       {vaultidentity.pin_status(con)}")
+    print(f"pin:       {identity.pin_status(con)}")
     print(f"db:        {DB_PATH}")
     print(f"sources:   {one('SELECT COUNT(*) FROM sources WHERE deleted=0')} active, "
           f"{one('SELECT COUNT(*) FROM sources WHERE deleted=1')} deleted")
@@ -197,10 +198,10 @@ def cmd_reflect(args):
     content here; the LOCAL model does."""
     from . import reflect as reflect_mod
 
-    vaultidentity.require_vault_dir()
+    identity.require_vault_dir()
     con = db.connect()
     try:
-        vaultidentity.require_vault_identity(con)
+        identity.require_vault_identity(con)
     except BaseException:
         con.close()
         raise

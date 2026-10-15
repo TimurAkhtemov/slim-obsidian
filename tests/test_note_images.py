@@ -1,7 +1,7 @@
 """Images embedded in a note: resolved where Obsidian finds them, never outside the vault."""
 import base64
 
-from slim import note_images
+from slim.vault import note_images
 
 
 def note_image(root, rel, width=10):

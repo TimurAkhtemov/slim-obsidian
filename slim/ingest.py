@@ -16,7 +16,7 @@ from pathlib import Path
 
 from .chunk import chunk_markdown, source_text
 from .config import EXCLUDED_DIRS, EXCLUDED_TOP, VAULT
-from .frontmatter import parse_frontmatter
+from .vault.frontmatter import parse_frontmatter
 
 
 class IngestError(RuntimeError):

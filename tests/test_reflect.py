@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from slim import db, ingest, reflect
-from slim.frontmatter import parse_frontmatter
+from slim.vault.frontmatter import parse_frontmatter
 
 
 @pytest.fixture

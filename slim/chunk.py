@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 
 from .config import CHUNK_MAX, CHUNK_MIN, CHUNK_TARGET
-from .frontmatter import parse_frontmatter
+from .vault.frontmatter import parse_frontmatter
 
 HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
 

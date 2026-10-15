@@ -30,7 +30,7 @@ from . import edits_note
 from .chunk import TRANSCRIPT_MARKER
 from .config import EXCLUDED_DIRS
 from .edits_note import Block, Note, ToolError
-from .frontmatter import parse_frontmatter, set_frontmatter
+from .vault.frontmatter import parse_frontmatter, set_frontmatter
 
 # A lone `...` in new text is the model's "the rest as before", and it would delete the rest.
 _ELISION = re.compile(r"^[ \t]*(?:\.\.\.|…)[ \t]*$", re.MULTILINE)

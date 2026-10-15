@@ -5,13 +5,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from slim import chat as chat_mod, cli, config, vaultidentity
+from slim import chat as chat_mod, cli, config
+from slim.vault import identity
 
 
 def use_vault(monkeypatch, vault):
     """The CLI reports the vault and vaultidentity guards it; each reads it at import."""
     monkeypatch.setattr(cli, "VAULT", vault)
-    monkeypatch.setattr(vaultidentity, "VAULT", vault)
+    monkeypatch.setattr(identity, "VAULT", vault)
 
 
 def stub_ingest(monkeypatch, tmp_path, vault):
@@ -50,7 +51,7 @@ def test_first_ingest_pins_the_vault_it_indexed(monkeypatch, tmp_path):
 
     cli.cmd_ingest(SimpleNamespace(verbose=False))
 
-    assert vaultidentity.pinned_vault() == vault
+    assert identity.pinned_vault() == vault
 
 
 def test_existing_unpinned_index_refuses_before_the_removal_sweep(
@@ -75,7 +76,7 @@ def test_existing_unpinned_index_refuses_before_the_removal_sweep(
 
     assert exc.value.code == 1
     assert calls == []
-    assert vaultidentity.pinned_vault() is None
+    assert identity.pinned_vault() is None
     assert "existing index has no vault pin" in capsys.readouterr().out
 
 
@@ -96,7 +97,7 @@ def test_explicit_env_cannot_adopt_an_existing_unpinned_index(monkeypatch, tmp_p
         cli.cmd_ingest(SimpleNamespace(verbose=False))
 
     assert exc.value.code == 1
-    assert vaultidentity.pinned_vault() is None
+    assert identity.pinned_vault() is None
     assert "--vault-moved" in capsys.readouterr().out
 
 
@@ -111,7 +112,7 @@ def test_existing_unpinned_index_can_explicitly_adopt_the_current_vault(monkeypa
 
     cli.cmd_ingest(SimpleNamespace(verbose=False, vault_moved=True))
 
-    assert vaultidentity.pinned_vault() == vault
+    assert identity.pinned_vault() == vault
 
 
 def test_ingest_pins_before_embedding_can_fail(monkeypatch, tmp_path):
@@ -126,7 +127,7 @@ def test_ingest_pins_before_embedding_can_fail(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="offline"):
         cli.cmd_ingest(SimpleNamespace(verbose=False))
 
-    assert vaultidentity.pinned_vault() == vault
+    assert identity.pinned_vault() == vault
 
 
 def test_ingest_refuses_a_vault_the_index_was_not_built_from(monkeypatch, tmp_path, capsys):
@@ -152,7 +153,7 @@ def test_ingest_refuses_a_vault_the_index_was_not_built_from(monkeypatch, tmp_pa
     out = capsys.readouterr().out
     assert str(first) in out and str(second) in out
     assert "--vault-moved" in out
-    assert vaultidentity.pinned_vault() == first       # the pin is not moved by a refusal
+    assert identity.pinned_vault() == first       # the pin is not moved by a refusal
 
 
 def test_vault_moved_repoints_the_pin(monkeypatch, tmp_path):
@@ -167,7 +168,7 @@ def test_vault_moved_repoints_the_pin(monkeypatch, tmp_path):
 
     cli.cmd_ingest(SimpleNamespace(verbose=False, vault_moved=True))
 
-    assert vaultidentity.pinned_vault() == second
+    assert identity.pinned_vault() == second
 
 
 def test_memos_refuses_a_mismatched_vault_before_copying(monkeypatch, tmp_path):
@@ -178,7 +179,7 @@ def test_memos_refuses_a_mismatched_vault_before_copying(monkeypatch, tmp_path):
     second = tmp_path / "Second"
     second.mkdir()
     con = stub_ingest(monkeypatch, tmp_path, first)
-    vaultidentity.pin_vault(first)
+    identity.pin_vault(first)
     use_vault(monkeypatch, second)
     calls = []
     monkeypatch.setattr(voicememos, "sweep", lambda **kw: calls.append("sweep") or [])
@@ -199,7 +200,7 @@ def test_reflect_refuses_a_mismatched_vault_before_the_model_or_write(monkeypatc
     second = tmp_path / "Second"
     second.mkdir()
     con = stub_ingest(monkeypatch, tmp_path, first)
-    vaultidentity.pin_vault(first)
+    identity.pin_vault(first)
     use_vault(monkeypatch, second)
     calls = []
     monkeypatch.setattr(reflect, "reflect", lambda *a, **kw: calls.append(1))
@@ -217,7 +218,7 @@ def test_chat_refuses_a_mismatched_vault_before_serving_writes(monkeypatch, tmp_
     second = tmp_path / "Second"
     second.mkdir()
     con = stub_ingest(monkeypatch, tmp_path, first)
-    vaultidentity.pin_vault(first)
+    identity.pin_vault(first)
     use_vault(monkeypatch, second)
     calls = []
     monkeypatch.setattr(chat_mod, "serve", lambda *a, **kw: calls.append(1))
@@ -237,7 +238,7 @@ def test_vault_dir_missing_is_traced(monkeypatch, tmp_path):
     traced = []
     monkeypatch.setattr(cli.trace, "record", lambda kind, data: traced.append((kind, data)))
     with pytest.raises(SystemExit):
-        vaultidentity.require_vault_dir()
+        identity.require_vault_dir()
     assert any(k == "vault_identity" and d["reason"] == "vault_dir_missing" for k, d in traced)
 
 
@@ -262,7 +263,7 @@ def test_pinned_mismatch_refusal_is_traced(monkeypatch, tmp_path):
     second = tmp_path / "B"
     second.mkdir()
     con = stub_ingest(monkeypatch, tmp_path, first)
-    vaultidentity.pin_vault(first)
+    identity.pin_vault(first)
     use_vault(monkeypatch, second)
     traced = []
     monkeypatch.setattr(cli.trace, "record", lambda kind, data: traced.append((kind, data)))

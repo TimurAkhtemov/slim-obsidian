@@ -6,13 +6,13 @@ the index may use it."""
 import os
 from pathlib import Path
 
-from . import trace
-from .config import VAULT
+from .. import trace
+from ..config import VAULT
 
 
 def pinned_vault() -> Path | None:
     """The vault this index was built from, or None before the first ingest."""
-    from . import config
+    from .. import config
     pin = config.DATA_DIR / "vault_pin"
     if not pin.is_file():
         return None
@@ -23,7 +23,7 @@ def pinned_vault() -> Path | None:
 
 
 def pin_vault(vault: Path) -> None:
-    from . import config
+    from .. import config
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     pin = config.DATA_DIR / "vault_pin"
     partial = pin.with_name(f".{pin.name}.{os.getpid()}.part")

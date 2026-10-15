@@ -20,7 +20,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import audio, enrich, notefile, trace, transcribe as tx, voicetags
+from . import audio, enrich, trace, transcribe as tx, voicetags
+from .vault import notefile
 from .config import DATA_DIR, VAULT
 
 INBOX = {"journal": VAULT / "Inbox" / "Journal"}

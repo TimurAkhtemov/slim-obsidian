@@ -15,7 +15,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from slim import chat, cli, config, vaultidentity
+from slim import chat, cli, config
+from slim.vault import identity
 
 
 # --- loopback-only, by construction ---------------------------------------------------------
@@ -125,9 +126,9 @@ def test_a_managed_parent_pid_must_be_positive(parent_pid):
 
 def test_chat_cli_passes_the_managed_parent_to_the_server(monkeypatch):
     called = {}
-    monkeypatch.setattr(vaultidentity, "require_vault_dir", lambda: None)
+    monkeypatch.setattr(identity, "require_vault_dir", lambda: None)
     monkeypatch.setattr(cli.db, "connect", lambda: SimpleNamespace(close=lambda: None))
-    monkeypatch.setattr(vaultidentity, "require_vault_identity", lambda _con: None)
+    monkeypatch.setattr(identity, "require_vault_identity", lambda _con: None)
     monkeypatch.setattr(chat, "serve", lambda host, port, *, parent_pid: called.update(
         host=host, port=port, parent_pid=parent_pid))
 

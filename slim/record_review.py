@@ -55,7 +55,7 @@ def handle_record_summary(*, note: str, instructions: str = "", job_id: str = ""
     died is that shape exactly. This raises and writes nothing.
     """
     from . import record as record_mod, summarize
-    from .frontmatter import parse_frontmatter
+    from .vault.frontmatter import parse_frontmatter
     from .config import VAULT as _VAULT
 
     vault = vault or _VAULT
@@ -123,7 +123,7 @@ def handle_record_apply(*, note: str, dest_dir: str, type_tag: str, topics: list
     """
     from . import record as record_mod
     from . import summarize
-    from .frontmatter import set_frontmatter
+    from .vault.frontmatter import set_frontmatter
     from .config import VAULT as _VAULT
 
     vault = vault or _VAULT
@@ -153,7 +153,7 @@ def handle_record_apply(*, note: str, dest_dir: str, type_tag: str, topics: list
         # makes the name content-addressed, and neither is theirs to change by retitling.
         name = src.name
         if title.strip():
-            from . import notefile
+            from .vault import notefile
             updates["title"] = f'"{record_mod._clean_scalar(title)}"'
             parts = src.stem.split("--")
             if len(parts) >= 3:
@@ -187,7 +187,7 @@ def handle_record_review(*, note: str, vault: Path | None = None) -> dict:
     Approving the card as it stands is agreeing with where SLIM put it, so `filed_by` goes,
     as it does on apply: its presence means "SLIM guessed and nobody has looked"."""
     from . import record as record_mod
-    from .frontmatter import parse_frontmatter
+    from .vault.frontmatter import parse_frontmatter
     from .config import VAULT as _VAULT
 
     vault = vault or _VAULT

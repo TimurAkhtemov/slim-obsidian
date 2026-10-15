@@ -5,7 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from slim import cli, db, inbox, vaultidentity, voicememos
+from slim import cli, db, inbox, voicememos
+from slim.vault import identity
 from slim.ingest import ingest
 from tests.test_ingest import counts
 from tests.test_vaultidentity import stub_ingest, use_vault
@@ -40,7 +41,7 @@ def _status_out(monkeypatch, tmp_path, capsys, *, pinned=None, populated=False):
         con.execute("INSERT INTO sources (id, path, title, type, authored_at, current_hash) "
                     "VALUES ('a', 'Notes/a.md', 'a', 'note', '2026-09-01', 'hash')")
     if pinned is not None:
-        vaultidentity.pin_vault(pinned)
+        identity.pin_vault(pinned)
     monkeypatch.setattr(db, "connect", lambda *a, **kw: con)
     cli.cmd_status(SimpleNamespace())
     return capsys.readouterr().out
@@ -56,19 +57,19 @@ def test_status_reports_an_index_built_from_another_vault(monkeypatch, tmp_path,
     the counts, rather than refusing the way a writing command does."""
     line = _status(monkeypatch, tmp_path, capsys, pinned=tmp_path / "Elsewhere", populated=True)
     assert "⚠" in line and "Elsewhere" in line and "--vault-moved" in line
-    assert vaultidentity.pinned_vault() == tmp_path / "Elsewhere", "reporting never re-pins"
+    assert identity.pinned_vault() == tmp_path / "Elsewhere", "reporting never re-pins"
 
 
 def test_status_reports_a_populated_index_with_no_pin(monkeypatch, tmp_path, capsys):
     line = _status(monkeypatch, tmp_path, capsys, populated=True)
     assert "⚠" in line and "--vault-moved" in line
-    assert vaultidentity.pinned_vault() is None, "reporting never adopts"
+    assert identity.pinned_vault() is None, "reporting never adopts"
 
 
 def test_status_on_a_new_index_is_not_a_warning(monkeypatch, tmp_path, capsys):
     line = _status(monkeypatch, tmp_path, capsys)
     assert "⚠" not in line
-    assert vaultidentity.pinned_vault() is None
+    assert identity.pinned_vault() is None
 
 
 def test_status_names_recordings_that_never_filed(monkeypatch, tmp_path, capsys):
@@ -149,9 +150,9 @@ def _written():
 
 def test_memos_cli_runs_sweep_then_process_then_indexes_when_written(monkeypatch):
     calls: list[str] = []
-    monkeypatch.setattr(vaultidentity, "require_vault_dir", lambda: None)
+    monkeypatch.setattr(identity, "require_vault_dir", lambda: None)
     monkeypatch.setattr(cli.db, "connect", lambda: SimpleNamespace(close=lambda: None))
-    monkeypatch.setattr(vaultidentity, "require_vault_identity", lambda _con: None)
+    monkeypatch.setattr(identity, "require_vault_identity", lambda _con: None)
     monkeypatch.setattr(voicememos, "sweep",
                         lambda container, dry_run: (calls.append("sweep"), [])[1])
     monkeypatch.setattr(inbox, "process",
@@ -164,9 +165,9 @@ def test_memos_cli_runs_sweep_then_process_then_indexes_when_written(monkeypatch
 
 def test_memos_cli_skips_index_when_nothing_written(monkeypatch):
     calls: list[str] = []
-    monkeypatch.setattr(vaultidentity, "require_vault_dir", lambda: None)
+    monkeypatch.setattr(identity, "require_vault_dir", lambda: None)
     monkeypatch.setattr(cli.db, "connect", lambda: SimpleNamespace(close=lambda: None))
-    monkeypatch.setattr(vaultidentity, "require_vault_identity", lambda _con: None)
+    monkeypatch.setattr(identity, "require_vault_identity", lambda _con: None)
     monkeypatch.setattr(voicememos, "sweep",
                         lambda container, dry_run: (calls.append("sweep"), [])[1])
     monkeypatch.setattr(inbox, "process",
@@ -179,9 +180,9 @@ def test_memos_cli_skips_index_when_nothing_written(monkeypatch):
 
 def test_memos_cli_dry_run_never_indexes(monkeypatch):
     calls: list[str] = []
-    monkeypatch.setattr(vaultidentity, "require_vault_dir", lambda: None)
+    monkeypatch.setattr(identity, "require_vault_dir", lambda: None)
     monkeypatch.setattr(cli.db, "connect", lambda: SimpleNamespace(close=lambda: None))
-    monkeypatch.setattr(vaultidentity, "require_vault_identity", lambda _con: None)
+    monkeypatch.setattr(identity, "require_vault_identity", lambda _con: None)
     monkeypatch.setattr(voicememos, "sweep",
                         lambda container, dry_run: (calls.append("sweep"), [])[1])
     monkeypatch.setattr(inbox, "process",

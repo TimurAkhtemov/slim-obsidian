@@ -205,7 +205,7 @@ def append_audio_frontmatter(text: str, *, rels: list[str], digests: list[str],
     keeps that provenance, and a resume that produced no model name never blanks it. `speakers_by`
     follows the same rule.
     """
-    from .frontmatter import parse_frontmatter, set_frontmatter
+    from .vault.frontmatter import parse_frontmatter, set_frontmatter
 
     fm, _ = parse_frontmatter(text)
 
@@ -239,7 +239,7 @@ def write_note_text(path: Path, text: str) -> None:
     transcript. Every derived edit (notes autosave, retry, append) goes through here so an
     interrupted write leaves the previous note intact rather than half a recording.
     """
-    from . import notefile
+    from .vault import notefile
     notefile.atomic_write_text(path, text)
 
 
@@ -251,7 +251,7 @@ def set_review_status(text: str, status: str) -> str:
     """
     if status not in {"pending", "complete"}:
         raise ValueError(f"invalid recording review status: {status!r}")
-    from .frontmatter import set_frontmatter
+    from .vault.frontmatter import set_frontmatter
     return set_frontmatter(text, {"review_status": status})
 
 
@@ -391,7 +391,8 @@ def write_recording(*, audio_src: Path | list[Path], title: str, when: datetime,
                     transcribed_at: datetime | None = None,
                     draft_src: Path | None = None,
                     vault: Path = VAULT) -> Recorded:
-    from . import inbox, notefile
+    from . import inbox
+    from .vault import notefile
 
     sources = [audio_src] if isinstance(audio_src, Path) else list(audio_src)
     archived_all, digests = [], []

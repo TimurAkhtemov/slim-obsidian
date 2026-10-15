@@ -8,7 +8,8 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import config, llm, note_images, record_state, trace
+from . import config, llm, record_state, trace
+from .vault import note_images
 
 _DRAFT_SUFFIX = ".slim-draft.md"
 
@@ -402,7 +403,7 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
     edited by hand. ⚠ Silence is refused exactly as the recording path refuses it.
     """
     from . import record as record_mod, transcribe
-    from .frontmatter import parse_frontmatter
+    from .vault.frontmatter import parse_frontmatter
     from .config import VAULT as _VAULT
 
     vault = vault or _VAULT

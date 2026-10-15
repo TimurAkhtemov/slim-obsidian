@@ -1,7 +1,7 @@
 """frontmatter: parsing and writing."""
 import pytest
 
-from slim import frontmatter
+from slim.vault import frontmatter
 
 
 # --- the frontmatter writer ---------------------------------------------------------------

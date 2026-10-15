@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass
 
 from .chunk import TRANSCRIPT_MARKER
-from .frontmatter import parse_frontmatter
+from .vault.frontmatter import parse_frontmatter
 
 _MEETING_OPEN = re.compile(r"^\s*(`{3,})slim-meeting")
 

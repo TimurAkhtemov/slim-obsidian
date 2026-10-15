@@ -24,7 +24,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import audio, inbox, notefile, trace
+from . import audio, inbox, trace
+from .vault import notefile
 from .config import DATA_DIR
 
 # Apple's synced Voice Memos recordings folder. Overridable everywhere via `container=` so the

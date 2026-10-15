@@ -12,7 +12,7 @@ def test_an_edit_moves_the_note_and_marks_the_fields_as_theirs(tmp_path, monkeyp
     overrides a declared value, so a card edit that only writes the value gets reverted by a
     later pass — they correct the same note twice and concludes correcting does not work."""
     from slim import record_review
-    from slim.frontmatter import parse_frontmatter
+    from slim.vault.frontmatter import parse_frontmatter
     r = _existing(tmp_path, monkeypatch)
     out = record_review.handle_record_apply(note=str(r.note.relative_to(tmp_path)),
                                             dest_dir="Notes/school/CS201 ML", type_tag="lecture",
@@ -31,7 +31,7 @@ def test_approval_without_edits_completes_review_and_owns_the_filing(tmp_path, m
     left behind made "SLIM guessed" and "they agreed" the same note. Nothing else changes:
     no move, no rewrite of the body."""
     from slim import record_review
-    from slim.frontmatter import parse_frontmatter
+    from slim.vault.frontmatter import parse_frontmatter
     r = _existing(tmp_path, monkeypatch)
     before = r.note.read_text(encoding="utf-8")
     before_fm, _ = parse_frontmatter(before)
@@ -92,7 +92,7 @@ def test_editing_the_title_renames_the_file_and_keeps_date_and_digest(tmp_path, 
     """The filename is what they read in the file tree and the quick switcher. A note retitled
     only in frontmatter is still wrongly named where it counts."""
     from slim import record_review
-    from slim.frontmatter import parse_frontmatter
+    from slim.vault.frontmatter import parse_frontmatter
     r = _existing(tmp_path, monkeypatch)
     date, _slug, digest = r.note.stem.split("--")
     out = record_review.handle_record_apply(note=str(r.note.relative_to(tmp_path)),
@@ -152,7 +152,7 @@ def test_saving_notes_touches_nothing_but_the_notes(tmp_path, monkeypatch):
     `apply`: apply rewrites frontmatter, drops `filed_by` and can MOVE the file. Typing a note
     is not a filing decision, and an autosave that files is an autosave that surprises."""
     from slim import record_review
-    from slim.frontmatter import parse_frontmatter
+    from slim.vault.frontmatter import parse_frontmatter
     r = _existing(tmp_path, monkeypatch)
     before = r.note.read_text(encoding="utf-8")
 
