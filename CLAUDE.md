@@ -182,12 +182,14 @@ slim/memos/      the phone lane: voicememos (the sweep), inbox (files a memo)
 slim/recorder/   the desktop lane: routes, pipeline, review, state, note (the note's sole writer),
                  suggest (the filing card)
 slim/index/      ingest, chunk, embed, search
-slim/copilot/    Talk: turn, context, run, edits, blocks (the note as handled blocks), threads,
-                 images, skills; the built-in skill templates are `slim/skills/`
+slim/copilot/    Talk: turn (the intent gate is `_intent`), context, run (the editing run), edits,
+                 blocks (the note as handled blocks), threads, images, skills; the built-in
+                 skill templates are `slim/skills/`
 ```
 
 The plugin, `obsidian/src/`, has the same shape: `recorder/`, `chat/` and `live/` feature folders;
-the entry, `plugin.js`, `server.js`, `settings-tab.js` and `sse.js` at the top. Tests mirror both trees.
+the entry, `plugin.js`, `server.js`, `settings-tab.js` and `sse.js` at the top. The live editor
+(drafts, change marks, ↺) is `live/editor.js` (`makeLiveEditor`). Tests mirror both trees.
 
 ## What was cut
 
