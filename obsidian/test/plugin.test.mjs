@@ -205,7 +205,7 @@ test("plugin reload adopts every visible recorded block into its own session", a
 });
 
 test("the plugin owns a meeting-session manager, not one global recorder", () => {
-  const source = srcText("plugin.js");
-  assert.match(source, /this\.meetings\s*=\s*new MeetingSessionManager\(this\)/);
-  assert.doesNotMatch(source, /this\.recorder\s*=\s*new RecorderView\(null, this\)/);
+  assert.match(srcText("plugin.js"), /this\.meetings\s*=\s*new MeetingSessionManager\(this\)/);
+  // the whole plugin, as before the split: no module may hold one global recorder
+  assert.doesNotMatch(srcText(), /this\.recorder\s*=\s*new RecorderView\(null, this\)/);
 });

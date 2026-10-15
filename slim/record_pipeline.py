@@ -264,11 +264,11 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
             record_state._check_record_cancel(job_id)
             # ⚠ RECORD_MODEL is the resident (llm.py says why). Their notes ride along as
             # context — what they noticed, how they spell things — never as a filter.
-            clean_notes, note_images = _extract_note_images(notes_md or "", vault)
+            clean_notes, embedded = _extract_note_images(notes_md or "", vault)
             s = summarize.summarize(text, model=llm.RECORD_MODEL,
                                     num_ctx=llm.RECORD_CTX, think=True,
                                     on_activity=activity, notes=clean_notes,
-                                    images=note_images or None)
+                                    images=embedded or None)
             # Rendered below, once the card has decided the type: a lecture carries no
             # "Open questions" (summarize.LECTURE_TYPES). ⚠ render(), NOT s.overview — the
             # overview is 2-4 sentences and the SUBSTANCE is in the other fields. Writing only
