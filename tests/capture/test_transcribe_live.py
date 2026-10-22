@@ -89,7 +89,8 @@ def test_real_live_wrapper_keeps_mlx_stream_on_one_worker_thread(monkeypatch):
 
     fake_stream = FakeStream()
     monkeypatch.setattr(audio, "ensure_ffmpeg_on_path", lambda: None)
-    fake_mx = SimpleNamespace(array=lambda value: value)
+    fake_mx = SimpleNamespace(array=lambda value: value,
+                              clear_cache=lambda: thread_ids.append(("clear", threading.get_ident())))
     monkeypatch.setitem(sys.modules, "mlx", SimpleNamespace(core=fake_mx))
     monkeypatch.setitem(sys.modules, "mlx.core", fake_mx)
     monkeypatch.setattr(
@@ -101,6 +102,8 @@ def test_real_live_wrapper_keeps_mlx_stream_on_one_worker_thread(monkeypatch):
     live = transcribe.LiveTranscriber()
     assert live.add_pcm16(b"\x00\x00") == "words so far"
     assert live.close() == "words so far"
+    assert [event for event, _ in thread_ids][-2:] == ["exit", "clear"], \
+        "a closed live stream hands MLX's cached buffers back"
     assert {thread_id for _, thread_id in thread_ids} == {thread_ids[0][1]}
     assert thread_ids[0][1] != threading.get_ident()
 
@@ -142,7 +145,8 @@ def test_final_parakeet_pass_does_not_wait_for_the_live_stream(monkeypatch):
 
     monkeypatch.setattr(audio, "ensure_ffmpeg_on_path", lambda: None)
     monkeypatch.setattr(audio, "audio_seconds", lambda _path: 1.0)
-    fake_mx = SimpleNamespace(array=lambda value: value)
+    cleared: list[bool] = []
+    fake_mx = SimpleNamespace(array=lambda value: value, clear_cache=lambda: cleared.append(True))
     monkeypatch.setitem(sys.modules, "mlx", SimpleNamespace(core=fake_mx))
     monkeypatch.setitem(sys.modules, "mlx.core", fake_mx)
 
@@ -165,6 +169,7 @@ def test_final_parakeet_pass_does_not_wait_for_the_live_stream(monkeypatch):
     assert sorted(lanes) == ["batch", "live"], "each lane must ask for its OWN instance"
     assert transcribe._ASR_LIVE_LOCK is not transcribe._ASR_BATCH_LOCK
     assert result[0].text == "final words"
+    assert len(cleared) == 2, "each lane hands MLX's cached buffers back when its work is done"
 
 
 def test_neither_lane_can_be_asked_for_without_naming_itself():

@@ -75,6 +75,19 @@ def _asr_model(name: str, lane: str):
     return model
 
 
+def _release_cache() -> None:
+    """Hand MLX's freed GPU buffers back to the system once a lane's work is done.
+
+    MLX keeps every buffer it frees for reuse and never returns one by default, so an idle
+    server held the high-water mark of its longest transcription on top of the two models:
+    3.66 GB of cache after a 51-minute meeting (measured 2026-10-02: 3.66 -> 0 GB, wall time
+    and transcript unchanged), while the summary model that runs right after a transcription
+    needs ~28 GB. Only unused buffers are released; the other lane's arrays and both models
+    are untouched."""
+    import mlx.core as mx
+    mx.clear_cache()
+
+
 # One lock per lane, guarding that lane's own instance — never each other's. The live lock
 # spans a whole capture and blocks only a second live capture, which the plugin's capture lease
 # already prevents. The batch lock keeps queued recordings off one object at once.
@@ -133,6 +146,7 @@ class LiveTranscriber:
                     else:
                         self._final_text = stream.result.text.strip()
                         stream.__exit__(None, None, None)
+                        _release_cache()
                         response.put((True, self._final_text))
                         return
                 except BaseException as exc:  # noqa: BLE001 - return worker failures to HTTP
@@ -213,6 +227,7 @@ def transcribe(path: Path, model: str | None = None) -> Transcript:
             chunk_duration=CHUNK_SECONDS,
             overlap_duration=OVERLAP_SECONDS,
         )
+        _release_cache()
     text, speakers_by = result.text.strip(), ""
     # Outside the ASR lock: this is ffmpeg and numpy, and must not hold up live captions.
     from . import speakers
