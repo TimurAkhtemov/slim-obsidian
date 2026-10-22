@@ -11,3 +11,4 @@ are the history. Past ~20 items is a signal about scope, not a reason for headin
 - [ ] In-room meetings on one microphone: the same model on the mic channel; "which cluster is me" needs an enrollment or a rename on the card. Test with a podcast played out of the speakers into the mic.
 - [ ] The recorder summary resolves a bare image name with no note path, so an ambiguous one (`paste-001.png` ×5 in the vault) can be another note's; pass the note's path to `note_images.load`.
 - [ ] 11 orphaned transcript caches in `Attachments/_incoming` (`slim status`); two hold words no note has (2026-08-27, 2026-09-10). Owner decides: file or delete.
+- [ ] "Record this?" when a call starts, as Notion does: poll Core Audio for another process running mic input (`kAudioProcessPropertyIsRunningInput` + `BundleID`, macOS 14.4+; probed OK 2026-09-29) and offer one click. No model, no listening; needs a tiny native helper and must ignore SLIM's own capture.
