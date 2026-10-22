@@ -214,11 +214,26 @@ const STOPPED_BECAUSE = {
   "empty plan": "the plan had no steps",
 };
 
+// The steps a run left undone: those it worked but did not finish (partial), or changed nothing
+// where they said (skipped), and those it never reached.
+function stepsLeft(run, steps) {
+  const done = run.stopped ? Math.min(run.steps_done || 0, steps.length) : steps.length;   // a finished run reached them all
+  const states = run.step_states || [];
+  const left = steps.flatMap((step, i) => i >= done || states[i] === "skipped" ? [step]
+    : states[i] === "partial" ? [`the rest of ${step}`] : []);
+  return { done, left, list: left.length < 2 ? left.join("") : `${left.slice(0, -1).join(", ")} and ${left.at(-1)}` };
+}
+
 // "Done: …", or how far a run got, why it stopped, and what it left undone.
 function editOutcome(run) {
   const steps = run.plan?.steps || [];
   const { landed } = runCounts(run);
   if (!run.stopped) {
+    const { left, list } = stepsLeft(run, steps);
+    if (left.length && landed.length) {
+      const finished = (run.step_states || []).filter((state) => state === "done").length;
+      return `Done ${finished} of ${steps.length} step${steps.length === 1 ? "" : "s"}. Not done: ${list}.`;
+    }
     const said = run.summary && run.summary !== run.plan?.intro ? run.summary : "";
     if (!said) return landed.length ? "Done." : "Done. Nothing needed changing.";
     return /^done\b/i.test(said) ? said : `Done: ${said}`;
@@ -227,13 +242,7 @@ function editOutcome(run) {
     : STOPPED_BECAUSE[run.stopped] || String(run.stopped).replace(/^error: /, "");
   if (!landed.length) return `Stopped before changing anything${why ? `: ${why}` : ""}.`;
   if (!steps.length) return `Stopped${why ? `: ${why}` : ""}.`;
-  const done = Math.min(run.steps_done || 0, steps.length);
-  const states = run.step_states || [];
-  const left = [
-    ...steps.slice(0, done).filter((_step, i) => states[i] === "partial").map((step) => `the rest of ${step}`),
-    ...steps.slice(done),
-  ];
-  const list = left.length < 2 ? left.join("") : `${left.slice(0, -1).join(", ")} and ${left.at(-1)}`;
+  const { done, left, list } = stepsLeft(run, steps);
   return `Stopped after ${done} of ${steps.length} step${steps.length === 1 ? "" : "s"}${why ? `: ${why}` : ""}.`
     + `${left.length ? ` Not done: ${list}.` : ""}`;
 }

@@ -91,7 +91,8 @@ test("the chat shows the intro, a line per step, the outcome and the meta line",
   view.render();
   const texts = [];
   (function walk(el) { if (el.textContent) texts.push(el.textContent); el.children.forEach(walk); })(root);
-  for (const want of [PLAN.intro, "Rename the heading", "Tighten the intro", "Done.", "2 changes, 1 undone",
+  for (const want of [PLAN.intro, "Rename the heading", "Tighten the intro",
+                      "Done 1 of 2 steps. Not done: the rest of Tighten the intro.", "2 changes, 1 undone",
                       "Undo all", "Redo", "See before", "Hide marks", "Quick · 41 s"]) {
     assert.ok(texts.includes(want), `${want} in ${JSON.stringify(texts)}`);
   }
@@ -478,6 +479,11 @@ test("the outcome says done, or how far it got and why", () => {
   assert.equal(editOutcome(run({ stopped: "call limit", steps_done: 1, step_states: ["partial"] })),
                "Stopped after 1 of 2 steps: it reached its limit of calls. Not done: the rest of Rename the heading and Tighten the intro.");
   assert.equal(editOutcome({ plan: PLAN, changes: [], stopped: "stopped" }), "Stopped before changing anything.");
+  // A run that finished with a step code judged undone says so, not "Done.".
+  assert.equal(editOutcome(run({ stopped: null, summary: PLAN.intro, steps_done: 2, step_states: ["done", "skipped"] })),
+               "Done 1 of 2 steps. Not done: Tighten the intro.");
+  assert.equal(editOutcome(run({ stopped: null, summary: PLAN.intro, steps_done: 2, step_states: ["partial", "done"] })),
+               "Done 1 of 2 steps. Not done: the rest of Rename the heading.");
 });
 
 test("no regenerate after an edit turn: asking again would apply its changes twice", async () => {

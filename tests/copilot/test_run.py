@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from slim import db, llm
-from slim.copilot import context, edits, run as edit_run, turn as copilot_turn
+from slim.copilot import blocks, context, edits, run as edit_run, turn as copilot_turn
 from slim.index import chunk
 
 
@@ -1124,3 +1124,65 @@ def test_a_draft_end_that_cannot_be_sent_is_counted_and_the_run_goes_on(con, vau
     got = copilot_turn.run_turn(con, source["id"], "add", [], "quick", vault=vault, doc=NOTE,
                                 doc_hash=edits.digest(NOTE), on_edit=on_edit)
     assert len(got["edit_run"]["changes"]) == 1 and records[-1]["edit_run"]["draft_failures"] == 1
+
+
+# --- a step's target: the handles its plan step names, judged by code (2026-10-22) -----------
+
+def test_a_step_target_is_the_blocks_its_handles_cover():
+    note = blocks.Note(NOTE)
+    assert edit_run._target(note, "Rename B (s7)") == {"b7", "b8"}
+    assert edit_run._target(note, "Tidy the list b4-b6 and [b2]") == {"b2", "b4", "b5", "b6"}
+    assert edit_run._target(note, "Move s7 to s3") == {"b3", "b4", "b5", "b6", "b7", "b8"}
+    assert edit_run._target(note, "Tidy up") is None and edit_run._target(note, "Fix b99") is None
+    assert edit_run._target(note, "Rename the heading after block b2") == {"b2", "b3"}     # b2 a landmark
+    assert edit_run._target(note, "Add a line before [b7]") == {"b6", "b7"}
+
+
+def test_a_step_whose_changes_miss_its_section_is_sent_back_there_once(turn, monkeypatch):
+    # The 2026-10-22 run: each step did the step before's leftover, and every step read done.
+    seen = scripted(monkeypatch,
+                    ("", [("plan", {"intro": "x", "steps": ["Fix the intro (b2)", "Rename B (s7)"]})]),
+                    ("", [("edit_text", {"target": "b2", "old": "Intro para.", "new": "Intro paragraph."})]),
+                    ("", [("replace", {"target": "b3", "markdown": "## A renamed"})]),
+                    ("", [("replace", {"target": "b7", "markdown": "## B renamed"})]))
+    got, events = turn("tidy it")
+    asked = seen[3]["messages"][-1]["content"]
+    assert "Step 2 of 2: Rename B (s7)" in asked and "were not in s7" in asked
+    assert "## A renamed" in got["final"] and "## B renamed" in got["final"]      # the stray change stays
+    assert len(got["edit_run"]["changes"]) == 3 and len(seen) == 4
+    assert [p for e, p in events if e == "step"] == [
+        {"index": 1, "state": "doing"}, {"index": 1, "state": "done"},
+        {"index": 2, "state": "doing"}, {"index": 2, "state": "done"}]
+
+
+def test_a_step_that_misses_its_section_twice_is_skipped_and_its_changes_stay(turn, monkeypatch):
+    records = []
+    monkeypatch.setattr(copilot_turn.trace, "record", lambda kind, payload: records.append((kind, payload)))
+    seen = scripted(monkeypatch,
+                    ("", [("plan", {"intro": "x", "steps": ["Rename B (s7)"]})]),
+                    ("", [("replace", {"target": "b3", "markdown": "## A renamed"})]),
+                    ("", [("edit_text", {"target": "b2", "old": "Intro para.", "new": "Intro."})]))
+    got, events = turn("rename B")
+    assert len(seen) == 3 and len(got["edit_run"]["changes"]) == 2 and got["edit_run"]["steps_done"] == 1
+    assert [p for e, p in events if e == "step"] == [{"index": 1, "state": "doing"}, {"index": 1, "state": "skipped"}]
+    facts = records[0][1]["edit_run"]
+    assert facts["corrections"] == 1 and facts["steps_missed"] == 1
+
+
+def test_a_step_that_names_no_handle_is_done_wherever_it_changed(turn, monkeypatch):
+    seen = scripted(monkeypatch, ("", [("plan", {"intro": "x", "steps": ["Tidy up"]})]),
+                    ("", [("replace", {"target": "b3", "markdown": "## A renamed"})]))
+    got, events = turn("tidy")
+    assert len(seen) == 2 and events[-1] == ("step", {"index": 1, "state": "done"})
+
+
+def test_a_first_reply_edit_off_its_step_is_judged_but_not_sent_back(turn, monkeypatch):
+    seen = scripted(monkeypatch,
+                    ("", [("plan", {"intro": "x", "steps": ["Rename B (s7)", "Fix the intro (b2)"]}),
+                          ("replace", {"target": "b3", "markdown": "## A renamed"})]),
+                    ("", [("edit_text", {"target": "b2", "old": "Intro para.", "new": "Intro."})]))
+    got, events = turn("go")
+    assert len(seen) == 2 and len(got["edit_run"]["changes"]) == 2
+    assert [p for e, p in events if e == "step"] == [
+        {"index": 1, "state": "doing"}, {"index": 1, "state": "skipped"},
+        {"index": 2, "state": "doing"}, {"index": 2, "state": "done"}]

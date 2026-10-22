@@ -192,6 +192,51 @@ def _listed_plan(content: str) -> tuple[str, list[str]] | None:
     return (first.group(1) if first else intro), runs[-1][:MAX_STEPS]
 
 
+# A handle, or a range of two as the tools read one ("b4-b6", "s7 to s3").
+_TARGET = re.compile(rf"{blocks._HANDLE.pattern}(?:{blocks._RANGE_MARK.pattern}{blocks._HANDLE.pattern})?")
+
+
+def _covered(note: blocks.Note, target: str) -> set[str]:
+    """The blocks a handle or a range covers in the note as it is now; none when the note has no
+    such place."""
+    try:
+        i, j = note.span(target)
+    except blocks.ToolError:
+        return set()
+    return {b.handle for b in note.blocks[i:j] if b.kind != "blank"}
+
+
+# A handle named as a landmark: "the heading after block b2" is about the block beside b2.
+_BESIDE = re.compile(r"\b(?:(after|following|below)|(before|above|preceding))\s+(?:the\s+)?(?:block|section)?\s*\[?$",
+                     re.I)
+
+
+def _target(note: blocks.Note, step: str) -> set[str] | None:
+    """What a plan step is about: the blocks its handles cover, read from the step as the model
+    wrote it, and the block beside one it names as a landmark. None when it names none the note
+    has: such a step is not judged. A range code cannot read as one ("move s7 to s3") is its
+    handles one by one."""
+    found = set()
+    for m in _TARGET.finditer(step):
+        covered = _covered(note, m.group()) or {h for part in blocks.handles_in(m.group())
+                                                for h in _covered(note, part)}
+        beside = _BESIDE.search(step[:m.start()])
+        live = [b.handle for b in note.blocks if b.kind != "blank"]
+        at = [n for n, h in enumerate(live) if h in covered]
+        if beside and at:
+            n = at[-1] + 1 if beside.group(1) else at[0] - 1
+            covered |= {live[n]} if 0 <= n < len(live) else set()
+        found |= covered
+    return found or None
+
+
+def _places(note: blocks.Note, args) -> set[str]:
+    """The blocks a call points at (its target, after or before), before it lands."""
+    if not isinstance(args, dict):
+        return set()
+    return {h for key in ("target", "after", "before") if args.get(key) for h in _covered(note, args[key])}
+
+
 class _Drafts:
     """An insert's or replace's text in the note while the model writes it: a draft at the place
     the call names, from the moment that place is known, with what was written before it. Code
@@ -311,12 +356,14 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
            "refusals": [], "malformed": [], "empty_steps": 0, "stopped": None, "summary": "",
            "finished_early": False, "replanned": False, "outline": None, "outline_met": None,
            "retries": 0, "first_call_edits": 0, "timing": [], "nudged": False,
-           "outline_details": None,
+           "outline_details": None, "corrections": 0, "steps_missed": 0,
            "first_temperature": temperature}
     spent, failed = 0, []
     # Deep's thinking has its own allowance: it would otherwise eat the steps' budget.
     budget = RUN_OUTPUT_TOKENS + (THINK_BUDGET if think else 0)
-    current = {"k": None, "count": 1, "landed": 0, "refused": False}      # the step(s) being worked
+    # The step(s) being worked; `target` the blocks the step names (None: not judged), `hit` whether
+    # a change landed there.
+    current = {"k": None, "count": 1, "landed": 0, "refused": False, "target": None, "hit": False}
     steps: list[str] = []
     # What the owner reads names text, never a handle; the model keeps its own words.
     plain = note.plain if note is not None else (lambda words: words)
@@ -369,7 +416,8 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
         return reply
 
     def open_step(k: int, count: int = 1) -> None:
-        current.update(k=k, count=count, landed=0, refused=False)
+        target = _target(note, steps[k]) if note is not None and count == 1 else None
+        current.update(k=k, count=count, landed=0, refused=False, target=target, hit=False)
         for n in range(k, k + count):
             if steps[n] != ONE_REPLY:
                 on_edit("step", {"index": n + 1, "state": "doing"})
@@ -379,7 +427,12 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
         if k is None:
             return
         current["k"] = None
-        state = "skipped" if not current["landed"] else "partial" if current["refused"] else "done"
+        # A step that names its place and changed only elsewhere did not do what it said: what it
+        # changed stays in the note, but the step is not done.
+        missed = current["target"] is not None and not current["hit"]
+        out["steps_missed"] += bool(missed and current["landed"])
+        state = ("skipped" if not current["landed"] or missed
+                 else "partial" if current["refused"] else "done")
         for n in range(k, k + current["count"]):
             if steps[n] != ONE_REPLY:
                 on_edit("step", {"index": n + 1, "state": state})
@@ -490,6 +543,9 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
                     out["stopped"] = out["stopped"] or "call limit"
                     refused = True
                     break
+                # Where the call points, read before it lands and moves the note's blocks.
+                aimed = current["target"] and note is not None and bool(
+                    _places(note, call.get("arguments")) & current["target"])
                 try:
                     if name not in step_tools:
                         raise blocks.ToolError(f"{name} is not available now", "tool")
@@ -509,6 +565,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
                 on_edit("change", {**change, "draft": draft} if draft else change)
                 results.append(f"ok: {said}")
                 landed, in_row = landed + 1, 0
+                current["hit"] = current["hit"] or aimed
             if drafts:                      # refused, or never reached
                 drafts.end()
             if current["k"] is not None:
@@ -519,12 +576,17 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
         def instruction(k: int) -> str:
             if steps[k] == ONE_REPLY:   # only ever a retry: the first reply's change was refused
                 return "Make your change again, fixing what was refused."
+            if current["landed"] and current["target"] is not None and not current["hit"]:
+                named = ", ".join(m.group() for m in _TARGET.finditer(steps[k]))
+                return (f"Step {k + 1} of {len(steps)}: {steps[k]}\nYour changes were not in {named}, where "
+                        "this step is. Make this step's change there now.")
             return f"Step {k + 1} of {len(steps)}: {steps[k]}\nMake this step's changes now."
 
         k, retried, pending = 0, False, first if edits else None
         while k < len(steps) and not out["stopped"]:
             if not retried:
                 open_step(k, covered if pending else 1)
+            from_first = pending is not None
             if pending:                 # the first reply already holds the first steps' calls
                 reply, pending = pending, None
                 numbers, m = [], 0
@@ -548,6 +610,10 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
             if (acted or reply.malformed) and not landed and not retried:
                 retried = True              # every call refused or unreadable: the same step once more, with why
                 current["count"] = 1        # (the steps after it run as their own)
+                continue
+            if landed and current["target"] is not None and not current["hit"] and not retried and not from_first:
+                retried = True              # changes, none where the step said: once more, named (`instruction`)
+                out["corrections"] += 1
                 continue
             span = current["count"]
             close_step()
@@ -623,5 +689,6 @@ def _facts(out: dict, run: dict) -> dict:
             "first_call_edits": out["first_call_edits"], "replanned": out["replanned"],
             "retries": out["retries"], "stopped": out["stopped"], "finished_early": out["finished_early"],
             "outline_met": out["outline_met"], "outline_details": out["outline_details"],
+            "corrections": out["corrections"], "steps_missed": out["steps_missed"],
             "nudged": out["nudged"], "draft_failures": out.get("draft_failures", 0),
             "first_temperature": out["first_temperature"], "timing": out["timing"]}
