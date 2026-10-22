@@ -169,7 +169,7 @@ import urllib.request
 RECORD_WRITE_ROUTES = [
     "/api/record", "/api/record/live", "/api/record/apply", "/api/record/review",
     "/api/record/notes", "/api/record/summary", "/api/record/cancel",
-    "/api/record/transcript", "/api/record/append",
+    "/api/record/transcript", "/api/record/append", "/api/record/forget",
 ]
 
 

@@ -329,3 +329,23 @@ def test_an_empty_but_valid_summary_never_deletes_the_one_that_is_there(tmp_path
     with pytest.raises(ValueError, match="empty"):
         review.handle_record_summary(note=str(r.note.relative_to(tmp_path)), vault=tmp_path)
     assert "\ns\n" in r.note.read_text(encoding="utf-8").replace("\r\n", "\n")
+
+
+# --- POST /api/record/forget ------------------------------------------------------------
+
+def test_forgetting_a_deleted_recording_sweeps_it_out_of_the_index(tmp_path, monkeypatch):
+    """Deleted from the card, the note must leave the index now: the copilot reads SQLite, and
+    a note gone from disk stayed readable there until some later recording swept."""
+    from slim.recorder import review, state
+    swept = []
+    monkeypatch.setattr(state, "_schedule_sweep", lambda vault: swept.append(vault))
+    r = _existing(tmp_path, monkeypatch)
+    rel = str(r.note.relative_to(tmp_path))
+
+    with pytest.raises(ValueError, match="still exists"):
+        review.handle_record_forget(note=rel, vault=tmp_path)
+    assert swept == [] and r.note.exists()      # it forgets; it never deletes
+
+    r.note.unlink()
+    assert review.handle_record_forget(note=rel, vault=tmp_path) == {"note": rel}
+    assert swept == [tmp_path]

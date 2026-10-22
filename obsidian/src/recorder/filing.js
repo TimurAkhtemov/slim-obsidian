@@ -96,6 +96,8 @@ module.exports = {
     try {
       this.result = await this.plugin.postRecording(body);
     } catch (e) {
+      // Deleted while it ran: whatever stopped it, nothing was filed, and they want it gone.
+      if (this.deleteWhenDone) return this.deleteWhenStopped();
       // ⚠ NEITHER OF THESE IS AN ERROR SCREEN. A cancel is their instruction; a silent take is
       // an outcome, not a failure. Both leave every file where it was, so both park in
       // `paused` — the ordinary way forward — instead of asking them to choose between
@@ -124,6 +126,8 @@ module.exports = {
     this.draftRel = "";
     this.filedNotePath = this.result.note;
     if (this.manager) this.manager.indexSession(this);
+    // Deleted too late to stop: it filed, so delete the note it filed.
+    if (this.deleteWhenDone) return this.deleteWhenStopped();
     if (fromDraft) await this.loadEditorFile(this.filedNotePath);
     await this.loadNoteParts();
     this.result.notes_md = this.noteParts.notes;

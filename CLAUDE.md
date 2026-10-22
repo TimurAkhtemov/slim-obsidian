@@ -74,8 +74,11 @@ against it). The server's own edit-and-move passes the old path, so only hand mo
    - **A failed or silent transcript is REFUSED, not filed.** Three recordings were lost by
      filing empty transcripts (2026-08-05, 08-22). The transcript IS the note; the audio stays
      staged and the card offers Try again.
-   - Cancel writes and deletes nothing. Resume records a new segment, also on a finished note,
-     and leaves the summary alone until Retry summary (which takes a one-line steer).
+   - Cancel writes and deletes nothing. Delete, offered in every state behind a second click
+     (`recorder/delete.js`), trashes the whole recording — draft, staged or archived audio no
+     other note names, pasted images — and `/api/record/forget` sweeps it from the index; on a
+     resumed take it discards only the take. Resume records a new segment, also on a finished
+     note, and leaves the summary alone until Retry summary (which takes a one-line steer).
    - Pending review is durable (`review_status: pending`). `My notes` saves on blur, and on
      close or quit, where no blur fires.
    - Meeting state is per recording; only capture and the heavy model jobs are global (one
@@ -269,8 +272,10 @@ summarizer's backslash ban is backed by `_repair`, and measure it. A green test 
 verification of what you thought to check.
 
 **Obsidian's plugin sees the server's file moves as deletions.** An external rename is
-`delete` + `create`, never `rename`, and the leaf lets go of the deleted file. Anything that
-reacts to a vault `delete` must first ask whether the server caused it (2026-09-04/09).
+`delete` + `create`, never `rename`, and the leaf lets go of the deleted file: Obsidian goes
+back in its history, or empties it, or closes it beside sibling tabs. An emptied leaf is still
+the session's to reuse (`isEmptiedLeaf`), or filing opens a second pane (2026-09-30). Anything
+that reacts to a vault `delete` must first ask whether the server caused it (2026-09-04/09).
 
 ## Rules, with their reasons
 

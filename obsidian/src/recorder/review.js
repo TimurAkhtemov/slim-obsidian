@@ -198,6 +198,7 @@ module.exports = {
     const moreRow = root.createDiv({ cls: "slim-row slim-resume-row" });
     const moreBtn = moreRow.createEl("button", { text: "Resume recording" });
     moreBtn.addEventListener("click", () => this.startAppendRecording());
+    this.renderDeleteButton(moreRow);
     const details = root.createEl("details", { cls: "slim-review-details" });
     details.createEl("summary", { text: "Review filing details" });
     root = details.createDiv({ cls: "slim-review-controls" });

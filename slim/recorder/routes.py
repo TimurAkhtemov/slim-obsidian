@@ -167,6 +167,19 @@ def approve(h, data: dict) -> None:
     h._send_json(200, result)
 
 
+def forget(h, data: dict) -> None:
+    note = str(data.get("note") or "").strip()
+    if not note:
+        h._send_json(400, {"error": "note is required"})
+        return
+    try:
+        result = review.handle_record_forget(note=note)
+    except ValueError as e:
+        h._send_json(400, {"error": str(e)})
+        return
+    h._send_json(200, result)
+
+
 def cancel(h, data: dict) -> None:
     job_id = str(data.get("job_id") or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", job_id or ""):
@@ -286,7 +299,7 @@ GET = {
 }
 
 # Each route's adapter and its body cap. None is the server's 64 kB default: a cancel carries a
-# job id and nothing else.
+# job id and nothing else, a forget one path.
 POST = {
     "/api/record": (record, MAX_RECORD_BODY_BYTES),
     "/api/record/live": (live, MAX_RECORD_BODY_BYTES),
@@ -295,6 +308,7 @@ POST = {
     "/api/record/notes": (notes, MAX_RECORD_BODY_BYTES),
     "/api/record/summary": (summary, MAX_RECORD_BODY_BYTES),
     "/api/record/cancel": (cancel, None),
+    "/api/record/forget": (forget, None),
     "/api/record/transcript": (transcript, MAX_RECORD_BODY_BYTES),
     "/api/record/append": (append, MAX_RECORD_BODY_BYTES),
 }

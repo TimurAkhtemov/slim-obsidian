@@ -465,6 +465,7 @@ class SlimRecorderPlugin extends Plugin {
   saveNotes(body) { return this.post("/api/record/notes", body); }
   retrySummary(body) { return this.post("/api/record/summary", body); }
   cancelRecording(body) { return this.post("/api/record/cancel", body); }
+  forgetRecording(body) { return this.post("/api/record/forget", body); }
   recordTranscript(body) { return this.post("/api/record/transcript", body); }
   appendRecording(body) { return this.post("/api/record/append", body); }
 }

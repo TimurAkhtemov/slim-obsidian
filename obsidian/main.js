@@ -3121,6 +3121,7 @@ var require_meeting_note = __commonJS({
     var { pad } = require_clock();
     var STAGING_DIR = "Attachments/_incoming";
     var RECORDER_ATTACHMENTS = "Attachments/Recorder";
+    var ARCHIVE_DIR = "Attachments/Recordings";
     var DRAFT_SUFFIX = ".slim-draft.md";
     var EMPTY_MEETING_BLOCK = "````slim-meeting\n\n````\n\n";
     var TYPES = [
@@ -3289,6 +3290,7 @@ ${fence}`);
     module2.exports = {
       STAGING_DIR,
       RECORDER_ATTACHMENTS,
+      ARCHIVE_DIR,
       DRAFT_SUFFIX,
       EMPTY_MEETING_BLOCK,
       TYPES,
@@ -4170,6 +4172,7 @@ var require_filing = __commonJS({
         try {
           this.result = await this.plugin.postRecording(body);
         } catch (e) {
+          if (this.deleteWhenDone) return this.deleteWhenStopped();
           if (e && (e.cancelled || e.silent)) {
             if (e.silent) new Notice(`SLIM: ${e.message}`);
             this.freezeEditor(false);
@@ -4190,6 +4193,7 @@ var require_filing = __commonJS({
         this.draftRel = "";
         this.filedNotePath = this.result.note;
         if (this.manager) this.manager.indexSession(this);
+        if (this.deleteWhenDone) return this.deleteWhenStopped();
         if (fromDraft) await this.loadEditorFile(this.filedNotePath);
         await this.loadNoteParts();
         this.result.notes_md = this.noteParts.notes;
@@ -4509,6 +4513,7 @@ var require_render2 = __commonJS({
           }
           this.render();
         });
+        this.renderDeleteButton(row);
       },
       renderObjectHeader(root, eyebrow, title, status) {
         const head = root.createDiv({ cls: "slim-object-head" });
@@ -4584,6 +4589,7 @@ var require_render2 = __commonJS({
             btn.disabled = false;
           }
         });
+        this.renderDeleteButton(setup.createDiv({ cls: "slim-row slim-setup-actions" }));
       },
       renderRecording(root) {
         const paused = this.recorder && this.recorder.state === "paused";
@@ -4608,6 +4614,7 @@ var require_render2 = __commonJS({
           p.disabled = true;
           await this.stop();
         });
+        this.renderDeleteButton(row);
         if (this.silenceWatch && this.silenceWatch.warn) {
           console2.createDiv({
             cls: "slim-silence-warning",
@@ -4651,8 +4658,11 @@ var require_render2 = __commonJS({
           cls: "slim-hint",
           text: progress.detail || "Your recording and notes are safe while SLIM finishes locally."
         });
-        const cancel = current.createEl("button", { cls: "slim-cancel", text: "Cancel" });
+        const actions = current.createDiv({ cls: "slim-row slim-processing-actions" });
+        const cancel = actions.createEl("button", { cls: "slim-cancel", text: "Cancel" });
+        cancel.disabled = Boolean(this.deleteWhenDone);
         cancel.addEventListener("click", () => this.cancelProcessing());
+        if (!this.appendTo) this.renderDeleteButton(actions);
         const metrics = progress.metrics || {};
         const facts = [];
         if (metrics.transcript_words != null) facts.push(`${metrics.transcript_words} words`);
@@ -4724,6 +4734,7 @@ var require_render2 = __commonJS({
         });
         const close = row.createEl("button", { text: "Keep files & close" });
         close.addEventListener("click", () => this.closeSession());
+        this.renderDeleteButton(row);
       },
       renderFinished(root) {
         const title = this.result && this.result.title || this.cardTitle || "Meeting note";
@@ -4752,6 +4763,7 @@ var require_render2 = __commonJS({
             }
           });
         }
+        this.renderDeleteButton(row);
         root.createEl("p", {
           cls: "slim-native-editor-hint",
           text: "This block is part of the note. Keep writing normally before or after it."
@@ -5049,6 +5061,7 @@ var require_review = __commonJS({
         const moreRow = root.createDiv({ cls: "slim-row slim-resume-row" });
         const moreBtn = moreRow.createEl("button", { text: "Resume recording" });
         moreBtn.addEventListener("click", () => this.startAppendRecording());
+        this.renderDeleteButton(moreRow);
         const details = root.createEl("details", { cls: "slim-review-details" });
         details.createEl("summary", { text: "Review filing details" });
         root = details.createDiv({ cls: "slim-review-controls" });
@@ -5255,6 +5268,150 @@ var require_review = __commonJS({
   }
 });
 
+// src/recorder/delete.js
+var require_delete = __commonJS({
+  "src/recorder/delete.js"(exports2, module2) {
+    "use strict";
+    var { Notice } = require("obsidian");
+    var { ARCHIVE_DIR, RECORDER_ATTACHMENTS } = require_meeting_note();
+    module2.exports = {
+      /* Delete this recording outright, from any state: they asked for it on the object itself,
+       * and the alternative was waiting for it to file and then deleting by hand in the file
+       * explorer (2026-09-30). Everything goes to Obsidian's trash, so it stays recoverable.
+       * A filed note takes its archived audio and pasted images with it, and the index is told. */
+      async deleteRecording() {
+        if (this.filing || this.retrying) {
+          new Notice("SLIM: wait for the current step to finish, then delete.");
+          return;
+        }
+        if (this.state === "processing") return this.deleteAfterProcessing();
+        this.deleting = true;
+        try {
+          await this.abandonCapture();
+          if (this.appendTo) return await this.discardTake();
+          const note = this.filedNotePath;
+          const filed = note ? await this.filedSources(note) : [];
+          await this.trashStagedSources();
+          for (const path of filed) await this.trashManagedPath(path);
+          if (note) {
+            await this.trashManagedPath(note);
+            if (typeof this.plugin.forgetRecording === "function") {
+              await this.plugin.forgetRecording({ note }).catch((e) => console.error("[slim] forget", e));
+            }
+          }
+          this.resetSession();
+          if (this.manager) this.manager.removeSession(this);
+          new Notice("SLIM: deleted the recording.");
+        } finally {
+          this.deleting = false;
+        }
+      },
+      /* Deletion is cooperative like Cancel: the job stops after its current step, or files if it
+       * was nearly done — and whichever way it ends, `submitRecording` deletes what it left. */
+      async deleteAfterProcessing() {
+        this.deleteWhenDone = true;
+        this.render();
+        new Notice("SLIM: deleting after the current step.");
+        const jobId = this.jobId || this.recordingId;
+        if (!jobId || typeof this.plugin.cancelRecording !== "function") return;
+        await this.plugin.cancelRecording({ job_id: jobId }).catch((e) => console.error("[slim] cancel for delete", e));
+      },
+      async deleteWhenStopped() {
+        this.deleteWhenDone = false;
+        this.freezeEditor(false);
+        this.state = this.filedNotePath ? "card" : "paused";
+        this.processingProgress = null;
+        await this.deleteRecording();
+      },
+      /* The archived audio and pasted images a filed note names. Read before the note goes, and
+       * only from the two folders the recorder writes. Its audio comes from the note's own text:
+       * a note filed a moment ago may not be in Obsidian's metadata cache yet. The archive is
+       * content-addressed, so a file another note also names stays: deleting this note must not
+       * take that one's source. */
+      async filedSources(note) {
+        const file = this.app.vault.getAbstractFileByPath(note);
+        if (!file) return [];
+        const text = await this.app.vault.read(file);
+        const head = text.startsWith("---\n") ? text.slice(0, text.indexOf("\n---", 3) + 1) : "";
+        const archived = new RegExp(`${ARCHIVE_DIR}/[^\\s"',\\]]+`, "g");
+        const elsewhere = /* @__PURE__ */ new Set();
+        if (typeof this.app.vault.getMarkdownFiles === "function" && this.app.metadataCache) {
+          for (const other of this.app.vault.getMarkdownFiles()) {
+            if (other.path === note) continue;
+            const cache = this.app.metadataCache.getFileCache(other);
+            const audio = cache && cache.frontmatter && cache.frontmatter.audio;
+            (Array.isArray(audio) ? audio : [audio]).forEach((p) => elsewhere.add(String(p || "")));
+          }
+        }
+        const paths = [...head.matchAll(archived)].map((m) => m[0]).filter((p) => !elsewhere.has(p));
+        const pasted = new RegExp(`${RECORDER_ATTACHMENTS}/([A-Za-z0-9_-]+)/`, "g");
+        for (const m of text.matchAll(pasted)) paths.push(`${RECORDER_ATTACHMENTS}/${m[1]}`);
+        return [...new Set(paths)];
+      },
+      /* Stop capturing without filing anything: the recorder's own stop, minus the submit. */
+      async abandonCapture() {
+        if (!this.recorder || this.recorder.state === "inactive") return;
+        await new Promise((resolve) => {
+          this.recorder.onstop = resolve;
+          this.recorder.stop();
+        });
+        this.recorder = null;
+        if (this.writeQueue) await this.writeQueue.catch(() => {
+        });
+        this.teardownStream();
+        if (this.manager) this.manager.releaseCapture(this);
+      },
+      /* A resumed segment deleted before it was added: the note keeps what it had. */
+      async discardTake() {
+        for (const seg of this.segments || []) await this.removeStagedSegment(seg).catch(() => {
+        });
+        this.segments = [];
+        this.appendTo = "";
+        this.liveTranscript = "";
+        this.liveCarry = "";
+        this.freezeEditor(false);
+        this.state = this.resumeReturnState || "finished";
+        this.resumeReturnState = "";
+        this.render();
+        new Notice("SLIM: discarded that take. The note is as it was.");
+      },
+      /* One Delete for every state. Armed, not confirmed in a modal: the first click turns it into
+       * "Click again to delete" for four seconds, so a stray click costs nothing and a meant one
+       * costs one more. The arming lives on the session so a re-render mid-count keeps it. */
+      renderDeleteButton(row) {
+        const label = this.appendTo ? "Discard take" : "Delete";
+        const armed = Date.now() < (this.deleteArmedUntil || 0);
+        const button = row.createEl("button", {
+          cls: "mod-warning slim-delete",
+          text: this.deleteWhenDone ? "Deleting\u2026" : armed ? "Click again to delete" : label
+        });
+        button.disabled = Boolean(this.deleteWhenDone);
+        button.addEventListener("click", async () => {
+          if (Date.now() >= (this.deleteArmedUntil || 0)) {
+            this.deleteArmedUntil = Date.now() + 4e3;
+            button.setText("Click again to delete");
+            window.setTimeout(() => {
+              if (Date.now() >= (this.deleteArmedUntil || 0)) button.setText(label);
+            }, 4e3);
+            return;
+          }
+          this.deleteArmedUntil = 0;
+          button.disabled = true;
+          try {
+            await this.deleteRecording();
+          } catch (e) {
+            console.error("[slim] delete", e);
+            new Notice(`SLIM: could not delete the recording \u2014 ${e.message || e}`);
+            button.disabled = false;
+            button.setText(label);
+          }
+        });
+        return button;
+      }
+    };
+  }
+});
+
 // src/recorder/view.js
 var require_view2 = __commonJS({
   "src/recorder/view.js"(exports2, module2) {
@@ -5323,6 +5480,9 @@ var require_view2 = __commonJS({
         this.filedNotePath = "";
         this.filingFrom = "";
         this.filing = false;
+        this.deleting = false;
+        this.deleteWhenDone = false;
+        this.deleteArmedUntil = 0;
         this.cardTitle = null;
         this.reviewCloseNotified = false;
       }
@@ -5390,11 +5550,12 @@ var require_view2 = __commonJS({
       async loadEditorFile(path) {
         const file = this.app.vault.getAbstractFileByPath(path);
         if (!file) throw new Error(`no note at ${path}`);
-        if (!this.isOpenMarkdownLeaf(this.editorLeaf)) {
+        if (!this.isOpenMarkdownLeaf(this.editorLeaf) && !this.isEmptiedLeaf(this.editorLeaf)) {
           this.detachEditorObject();
+          const lost = Boolean(this.editorLeaf);
           const prior = this.plugin.editorLeaf;
           const priorOwner = this.manager && typeof this.manager.sessionForLeaf === "function" ? this.manager.sessionForLeaf(prior) : null;
-          this.editorLeaf = this.isOpenMarkdownLeaf(prior) && (!priorOwner || priorOwner === this) ? prior : this.app.workspace.getLeaf("split");
+          this.editorLeaf = this.isOpenMarkdownLeaf(prior) && (!priorOwner || priorOwner === this) ? prior : this.app.workspace.getLeaf(lost ? "tab" : "split");
         }
         await this.editorLeaf.openFile(file, { active: true, state: { mode: "source", source: false } });
         this.plugin.editorLeaf = this.editorLeaf;
@@ -5421,6 +5582,21 @@ var require_view2 = __commonJS({
         const workspace = this.app && this.app.workspace;
         if (!workspace || typeof workspace.getLeavesOfType !== "function") return true;
         return workspace.getLeavesOfType("markdown").includes(leaf);
+      }
+      /* Still in the workspace and showing nothing: the tab Obsidian emptied is ours to reuse. A
+       * tab they have since pointed at something else is theirs. */
+      isEmptiedLeaf(leaf) {
+        const workspace = this.app && this.app.workspace;
+        if (!leaf || !workspace || typeof workspace.iterateAllLeaves !== "function") return false;
+        const view = leaf.view;
+        if (view && (typeof view.getViewType !== "function" || view.getViewType() !== "empty")) {
+          return false;
+        }
+        let found = false;
+        workspace.iterateAllLeaves((candidate) => {
+          if (candidate === leaf) found = true;
+        });
+        return found;
       }
       async loadNoteParts() {
         if (!this.filedNotePath || !this.app || !this.app.vault) return this.noteParts;
@@ -5541,6 +5717,8 @@ var require_view2 = __commonJS({
         this.filedNotePath = "";
         this.filingFrom = "";
         this.filing = false;
+        this.deleteWhenDone = false;
+        this.deleteArmedUntil = 0;
         this.cardTitle = null;
         this.reviewCloseNotified = false;
         this.errorText = "";
@@ -5563,7 +5741,7 @@ var require_view2 = __commonJS({
        * Read as their deletion it reset the session under the Approve button: "the deleted note was
        * released", then "Cannot set properties of null (setting 'note')" (2026-09-04). */
       expectsDeletion(path) {
-        return this.state === "processing" || this.state === "recording" || path === this.filingFrom;
+        return this.deleting || this.state === "processing" || this.state === "recording" || path === this.filingFrom;
       }
       handleVaultDelete(file) {
         if (!file || file.path !== this.draftRel && file.path !== this.filedNotePath) return;
@@ -5593,6 +5771,18 @@ var require_view2 = __commonJS({
         if (await adapter.exists(cache)) await adapter.remove(cache);
       }
       async discardSession(restart) {
+        await this.trashStagedSources();
+        this.resetSession();
+        new Notice("SLIM: discarded the failed recording and its draft.");
+        if (restart) {
+          if (this.manager) this.manager.claimCapture(this);
+          await this.open();
+          if (this.manager) this.manager.indexSession(this);
+        }
+      }
+      /* What an unfiled recording owns: the draft, every staged segment with its transcript cache,
+       * and the pasted images. Nothing outside those three places. */
+      async trashStagedSources() {
         const id = this.recordingId;
         const draft = this.draftRel;
         const audios = [...new Set([...this.segments || [], this.audioRel].filter(Boolean))];
@@ -5605,13 +5795,6 @@ var require_view2 = __commonJS({
           await this.removeStagedSegment(audio);
         }
         if (attachmentFolder) await this.trashManagedPath(attachmentFolder);
-        this.resetSession();
-        new Notice("SLIM: discarded the failed recording and its draft.");
-        if (restart) {
-          if (this.manager) this.manager.claimCapture(this);
-          await this.open();
-          if (this.manager) this.manager.indexSession(this);
-        }
       }
       closeSession() {
         this.resetSession();
@@ -5720,7 +5903,8 @@ var require_view2 = __commonJS({
       require_live(),
       require_filing(),
       require_render2(),
-      require_review()
+      require_review(),
+      require_delete()
     );
     module2.exports = { RecorderView };
   }
@@ -6476,6 +6660,9 @@ var require_plugin = __commonJS({
       }
       cancelRecording(body) {
         return this.post("/api/record/cancel", body);
+      }
+      forgetRecording(body) {
+        return this.post("/api/record/forget", body);
       }
       recordTranscript(body) {
         return this.post("/api/record/transcript", body);

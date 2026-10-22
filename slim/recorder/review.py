@@ -1,5 +1,5 @@
 """The card's edits to a filed recording: their notes, a summary retry, apply (which can move
-the note) and plain approval."""
+the note), plain approval, and forgetting one the plugin deleted."""
 
 import re
 from pathlib import Path
@@ -204,3 +204,17 @@ def handle_record_review(*, note: str, vault: Path | None = None) -> dict:
     state.index_now(vault, str(src.relative_to(vault)), sweep=False)
     trace.record("record", {"stage": "review", "note": str(src)})
     return {"note": str(src.relative_to(vault))}
+
+
+def handle_record_forget(*, note: str, vault: Path | None = None) -> dict:
+    """The plugin trashed a recording; take it out of the index now, not at the next sweep, or
+    the copilot keeps reading a note that is gone. The sweep is what evicts it — this route
+    only starts one early, and refuses a note still on disk: it forgets, it never deletes."""
+    from ..config import VAULT as _VAULT
+
+    vault = vault or _VAULT
+    if state.vault_path(vault, note).exists():
+        raise ValueError(f"{note!r} still exists; delete it first")
+    state._schedule_sweep(vault)
+    trace.record("record", {"stage": "forget", "note": note})
+    return {"note": note}

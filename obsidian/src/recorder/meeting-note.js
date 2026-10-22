@@ -8,6 +8,7 @@ const { pad } = require("./clock");
 
 const STAGING_DIR = "Attachments/_incoming";
 const RECORDER_ATTACHMENTS = "Attachments/Recorder";
+const ARCHIVE_DIR = "Attachments/Recordings";   // slim/capture/audio.py AUDIO_ARCHIVE
 const DRAFT_SUFFIX = ".slim-draft.md";
 const EMPTY_MEETING_BLOCK = "````slim-meeting\n\n````\n\n";
 
@@ -200,6 +201,6 @@ function renderPassiveMeetingBlock(app, plugin, el, source, sourcePath) {
   draw();
 }
 
-module.exports = { STAGING_DIR, RECORDER_ATTACHMENTS, DRAFT_SUFFIX, EMPTY_MEETING_BLOCK, TYPES,
+module.exports = { STAGING_DIR, RECORDER_ATTACHMENTS, ARCHIVE_DIR, DRAFT_SUFFIX, EMPTY_MEETING_BLOCK, TYPES,
         recordingIdFromStaged, localDay, recordingId, splitMeetingNote, frontmatterScalar, hasMeetingBlock,
         embedLegacyMeetingBlock, renderMeetingTabs, renderPassiveMeetingBlock };

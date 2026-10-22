@@ -101,6 +101,7 @@ module.exports = {
       }
       this.render();
     });
+    this.renderDeleteButton(row);
   },
 
   renderObjectHeader(root, eyebrow, title, status) {
@@ -177,6 +178,7 @@ module.exports = {
         btn.disabled = false;
       }
     });
+    this.renderDeleteButton(setup.createDiv({ cls: "slim-row slim-setup-actions" }));
   },
 
   renderRecording(root) {
@@ -197,6 +199,7 @@ module.exports = {
       s.disabled = true; p.disabled = true;
       await this.stop();
     });
+    this.renderDeleteButton(row);
     if (this.silenceWatch && this.silenceWatch.warn) {
       console.createDiv({
         cls: "slim-silence-warning", attr: { role: "alert" },
@@ -234,8 +237,12 @@ module.exports = {
       text: progress.detail || "Your recording and notes are safe while SLIM finishes locally." });
     // Stop was hit by accident, 40 minutes into a lecture. Cancelling parks the session with
     // every segment and their notes intact instead of making them wait out the whole pipeline.
-    const cancel = current.createEl("button", { cls: "slim-cancel", text: "Cancel" });
+    const actions = current.createDiv({ cls: "slim-row slim-processing-actions" });
+    const cancel = actions.createEl("button", { cls: "slim-cancel", text: "Cancel" });
+    cancel.disabled = Boolean(this.deleteWhenDone);
     cancel.addEventListener("click", () => this.cancelProcessing());
+    // Not while a resumed take is being added: its note is filed, and "delete" would mean it.
+    if (!this.appendTo) this.renderDeleteButton(actions);
 
     const metrics = progress.metrics || {};
     const facts = [];
@@ -307,6 +314,7 @@ module.exports = {
     });
     const close = row.createEl("button", { text: "Keep files & close" });
     close.addEventListener("click", () => this.closeSession());
+    this.renderDeleteButton(row);
   },
 
   renderFinished(root) {
@@ -336,6 +344,7 @@ module.exports = {
         }
       });
     }
+    this.renderDeleteButton(row);
     root.createEl("p", { cls: "slim-native-editor-hint",
       text: "This block is part of the note. Keep writing normally before or after it." });
   },

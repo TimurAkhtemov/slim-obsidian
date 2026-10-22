@@ -303,7 +303,7 @@
   font-family: var(--font-monospace); font-size: 22px; font-variant-numeric: tabular-nums;
 }
 .slim-state { font-size: 12px; color: var(--text-muted); }
-.slim-recording-actions { width: min(320px, 42%); margin-left: auto; }
+.slim-recording-actions { width: min(420px, 56%); margin-left: auto; }
 .slim-recording-actions button { min-height: 38px; }
 .slim-level {
   height: 4px; background: var(--background-modifier-border);
@@ -779,5 +779,9 @@
 .slim-retry-instructions { width: 100%; }
 .slim-retry-status { color: var(--text-muted); font-size: var(--font-ui-smaller); }
 
-.slim-processing-current .slim-cancel { margin-left: auto; align-self: flex-start; }
+.slim-processing-actions { margin-left: auto; align-self: flex-start; }
+/* Delete sits apart at the end of its row, at its own width: the one button that cannot be
+   pressed by accident without a second press, and should not look like its neighbours. */
+.slim-row .slim-delete { flex: 0 0 auto; margin-left: auto; }
+.slim-setup-actions { justify-content: flex-end; }
 .slim-resume-row { padding: 0 20px 14px; }

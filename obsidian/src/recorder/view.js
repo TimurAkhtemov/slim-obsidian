@@ -1,5 +1,5 @@
 // One recording's controller: its draft, its editor, its lifecycle. The rest of its methods are
-// in this folder (capture, live, filing, render, review) and attached to its prototype at the bottom of this file.
+// in this folder (capture, live, filing, render, review, delete) and attached to its prototype at the bottom of this file.
 "use strict";
 
 const { MarkdownView, Notice } = require("obsidian");
@@ -60,6 +60,9 @@ class RecorderView {
     this.filedNotePath = "";
     this.filingFrom = "";
     this.filing = false;
+    this.deleting = false;
+    this.deleteWhenDone = false;
+    this.deleteArmedUntil = 0;
     this.cardTitle = null;
     this.reviewCloseNotified = false;
   }
@@ -136,13 +139,17 @@ class RecorderView {
   async loadEditorFile(path) {
     const file = this.app.vault.getAbstractFileByPath(path);
     if (!file) throw new Error(`no note at ${path}`);
-    if (!this.isOpenMarkdownLeaf(this.editorLeaf)) {
+    // ⚠ FILING EMPTIES THIS LEAF. The server unlinks the draft, and Obsidian answers a deleted
+    // file by emptying its tab (or closing it, beside siblings). Read as "no editor", that split
+    // a second pane for the filed note next to an empty tab, on every recording (2026-09-30).
+    if (!this.isOpenMarkdownLeaf(this.editorLeaf) && !this.isEmptiedLeaf(this.editorLeaf)) {
       this.detachEditorObject();
+      const lost = Boolean(this.editorLeaf);
       const prior = this.plugin.editorLeaf;
       const priorOwner = this.manager && typeof this.manager.sessionForLeaf === "function"
         ? this.manager.sessionForLeaf(prior) : null;
       this.editorLeaf = this.isOpenMarkdownLeaf(prior) && (!priorOwner || priorOwner === this)
-        ? prior : this.app.workspace.getLeaf("split");
+        ? prior : this.app.workspace.getLeaf(lost ? "tab" : "split");
     }
     await this.editorLeaf.openFile(file, { active: true, state: { mode: "source", source: false } });
     this.plugin.editorLeaf = this.editorLeaf;
@@ -178,6 +185,20 @@ class RecorderView {
     const workspace = this.app && this.app.workspace;
     if (!workspace || typeof workspace.getLeavesOfType !== "function") return true;
     return workspace.getLeavesOfType("markdown").includes(leaf);
+  }
+
+  /* Still in the workspace and showing nothing: the tab Obsidian emptied is ours to reuse. A
+   * tab they have since pointed at something else is theirs. */
+  isEmptiedLeaf(leaf) {
+    const workspace = this.app && this.app.workspace;
+    if (!leaf || !workspace || typeof workspace.iterateAllLeaves !== "function") return false;
+    const view = leaf.view;
+    if (view && (typeof view.getViewType !== "function" || view.getViewType() !== "empty")) {
+      return false;
+    }
+    let found = false;
+    workspace.iterateAllLeaves((candidate) => { if (candidate === leaf) found = true; });
+    return found;
   }
 
   async loadNoteParts() {
@@ -314,6 +335,8 @@ class RecorderView {
     this.filedNotePath = "";
     this.filingFrom = "";
     this.filing = false;
+    this.deleteWhenDone = false;
+    this.deleteArmedUntil = 0;
     this.cardTitle = null;
     this.reviewCloseNotified = false;
     this.errorText = "";
@@ -339,7 +362,8 @@ class RecorderView {
    * Read as their deletion it reset the session under the Approve button: "the deleted note was
    * released", then "Cannot set properties of null (setting 'note')" (2026-09-04). */
   expectsDeletion(path) {
-    return this.state === "processing" || this.state === "recording" || path === this.filingFrom;
+    return this.deleting || this.state === "processing" || this.state === "recording" ||
+      path === this.filingFrom;
   }
 
   handleVaultDelete(file) {
@@ -373,6 +397,19 @@ class RecorderView {
   }
 
   async discardSession(restart) {
+    await this.trashStagedSources();
+    this.resetSession();
+    new Notice("SLIM: discarded the failed recording and its draft.");
+    if (restart) {
+      if (this.manager) this.manager.claimCapture(this);
+      await this.open();
+      if (this.manager) this.manager.indexSession(this);
+    }
+  }
+
+  /* What an unfiled recording owns: the draft, every staged segment with its transcript cache,
+   * and the pasted images. Nothing outside those three places. */
+  async trashStagedSources() {
     const id = this.recordingId;
     const draft = this.draftRel;
     // Every segment of this recording, not just the one that was open — a resumed session
@@ -389,13 +426,6 @@ class RecorderView {
       await this.removeStagedSegment(audio);
     }
     if (attachmentFolder) await this.trashManagedPath(attachmentFolder);
-    this.resetSession();
-    new Notice("SLIM: discarded the failed recording and its draft.");
-    if (restart) {
-      if (this.manager) this.manager.claimCapture(this);
-      await this.open();
-      if (this.manager) this.manager.indexSession(this);
-    }
   }
 
   closeSession() {
@@ -508,6 +538,7 @@ Object.assign(RecorderView.prototype,
   require("./live"),
   require("./filing"),
   require("./render"),
-  require("./review"));
+  require("./review"),
+  require("./delete"));
 
 module.exports = { RecorderView };
