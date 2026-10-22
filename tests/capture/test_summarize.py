@@ -70,7 +70,7 @@ def test_one_context_size_is_used(monkeypatch):
     monkeypatch.setattr(summarize_mod.llm, "chat_json",
                         lambda *a, **k: (seen.update(k), (_OK, {}))[1])
     summarize_mod.summarize("...")
-    assert seen["num_ctx"] == summarize_mod.llm.RESIDENT_CTX == 131072
+    assert seen["num_ctx"] == summarize_mod.llm.RESIDENT_CTX == 262144
     assert seen["num_predict"] == summarize_mod.NUM_PREDICT, "unbounded decode = infinite loop"
 
 

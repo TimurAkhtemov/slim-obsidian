@@ -86,6 +86,12 @@ MODEL = "qwen3.6:35b"
 # on this machine, same model, one size at a time:
 #
 #     32768 -> 23 GB     65536 -> 24 GB     131072 -> 25 GB      (all 100% GPU)
+#     262144 -> 28 GB (100% GPU, measured 2026-10-16)
+#
+# 256k since 2026-10-16 — THE OWNER'S CALL: one runner shared with the Pi coding agent, and
+# the input budgets derived from this constant (copilot/context.py, copilot/turn.py) scale
+# with it, knowingly — twice the text per prompt, so a longer prefill and weaker recall of
+# the middle on the biggest inputs.
 #
 # ~16 MB of KV per 1k tokens, because qwen35moe is MoE with a 2048 embedding length. The
 # weights dominate and the window is nearly free — none of which transfers to a dense model.
@@ -93,7 +99,7 @@ MODEL = "qwen3.6:35b"
 # It buys headroom for images and fewer summaries lost to ctx_saturated. It costs the guard:
 # at 32k an overlong prompt fails visibly, and at 128k the same prompt succeeds with weak
 # recall of its own middle. A visible failure traded for an invisible one, knowingly.
-RESIDENT_CTX = 131072
+RESIDENT_CTX = 262144
 
 # THE RECORDING PATH. All three calls a recording makes — `summarize`, `enrich`'s title and
 # `suggest.build_card` — run here, and ⚠ THEY MUST MOVE TOGETHER: see the runner-per-(model,

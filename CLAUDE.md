@@ -225,7 +225,7 @@ that). Obsidian's loader cannot resolve a relative `require` (it broke the plugi
 while node's tests stayed green), which is why src/ is bundled.
 
 **Memory is the binding constraint, and macOS kills silently.** On a 48 GB machine
-`qwen3.6:35b` (MoE) takes ~25 GB at `RESIDENT_CTX = 131072`, ~16 MB per 1k tokens. Ollama
+`qwen3.6:35b` (MoE) takes ~28 GB at `RESIDENT_CTX = 262144` (shared with the Pi coding agent), ~16 MB per 1k tokens. Ollama
 spawns one runner per (model, `num_ctx`), so every call uses the one size — the recording
 path's three calls (summary, title, card) MUST share it, and a SMALLER bespoke window is the
 same cliff from the other side (a second ~23 GB runner; measured 2026-08-26). A long pass must
