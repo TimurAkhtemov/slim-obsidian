@@ -1,9 +1,11 @@
-"""A reply read back as Ollama 0.35's qwen3.5 parser reads it, piece by piece as it decodes."""
+"""A reply read back as Ollama 0.35's qwen3.5 parser read it, piece by piece as it decodes."""
+
+import json
 
 import pytest
 
-from slim import llm_render
-from tests.test_llm_render import TOOLS
+from slim import llm, llm_render
+from tests.test_llm_messages import TOOLS
 
 
 INSERT = ("I'll add it.\n\n<tool_call>\n<function=insert>\n<parameter=after>\nb1\n</parameter>\n"
@@ -52,18 +54,16 @@ def test_values_are_typed_by_the_tools_schema_as_ollama_types_them():
     assert calls == [{"name": "plan", "arguments": {"steps": None, "other": None}}]
 
 
-def test_a_text_parameter_written_null_is_that_text_and_renders_as_ollamas_null():
+def test_a_text_parameter_written_null_is_that_text_and_goes_back_as_that_text():
     # Ollama types any "null" as None, so "change undefined to null" deleted the word (review,
-    # 2026-10-13). A string parameter's text is its value; written back, it is the same bytes.
+    # 2026-10-13). A string parameter's text is its value; written back, it is the same text.
     text = ("<tool_call>\n<function=insert>\n<parameter=after>\nb1\n</parameter>\n<parameter=markdown>\nnull\n"
             "</parameter>\n</function>\n</tool_call>")
     (_content, _thinking, calls, raw), parts = read(text, size=3)
     assert calls == [{"name": "insert", "arguments": {"after": "b1", "markdown": "null"}}]
     assert ("value", 0, "markdown", "null") in parts
-    ollamas = [{"function": {"name": "insert", "arguments": {"after": "b1", "markdown": None}}}]
-    history = lambda calls: [{"role": "user", "content": "go"}, {"role": "assistant", "content": "", "tool_calls": calls},
-                             {"role": "tool", "content": "ok: inserted"}]
-    assert llm_render.render(history(raw), TOOLS, False) == llm_render.render(history(ollamas), TOOLS, False)
+    (wired,) = llm._wire([{"role": "assistant", "content": "", "tool_calls": raw}])[0]["tool_calls"]
+    assert json.loads(wired["function"]["arguments"]) == {"after": "b1", "markdown": "null"}
 
 
 def test_thinking_ends_at_its_close_or_at_a_tool_call():

@@ -1,10 +1,17 @@
-"""Ollama chat client. The single place a local model gets called.
+"""Chat client for llama.cpp's `llama-server`. The single place a local model gets called.
 
-Two rules are enforced here rather than trusted to callers. `num_ctx` is ALWAYS
-set explicitly, because Ollama's default is 4096 tokens and it truncates silently.
-Structured calls pass a JSON schema to Ollama's `format`, so the decoder is
-constrained to valid JSON — but a constrained decode still produces schema-valid
-nonsense, so the caller validates meaning, not syntax.
+Two rules are enforced here rather than trusted to callers. `think` is ALWAYS set
+explicitly, because qwen3.6 thinks by default. Structured calls pass a JSON schema
+(`response_format`), so the decoder is constrained to valid JSON — but a constrained
+decode still produces schema-valid nonsense, so the caller validates meaning, not syntax.
+
+Why llama-server and not Ollama (2026-10-23): Ollama renders qwen3.6's prompt with its own Go
+renderer instead of the model's chat template, and that renderer has open bugs in exactly the
+thinking-then-tool-call shape an agent loop makes (ollama#14493, #16383). It also ignores
+`preserve_thinking` (#16240). The Pi coding agent on Ollama looped until killed in 2 of 8 replays of
+a real session; on llama-server, same weights, 8 of 8 finished in under 30 s. llama-server renders with the
+template inside the GGUF, which is Qwen's own. One server now holds the weights for SLIM and the
+agent, where Ollama plus a second server held two copies.
 """
 
 import json
@@ -16,8 +23,12 @@ from contextlib import contextmanager, nullcontext
 
 from . import llm_render
 
-OLLAMA_CHAT = "http://localhost:11434/api/chat"
-OLLAMA_GENERATE = "http://localhost:11434/api/generate"
+# The server is started outside SLIM (README, "Requirements"): the qwen3.6 GGUF, its mmproj (the
+# open note's images), `--jinja`, and a per-slot window of at least RESIDENT_CTX.
+SERVER = "http://127.0.0.1:8080"
+CHAT_URL = SERVER + "/v1/chat/completions"
+TEMPLATE_URL = SERVER + "/apply-template"
+COMPLETION_URL = SERVER + "/completion"
 # A streamed call asks its caller's should_stop() this often: a write to a closed client is how
 # Stop is noticed, and a stopped call frees the model at once rather than at its last token.
 STOP_CHECK_S = 1.0
@@ -68,42 +79,32 @@ def _lock():
 # nothing when nobody committed. The grounding-best model is the summarization-worst, and
 # "qwen for everything" accepts that trade (2026-09-01).
 #
-# ⚠ qwen3.6 THINKS BY DEFAULT, and Ollama bills thinking tokens against num_predict while
-#   returning them in a separate field. Every call path therefore sets `think` EXPLICITLY —
-#   never by inheriting the default. Left unset, the model spends its whole output budget
-#   reasoning and returns content="", and the call dies at the first step.
+# ⚠ qwen3.6 THINKS BY DEFAULT, and its thinking tokens count against the output cap
+#   (`max_tokens`/`n_predict`) while coming back in a separate field. Every call path therefore
+#   sets `think` EXPLICITLY — never by inheriting the default. Left unset, the model spends its
+#   whole output budget reasoning and returns content="", and the call dies at the first step.
 #   `tests/test_llm_wire.py` pins it.
+#
+# The name of the weights: Ollama's `qwen3.6:35b` GGUF, the very file llama-server loads. The
+# server serves one model and ignores the field; traces record it.
 MODEL = "qwen3.6:35b"
 
-# ⚠ ONE context size for every call, and it is not a style choice. OLLAMA SPAWNS A SEPARATE
-# RUNNER PER (model, num_ctx) PAIR. Two sizes in one flow UNLOAD 19 GB of weights and reload
-# them at the other size, mid-query — `ollama ps` sitting in "Stopping..." while the GPU
-# thrashes, turning a ~20s answer into a hang. A SMALLER bespoke window is the same cliff from
-# the other side: a 32k call beside the loaded 128k resident is a SECOND ~23 GB runner
-# (measured 2026-08-27). One size, everywhere.
+# The window every input budget is derived from (copilot/context.py, copilot/turn.py). The server
+# fixes the window per slot at its start, so this must equal its per-slot size; a call cannot
+# change it. 256k since 2026-10-16 — THE OWNER'S CALL: twice the text per prompt, so a longer
+# prefill and weaker recall of the middle on the biggest inputs.
 #
-# 128k since 2026-08-26, and the number is a MEASUREMENT, not a preference. `ollama ps`
-# on this machine, same model, one size at a time:
-#
-#     32768 -> 23 GB     65536 -> 24 GB     131072 -> 25 GB      (all 100% GPU)
-#     262144 -> 28 GB (100% GPU, measured 2026-10-16)
-#
-# 256k since 2026-10-16 — THE OWNER'S CALL: one runner shared with the Pi coding agent, and
-# the input budgets derived from this constant (copilot/context.py, copilot/turn.py) scale
-# with it, knowingly — twice the text per prompt, so a longer prefill and weaker recall of
-# the middle on the biggest inputs.
+# Ollama spawned one runner per (model, num_ctx), so every call had to use one size or reload
+# 19 GB mid-query. llama-server has no such cliff, but the size stays one constant for the
+# budgets. An overlong prompt is refused (HTTP 400, exceed_context_size_error), never truncated
+# as Ollama truncated it, so the loud failure the big window traded away is back.
 #
 # ~16 MB of KV per 1k tokens, because qwen35moe is MoE with a 2048 embedding length. The
 # weights dominate and the window is nearly free — none of which transfers to a dense model.
-#
-# It buys headroom for images and fewer summaries lost to ctx_saturated. It costs the guard:
-# at 32k an overlong prompt fails visibly, and at 128k the same prompt succeeds with weak
-# recall of its own middle. A visible failure traded for an invisible one, knowingly.
 RESIDENT_CTX = 262144
 
 # THE RECORDING PATH. All three calls a recording makes — `summarize`, `enrich`'s title and
-# `suggest.build_card` — run here, and ⚠ THEY MUST MOVE TOGETHER: see the runner-per-(model,
-# num_ctx) note on RESIDENT_CTX, which a recording would pay while the owner waits for their note.
+# `suggest.build_card` — run here, on the resident's window.
 #
 # ⚠ AN ALIAS, NOT A NUMBER. Two constants that must be equal will drift; one that is defined
 # as the other cannot.
@@ -111,9 +112,9 @@ RECORD_CTX = RESIDENT_CTX
 # The recorder's three calls run on the RESIDENT (2026-08-25, their call).
 RECORD_MODEL = MODEL
 
-# Keep the resident model in VRAM between calls (the default 5m is fine, but being
-# explicit is the point — an evicted model costs a 19 GB reload on the next query).
-KEEP_ALIVE = "30m"
+# The server's own thinking budget belongs to the coding agent that shares it. SLIM's bound on
+# thinking is the output cap it always was: -1 turns the server's off for every SLIM call.
+NO_THINKING_BUDGET = -1
 
 # Temperature is split by JOB. Structured extraction keeps the 0.0 default, where
 # determinism IS correctness. PROSE THE OWNER READS is a different job, and greedy decoding is
@@ -125,11 +126,74 @@ REPLY_TEMPERATURE = 0.7
 
 
 class LLMError(RuntimeError):
-    """Ollama unreachable, timed out, or returned unusable output."""
+    """The server unreachable, timed out, or returned unusable output."""
 
 
 class Stopped(Exception):
     """The caller's should_stop() said stop while a streamed call ran: the call was abandoned."""
+
+
+# --- the wire: SLIM's messages as the server reads them ------------------------------------------
+#
+# Callers build messages as they always have: `images` a list of base64 strings beside the text,
+# `thinking` beside an assistant's content, a tool call's `arguments` an object. The server reads
+# OpenAI's shapes: an image is a content part, reasoning is `reasoning_content`, arguments are a
+# JSON string. Converted here, once, for every call path; replies come back the same way.
+
+_IMAGE_TYPES = {"/9j/": "jpeg", "R0lG": "gif", "UklG": "webp"}      # base64 of each magic number
+_STOPS = {"limit": "length", "eos": "stop", "word": "stop"}          # a raw call's stop_type
+
+
+def _image(data: str) -> dict:
+    kind = next((kind for head, kind in _IMAGE_TYPES.items() if data.startswith(head)), "png")
+    return {"type": "image_url", "image_url": {"url": f"data:image/{kind};base64,{data}"}}
+
+
+def _wire(messages: list[dict]) -> list[dict]:
+    """The messages as the chat template reads them. A message's images go before its text, in
+    order: the order a raw call sends them in."""
+    out = []
+    for message in messages:
+        wired = {"role": message["role"], "content": message.get("content") or ""}
+        if message.get("images"):
+            wired["content"] = [*map(_image, message["images"]), {"type": "text", "text": wired["content"]}]
+        if message.get("thinking"):
+            wired["reasoning_content"] = message["thinking"]
+        if message.get("tool_calls"):
+            wired["tool_calls"] = [{"type": "function", "function": {
+                "name": call["function"]["name"],
+                "arguments": json.dumps(call["function"].get("arguments") or {}, ensure_ascii=False)}}
+                for call in message["tool_calls"]]
+        out.append(wired)
+    return out
+
+
+def _calls(raw: list[dict]) -> list[dict]:
+    """The server's tool calls as the conversation carries them: arguments an object again."""
+    out = []
+    for call in raw:
+        arguments = call["function"].get("arguments") or {}
+        out.append({"function": {"name": call["function"]["name"],
+                                 "arguments": json.loads(arguments) if isinstance(arguments, str) else arguments}})
+    return out
+
+
+def _body(messages: list[dict], *, model: str | None, think: bool, temperature: float,
+          num_predict: int, schema: dict | None, stream: bool) -> dict:
+    """A chat call's body, the same bounds on every path."""
+    body = {
+        "model": model or MODEL,
+        "messages": _wire(messages),
+        "stream": stream,
+        "max_tokens": num_predict,
+        "temperature": temperature,
+        # Explicit, never left to the model's default — see the ⚠ note on MODEL.
+        "chat_template_kwargs": {"enable_thinking": think},
+        "thinking_budget_tokens": NO_THINKING_BUDGET,
+    }
+    if schema is not None:
+        body["response_format"] = {"type": "json_schema", "json_schema": {"name": "reply", "schema": schema}}
+    return body
 
 
 def chat(messages: list[dict], schema: dict | None = None, model: str | None = None,
@@ -148,27 +212,19 @@ def chat(messages: list[dict], schema: dict | None = None, model: str | None = N
     1600 num_predict tokens spent on 6,964 characters of thinking and empty content, against
     375 tokens and 8.5s with think=False. Pass think=True only with a budget for BOTH.
 
-    stats carries what the trace records.
+    `num_ctx` is the window the stats measure the prompt against; the server's is fixed at its
+    start (RESIDENT_CTX). stats carries what the trace records.
     """
-    body = {
-        "model": model or MODEL,
-        "messages": messages,
-        "stream": False,
-        "keep_alive": KEEP_ALIVE,
-        # Explicit, never left to the model's default — see the ⚠ note on MODEL.
-        "think": think,
-        "options": {"num_ctx": num_ctx, "temperature": temperature,
-                    "num_predict": num_predict},
-    }
-    if schema is not None:
-        body["format"] = schema
-
-    resp = _post(body, model or MODEL, timeout)
-    msg = resp.get("message", {})
-    content = msg.get("content", "")
+    body = _body(messages, model=model, think=think, temperature=temperature,
+                 num_predict=num_predict, schema=schema, stream=False)
+    resp = _post(CHAT_URL, body, model or MODEL, timeout)
+    choice = (resp.get("choices") or [{}])[0]
+    msg = choice.get("message") or {}
+    content = msg.get("content") or ""
     # If a reasoning trace came back, the tokens it cost came out of num_predict. Record
     # it, so "the model returned no JSON" is never mistaken for a model defect.
-    return content, _stats(resp, model or MODEL, num_ctx, content, len(msg.get("thinking") or ""))
+    return content, _stats(resp.get("timings") or {}, choice.get("finish_reason"), model or MODEL,
+                           num_ctx, content, len(msg.get("reasoning_content") or ""))
 
 
 def chat_tools(messages: list[dict], tools: list[dict] | None = None, *, think: bool,
@@ -182,67 +238,73 @@ def chat_tools(messages: list[dict], tools: list[dict] | None = None, *, think: 
 
     With tools the call streams, raw (`_tools_raw`): `on_part` hears each tool call's parameters
     as they decode, and `should_stop()`, asked about once a second, abandons it (Stopped).
-    Without them (the intent gate) it is one /api/chat call."""
+    Without them (the intent gate) it is one chat call."""
     if tools:
         return _tools_raw(messages, tools, think=think, temperature=temperature, num_predict=num_predict,
                           fmt=fmt, timeout=timeout, on_part=on_part, should_stop=should_stop)
-    body = {
-        "model": MODEL,
-        "messages": messages,
-        "stream": False,
-        "keep_alive": KEEP_ALIVE,
-        "think": think,
-        "options": {"num_ctx": RESIDENT_CTX, "temperature": temperature,
-                    "num_predict": num_predict},
-    }
-    if fmt is not None:
-        body["format"] = fmt
-    resp = _post(body, MODEL, timeout)
-    msg = resp.get("message", {})
-    content, raw = msg.get("content", ""), msg.get("tool_calls") or []
-    thinking_chars = len(msg.get("thinking") or "")
-    calls = [{"name": c["function"]["name"], "arguments": c["function"].get("arguments") or {}}
-             for c in raw]
+    body = _body(messages, model=None, think=think, temperature=temperature,
+                 num_predict=num_predict, schema=fmt, stream=False)
+    resp = _post(CHAT_URL, body, MODEL, timeout)
+    choice = (resp.get("choices") or [{}])[0]
+    msg = choice.get("message") or {}
+    content, raw = msg.get("content") or "", _calls(msg.get("tool_calls") or [])
+    thinking_chars = len(msg.get("reasoning_content") or "")
+    calls = [{"name": c["function"]["name"], "arguments": c["function"]["arguments"]} for c in raw]
     # A reply that is only tool calls is not one whose thinking ate the budget.
-    stats = _stats(resp, MODEL, RESIDENT_CTX, content or bool(raw), thinking_chars)
+    stats = _stats(resp.get("timings") or {}, choice.get("finish_reason"), MODEL, RESIDENT_CTX,
+                   content or bool(raw), thinking_chars)
     return {"content": content, "tool_calls": calls, "raw_tool_calls": raw}, stats
 
 
+# --- a call with tools: the template's prompt, the reply read as it decodes ----------------------
+#
+# The chat endpoint parses a tool call into JSON arguments. A RAW completion streams the model's
+# own XML instead, which `llm_render._Reader` reads as it decodes: a parameter's text reaches the
+# owner's draft as it arrives, and a `\frac` in it never passes through JSON. The prompt is the
+# server's own rendering (`/apply-template`, the GGUF's chat template), so a raw call and a chat
+# call over the same history share their cached prefix.
+
 def _tools_raw(messages: list[dict], tools: list[dict], *, think: bool, temperature: float, num_predict: int,
                fmt: dict | None, timeout: int, on_part, should_stop) -> tuple[dict, dict]:
-    body = {"model": MODEL, "prompt": llm_render.render(messages, tools, think), "raw": True, "stream": True,
-            "images": [image for m in messages for image in m.get("images") or ()],
-            "keep_alive": KEEP_ALIVE,
-            # The prompt's own last line decides thinking; `think` is sent anyway, as on every call.
-            "think": think,
-            "options": {"num_ctx": RESIDENT_CTX, "temperature": temperature, "num_predict": num_predict}}
+    rendered = _post(TEMPLATE_URL, {"messages": _wire(messages), "tools": tools,
+                                    "chat_template_kwargs": {"enable_thinking": think}}, MODEL, timeout)
+    images = [image for m in messages for image in m.get("images") or ()]
+    # Each image is a media marker in the rendered prompt, in the order the images are sent.
+    prompt = {"prompt_string": rendered["prompt"], "multimodal_data": images} if images else rendered["prompt"]
+    body = {"prompt": prompt, "stream": True, "n_predict": num_predict, "temperature": temperature,
+            "cache_prompt": True}
     if fmt is not None:
-        body["format"] = fmt
+        body["json_schema"] = fmt
     reader = llm_render._Reader(think, tools, on_part)
     final = _generate(body, reader.feed, should_stop, timeout)
     content, thinking_chars, calls, raw = reader.close()
     # A reply that is only tool calls is not one whose thinking ate the budget.
-    stats = _stats(final, MODEL, RESIDENT_CTX, content or bool(calls), thinking_chars)
+    stats = _stats(final.get("timings") or {}, _STOPS.get(final.get("stop_type")), MODEL, RESIDENT_CTX,
+                   content or bool(calls), thinking_chars)
     return {"content": content, "tool_calls": calls, "raw_tool_calls": raw}, stats
 
 
 def _generate(body: dict, on_chunk, should_stop, timeout: int) -> dict:
-    """A raw /api/generate, streamed: each piece of the reply to `on_chunk`, the final chunk (the
+    """A raw completion, streamed: each piece of the reply to `on_chunk`, the final event (the
     stats) returned. The lock spans the whole stream, as in `_stream`."""
-    req = urllib.request.Request(OLLAMA_GENERATE, data=json.dumps(body).encode(),
+    req = urllib.request.Request(COMPLETION_URL, data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
     final, asked = {}, time.monotonic()
     try:
         with _lock(), urllib.request.urlopen(req, timeout=timeout) as resp:
             for line in resp:
-                if not line.strip():
+                line = line.strip()
+                if line.startswith(b"error:"):
+                    raise LLMError(f"the server failed mid-stream ({MODEL}): "
+                                   f"{line[len(b'error:'):].decode('utf-8', 'replace').strip()[:300]}")
+                if not line.startswith(b"data:"):
                     continue
-                data = json.loads(line)
+                data = json.loads(line[len(b"data:"):])
                 if data.get("error"):
-                    raise LLMError(f"ollama failed mid-stream ({body['model']}): {str(data['error'])[:300]}")
-                if data.get("response"):
-                    on_chunk(data["response"])
-                if data.get("done"):
+                    raise LLMError(f"the server failed mid-stream ({MODEL}): {str(data['error'])[:300]}")
+                if data.get("content"):
+                    on_chunk(data["content"])
+                if data.get("stop"):
                     final = data
                 if should_stop is not None and time.monotonic() - asked >= STOP_CHECK_S:
                     asked = time.monotonic()
@@ -250,88 +312,94 @@ def _generate(body: dict, on_chunk, should_stop, timeout: int) -> dict:
                         raise Stopped
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")[:300]
-        raise LLMError(f"ollama rejected the call ({body['model']}): HTTP {e.code} — {detail}") from e
+        raise LLMError(f"the server rejected the call ({MODEL}): HTTP {e.code} — {detail}") from e
     except (urllib.error.URLError, TimeoutError, OSError) as e:
-        raise LLMError(f"ollama stream failed ({body['model']}): {e}") from e
+        raise LLMError(f"the server's stream failed ({MODEL}): {e}") from e
     if not final:                              # a reply cut off is no reply, whatever it held
-        raise LLMError(f"ollama's stream ended before it was done ({body['model']})")
+        raise LLMError(f"the server's stream ended before it was done ({MODEL})")
     return final
 
 
-def _post(body: dict, model: str, timeout: int) -> dict:
+def _post(url: str, body: dict, model: str, timeout: int) -> dict:
     req = urllib.request.Request(
-        OLLAMA_CHAT, data=json.dumps(body).encode(),
+        url, data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json"})
     try:
         with _lock():
             return json.load(urllib.request.urlopen(req, timeout=timeout))
     except urllib.error.HTTPError as e:
-        # Ollama puts the real reason in the body; the status line alone is useless.
+        # The server puts the real reason in the body; the status line alone is useless.
         detail = e.read().decode("utf-8", "replace")[:300]
-        raise LLMError(f"ollama rejected the call ({model}): HTTP {e.code} — {detail}") from e
+        raise LLMError(f"the server rejected the call ({model}): HTTP {e.code} — {detail}") from e
     except (urllib.error.URLError, TimeoutError, OSError) as e:
-        raise LLMError(f"ollama call failed ({model}): {e}") from e
+        raise LLMError(f"the server call failed ({model}): {e}") from e
 
 
-def _stream(body: dict, model: str, timeout: int, on_delta, on_thinking) -> tuple[str, int, dict]:
-    """A streamed call: (content, thinking characters, the final chunk, which carries the stats)."""
+def _stream(body: dict, model: str, timeout: int, on_delta, on_thinking) -> tuple[str, int, dict, str | None]:
+    """A streamed chat call: (content, thinking characters, the timings, the finish reason)."""
     req = urllib.request.Request(
-        OLLAMA_CHAT, data=json.dumps(body).encode(),
+        CHAT_URL, data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json"})
     parts: list[str] = []
     thinking_chars = 0
-    final: dict = {}
+    timings: dict = {}
+    reason = None
     try:
         # The lock spans the whole iteration — see _CALL_LOCK. Releasing at first byte
         # would let another call interleave with this stream's own decode.
         with _lock(), urllib.request.urlopen(req, timeout=timeout) as resp:
             for line in resp:
-                if not line.strip():
+                line = line.strip()
+                if not line.startswith(b"data:") or line == b"data: [DONE]":
                     continue
-                data = json.loads(line)
-                msg = data.get("message", {})
-                thinking = msg.get("thinking") or ""
-                thinking_chars += len(thinking)
-                if thinking and on_thinking is not None:
-                    on_thinking(thinking)
-                chunk = msg.get("content", "")
-                if chunk:
-                    parts.append(chunk)
-                    if on_delta is not None:
-                        on_delta(chunk)
-                if data.get("done"):
-                    final = data
+                data = json.loads(line[len(b"data:"):])
+                if data.get("error"):
+                    raise LLMError(f"the server failed mid-stream ({model}): {str(data['error'])[:300]}")
+                for choice in data.get("choices") or ():
+                    delta = choice.get("delta") or {}
+                    thinking = delta.get("reasoning_content") or ""
+                    thinking_chars += len(thinking)
+                    if thinking and on_thinking is not None:
+                        on_thinking(thinking)
+                    chunk = delta.get("content") or ""
+                    if chunk:
+                        parts.append(chunk)
+                        if on_delta is not None:
+                            on_delta(chunk)
+                    reason = choice.get("finish_reason") or reason
+                timings = data.get("timings") or timings
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")[:300]
-        raise LLMError(f"ollama rejected the call ({model}): HTTP {e.code} — {detail}") from e
+        raise LLMError(f"the server rejected the call ({model}): HTTP {e.code} — {detail}") from e
     except (urllib.error.URLError, TimeoutError, OSError) as e:
-        raise LLMError(f"ollama stream failed ({model}): {e}") from e
-    return "".join(parts), thinking_chars, final
+        raise LLMError(f"the server's stream failed ({model}): {e}") from e
+    return "".join(parts), thinking_chars, timings, reason
 
 
-def _stats(resp: dict, model: str, num_ctx: int, content, thinking_chars: int) -> dict:
+def _stats(timings: dict, reason: str | None, model: str, num_ctx: int, content, thinking_chars: int) -> dict:
     """What the trace records of one call, the same for every call path."""
-    prompt_tokens = resp.get("prompt_eval_count", 0)
-    out_tokens = resp.get("eval_count", 0)
-    prefill_s = resp.get("prompt_eval_duration", 0) / 1e9
-    decode_s = resp.get("eval_duration", 0) / 1e9
+    evaluated = timings.get("prompt_n", 0)
+    prompt_tokens = evaluated + timings.get("cache_n", 0)     # the whole prompt, cached or not
+    out_tokens = timings.get("predicted_n", 0)
+    prefill_s = timings.get("prompt_ms", 0) / 1000
+    decode_s = timings.get("predicted_ms", 0) / 1000
     return {
         "model": model,
         "num_ctx": num_ctx,
         "prompt_tokens": prompt_tokens,
         "output_tokens": out_tokens,
-        "prefill_tok_s": round(prompt_tokens / prefill_s) if prefill_s else None,
+        "prefill_tok_s": round(evaluated / prefill_s) if prefill_s else None,
         "decode_tok_s": round(out_tokens / decode_s) if decode_s else None,
-        "duration_s": round(resp.get("total_duration", 0) / 1e9, 2),
-        # Ollama truncates the prompt to num_ctx without erroring. If these are
-        # equal the prompt was probably cut off — the trace should show it.
+        "duration_s": round(prefill_s + decode_s, 2),
+        # The server refuses a prompt over its window rather than truncating it, so this is true
+        # only when this window and the server's disagree: the trace should show it.
         "ctx_saturated": prompt_tokens >= num_ctx,
         # "length" means the model hit num_predict instead of finishing. Under a
         # JSON grammar that usually means a repetition loop, and the JSON will be
         # truncated mid-string — the caller's parse will fail, loudly, which is
         # what we want. Recorded so the trace shows WHY.
-        "done_reason": resp.get("done_reason"),
-        "output_truncated": resp.get("done_reason") == "length",
+        "done_reason": reason,
+        "output_truncated": reason == "length",
         # Non-zero means the model reasoned. Under think=False it must be 0. Non-zero
         # AND empty content means thinking ate the output budget; the stats say so.
         "thinking_chars": thinking_chars,
@@ -350,20 +418,10 @@ def chat_stream(messages: list[dict], model: str | None = None,
     that exposes the model's reasoning. A schema may be supplied by a caller that treats
     deltas as diagnostics and parses only the completed JSON.
     """
-    body = {
-        "model": model or MODEL,
-        "messages": messages,
-        "stream": True,
-        "keep_alive": KEEP_ALIVE,
-        # Explicit, never left to the model's default — see the ⚠ note on MODEL.
-        "think": think,
-        "options": {"num_ctx": num_ctx, "temperature": temperature,
-                    "num_predict": num_predict},
-    }
-    if schema is not None:
-        body["format"] = schema
-    content, thinking_chars, final = _stream(body, model or MODEL, timeout, on_delta, on_thinking)
-    return content, _stats(final, model or MODEL, num_ctx, content, thinking_chars)
+    body = _body(messages, model=model, think=think, temperature=temperature,
+                 num_predict=num_predict, schema=schema, stream=True)
+    content, thinking_chars, timings, reason = _stream(body, model or MODEL, timeout, on_delta, on_thinking)
+    return content, _stats(timings, reason, model or MODEL, num_ctx, content, thinking_chars)
 
 
 def chat_json(messages: list[dict], schema: dict, **kw) -> tuple[dict, dict]:

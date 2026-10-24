@@ -21,12 +21,11 @@ class _Body:
 
 def test_thinking_chunks_ping_on_thinking_but_never_reach_on_delta(monkeypatch):
     # A client that hung up can only be noticed by WRITING to it. During a long think no
-    # content arrives, so without this hook the socket, the Ollama request and _CALL_LOCK
+    # content arrives, so without this hook the socket, the server's request and _CALL_LOCK
     # all stay held until the reasoning ends (~50 s measured).
-    lines = [json.dumps({"message": {"thinking": "let me see"}}).encode(),
-             json.dumps({"message": {"thinking": "hmm"}}).encode(),
-             json.dumps({"message": {"content": "Answer"}}).encode(),
-             json.dumps({"message": {"content": ""}, "done": True, "eval_count": 3}).encode()]
+    event = lambda delta, **more: b"data: " + json.dumps({"choices": [{"delta": delta, **more}]}).encode()
+    lines = [event({"reasoning_content": "let me see"}), event({"reasoning_content": "hmm"}),
+             event({"content": "Answer"}), event({}, finish_reason="stop"), b"data: [DONE]"]
     monkeypatch.setattr(llm.urllib.request, "urlopen", lambda req, timeout=None: _Body(lines))
     deltas, pings = [], []
     content, stats = llm.chat_stream(

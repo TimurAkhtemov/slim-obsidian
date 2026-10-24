@@ -228,36 +228,41 @@ that). Obsidian's loader cannot resolve a relative `require` (it broke the plugi
 while node's tests stayed green), which is why src/ is bundled.
 
 **Memory is the binding constraint, and macOS kills silently.** On a 48 GB machine
-`qwen3.6:35b` (MoE) takes ~28 GB at `RESIDENT_CTX = 262144` (shared with the Pi coding agent), ~16 MB per 1k tokens. Ollama
-spawns one runner per (model, `num_ctx`), so every call uses the one size — the recording
-path's three calls (summary, title, card) MUST share it, and a SMALLER bespoke window is the
-same cliff from the other side (a second ~23 GB runner; measured 2026-08-26). A long pass must
-stream its results. The big window trades the loud `ctx_saturated` guard for silent weak
-recall of a prompt's middle.
+`qwen3.6:35b` (MoE) is ~32 GB in `llama-server` with two slots of `RESIDENT_CTX = 262144` (one for
+SLIM, one for the Pi coding agent), ~16 MB of KV per 1k tokens. Never load the same weights in
+Ollama beside it: that is a second ~23 GB copy. A long pass must stream its results. The big
+window costs weak recall of a prompt's middle; an overlong prompt is refused (HTTP 400), never
+cut.
 
 **One model job at a time, across every session on this Mac.** On 2026-09-29 parallel jobs
 loading models (Ollama plus MLX benches) drove the machine to ~70 GB and it had to be
 hard-reset: GPU-wired memory can't swap, so macOS hangs instead of killing. Before a model job
-(regress, an eval, a live server run), check `ps` and Ollama's `server.log` for another one; a
-client at a different `num_ctx` makes Ollama reload the model on every switch.
+(regress, an eval, a live server run), check `ps`, `ollama ps` and `llama-server`'s log for
+another one.
 
-**Ollama traps — all handled in `slim/llm.py`; never call Ollama directly.** `qwen3.6` thinks
-by default and thinking tokens count against `num_predict`, so an unset `think` returns
-`content=""`; every call sets it explicitly (`think=True` only for the recorder's summary and
-the copilot's Deep mode). Greedy decoding into a JSON grammar loops forever on an unbounded
-string: cap `num_predict`, put `maxLength` on short fields (Ollama cannot compile one above
-~1500). LaTeX does not survive JSON — `\b \f \n \r \t` collide with `\beta \frac \nabla \rho
-\text` — so the summarizer bans backslashes and `capture.summarize._repair` reverses the decode.
+**Model-server traps — all handled in `slim/llm.py`; never call the server directly.** The
+generative model is served by llama.cpp's `llama-server`, not Ollama (2026-10-23): Ollama renders
+qwen3.6's prompt with its own Go renderer, whose open bugs hit the thinking-then-tool-call shape
+(ollama#14493, #16383), and the Pi coding agent on it looped until killed in 2 of 8 replays where
+llama-server finished 8 of 8. Ollama keeps the embedder. `qwen3.6` thinks
+by default and thinking tokens count against the output cap, so an unset `think` returns
+`content=""`; every call sets `enable_thinking` explicitly (`think=True` only for the recorder's
+summary and the copilot's Deep mode), and turns off the server's thinking budget, which is the
+coding agent's. Greedy decoding into a JSON grammar loops forever on an unbounded
+string: cap `num_predict`, put `maxLength` on short fields (Ollama could not compile one above
+~1500; llama.cpp's limit is unmeasured). LaTeX does not survive JSON — `\b \f \n \r \t` collide
+with `\beta \frac \nabla \rho \text` — so the summarizer bans backslashes and
+`capture.summarize._repair` reverses the decode.
 `llm.py` serializes live calls; temperature 0.0 for structured work, 0.7 for prose a person
-reads. /api/chat parses a tool call itself and holds it back until it is whole, tools= or not,
-so a call with tools goes RAW to /api/generate, its prompt built by `llm_render.render` byte for
-byte as Ollama 0.35's `qwen3.5` renderer builds it (`tests/test_llm_render.py` holds Ollama's
-own rendering; after an Ollama upgrade, check it still matches) and its reply read by
-`llm_render._Reader`. A model with another renderer needs its own. A tool call's text is XML,
-taken as written: the JSON trap above never touches it, and unlike Ollama's parser `_Reader`
-keeps a text parameter written `null` as the word. Even at temperature 0, a run can differ
-between two identical calls (seen 2026-10-14 on unchanged code; likely Ollama's prompt cache): compare regress results case by case, not
-by a single run.
+reads. A call with tools goes RAW: its prompt rendered by the server (`/apply-template`, the
+GGUF's own chat template) and completed by `/completion`, streamed, its reply read by
+`llm_render._Reader` — the chat endpoint would parse the call into JSON arguments, and the draft
+shows a parameter's text as it decodes. A model with another tool-call format needs its own
+reader. A tool call's text is XML, taken as written: the JSON trap above never touches it, and
+`_Reader` keeps a text parameter written `null` as the word. Messages are built in Ollama's
+shape (`images`, `thinking`, object `arguments`) and converted once, by `llm._wire`. Even at
+temperature 0, a run can differ between two identical calls (seen 2026-10-14 on unchanged code,
+under Ollama): compare regress results case by case, not by a single run.
 
 **A note can be filed and still be unreachable.** Filing is a markdown file; the copilot and
 `reflect` read SQLite. Anything that writes a note must ingest AND embed, or say plainly
@@ -325,7 +330,8 @@ These are value calls, not technical constraints; they change only on the owner'
 
 ## Environment
 
-- Apple Silicon Mac with Ollama; 48 GB of memory fits the default model. macOS only: MLX
+- Apple Silicon Mac with llama.cpp's `llama-server` (the generative model, README "Requirements")
+  and Ollama (the embedder); 48 GB of memory fits the default model. macOS only: MLX
   (Parakeet) and the Core Audio tap need it.
 - Vault: `SLIM_VAULT`, else DISCOVERED (`vaultpath.py`): Obsidian's own registry, then
   iCloud's Obsidian container, then `~/Documents/Obsidian Vault` (iCloud-synced is fine). Brain

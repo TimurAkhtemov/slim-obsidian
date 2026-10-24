@@ -1,224 +1,20 @@
-"""The prompt of a call with tools, rendered as Ollama renders it, and its reply read as it
-decodes. No network and no lock: `llm` sends the prompt and feeds the reply through `_Reader`.
+"""A call with tools: its reply read as it decodes. No network and no lock: `llm` streams the
+reply of a raw completion through `_Reader`.
+
+The prompt is the server's own rendering (`llm._tools_raw`). Until 2026-10-23 it was rendered
+here, byte for byte as Ollama 0.35's `qwen3.5` renderer built it, because Ollama's /api/chat held a
+tool call back until it was whole. llama-server renders with the model's own chat template; the
+reply's format is the model's, Qwen's tool-call XML, and is read here as before.
 """
 
 import json
-import math
 import re
-from decimal import Decimal
 
-# --- a call with tools: the prompt rendered here, the reply read as it decodes ------------------
-#
-# /api/chat runs the model's own parser (Ollama 0.35's `qwen3.5`) on every reply, tools or not, and
-# it holds a tool call back until `</tool_call>`: an insert's 700 characters arrived in one piece
-# at the end (measured 2026-10-13, /api/chat with no tools=: 0 content chunks, the call whole at
-# 3.66 s). A RAW /api/generate runs no parser, so the call streams; its prompt is rendered here, as
-# that renderer renders it (model/renderers/qwen35.go with RenderImgTags on, json.go, image_tags.go,
-# qwen3coder.go's formatToolCallArgument). Byte for byte: equal to Ollama's own `_debug_render_only`
-# for every call of a real run, and a raw call after a chat call re-read 2 of its 8,006 prompt
-# tokens. tests/test_llm_render.py pins it against Ollama's rendering.
+# --- the reply, read as it decodes ---------------------------------------------------------------
 
-_IM_START, _IM_END = "<|im_start|>", "<|im_end|>"
-_TOOLS_HEAD = "# Tools\n\nYou have access to the following functions:\n\n<tools>"
-_TOOLS_TAIL = """
-</tools>
-
-If you choose to call a function ONLY reply in the following format with NO suffix:
-
-<tool_call>
-<function=example_function_name>
-<parameter=example_parameter_1>
-value_1
-</parameter>
-<parameter=example_parameter_2>
-This is the value for the second parameter
-that can span
-multiple lines
-</parameter>
-</function>
-</tool_call>
-
-<IMPORTANT>
-Reminder:
-- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags
-- Required parameters MUST be specified
-- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after
-- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls
-</IMPORTANT>"""
 # What Go's strings.TrimSpace trims (unicode.IsSpace); Python's strip() also takes U+001C-U+001F.
 _SPACE = ("\t\n\v\f\r \x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
           "\u2028\u2029\u202f\u205f\u3000")
-
-
-def _trim(text: str) -> str:
-    return text.strip(_SPACE)
-
-
-def _go_json(value, sort: bool = True) -> str:
-    """Go's json.Marshal: compact, `<>&` and U+2028/9 escaped, a map's keys sorted, and every
-    number a float64, as Ollama holds any number it read from JSON."""
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        return _go_number(value)
-    if isinstance(value, list):
-        return "[" + ",".join(_go_json(v, sort) for v in value) + "]"
-    if isinstance(value, dict):
-        items = sorted(value.items()) if sort else value.items()
-        return "{" + ",".join(f"{_go_json(str(k))}:{_go_json(v, sort)}" for k, v in items) + "}"
-    out = json.dumps(str(value), ensure_ascii=False)
-    return (out.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
-               .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
-
-
-def _go_number(value) -> str:
-    """A float64 as encoding/json writes it: its shortest digits, positional between 1e-6 and
-    1e21, otherwise with an exponent (1e-7, 1.5e+21)."""
-    number = float(value)
-    if number == 0:
-        return "-0" if math.copysign(1, number) < 0 else "0"
-    digits = Decimal(repr(number)).normalize()
-    return format(digits, "e" if not 1e-6 <= abs(number) < 1e21 else "f")
-
-
-def _spaced(compact: str) -> str:
-    """marshalWithSpaces: a space after each ':' and ',' outside strings."""
-    out, quoted, escaped = [], False, False
-    for c in compact:
-        out.append(c + " " if not quoted and c in ":," else c)
-        if escaped:
-            escaped = False
-        elif quoted and c == "\\":
-            escaped = True
-        elif c == '"':
-            quoted = not quoted
-    return "".join(out)
-
-
-def _property(prop: dict) -> dict:
-    """api.ToolProperty's fields in Go's order, empty ones left out; `items` is a map, so sorted."""
-    out = {}
-    if prop.get("anyOf"):
-        out["anyOf"] = [_property(p) for p in prop["anyOf"]]
-    kind = prop.get("type")
-    if kind:
-        out["type"] = kind[0] if isinstance(kind, list) and len(kind) == 1 else kind
-    if prop.get("items") is not None:
-        out["items"] = json.loads(json.dumps(prop["items"], sort_keys=True))
-    for key in ("description", "enum"):
-        if prop.get(key):
-            out[key] = prop[key]
-    if prop.get("properties"):
-        out["properties"] = {k: _property(v) for k, v in prop["properties"].items()}
-    if prop.get("required"):
-        out["required"] = prop["required"]
-    return out
-
-
-def _tool_json(tool: dict) -> str:
-    """A tool as the prompt lists it: type, function {name, description, parameters {type,
-    required, properties}}, the properties in the order given."""
-    fn = tool["function"]
-    params = fn.get("parameters") or {}
-    shown = {"type": params.get("type", "object")}
-    if params.get("required"):
-        shown["required"] = params["required"]
-    shown["properties"] = {k: _property(v) for k, v in (params.get("properties") or {}).items()}
-    function = {"name": fn["name"], **({"description": fn["description"]} if fn.get("description") else {}),
-                "parameters": shown}
-    return _spaced(_go_json({"type": tool.get("type", "function"), "function": function}, sort=False))
-
-
-def _argument(value) -> str:
-    """An argument of a call in the history: text as it is, a list or a map as compact JSON."""
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (list, dict)):
-        return _go_json(value)
-    if isinstance(value, float) and value.is_integer():
-        return str(int(value))
-    return str(value)
-
-
-def _content(message: dict, offset: int) -> tuple[str, int]:
-    """A message's text with an [img-N] for each of its images before it, numbered across the
-    prompt; the raw call sends the images in that order."""
-    text, count = message.get("content") or "", len(message.get("images") or ())
-    if not count:
-        return text, offset
-    if "[img-" in text:
-        return text, offset + count
-    prefix = ""
-    for n in range(offset, offset + count):
-        if "[img]" in text:
-            text = text.replace("[img]", f"[img-{n}]", 1)
-        else:
-            prefix += f"[img-{n}]"
-    if prefix and text and text[0] not in _SPACE:
-        prefix += " "
-    return prefix + text, offset + count
-
-
-def _reasoning(content: str, thinking: str, shown: bool) -> tuple[str, str]:
-    if shown and thinking:
-        return _trim(thinking), content
-    reasoning, at = "", content.find("</think>")
-    if at != -1:
-        before = content[:at]
-        opened = before.rfind("<think>")
-        reasoning = before[opened + len("<think>"):] if opened != -1 else before
-        content = content[at + len("</think>"):].lstrip("\n")
-    return _trim(reasoning), content
-
-
-def render(messages: list[dict], tools: list[dict] | None, think: bool) -> str:
-    """The prompt Ollama builds from these messages and tools, ending in the assistant's open turn:
-    `<think>\\n` when it thinks, an empty think block when it does not."""
-    out = []
-    if tools:
-        out.append(_IM_START + "system\n" + _TOOLS_HEAD + "".join("\n" + _tool_json(t) for t in tools) + _TOOLS_TAIL)
-        if messages and messages[0]["role"] == "system":
-            system = _trim(_content(messages[0], 0)[0])
-            if system:
-                out.append("\n\n" + system)
-        out.append(_IM_END + "\n")
-    elif messages and messages[0]["role"] == "system":
-        out.append(_IM_START + "system\n" + _trim(_content(messages[0], 0)[0]) + _IM_END + "\n")
-    query = next((i for i in range(len(messages) - 1, -1, -1) if messages[i]["role"] == "user" and not (
-        (text := _trim(_content(messages[i], 0)[0])).startswith("<tool_response>") and text.endswith("</tool_response>"))),
-        len(messages) - 1)
-    offset = 0
-    for i, message in enumerate(messages):
-        content, offset = _content(message, offset)
-        content = _trim(content)
-        role, last = message["role"], i == len(messages) - 1
-        if role == "user" or (role == "system" and i):
-            out.append(_IM_START + role + "\n" + content + _IM_END + "\n")
-        elif role == "assistant":
-            shown = think and i > query
-            reasoning, content = _reasoning(content, message.get("thinking") or "", shown)
-            out.append(_IM_START + "assistant\n" + (f"<think>\n{reasoning}\n</think>\n\n" if shown else "") + content)
-            for j, call in enumerate(message.get("tool_calls") or ()):
-                out.append(("\n\n" if _trim(content) else "") if j == 0 else "\n")
-                fn = call["function"]
-                out.append(f"<tool_call>\n<function={fn['name']}>\n" + "".join(
-                    f"<parameter={k}>\n{_argument(v)}\n</parameter>\n" for k, v in (fn.get("arguments") or {}).items())
-                    + "</function>\n</tool_call>")
-            if not last:
-                out.append(_IM_END + "\n")
-        elif role == "tool":
-            if i == 0 or messages[i - 1]["role"] != "tool":
-                out.append(_IM_START + "user")
-            out.append("\n<tool_response>\n" + content + "\n</tool_response>")
-            if last or messages[i + 1]["role"] != "tool":
-                out.append(_IM_END + "\n")
-        if last and role != "assistant":
-            out.append(_IM_START + "assistant\n" + ("<think>\n" if think else "<think>\n\n</think>\n\n"))
-    return "".join(out)
 
 
 _FUNCTION = re.compile(r"<function=([^>\n]+)>")
@@ -241,9 +37,10 @@ def _held(text: str, *tags: str) -> int:
 
 
 class _Reader:
-    """A reply as it decodes, read as Ollama's qwen3.5 parser reads one (model/parsers/qwen35.go and
-    qwen3coder.go): thinking up to `</think>`, text, and `<tool_call>` blocks, each parameter's value
-    typed by the tool's schema. Unlike that parser it hands a value on as it arrives:
+    """A reply as it decodes, read as Ollama's qwen3.5 parser read one (model/parsers/qwen35.go and
+    qwen3coder.go), which SLIM's editing run was built against: thinking up to `</think>`, text, and
+    `<tool_call>` blocks, each parameter's value typed by the tool's schema. Unlike that parser it
+    hands a value on as it arrives:
     `on_part(kind, index, name, value)` hears ("call", i, tool, None), ("parameter", i, name, None),
     ("text", i, name, chunk), ("value", i, name, value) and ("end", i, None, None) — or, for a call
     that turns into text, ("drop", i, None, None), and the next call is i again."""
@@ -374,7 +171,7 @@ class _Reader:
     def _typed(self, tool: str, name: str, value: str):
         """As Ollama types it: "null" is None, and an array or object parameter is JSON if it parses.
         But a string parameter's text is its value, "null" too: Ollama's None made "change undefined
-        to null" delete the word. Written back into the prompt, both are `null`."""
+        to null" delete the word. Written back into the prompt, the text renders as itself."""
         kind = self.types.get(tool, {}).get(name)
         kinds = kind if isinstance(kind, list) else [kind]
         if value.lower() == "null" and "string" not in kinds:

@@ -1,8 +1,8 @@
-"""S2-E: one live Ollama call at a time.
+"""S2-E: one live model call at a time.
 
 There is one resident model and the chat surface is a ThreadingHTTPServer, so concurrent
 calls were always possible — nothing serialized them before the tool-loop. The cost is
-not correctness at the HTTP layer (Ollama would answer both) but the per-runner KV cache:
+not correctness at the HTTP layer (the server would answer both) but the slot's KV cache:
 interleaved calls evict each other's prefix, and the tool-loop's growing conversation is
 only affordable because that prefix survives between calls.
 
@@ -40,7 +40,7 @@ class _Overlap:
 
 def test_non_streaming_calls_do_not_overlap(monkeypatch):
     overlap = _Overlap()
-    payload = json.dumps({"message": {"content": "{}"}, "done": True}).encode()
+    payload = json.dumps({"choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}]}).encode()
 
     def fake_urlopen(req, timeout=None):
         overlap.enter()
@@ -77,9 +77,9 @@ def test_a_stream_holds_the_lock_for_its_whole_decode(monkeypatch):
     """The load-bearing half: a stream that released at first byte would let a decision
     call interleave with its own answer, which is exactly the tool-loop's shape."""
     overlap = _Overlap()
-    lines = [json.dumps({"message": {"content": "tok"}}).encode() for _ in range(4)]
-    lines.append(json.dumps({"message": {"content": "!"}, "done": True,
-                             "eval_count": 5}).encode())
+    event = lambda delta, **more: b"data: " + json.dumps({"choices": [{"delta": delta, **more}]}).encode()
+    lines = [event({"content": "tok"}) for _ in range(4)]
+    lines.append(event({"content": "!"}, finish_reason="stop"))
 
     def fake_urlopen(req, timeout=None):
         overlap.enter()
@@ -128,7 +128,7 @@ class _StreamBody:
 
 def test_a_failing_call_releases_the_lock(monkeypatch):
     """A refusal must not wedge every later call — the lock is released on the error
-    path too, or one unreachable-Ollama moment would deadlock the whole surface."""
+    path too, or one unreachable-server moment would deadlock the whole surface."""
     def boom(req, timeout=None):
         raise OSError("connection refused")
 

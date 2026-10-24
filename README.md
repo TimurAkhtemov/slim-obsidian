@@ -2,7 +2,7 @@
 
 A private local assistant that lives in an Obsidian vault. You speak; it transcribes,
 organizes, reflects, and can talk with you about any of it. Everything runs on one Mac —
-local models over Ollama, a SQLite index, and Markdown files you can read without it.
+local models over llama.cpp and Ollama, a SQLite index, and Markdown files you can read without it.
 
 Built to replace a paid Notion subscription whose only load-bearing feature was AI meeting
 notes, and whose real failure was simpler: *I click record, it sits somewhere, and I can
@@ -165,9 +165,8 @@ batch transcript, because **the transcript is the note** — summary, title and 
 decorate it. A failed or silent transcript is refused rather than filed, and your audio stays
 staged so you can retry.
 
-The three model calls in that sequence all share one context window on purpose. Ollama spawns
-one runner per model *and context size*, so a second, smaller, bespoke window would not save
-memory — it would load a second copy of the model.
+The three model calls in that sequence share one server and its one context window: the
+window is fixed when the server starts, so a call cannot ask for a second, smaller one.
 
 ## How answers work
 
@@ -228,12 +227,28 @@ a 48 GB machine fits comfortably and a 16 GB machine does not.
   3.12+ environment on first use. There is no separate install step.
 - **ffmpeg** — `brew install ffmpeg`. `ffprobe` reads the recorder's container and `ffmpeg`
   decodes it; a recording dies without them.
-- **[Ollama](https://ollama.com)**, running, with both models pulled:
+- **[Ollama](https://ollama.com)**, running, with both models pulled. Ollama runs the embedder;
+  the generative model's weights are its `qwen3.6:35b` files, served by llama.cpp (next item):
 
   ```bash
-  ollama pull qwen3.6:35b      # every generative call: summary, title, card, reflect, copilot
+  ollama pull qwen3.6:35b      # the weights llama-server loads: the model and its projector
   ollama pull embeddinggemma   # the embedder; its task prefixes are load-bearing
   ```
+
+- **[llama.cpp](https://github.com/ggml-org/llama.cpp)**'s `llama-server` on `127.0.0.1:8080`
+  (`brew install llama.cpp`), for every generative call: summary, title, card, reflect, copilot.
+  It renders the prompt with the model's own chat template, which Ollama does not. Point it at
+  the two GGUF files Ollama keeps for `qwen3.6:35b` (the `model` and `projector` layers of its
+  manifest, under `~/.ollama/models/blobs/`), and give each slot at least `llm.RESIDENT_CTX` tokens:
+
+  ```bash
+  llama-server -m <model.gguf> --mmproj <projector.gguf> --jinja -ngl 999 \
+    -np 2 -c 524288 --spec-type draft-mtp --sleep-idle-seconds 600 --port 8080
+  ```
+
+  `-np 2 -c 524288` is two slots of 262,144 tokens, so a second client (a coding agent) keeps
+  its own prompt cache; `--spec-type draft-mtp` uses the model's own draft head, about twice the
+  decode speed.
 
 - **Obsidian** 1.5 or newer, desktop. It is the only interactive surface.
 
@@ -302,8 +317,8 @@ sweep every five minutes, the reflection nightly, and a restic backup of the vau
 ## Code map
 
 - `slim/` — the entry points and seams: `cli.py` (six commands), `server.py` (the plugin's API
-  server, run as `slim chat`), `reflect.py`, `db.py`, `llm.py` (never call Ollama directly) and
-  `llm_render.py` (the raw tool-call prompt and reply format), `trace.py`, `config.py`,
+  server, run as `slim chat`), `reflect.py`, `db.py`, `llm.py` (never call the model server directly) and
+  `llm_render.py` (the raw tool-call reply format), `trace.py`, `config.py`,
   `vaultpath.py`. Each subpackage below is a feature folder, not a layer.
 - `slim/vault/` — `frontmatter.py` (the frontmatter reader and writer), `notefile.py` (slugs,
   safe writes), `note_images.py` (a note's embedded images), `identity.py` (the vault pin).
@@ -346,7 +361,7 @@ sweep every five minutes, the reflection nightly, and a restic backup of the vau
 
 ## Tests
 
-Both suites run without Ollama, a vault, or any of the model weights — ffmpeg is the one
+Both suites run without a model server, a vault, or any of the model weights — ffmpeg is the one
 binary the recorder tests genuinely need, because they exercise real container handling:
 
 ```bash

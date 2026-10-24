@@ -947,7 +947,7 @@ def streamed(monkeypatch, *replies, order=None):
 
 def wired(monkeypatch, *replies, size=3):
     """The model as the raw call hears it: each reply's text read by the real llm.chat_tools (its
-    prompt rendered, its reply read by llm_render._Reader), a few characters at a time."""
+    reply read by llm_render._Reader; the server's prompt faked), a few characters at a time."""
     real = llm.chat_tools
     seen = scripted(monkeypatch)
     gate, pending = copilot_turn.llm.chat_tools, list(replies)
@@ -956,10 +956,11 @@ def wired(monkeypatch, *replies, size=3):
         text = pending.pop(0)
         for i in range(0, len(text), size):
             on_chunk(text[i:i + size])
-        return {"done": True, "eval_count": 10}
+        return {"stop": True, "stop_type": "eos", "timings": {"predicted_n": 10}}
 
     def chat_tools(messages, tools=None, **opts):
         return gate(messages, tools, **opts) if opts.get("fmt") is not None else real(messages, tools, **opts)
+    monkeypatch.setattr(copilot_turn.llm, "_post", lambda url, body, model, timeout: {"prompt": ""})
     monkeypatch.setattr(copilot_turn.llm, "_generate", generate)
     monkeypatch.setattr(copilot_turn.llm, "chat_tools", chat_tools)
     return seen
