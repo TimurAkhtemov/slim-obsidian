@@ -45,9 +45,8 @@ between two ingests reads as delete + create and the note loses its id** (and th
 against it). The server's own edit-and-move passes the old path, so only hand moves can hit this.
 
 1. **Capture.** The Obsidian recorder plugin (`obsidian/src/`, bundled by esbuild into the
-   committed `obsidian/main.js`, the one file Obsidian loads) is the desktop lane and the reason
-   the project exists; `slim memos` (launchd, every 5 min) sweeps the phone's Voice Memos into
-   `Journal/`. How the recorder works, and why:
+   committed `obsidian/main.js`, the one file Obsidian loads) is the one capture lane and the
+   reason the project exists. How the recorder works, and why:
    - The meeting object is a `slim-meeting` fenced block inside a standard `MarkdownView`,
      never a custom view, private editor internals or an overlay: a custom view was built,
      tested live and rejected (2026-08-23). The draft note exists from the first click; states
@@ -89,16 +88,12 @@ against it). The server's own edit-and-move passes the old path, so only hand mo
      process GROUP on unload because `uv run` wraps the real python.
    - The server moves a note by create + unlink, which Obsidian reports as `delete`. The
      session names the path it is moving (`filingFrom`) and treats that delete as its own.
-2. **Label** — what a recording IS (type) and what it is ABOUT (subject). The two lanes do
-   this differently, and conflating them has caused wrong reasoning more than once:
-   - **Memo lane** (`memos/inbox.py`) is deterministic first — `voicetags.detect_type` parses the
-     spoken opening and `voicetags.route` decides the folder; `enrich` only fills a silence.
-   - **Recorder lane** (`recorder/`, `server.py`) never calls `detect_type`, `detect_subject` or
-     `route` (neither imports `voicetags`). `enrich` supplies the title and `suggest` builds the
-     card; `voicetags` contributes constants and `registered_project` only.
+2. **Label** — what a recording IS (type) and what it is ABOUT (subject). The owner picks the
+   type before recording, else the filing card (`suggest`) proposes one; `enrich` supplies the
+   title; `voicetags` holds the type list, the folder names and `registered_project`.
 
-   Labels are written once, at capture, with `tagged_by`/`routed_by`/`subject_by` recording
-   which layer decided. A wrong one is the owner's edit, on the card or in the frontmatter.
+   Labels are written once, at capture, with `tagged_by`/`subject_by` recording which layer
+   decided. A wrong one is the owner's edit, on the card or in the frontmatter.
 3. **File** — the card: `suggest` proposes `Capture/<subject>/`; an invented destination
    collapses to its deepest existing ancestor, else `Capture/_unfiled`, and a journal is
    forced flat to `Journal/`. The owner can edit it, and `/api/record/apply` moves the note.
@@ -164,7 +159,7 @@ against it). The server's own edit-and-move passes the old path, so only hand mo
 Journal/            private floor · flat · never routes out
 Capture/<subject>/  every recording, router-owned; `_unfiled` when no subject is known
 Notes/<subject>/    curated writing; any depth below level 2 is the owner's
-Inbox/Journal/      the memo sweep's drop       Profile/        the owner's self-description; not indexed, not injected
+Profile/            the owner's self-description; not indexed, not injected
 Attachments/        binaries                   _Reflections/   derived, excluded from ingest
 Skills/             the owner's copilot /commands; not indexed
 ```
@@ -173,9 +168,8 @@ Subjects are the ids in `config/projects.yaml` (gitignored; copy `config/project
 The file also carries `owner`, the name the prompts address; nothing else reads it.
 
 **Subject is the only folder axis SLIM uses:** a path encodes one fact; type, course and status
-are frontmatter, where they can be queried. Folders SLIM invents are at most two segments
-(`Capture/<subject>`; `tests/capture/test_voicetags.py` checks every memo route), so folders
-don't multiply across every axis; depth the owner creates is theirs, and the card files into it.
+are frontmatter, where they can be queried. The only folder SLIM invents is `Capture/_unfiled`
+(the card files into folders that exist), so folders don't multiply across every axis; depth the owner creates is theirs, and the card files into it.
 
 **(owner)** **`Journal/` is the floor, and the floor is a path.** Permanent, flat, a top-level
 sibling of `Capture/`; no route ever carries a note out of it (test-enforced). If a cloud
@@ -184,17 +178,16 @@ it reads `type = 'journal'` notes under `Journal/` only, so one placed elsewhere
 in the nightly synthesis.
 
 The code, `slim/`: subpackages are feature folders. Imports run one way:
-`vault <- index <- copilot`, `vault <- capture <- memos`, `capture <- recorder` (which also uses
+`vault <- index <- copilot`, `vault <- capture <- recorder` (which also uses
 `index`); `server` joins `recorder` and `copilot`; the seams (config, db, trace, llm) import no package.
 
 ```
 slim/            entry points and seams: cli, server (`slim chat`'s HTTP), config, db, trace,
                  llm, llm_render, reflect, devserver; vaultpath (stdlib only, loaded BY PATH)
 slim/vault/      reading and writing notes: frontmatter, notefile, note_images, identity (the pin)
-slim/capture/    audio to labelled text, both lanes: audio, transcribe, speakers, summarize,
-                 enrich, voicetags
-slim/memos/      the phone lane: voicememos (the sweep), inbox (files a memo)
-slim/recorder/   the desktop lane: routes, pipeline, review, state, note (the note's sole writer),
+slim/capture/    audio to labelled text: audio, transcribe, speakers, summarize, enrich,
+                 voicetags
+slim/recorder/   the capture lane: routes, pipeline, review, state, note (the note's sole writer),
                  suggest (the filing card)
 slim/index/      ingest, chunk, embed, search
 slim/copilot/    Talk: turn (the intent gate is `_intent`), context, run (the editing run), edits,
@@ -208,12 +201,13 @@ the entry, `plugin.js`, `server.js`, `settings-tab.js` and `sse.js` at the top. 
 
 ## What was cut (owner)
 
-Four cuts (2026-07-31, 08-27, 09-01, 09-03) removed roughly 60k lines of code nobody used:
+Five cuts (2026-07-31, 08-27, 09-01, 09-03, 11-05) removed roughly 60k lines of code nobody used:
 curated memory, context packs, an evidence rail, MCP tools and server, policy tiers, a
 vault-wide ask stack, the desktop app and its chat lane, a tool loop for search (the editing
-loop in Talk is the owner's call of 2026-10-12), re-filing and re-labelling passes, and the
-schema columns and prose that described them. **Restoring any of these is the owner's call:
-stop and ask.** The maintainer's archive holds them. Model evaluations run from harnesses kept
+loop in Talk is the owner's call of 2026-10-12), re-filing and re-labelling passes, the phone's
+Voice Memos sweep and its spoken-opening router (`slim memos`, 2026-11-05: the owner had stopped
+recording memos), and the schema columns and prose that described them. **Restoring any of
+these is the owner's call: stop and ask.** The maintainer's archive holds them. Model evaluations run from harnesses kept
 outside the repo.
 
 ## Traps that will bite you, and what they cost when they did
@@ -337,8 +331,7 @@ These are value calls, not technical constraints; they change only on the owner'
   iCloud's Obsidian container, then `~/Documents/Obsidian Vault` (iCloud-synced is fine). Brain
   DB outside any synced folder: `SLIM_DATA_DIR`, default `~/Library/Application Support/slim/`
   (SQLite + FTS5 + vectors, rebuildable — see above).
-- launchd: `com.slim.voicememos` every 5 min, `com.slim.reflect` nightly, `com.slim.backup`
-  daily (`scripts/backup.sh`, vault → restic).
+- launchd: `com.slim.reflect` nightly, `com.slim.backup` daily (`scripts/backup.sh`, vault → restic).
 
 ## Conventions
 

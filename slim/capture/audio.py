@@ -1,6 +1,6 @@
 """Audio files: the ffmpeg binaries, a recording's container and duration, its hash and archive.
 
-Shared by both lanes and by `speakers` and `transcribe`; no speech recognition happens here.
+Used by the recorder and by `speakers` and `transcribe`; no speech recognition happens here.
 """
 from __future__ import annotations
 
@@ -15,10 +15,6 @@ from pathlib import Path
 from ..config import VAULT
 
 AUDIO_ARCHIVE = VAULT / "Attachments" / "Recordings"
-
-AUDIO_SUFFIXES = {".m4a", ".mp3", ".wav", ".aac", ".mp4", ".mov",
-                  ".caf", ".flac", ".opus", ".webm", ".ogg"}
-
 
 # Where ffmpeg installs itself when PATH cannot be trusted. Homebrew on Apple silicon
 # first, Intel second; anything else has to be on PATH.
@@ -126,19 +122,6 @@ def normalize_container(path: Path) -> Path:
     except Exception:                                  # noqa: BLE001 - the original still works
         fixed.unlink(missing_ok=True)
     return path
-
-
-def to_wav16k(src: Path, dst: Path) -> Path:
-    """Any recording -> 16 kHz mono WAV. Voice Memos hands us m4a; a call recorder may hand
-    us stereo at 48 kHz. Every ASR wants 16 kHz mono, so normalize once, here, rather than
-    letting each runtime resample differently."""
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [ffbin("ffmpeg"), "-y", "-loglevel", "error", "-i", str(src),
-         "-ac", "1", "-ar", "16000", str(dst)],
-        check=True,
-    )
-    return dst
 
 
 def sha256(path: Path) -> str:

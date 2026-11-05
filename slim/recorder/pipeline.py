@@ -215,8 +215,8 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
     progress("preparing", "Preparing audio", "Making the recording seekable and readable")
 
     # Keep the Transcript, not just its text: `asr_model` and `audio_seconds` are deterministic
-    # facts about how these words were produced, and the note records them the same way the
-    # memo lane does. They stay absent when transcription fails rather than being invented.
+    # facts about how these words were produced, and the note records them. They stay absent
+    # when transcription fails rather than being invented.
     asr_model, audio_seconds, transcribed_at, speakers_by = "", None, None, ""
     gots, words, seconds, wall = [], 0, 0.0, 0.0
     try:

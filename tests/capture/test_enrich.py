@@ -1,5 +1,5 @@
 """Enrichment's schema: what the model may answer is the vocabulary code already holds."""
-from slim.capture import enrich, voicetags
+from slim.capture import enrich
 
 REGISTRY = {
     "beacon": {"name": "Beacon"},
@@ -14,7 +14,10 @@ def test_the_project_enum_is_exactly_the_registry_plus_none():
         [*sorted(REGISTRY), enrich.NO_PROJECT]
 
 
-def test_the_inferred_and_spoken_vocabularies_are_literally_the_same_list():
-    """enrich-v1 claimed this and shipped a different list, which is why the model's inferred
-    type sat in frontmatter unusable for two weeks. Pin it so they cannot drift again."""
-    assert enrich.TYPE_TAGS == list(voicetags.ROUTING_TYPES)
+def test_an_invented_project_is_dropped_rather_than_filed():
+    """The grammar enum makes the closed set structural, and `registered_project` is the
+    redundant half: what survives a grammar that silently degrades."""
+    raw = {"title": "Kernels", "type_tag": "lecture", "topics": [], "project": "not-a-project"}
+    assert enrich.normalize(raw, "fallback", REGISTRY)["project"] == ""
+    assert enrich.normalize({**raw, "project": "School"}, "fallback", REGISTRY)["project"] \
+        == "school"

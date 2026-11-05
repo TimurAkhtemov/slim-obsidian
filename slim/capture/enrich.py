@@ -1,11 +1,8 @@
 """Model-written title, type, topics and project for one transcript.
 
 Writes frontmatter only: the transcript is raw testimony and stays byte-identical.
-Provenance is always recorded — `tagged_by: spoken` when the deterministic opening
-vocabulary matched, `llm` when this module classified. The type is a CLOSED enum,
-`voicetags.ROUTING_TYPES`, so a type the model inferred can be routed on; topics are open
-vocabulary, but code decides their form (slugged, bounded, deduped). Called by the
-recorder's filing card and by the memo sweep.
+The type is a CLOSED enum, `voicetags.ROUTING_TYPES`; topics are open vocabulary, but code
+decides their form (slugged, bounded, deduped). Called by the recorder for a note's title.
 """
 
 import re
@@ -26,8 +23,6 @@ ENABLED = True
 # Nobody waits on a label, so the bigger model's latency buys that accuracy for free.
 MODEL = None
 
-# LITERALLY the vocabulary `voicetags` detects from spoken openings. A model-assigned type
-# and a spoken one must be interchangeable, or the inferred one cannot be routed on.
 TYPE_TAGS = list(voicetags.ROUTING_TYPES)
 
 MAX_TOPICS = 5

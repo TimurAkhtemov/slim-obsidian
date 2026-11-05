@@ -20,7 +20,7 @@ audio  ->  transcript  ->  LABEL  ->  FILE  ->  INDEX  ->  (REFLECT, TALK)
 
 - [How it fits together](#how-it-fits-together)
 - [Your vault stays yours](#your-vault-stays-yours)
-- [Two capture lanes](#two-capture-lanes)
+- [How a recording is filed](#how-a-recording-is-filed)
 - [What happens when you record](#what-happens-when-you-record)
 - [How answers work](#how-answers-work)
 - [Where state lives](#where-state-lives)
@@ -45,7 +45,6 @@ flowchart TB
         direction LR
         REC["Obsidian recorder<br/>one click"]
         COP["Copilot sidebar<br/>the open note"]
-        MEM["Voice Memos sweep<br/>launchd, every 5 min"]
         CLI["slim CLI<br/>ingest / reflect / status"]
     end
 
@@ -53,7 +52,7 @@ flowchart TB
 
     subgraph P["Pipeline"]
         direction LR
-        CAP["CAPTURE<br/>transcribe.py"] --> LAB["LABEL<br/>voicetags / enrich"]
+        CAP["CAPTURE<br/>transcribe.py"] --> LAB["LABEL<br/>enrich"]
         LAB --> FIL["FILE<br/>suggest / recorder/note.py"]
         FIL --> IDX["INDEX<br/>ingest / chunk / embed"]
         IDX --> ANS["ANSWER<br/>search / copilot / reflect"]
@@ -66,7 +65,6 @@ flowchart TB
     COP --> SRV
     SRV --> CAP
     SRV --> ANS
-    MEM -- "no HTTP" --> CAP
     CLI -- "no HTTP" --> IDX
     FIL --> VAULT
     IDX --> BRAIN
@@ -109,31 +107,19 @@ Two degradations, both graceful. Without registered subjects, the copilot's scop
 stops at the note's own folder instead of widening further. And a note with `type: journal`
 in its frontmatter is read by the nightly reflection wherever it sits, folder or no folder.
 
-## Two capture lanes
-
-Both lanes end in a filed, indexed note, but they decide *what a recording is about* by
-opposite means — and this is the part that is easy to get wrong.
+## How a recording is filed
 
 ```mermaid
-flowchart TB
-    subgraph A["Lane A — phone memo"]
-        A1["voice memo synced"] --> A2["voicetags.detect_type()<br/>parses the spoken opening"]
-        A2 --> A3["enrich() — only if you said nothing<br/>fills silence, never overrides speech"]
-        A3 --> A4["voicetags.route()<br/>the one way out of the floor"]
-    end
-    subgraph B["Lane B — desktop recorder"]
-        B1["one click in Obsidian"] --> B2["batch transcript<br/>silence is REFUSED, not filed"]
-        B2 --> B3["summarize() + enrich() title"]
-        B3 --> B4["suggest.build_card()<br/>asks the model for a folder"]
-        B4 --> B5["invented folder collapses to the<br/>deepest real ancestor, else _unfiled"]
-    end
+flowchart LR
+    B1["one click in Obsidian"] --> B2["batch transcript<br/>silence is REFUSED, not filed"]
+    B2 --> B3["summarize() + enrich() title"]
+    B3 --> B4["suggest.build_card()<br/>asks the model for a folder"]
+    B4 --> B5["invented folder collapses to the<br/>deepest real ancestor, else _unfiled"]
 ```
 
-The phone lane is **deterministic first**: a spoken opening like *"journaling about…"* is
-parsed by code, and the model is consulted only to fill a silence. The desktop recorder
-**never calls the spoken-tag parser at all** — it asks the model for a filing card, and then
-code constrains the answer to folders that actually exist. Either way the model proposes and
-code disposes, which is why a hallucinated path cannot create a folder.
+The recorder asks the model for a filing card, and then code constrains the answer to folders
+that actually exist. The model proposes and code disposes, which is why a hallucinated path
+cannot create a folder.
 
 ## What happens when you record
 
@@ -305,31 +291,29 @@ The full command set:
 ```bash
 uv run slim ingest                        # index the vault; embeds at the end
 uv run slim status                        # index health, incl. fragments still unembedded
-uv run slim memos --container <dir>       # sweep synced Voice Memos -> transcribe -> index
 uv run slim reflect                       # journal window -> ONE reflection note
 uv run slim chat                          # the Obsidian plugin's server, 127.0.0.1:7546
 uv run slim trace -n 1                    # replay the last traced operation
 ```
 
-Optional background jobs, each installed by its own script in `scripts/`: the Voice Memos
-sweep every five minutes, the reflection nightly, and a restic backup of the vault daily.
+Optional background jobs, each installed by its own script in `scripts/`: the reflection
+nightly, and a restic backup of the vault daily.
 
 ## Code map
 
-- `slim/` — the entry points and seams: `cli.py` (six commands), `server.py` (the plugin's API
+- `slim/` — the entry points and seams: `cli.py` (five commands), `server.py` (the plugin's API
   server, run as `slim chat`), `reflect.py`, `db.py`, `llm.py` (never call the model server directly) and
   `llm_render.py` (the raw tool-call reply format), `trace.py`, `config.py`,
   `vaultpath.py`. Each subpackage below is a feature folder, not a layer.
 - `slim/vault/` — `frontmatter.py` (the frontmatter reader and writer), `notefile.py` (slugs,
   safe writes), `note_images.py` (a note's embedded images), `identity.py` (the vault pin).
-- `slim/capture/` — audio to labelled text, for both lanes: `transcribe.py` (two speech lanes),
+- `slim/capture/` — audio to labelled text: `transcribe.py` (two speech lanes),
   `audio.py` (ffmpeg, hashing, archive), `speakers.py`, `summarize.py`, `enrich.py` and
   `voicetags.py` (labelling).
-- `slim/recorder/` — the desktop lane: `routes.py` (the server's record routes), `pipeline.py`
+- `slim/recorder/` — the recorder: `routes.py` (the server's record routes), `pipeline.py`
   (audio to a filed note), `review.py` (edits to a filed note), `state.py` (the job queue,
   progress, locks), `note.py` (the sole writer of a recorded note), `suggest.py` (the filing
   card).
-- `slim/memos/` — the phone lane: `voicememos.py` (the sweep) and `inbox.py` (filing a memo).
 - `slim/index/` — `ingest.py`, `chunk.py` (fragments), `embed.py`, `search.py`.
 - `slim/copilot/` — `turn.py` (one turn: the gate and the Ask path), `context.py` (what it
   reads), `run.py` (the editing run), `edits.py` (the tools) and `blocks.py` (the note as

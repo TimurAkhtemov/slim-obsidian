@@ -4,7 +4,7 @@
 #
 # launchd, not cron: cron is legacy on macOS and skips runs outright when the machine is asleep;
 # launchd fires a missed StartCalendarInterval job on the next wake. Same shape as
-# install-memo-sweep.sh and install-backup-schedule.sh (absolute path resolution, log location,
+# install-backup-schedule.sh (absolute path resolution, log location,
 # LaunchAgents path).
 #
 # The plist is GENERATED here rather than committed: it needs absolute paths (repo root, uv's bin

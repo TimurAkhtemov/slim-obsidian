@@ -12,9 +12,9 @@ const ARCHIVE_DIR = "Attachments/Recordings";   // slim/capture/audio.py AUDIO_A
 const DRAFT_SUFFIX = ".slim-draft.md";
 const EMPTY_MEETING_BLOCK = "````slim-meeting\n\n````\n\n";
 
-// Matches slim/capture/voicetags.py TYPE_FRONTMATTER. A type they PICKS is testimony: the
-// pipeline never overrides a declared type, so choosing here removes the whole axis from
-// guesswork.
+// `meeting-note` is the spelling the imported Notion transcripts carry. A type they PICK is
+// testimony: the pipeline never overrides a declared type, so choosing here removes the whole
+// axis from guesswork.
 const TYPES = [
   ["meeting-note", "Meeting"],
   ["lecture", "Lecture"],

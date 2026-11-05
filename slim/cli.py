@@ -49,58 +49,6 @@ def cmd_ingest(args):
         raise SystemExit(1)
 
 
-def cmd_memos(args):
-    """Sweep Apple's Voice Memos container into Inbox/Journal, transcribe, and (only if a note
-    was written) index it. Driven by launchd every five minutes, or run by hand.
-
-    Copy-only: nothing in Apple's container is ever renamed, moved, or deleted. Safe to run
-    every five minutes — quiet when there is nothing new, loud (verbatim) when it is refused."""
-    from types import SimpleNamespace
-
-    from .memos import inbox as inbox_mod, voicememos
-
-    identity.require_vault_dir()
-    identity_con = db.connect()
-    try:
-        identity.require_vault_identity(identity_con)
-    finally:
-        identity_con.close()
-
-    container = Path(args.container).expanduser() if args.container else voicememos.CONTAINER
-    swept = voicememos.sweep(container=container, dry_run=args.dry_run)
-
-    refusals = [s for s in swept if s.status == "refused"]
-    copied = [s for s in swept if s.status == "copied"]
-    for s in refusals:
-        print(f"REFUSED: {s.detail}")
-    if copied:
-        for s in copied:
-            print(f"  swept  {s.source.name}  ->  Inbox/Journal/{s.dest.name}"
-                  f"{'   (dry run)' if args.dry_run else ''}")
-    elif not refusals:
-        print("no new voice memos to sweep.")
-
-    processed = inbox_mod.process(dry_run=args.dry_run)
-    for r in processed:
-        rel = r.note.relative_to(VAULT) if r.note and VAULT in r.note.parents else r.note
-        if r.status == "written" and r.transcript:
-            t = r.transcript
-            print(f"  {r.audio.name}  ->  {rel}   "
-                  f"({t.audio_seconds/60:.1f} min, {t.words} words)")
-        elif r.status == "written":
-            print(f"  {r.audio.name}  ->  {rel}   {r.detail}")
-        else:
-            print(f"  {r.audio.name}  [{r.status}] {r.detail}")
-
-    wrote = any(r.status == "written" for r in processed)
-    if wrote and not args.dry_run:
-        # Auto-index at the CLI level: a new transcript is retrievable without a second
-        # command, through the exact `slim ingest` seam (which embeds at the end).
-        cmd_ingest(SimpleNamespace(verbose=False))
-    elif wrote:
-        print("\n(dry run — not indexed)")
-
-
 def cmd_chat(args):
     """Serve the Obsidian plugin's API. Loopback-only by construction — a non-loopback
     --host is refused before a socket exists."""
@@ -240,14 +188,6 @@ def main():
                    help="the vault is the same one, at a new path — re-point the index to it")
     p.add_argument("-v", "--verbose", action="store_true")
     p.set_defaults(fn=cmd_ingest)
-
-    p = sub.add_parser(
-        "memos", help="sweep synced Voice Memos into Inbox/Journal, transcribe, and index")
-    p.add_argument("--container", default=None,
-                   help="override the Voice Memos recordings folder (default: the synced container)")
-    p.add_argument("--dry-run", action="store_true",
-                   help="show what would be swept and transcribed; copy and write nothing")
-    p.set_defaults(fn=cmd_memos)
 
     p = sub.add_parser(
         "chat", help="the Obsidian plugin's local API server: recorder + copilot (loopback only)")

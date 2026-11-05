@@ -171,27 +171,6 @@ def test_vault_moved_repoints_the_pin(monkeypatch, tmp_path):
     assert identity.pinned_vault() == second
 
 
-def test_memos_refuses_a_mismatched_vault_before_copying(monkeypatch, tmp_path):
-    from slim.memos import inbox, voicememos
-
-    first = tmp_path / "First"
-    first.mkdir()
-    second = tmp_path / "Second"
-    second.mkdir()
-    con = stub_ingest(monkeypatch, tmp_path, first)
-    identity.pin_vault(first)
-    use_vault(monkeypatch, second)
-    calls = []
-    monkeypatch.setattr(voicememos, "sweep", lambda **kw: calls.append("sweep") or [])
-    monkeypatch.setattr(inbox, "process", lambda **kw: calls.append("process") or [])
-
-    with pytest.raises(SystemExit):
-        cli.cmd_memos(SimpleNamespace(container=None, dry_run=False))
-
-    assert calls == []
-    con.close()
-
-
 def test_reflect_refuses_a_mismatched_vault_before_the_model_or_write(monkeypatch, tmp_path):
     from slim import reflect
 

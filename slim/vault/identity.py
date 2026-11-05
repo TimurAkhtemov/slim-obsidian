@@ -48,7 +48,7 @@ def require_vault_identity(con, *, allow_move: bool = False) -> None:
 
     An empty database is a new index and may claim the discovered vault. A populated database
     without a pin predates this invariant; only an explicit `--vault-moved` may adopt it. Pin
-    before work begins: recorder and memo writes precede their indexing pass, and `ingest()`
+    before work begins: recorder writes precede their indexing pass, and `ingest()`
     commits before embedding can fail.
     """
     pinned = pinned_vault()
