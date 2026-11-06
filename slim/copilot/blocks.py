@@ -421,19 +421,24 @@ class Note:
         if self.tail_locked and pos == len(self.blocks):
             raise ToolError("nothing can go after the transcript; put it before the transcript", "locked")
 
-    def below_properties(self, pos: int) -> tuple[int, str]:
-        """New text never goes above a note's properties (its frontmatter) or inside them: Obsidian
-        reads them only at the very top. A place there is right after them instead, with what the
-        result says of it. (A recording's are its own: `check_insert` refuses that place first.)"""
+    def properties_end(self) -> int:
+        """The index of the first block after the note's YAML frontmatter, or 0 if it has none."""
         text = self.text()
         _fm, skip = parse_frontmatter(text)
         if not skip:
-            return pos, ""
+            return 0
         end, top, at = _line_starts(text)[skip], 0, 0
         while top < len(self.blocks) and at < end:
             at += len(self.blocks[top].text)
             top += 1
-        if pos >= top:
+        return top
+
+    def below_properties(self, pos: int) -> tuple[int, str]:
+        """New text never goes above a note's properties (its frontmatter) or inside them: Obsidian
+        reads them only at the very top. A place there is right after them instead, with what the
+        result says of it. (A recording's are its own: `check_insert` refuses that place first.)"""
+        top = self.properties_end()
+        if not top or pos >= top:
             return pos, ""
         return top, f"; placed after {self.blocks[top - 1].handle} (the end of the note's properties, which stay at its top)"
 

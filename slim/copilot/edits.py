@@ -326,6 +326,19 @@ def lands(note: Note, tool: str, args: dict, markdown: str,
             note.check_insert(pos)
         return pos, pos, anchor, said, False
     i, j, target, trimmed = note.pick(_handle(note, args, "target"), only)
+    # A plain note's properties stay at its top: a replace changes them only through edit_text.
+    # Decided by the place and the text's first line alone, so a draft streaming in never
+    # vanishes or jumps once its text is longer.
+    top = note.properties_end()
+    if i < top:
+        if j <= top or markdown.lstrip("\n").startswith("---"):
+            raise ToolError(f"{target} is the note's properties, which stay at its top; "
+                            "change them with edit_text", "properties")
+        props = note.blocks[i].handle if top - i == 1 else f"{note.blocks[i].handle}-{note.blocks[top - 1].handle}"
+        kept = f"{props} is the note's properties; left it at the top"
+        trimmed = f"{kept}; {trimmed}" if trimmed else kept
+        i = top
+        target = note.blocks[i].handle if j - i == 1 else f"{note.blocks[i].handle}-{note.blocks[j - 1].handle}"
     old = "".join(b.text for b in note.blocks[i:j])
     return i, j, target, trimmed, _renames(note, i, j, fold(markdown, old)[0])
 
@@ -373,6 +386,10 @@ def _edit_text(note: Note, args: dict, ctx: dict):
         raise ToolError(f"'{old}' appears {found} times in {target}; quote a little more around it", "quote")
     raw = text.replace(old, new, 1)
     changed, folded = fold(raw, text)
+    if i < note.properties_end():
+        after = note.text()[:note.offset(i)] + note._new_text(i, j, changed.rstrip("\n")) + note.text()[note.offset(j):]
+        if not parse_frontmatter(after)[1]:
+            raise ToolError(f"{target} is the note's properties, which stay at its top", "properties")
     ctx["targets"] = note.changed(i, j, changed.rstrip("\n"))
     _own(note, ctx["targets"], target, ctx)
     _written(raw, text, changed)
@@ -406,6 +423,8 @@ def _insert(note: Note, args: dict, ctx: dict):
 
 def _move(note: Note, args: dict, ctx: dict):
     i, j, target, trimmed = note.pick(_handle(note, args, "target"), ctx["only"])
+    if i < note.properties_end():
+        raise ToolError(f"{target} is the note's properties, which stay at its top", "properties")
     anchor, after = _where(note, args)
     k, l = note.span(anchor)
     pos = l if after else k

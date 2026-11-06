@@ -158,6 +158,42 @@ def test_new_text_put_above_or_inside_a_notes_properties_goes_right_after_them()
         apply(Note(PROPS), "move", {"target": "b2", "before": "b1"}, change_id="c1", step=1)
 
 
+def test_replace_edit_text_and_move_never_drop_or_move_a_notes_properties():
+    for args in ({"target": "b1", "markdown": ""}, {"target": "b1", "markdown": "# New Title"}):
+        with pytest.raises(ToolError, match="is the note's properties"):
+            apply(Note(PROPS), "replace", args, change_id="c1", step=1)
+    with pytest.raises(ToolError, match="is the note's properties"):
+        apply(Note(PROPS), "move", {"target": "b1", "after": "b3"}, change_id="c1", step=1)
+    with pytest.raises(ToolError, match="is the note's properties"):
+        apply(Note(PROPS), "edit_text", {"target": "b1", "old": "---\ntags: [study]\n---", "new": "gone"},
+              change_id="c1", step=1)
+    # A range starting at b1 that rewrites the body without frontmatter leaves the properties intact at the top.
+    note = Note(PROPS)
+    _, said = apply(note, "replace", {"target": "b1-b3", "markdown": "# Rewritten\n\nNew body."}, change_id="c1", step=1)
+    assert note.text() == "---\ntags: [study]\n---\n\n# Rewritten\n\nNew body.\n"
+    assert "b1 is the note's properties; left it at the top" in said
+
+
+def test_a_replace_never_writes_properties_of_its_own():
+    """New properties in a replace would land below the real ones as a second `---` block, so
+    the text's first line refuses it, whatever follows: a draft is placed or refused for good
+    once that line is in."""
+    new_fm = "---\ntags: [exam]\n---"
+    for args in ({"target": "b1", "markdown": new_fm},
+                 {"target": "b1-b3", "markdown": f"{new_fm}\n\n# Rewritten"},
+                 {"target": "b1-b3", "markdown": "---\ntags: [ex"}):
+        with pytest.raises(ToolError, match="is the note's properties"):
+            edits.lands(Note(PROPS), "replace", args, args["markdown"])
+
+
+def test_a_replace_trimmed_below_the_properties_names_only_what_it_left_out():
+    note = Note("---\ntags: [study]\n\nother: x\n\nmore: y\n---\n\n# Title\n\nBody.\n")
+    assert note.properties_end() == 3                  # the properties are b1-b3
+    i, _j, target, said, _renames = edits.lands(note, "replace", {"target": "b2-b5"}, "# Rewritten")
+    assert (i, target) == (3, "b4-b5")
+    assert said.startswith("b2-b3 is the note's properties; left it at the top")
+
+
 def test_the_table_gives_ollama_function_schemas():
     [tool] = ollama_tools(["replace"])
     assert tool["type"] == "function" and tool["function"]["name"] == "replace"
