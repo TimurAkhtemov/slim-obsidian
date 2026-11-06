@@ -11,7 +11,8 @@ Three things are load-bearing:
     Nothing here returns or logs body text — the trace records counts, dates, model and token
     stats, never a line of a journal or of the reflection derived from it.
   - SELECTION IS DETERMINISTIC. Which journals to reflect on is decided in SQL by
-    `type='journal'` plus date, never by similarity: `authored_at` is a plain YYYY-MM-DD
+    `type='journal'` under `Journal/` (the floor is a path, so a `type: journal` note filed
+    anywhere else is not read) plus date, never by similarity: `authored_at` is a plain YYYY-MM-DD
     string, so the window is lexicographic date math. Retrieval is the wrong tool — it is
     subject-driven and needs a query term, and reflect wants EVERY journal in range.
   - `think=False`, explicit. If reflections ever read as invented, `think=True` with a widened
@@ -161,7 +162,7 @@ def _journals(con, *, after: str | None = None, on_or_after: str | None = None,
               before: str | None = None) -> list[JournalEntry]:
     """Dated journals in a date range, oldest first. Bounds are YYYY-MM-DD strings compared
     lexicographically. `after` is exclusive, `on_or_after` inclusive."""
-    where = ["type = 'journal'", "deleted = 0", "authored_at IS NOT NULL"]
+    where = ["type = 'journal'", "path GLOB 'Journal/*'", "deleted = 0", "authored_at IS NOT NULL"]
     params: list[str] = []
     if after is not None:
         where.append("authored_at > ?")

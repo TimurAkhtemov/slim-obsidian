@@ -79,6 +79,8 @@ def test_selects_journals_in_window_ordered_by_date(con):
 
 def test_only_journals_are_selected(con):
     _journal(con, "j", "2026-07-20")
+    # a note with type='journal' outside Journal/ must also be excluded (Journal/ is a path)
+    _journal(con, "stray", "2026-07-20", folder="Notes/school")
     # a meeting note on the same date must never be pulled into a reflection
     con.execute(
         "INSERT INTO sources (id, path, title, type, authored_at, current_hash) VALUES "

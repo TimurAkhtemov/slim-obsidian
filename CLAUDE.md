@@ -179,9 +179,9 @@ don't multiply across every axis; depth the owner creates is theirs, and the car
 
 **(owner)** **`Journal/` is the floor, and the floor is a path.** Permanent, flat, a top-level
 sibling of `Capture/`; no route ever carries a note out of it (test-enforced). If a cloud
-provider ever lands, the one check is "is the path under `Journal/`". Known gap: `reflect`
-selects journals by `type = 'journal'` with no path filter, so a `type: journal` note placed
-outside `Journal/` by hand IS read by the nightly synthesis.
+provider ever lands, the one check is "is the path under `Journal/`". `reflect` checks it too:
+it reads `type = 'journal'` notes under `Journal/` only, so one placed elsewhere by hand is not
+in the nightly synthesis.
 
 The code, `slim/`: subpackages are feature folders. Imports run one way:
 `vault <- index <- copilot`, `vault <- capture <- memos`, `capture <- recorder` (which also uses
