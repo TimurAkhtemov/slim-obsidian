@@ -212,3 +212,27 @@ test("the clock reads the wall, not the count of timer ticks", () => {
     Date.now = realNow;
   }
 });
+
+test("the level meter tolerates a detached contentEl while recording", () => {
+  const v = view();
+  v.state = "recording";
+  v.contentEl = null;
+  let rafTick = null;
+  const origWindow = globalThis.window;
+  globalThis.window = { ...origWindow, requestAnimationFrame: (fn) => { rafTick = fn; } };
+  v.audioCtx = {
+    createMediaStreamSource: () => ({ connect() {} }),
+    createAnalyser: () => ({
+      fftSize: 512,
+      frequencyBinCount: 256,
+      getByteTimeDomainData(data) { data.fill(140); },
+    }),
+  };
+  try {
+    v.setupMeter(new FakeStream(["audio"]));
+    assert.equal(typeof rafTick, "function");
+    assert.doesNotThrow(() => rafTick());
+  } finally {
+    globalThis.window = origWindow;
+  }
+});

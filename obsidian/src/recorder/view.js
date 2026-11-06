@@ -64,6 +64,7 @@ class RecorderView {
     this.deleteWhenDone = false;
     this.deleteArmedUntil = 0;
     this.cardTitle = null;
+    this.reviewDetailsOpen = false;
     this.reviewCloseNotified = false;
   }
 
@@ -338,6 +339,7 @@ class RecorderView {
     this.deleteWhenDone = false;
     this.deleteArmedUntil = 0;
     this.cardTitle = null;
+    this.reviewDetailsOpen = false;
     this.reviewCloseNotified = false;
     this.errorText = "";
     this.freezeEditor(false);

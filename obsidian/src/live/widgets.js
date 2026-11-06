@@ -7,6 +7,21 @@ const { excerpt, beforeBlocks } = require("./diff");
 const DRAFT_RENDER_MS = 250;              // a draft's Markdown is drawn again at most this often
 
 function makeWidgets(WidgetType, host, ui) {
+  const renderManaged = (el, markdown, path, dom) => {
+    const drawn = host.renderFor ? host.renderFor(el, markdown, path)
+      : Promise.resolve(host.render(el, markdown, path)).then(() => null);
+    return Promise.resolve(drawn).then((drop) => {
+      if (!drop) return;
+      if (dom.slimGone) drop();
+      else (dom.slimDrops ||= []).push(drop);
+    });
+  };
+  const destroyManaged = (dom) => {
+    dom.slimGone = true;
+    for (const drop of dom.slimDrops || []) drop();
+    dom.slimDrops = null;
+  };
+
   // Words a change removed, struck, where they were.
   class Gone extends WidgetType {
     constructor(text, raw, path) { super(); this.text = text; this.raw = raw; this.path = path; }
@@ -17,13 +32,15 @@ function makeWidgets(WidgetType, host, ui) {
       span.textContent = this.text;
       if (!this.raw) {
         const holder = document.createElement("div");
-        Promise.resolve(host.render(holder, this.text, this.path)).then(() => {
+        renderManaged(holder, this.text, this.path, span).then(() => {
+          if (span.slimGone) return;
           const p = holder.querySelector("p") || holder;
           if (p.childNodes.length) span.replaceChildren(...p.childNodes);
         }).catch(() => {});
       }
       return span;
     }
+    destroy(dom) { destroyManaged(dom); }
   }
 
   const undoButton = (view, runId, id, tip) => {
@@ -97,7 +114,7 @@ function makeWidgets(WidgetType, host, ui) {
       if (this.open && !this.moved) {
         const full = box.appendChild(document.createElement("div"));
         full.className = "slim-removed-full";
-        Promise.resolve(host.render(full, this.text, this.path)).catch(() => { full.textContent = this.text; });
+        renderManaged(full, this.text, this.path, box).catch(() => { full.textContent = this.text; });
       }
       if (this.undo) {
         const holder = box.appendChild(document.createElement("span"));
@@ -113,6 +130,7 @@ function makeWidgets(WidgetType, host, ui) {
       dom.querySelector(".slim-undo-holder")?.classList.toggle("is-shown", Boolean(this.hovered));
       return true;
     }
+    destroy(dom) { destroyManaged(dom); }
     ignoreEvent() { return true; }
   }
 
@@ -142,7 +160,7 @@ function makeWidgets(WidgetType, host, ui) {
           continue;
         }
         el.className = `slim-before-block${block.kind === "same" ? "" : ` slim-change is-${block.kind}`}`;
-        Promise.resolve(host.render(el, block.markdown, this.path)).catch(() => { el.textContent = block.markdown; });
+        renderManaged(el, block.markdown, this.path, root).catch(() => { el.textContent = block.markdown; });
         if (block.kind === "moved") {
           const marker = root.appendChild(document.createElement("div"));
           marker.className = "slim-before-marker is-moved";
@@ -151,6 +169,7 @@ function makeWidgets(WidgetType, host, ui) {
       }
       return root;
     }
+    destroy(dom) { destroyManaged(dom); }
     ignoreEvent() { return true; }
   }
 

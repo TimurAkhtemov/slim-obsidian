@@ -200,7 +200,9 @@ module.exports = {
     moreBtn.addEventListener("click", () => this.startAppendRecording());
     this.renderDeleteButton(moreRow);
     const details = root.createEl("details", { cls: "slim-review-details" });
-    details.createEl("summary", { text: "Review filing details" });
+    details.open = Boolean(this.reviewDetailsOpen);
+    const detailsSummary = details.createEl("summary", { text: "Review filing details" });
+    detailsSummary.addEventListener("click", () => { this.reviewDetailsOpen = !details.open; });
     root = details.createDiv({ cls: "slim-review-controls" });
     root.createEl("p", { cls: "slim-hint",
       text: "The note is already saved. Adjust any suggestion, then approve the final result." });
@@ -228,7 +230,9 @@ module.exports = {
       segs.forEach((seg, i) => {
         if (i) pathRow.createSpan({ cls: "slim-sep", text: "/" });
         const cls = i >= (c.confident_depth || 0) ? "slim-seg slim-seg-open" : "slim-seg";
-        pathRow.createSpan({ cls, text: seg });
+        const prefix = segs.slice(0, i + 1).join("/");
+        const span = pathRow.createSpan({ cls, text: seg });
+        span.addEventListener("click", () => select(prefix, false));
       });
     };
     renderPath();
@@ -259,8 +263,8 @@ module.exports = {
     }, "");
 
     const select = (path, isNew) => {
+      if (path !== c.dest_dir || isNew) this.edited = true;   // the folder already chosen is no edit
       c.dest_dir = path;
-      this.edited = true;
       renderPath();
       drawTree();
       if (mi) mi.value = path;
@@ -306,22 +310,28 @@ module.exports = {
       row.createSpan({ cls: "slim-tw is-leaf", text: "+" });
       const input = row.createEl("input", { type: "text", cls: "slim-newfolder",
                                             placeholder: `new folder in ${node.path}` });
-      input.focus();
+      if (typeof input.focus === "function") input.focus();
+      let done = false;
       const commit = () => {
+        if (done) return;
+        done = true;
         const name = input.value.trim().replace(/^\/+|\/+$/g, "");
         if (!name) { drawTree(); return; }
         const path = `${node.path}/${name}`;
+        const isNew = !byPath.has(path) || !!byPath.get(path).isNew;
         // Not created on disk here: the apply endpoint makes parents when the note moves, so
         // abandoning the card leaves no empty folder behind.
-        const fresh = { path, count: 0, name, children: [], isNew: true };
-        node.children.push(fresh);
-        byPath.set(path, fresh);
+        if (!byPath.has(path)) {
+          const fresh = { path, count: 0, name, children: [], isNew: true };
+          node.children.push(fresh);
+          byPath.set(path, fresh);
+        }
         expanded.add(node.path);
-        select(path, true);
+        select(path, isNew);
       };
       input.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") commit();
-        if (e.key === "Escape") drawTree();
+        if (e.key === "Enter") { e.preventDefault?.(); commit(); }
+        if (e.key === "Escape") { e.preventDefault?.(); done = true; drawTree(); }
       });
       input.addEventListener("blur", commit);
     };

@@ -336,6 +336,7 @@ module.exports = {
           this.result.summary = this.noteParts.summary;
           this.result.notes_md = this.noteParts.notes;
           this.summaryEditing = false;
+          this.reviewDetailsOpen = true;
           this.state = "card";
           this.render();
         } catch (e) {

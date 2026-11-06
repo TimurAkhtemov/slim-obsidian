@@ -1,7 +1,7 @@
 // The meeting block's screens: processing, review, errors, the card.
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fakeContentEl, findClass } from "../fakes.mjs";
+import { fakeContentEl, findClass, notices } from "../fakes.mjs";
 import { fileBackedView, findButton, view } from "../recorder-harness.mjs";
 
 test("AI summary renders as Markdown until the user enters edit mode", () => {
@@ -174,4 +174,63 @@ test("a reopened card fetches the vault's folders and tags, and redraws with the
   assert.deepEqual(asked, ["/api/record/folders"]);
   assert.deepEqual(v.result.card.folders, [{ path: "Capture/job-search", count: 3 }]);
   assert.deepEqual(v.result.card.tag_counts, { "job-search": 3 });
+});
+
+test("review details stay open on redraw, path breadcrumbs select prefixes, and new-folder Escape cancels cleanly", async () => {
+  const v = view();
+  v.state = "finished";
+  v.filedNotePath = "Notes/school/CS201/x.md";
+  v.saveDraft = async () => {};
+  v.loadNoteParts = async () => v.noteParts;
+  v.result = {
+    title: "T", summary: "s", notes_md: "",
+    card: {
+      dest_dir: "Notes/school/CS201", confident_depth: 2, type_tag: "lecture", topics: [],
+      folders: [{ path: "Notes", count: 5 }, { path: "Notes/school", count: 3 }, { path: "Notes/school/CS201", count: 1 }],
+    },
+  };
+  v.noteParts = { summary: "s", notes: "", transcript: "raw" };
+  const root = fakeContentEl();
+  v.contentEl = root;
+  v.render();
+
+  await findButton(root, "Edit review details").events.click();
+  assert.equal(v.state, "card");
+  assert.equal(findClass(root, "slim-review-details").open, true);
+
+  // Clicking a breadcrumb segment selects that ancestor folder.
+  const segs = findClass(root, "slim-path").children.filter((c) => c.classes.has("slim-seg"));
+  assert.deepEqual(segs.map((s) => s.options.text), ["Notes", "school", "CS201"]);
+  segs[2].events.click();                       // the folder already chosen: no edit
+  assert.ok(!v.edited);
+  segs[1].events.click();
+  assert.equal(v.result.card.dest_dir, "Notes/school");
+  assert.equal(v.edited, true);
+
+  // Pressing "+" on a folder, typing a name, and pressing Escape followed by blur does NOT commit it.
+  const plus = findClass(root, "slim-tree-plus");
+  plus.events.click({ stopPropagation() {} });
+  let input = findClass(root, "slim-newfolder");
+  input.value = "aborted";
+  input.events.keydown({ key: "Escape" });
+  input.events.blur();
+  assert.equal(v.result.card.dest_dir, "Notes/school");
+
+  // Pressing "+" and committing with Enter followed by blur commits only once.
+  findClass(root, "slim-tree-plus").events.click({ stopPropagation() {} });
+  input = findClass(root, "slim-newfolder");
+  input.value = "Lab";
+  input.events.keydown({ key: "Enter" });
+  input.events.blur();
+  assert.equal(v.result.card.dest_dir, "Notes/Lab");
+  assert.ok(notices.some((n) => String(n).includes("will create Notes/Lab")));
+
+  // Typing the name of a folder that exists selects it, and promises to create nothing.
+  const before = notices.length;
+  findClass(root, "slim-tree-plus").events.click({ stopPropagation() {} });
+  input = findClass(root, "slim-newfolder");
+  input.value = "school";
+  input.events.keydown({ key: "Enter" });
+  assert.equal(v.result.card.dest_dir, "Notes/school");
+  assert.ok(!notices.slice(before).some((n) => String(n).includes("will create")));
 });

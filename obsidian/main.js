@@ -361,15 +361,24 @@ var require_render = __commonJS({
         const menu = this.el?.slash;
         if (!menu) return;
         clear(menu);
-        const hits = matchSkills(this.skills, slashQuery(this.draft));
+        const hits = this.slashDismissed ? [] : matchSkills(this.skills, slashQuery(this.draft));
         menu.hidden = !hits.length;
-        for (const skill of hits) {
-          const item = create(menu, "button", `slim-slash-item${skill.error ? " is-broken" : ""}`);
+        if (!hits.length) {
+          this.slashIndex = 0;
+          return;
+        }
+        const idx = Math.min(Math.max(0, this.slashIndex || 0), hits.length - 1);
+        this.slashIndex = idx;
+        hits.forEach((skill, i) => {
+          const cls = `slim-slash-item${skill.error ? " is-broken" : ""}${i === idx ? " is-selected" : ""}`;
+          const item = create(menu, "button", cls);
           create(item, "span", "slim-slash-name", `/${skill.name}`);
           create(item, "small", "slim-slash-about", skill.error ? `Broken: ${skill.error}` : skill.description || "");
           item.onmousedown = (event) => event.preventDefault();
-          item.onclick = () => this.pickSkill(skill);
-        }
+          item.onclick = () => {
+            if (!skill.error) this.pickSkill(skill);
+          };
+        });
       },
       imageURL(threadId, imageId) {
         const port = this.plugin.settings?.port || 7546;
@@ -572,6 +581,8 @@ var require_render = __commonJS({
         autoGrow(input);
         input.oninput = () => {
           this.draft = input.value;
+          this.slashDismissed = false;
+          this.slashIndex = 0;
           autoGrow(input);
           if (input.value === "/") this.loadSkills();
           else this.renderSlash();
@@ -584,10 +595,25 @@ var require_render = __commonJS({
         };
         this.el.input = input;
         input.onkeydown = (event) => {
-          const hits = matchSkills(this.skills, slashQuery(this.draft));
-          if (hits.length && (event.key === "Tab" || event.key === "Enter" && !event.shiftKey && this.draft.length > 1 && !hits.some((h) => `/${h.name}` === this.draft))) {
+          const hits = this.slashDismissed ? [] : matchSkills(this.skills, slashQuery(this.draft));
+          if (hits.length && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
             event.preventDefault();
-            this.pickSkill(hits[0]);
+            const delta = event.key === "ArrowDown" ? 1 : -1;
+            this.slashIndex = ((this.slashIndex || 0) + delta + hits.length) % hits.length;
+            this.renderSlash();
+            return;
+          }
+          if (hits.length && event.key === "Escape") {
+            event.preventDefault();
+            this.slashDismissed = true;
+            this.renderSlash();
+            return;
+          }
+          const chosen = hits[Math.min(this.slashIndex || 0, hits.length - 1)];
+          const valid = chosen && !chosen.error ? chosen : hits.find((h) => !h.error);
+          if (valid && (event.key === "Tab" || event.key === "Enter" && !event.shiftKey && `/${valid.name}` !== this.draft && (this.draft.length > 1 || this.slashIndex > 0))) {
+            event.preventDefault();
+            this.pickSkill(valid);
             return;
           }
           if (event.key === "Enter" && !event.shiftKey) {
@@ -604,6 +630,8 @@ var require_render = __commonJS({
               input.value = `${input.value.slice(0, start)}${input.value.slice(end)}`;
               input.selectionStart = input.selectionEnd = start;
               this.draft = input.value;
+              this.slashDismissed = false;
+              autoGrow(input);
               this.renderSlash();
             }
           }
@@ -1492,6 +1520,7 @@ var require_view = __commonJS({
         const outgoingImages = this.pendingImages;
         const question = String(text || "").trim() || (outgoingImages.length ? "Explain this image." : "");
         if (!question || !this.context || this.sending) return;
+        this.clearBefore();
         if (!this.activeThread) this.newThread();
         const failed = this.turns.at(-1);
         if (this.retryQuestion && failed?.role === "you" && failed.text === this.retryQuestion) this.turns.pop();
@@ -1697,7 +1726,14 @@ var require_view = __commonJS({
         }
         this.renderStage();
       }
+      clearBefore() {
+        for (const view of this.plugin.liveViews || []) {
+          const ref = this.plugin.live?.showing?.(view);
+          if (ref) this.plugin.live.showBefore(view, ref, "", false);
+        }
+      }
       cancel() {
+        this.clearBefore();
         if (this.abort) this.abort.abort();
         this.abort = null;
         this.sending = false;
@@ -1800,12 +1836,20 @@ var require_diff = __commonJS({
       let i = 0;
       while (i < s.length) {
         let j = i;
+        const nl = s.indexOf("\n", j);
+        const lineEnd = nl < 0 ? s.length : nl;
+        const closeAt = (delim, from) => {
+          const k = s.indexOf(delim, from);
+          return k > from && k < lineEnd ? k + delim.length : 0;
+        };
         while (j < s.length && !/\s/.test(s[j])) {
           let close = 0;
-          if (s[j] === "$") close = s.indexOf("$", j + 1) + 1;
-          else if (s.startsWith("**", j)) close = s.indexOf("**", j + 2) + 2;
-          else if (s[j] === "`") close = s.indexOf("`", j + 1) + 1;
-          else if (s.startsWith("[[", j)) close = s.indexOf("]]", j + 2) + 2;
+          if (s[j] === "$" && s[j + 1] !== "$" && !/\s/.test(s[j + 1] || "")) {
+            const k = closeAt("$", j + 1);
+            if (k && !/\s/.test(s[k - 2]) && !/\d/.test(s[k] || "")) close = k;
+          } else if (s.startsWith("**", j)) close = closeAt("**", j + 2);
+          else if (s[j] === "`") close = closeAt("`", j + 1);
+          else if (s.startsWith("[[", j)) close = closeAt("]]", j + 2);
           j = close > j + 1 ? close : j + 1;
         }
         while (j < s.length && /\s/.test(s[j])) j += 1;
@@ -2282,6 +2326,19 @@ var require_widgets = __commonJS({
     var { excerpt, beforeBlocks } = require_diff();
     var DRAFT_RENDER_MS = 250;
     function makeWidgets(WidgetType, host, ui) {
+      const renderManaged = (el, markdown, path, dom) => {
+        const drawn = host.renderFor ? host.renderFor(el, markdown, path) : Promise.resolve(host.render(el, markdown, path)).then(() => null);
+        return Promise.resolve(drawn).then((drop) => {
+          if (!drop) return;
+          if (dom.slimGone) drop();
+          else (dom.slimDrops ||= []).push(drop);
+        });
+      };
+      const destroyManaged = (dom) => {
+        dom.slimGone = true;
+        for (const drop of dom.slimDrops || []) drop();
+        dom.slimDrops = null;
+      };
       class Gone extends WidgetType {
         constructor(text, raw, path) {
           super();
@@ -2298,13 +2355,17 @@ var require_widgets = __commonJS({
           span.textContent = this.text;
           if (!this.raw) {
             const holder = document.createElement("div");
-            Promise.resolve(host.render(holder, this.text, this.path)).then(() => {
+            renderManaged(holder, this.text, this.path, span).then(() => {
+              if (span.slimGone) return;
               const p = holder.querySelector("p") || holder;
               if (p.childNodes.length) span.replaceChildren(...p.childNodes);
             }).catch(() => {
             });
           }
           return span;
+        }
+        destroy(dom) {
+          destroyManaged(dom);
         }
       }
       const undoButton = (view, runId, id, tip) => {
@@ -2393,7 +2454,7 @@ ${this.tip}`) return false;
           if (this.open && !this.moved) {
             const full = box.appendChild(document.createElement("div"));
             full.className = "slim-removed-full";
-            Promise.resolve(host.render(full, this.text, this.path)).catch(() => {
+            renderManaged(full, this.text, this.path, box).catch(() => {
               full.textContent = this.text;
             });
           }
@@ -2410,6 +2471,9 @@ ${this.tip}`) return false;
           dom.classList.toggle("is-hovered", Boolean(this.hovered));
           dom.querySelector(".slim-undo-holder")?.classList.toggle("is-shown", Boolean(this.hovered));
           return true;
+        }
+        destroy(dom) {
+          destroyManaged(dom);
         }
         ignoreEvent() {
           return true;
@@ -2450,7 +2514,7 @@ ${this.tip}`) return false;
               continue;
             }
             el.className = `slim-before-block${block.kind === "same" ? "" : ` slim-change is-${block.kind}`}`;
-            Promise.resolve(host.render(el, block.markdown, this.path)).catch(() => {
+            renderManaged(el, block.markdown, this.path, root).catch(() => {
               el.textContent = block.markdown;
             });
             if (block.kind === "moved") {
@@ -2460,6 +2524,9 @@ ${this.tip}`) return false;
             }
           }
           return root;
+        }
+        destroy(dom) {
+          destroyManaged(dom);
         }
         ignoreEvent() {
           return true;
@@ -2546,7 +2613,7 @@ var require_editor = __commonJS({
     } = require_runs();
     var { makeWidgets } = require_widgets();
     function makeLiveEditor(cm, host) {
-      const { StateField, StateEffect, ChangeSet, Text, Compartment, EditorState } = cm.state;
+      const { StateField, StateEffect, ChangeSet, Text, EditorState } = cm.state;
       const { EditorView, Decoration, WidgetType, ViewPlugin } = cm.view;
       const isolate = cm.commands?.isolateHistory;
       const AGENT = "slim.agent", UNDO = "slim.undo", REDO = "slim.redo", RESTORE = "slim.restore";
@@ -2554,7 +2621,6 @@ var require_editor = __commonJS({
       const clearRuns = StateEffect.define();
       const showBefore = StateEffect.define();
       const setDraft = StateEffect.define();
-      const lock = new Compartment();
       const focused = /* @__PURE__ */ new WeakMap();
       const leaving = /* @__PURE__ */ new WeakMap();
       const LEAVE_MS = 500;
@@ -2589,9 +2655,17 @@ var require_editor = __commonJS({
       const beforeField = StateField.define({
         create: () => null,
         update(value, tr) {
+          const path = pathOf(tr.state);
+          if (value && value.path && path && value.path !== path) value = null;
           for (const effect of tr.effects) if (effect.is(showBefore)) value = effect.value;
           return value;
-        }
+        },
+        // Read-only while it shows, and no say at all otherwise: these facets take the first value
+        // given, so a value here would overrule whatever else makes the editor read-only.
+        provide: (field) => [
+          EditorView.editable.computeN([field], (state) => state.field(field) ? [false] : []),
+          EditorState.readOnly.computeN([field], (state) => state.field(field) ? [true] : [])
+        ]
       });
       const runOf = (state, runId) => state.field(runsField, false)?.get(runId) || null;
       const { Gone, Undo, Folded, Before, Draft } = makeWidgets(WidgetType, host, {
@@ -2808,7 +2882,6 @@ var require_editor = __commonJS({
           draftsField,
           draftMarks,
           tracker,
-          lock.of([]),
           EditorView.domEventHandlers({
             mouseover: (event, view) => hover(view, event.target),
             mouseleave: (_event, view) => hover(view, null)
@@ -3051,10 +3124,7 @@ var require_editor = __commonJS({
           const shown = view.state.field(beforeField, false);
           if (!on && shown?.runId !== runId) return;
           view.dispatch({
-            effects: [
-              showBefore.of(on ? { runId, text: String(beforeText) } : null),
-              lock.reconfigure(on ? [EditorView.editable.of(false), EditorState.readOnly.of(true)] : [])
-            ]
+            effects: showBefore.of(on ? { runId, text: String(beforeText), path: pathOf(view.state) } : null)
           });
         },
         showing: (view) => view.state.field(beforeField, false)?.runId || null,
@@ -3063,7 +3133,7 @@ var require_editor = __commonJS({
         restore(view, beforeText) {
           view.dispatch(own({
             changes: textDiff(view.state.doc.toString(), String(beforeText)),
-            effects: [clearRuns.of(null), showBefore.of(null), lock.reconfigure([])],
+            effects: [clearRuns.of(null), showBefore.of(null)],
             userEvent: RESTORE
           }));
         },
@@ -3723,7 +3793,7 @@ var require_capture = __commonJS({
             analyser.getByteTimeDomainData(data);
             let peak = 0;
             for (let i = 0; i < data.length; i++) peak = Math.max(peak, Math.abs(data[i] - 128));
-            const bar = this.contentEl.querySelector(".slim-level-fill");
+            const bar = this.contentEl && this.contentEl.querySelector(".slim-level-fill");
             if (bar) bar.style.width = `${Math.min(100, peak / 128 * 160)}%`;
             window.requestAnimationFrame(tick);
           };
@@ -4755,6 +4825,7 @@ var require_render2 = __commonJS({
               this.result.summary = this.noteParts.summary;
               this.result.notes_md = this.noteParts.notes;
               this.summaryEditing = false;
+              this.reviewDetailsOpen = true;
               this.state = "card";
               this.render();
             } catch (e) {
@@ -5063,7 +5134,11 @@ var require_review = __commonJS({
         moreBtn.addEventListener("click", () => this.startAppendRecording());
         this.renderDeleteButton(moreRow);
         const details = root.createEl("details", { cls: "slim-review-details" });
-        details.createEl("summary", { text: "Review filing details" });
+        details.open = Boolean(this.reviewDetailsOpen);
+        const detailsSummary = details.createEl("summary", { text: "Review filing details" });
+        detailsSummary.addEventListener("click", () => {
+          this.reviewDetailsOpen = !details.open;
+        });
         root = details.createDiv({ cls: "slim-review-controls" });
         root.createEl("p", {
           cls: "slim-hint",
@@ -5087,7 +5162,9 @@ var require_review = __commonJS({
           segs.forEach((seg, i) => {
             if (i) pathRow.createSpan({ cls: "slim-sep", text: "/" });
             const cls = i >= (c.confident_depth || 0) ? "slim-seg slim-seg-open" : "slim-seg";
-            pathRow.createSpan({ cls, text: seg });
+            const prefix = segs.slice(0, i + 1).join("/");
+            const span = pathRow.createSpan({ cls, text: seg });
+            span.addEventListener("click", () => select(prefix, false));
           });
         };
         renderPath();
@@ -5110,8 +5187,8 @@ var require_review = __commonJS({
           return p;
         }, "");
         const select = (path, isNew) => {
+          if (path !== c.dest_dir || isNew) this.edited = true;
           c.dest_dir = path;
-          this.edited = true;
           renderPath();
           drawTree();
           if (mi) mi.value = path;
@@ -5155,23 +5232,36 @@ var require_review = __commonJS({
             cls: "slim-newfolder",
             placeholder: `new folder in ${node.path}`
           });
-          input.focus();
+          if (typeof input.focus === "function") input.focus();
+          let done = false;
           const commit = () => {
+            if (done) return;
+            done = true;
             const name = input.value.trim().replace(/^\/+|\/+$/g, "");
             if (!name) {
               drawTree();
               return;
             }
             const path = `${node.path}/${name}`;
-            const fresh = { path, count: 0, name, children: [], isNew: true };
-            node.children.push(fresh);
-            byPath.set(path, fresh);
+            const isNew = !byPath.has(path) || !!byPath.get(path).isNew;
+            if (!byPath.has(path)) {
+              const fresh = { path, count: 0, name, children: [], isNew: true };
+              node.children.push(fresh);
+              byPath.set(path, fresh);
+            }
             expanded.add(node.path);
-            select(path, true);
+            select(path, isNew);
           };
           input.addEventListener("keydown", (e) => {
-            if (e.key === "Enter") commit();
-            if (e.key === "Escape") drawTree();
+            if (e.key === "Enter") {
+              e.preventDefault?.();
+              commit();
+            }
+            if (e.key === "Escape") {
+              e.preventDefault?.();
+              done = true;
+              drawTree();
+            }
           });
           input.addEventListener("blur", commit);
         };
@@ -5484,6 +5574,7 @@ var require_view2 = __commonJS({
         this.deleteWhenDone = false;
         this.deleteArmedUntil = 0;
         this.cardTitle = null;
+        this.reviewDetailsOpen = false;
         this.reviewCloseNotified = false;
       }
       async onOpen() {
@@ -5720,6 +5811,7 @@ var require_view2 = __commonJS({
         this.deleteWhenDone = false;
         this.deleteArmedUntil = 0;
         this.cardTitle = null;
+        this.reviewDetailsOpen = false;
         this.reviewCloseNotified = false;
         this.errorText = "";
         this.freezeEditor(false);

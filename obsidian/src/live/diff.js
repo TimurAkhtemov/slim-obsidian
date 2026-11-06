@@ -15,12 +15,20 @@ function wordTokens(text) {
   let i = 0;
   while (i < s.length) {
     let j = i;
+    const nl = s.indexOf("\n", j);
+    const lineEnd = nl < 0 ? s.length : nl;
+    const closeAt = (delim, from) => {
+      const k = s.indexOf(delim, from);
+      return k > from && k < lineEnd ? k + delim.length : 0;
+    };
     while (j < s.length && !/\s/.test(s[j])) {
       let close = 0;
-      if (s[j] === "$") close = s.indexOf("$", j + 1) + 1;
-      else if (s.startsWith("**", j)) close = s.indexOf("**", j + 2) + 2;
-      else if (s[j] === "`") close = s.indexOf("`", j + 1) + 1;
-      else if (s.startsWith("[[", j)) close = s.indexOf("]]", j + 2) + 2;
+      if (s[j] === "$" && s[j + 1] !== "$" && !/\s/.test(s[j + 1] || "")) {
+        const k = closeAt("$", j + 1);
+        if (k && !/\s/.test(s[k - 2]) && !/\d/.test(s[k] || "")) close = k;
+      } else if (s.startsWith("**", j)) close = closeAt("**", j + 2);
+      else if (s[j] === "`") close = closeAt("`", j + 1);
+      else if (s.startsWith("[[", j)) close = closeAt("]]", j + 2);
       j = close > j + 1 ? close : j + 1;
     }
     while (j < s.length && /\s/.test(s[j])) j += 1;

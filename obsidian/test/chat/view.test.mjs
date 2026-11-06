@@ -662,3 +662,53 @@ test("the rename modal resolves the typed title on submit and null when dismisse
   second.close();
   assert.deepEqual(dismissed, [null]);
 });
+
+test("slash menu navigates with arrows, dismisses on Escape, and skips broken skills", () => {
+  const { view, root } = renderedView();
+  view.skills = [
+    { name: "broken", error: "missing prompt" },
+    { name: "actions", description: "Extract action items" },
+    { name: "quiz", description: "Quiz me" },
+  ];
+  view.draft = "/";
+  view.render();
+  const input = find(root, (node) => node.tag === "textarea");
+  const key = (k) => input.onkeydown({
+    key: k, shiftKey: false, metaKey: false, altKey: false, ctrlKey: false,
+    preventDefault() {},
+  });
+  // First item is broken; Tab when index 0 is selected falls back to the first valid skill ("actions"),
+  // or ArrowDown selects "actions" then "quiz".
+  key("ArrowDown");
+  key("ArrowDown");
+  assert.equal(view.slashIndex, 2);
+  key("Escape");
+  const menu = find(root, (node) => node.cls === "slim-slash-menu");
+  assert.equal(menu.hidden, true);
+  // Typing again reopens the menu, and Tab picks the selected valid skill.
+  input.value = "/q";
+  input.oninput();
+  assert.equal(menu.hidden, false);
+  key("Tab");
+  assert.equal(view.draft, "/quiz ");
+});
+
+test("Enter sends a skill named in full, or picks the one the arrows chose", () => {
+  const { view, root } = renderedView();
+  view.skills = [{ name: "quiz", description: "Quiz me" }, { name: "quiz-hard", description: "Harder" }];
+  const sent = [];
+  view.send = () => sent.push(view.draft);
+  view.draft = "/quiz";
+  view.render();
+  const input = find(root, (node) => node.tag === "textarea");
+  const key = (k) => input.onkeydown({
+    key: k, shiftKey: false, metaKey: false, altKey: false, ctrlKey: false,
+    preventDefault() {},
+  });
+  key("Enter");
+  assert.deepEqual(sent, ["/quiz"]);
+  key("ArrowDown");
+  key("Enter");
+  assert.equal(view.draft, "/quiz-hard ");
+  assert.deepEqual(sent, ["/quiz"]);
+});

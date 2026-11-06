@@ -152,8 +152,15 @@
   resize: none;
 }
 .slim-live-markdown-editor {
+  border: 1px solid transparent;
+  border-radius: var(--radius-s, 5px);
   cursor: text;
   white-space: normal;
+}
+.slim-live-markdown-editor[data-placeholder]:empty::before {
+  content: attr(data-placeholder);
+  color: var(--text-faint);
+  pointer-events: none;
 }
 .slim-live-markdown-editor:focus {
   border-color: var(--interactive-accent);
@@ -247,7 +254,6 @@
 .slim-review-details > summary { padding: 14px 0 8px; cursor: pointer; color: var(--text-muted); font-size: 12px; }
 .slim-editor-bridge { color: var(--text-muted); font-size: 12px; }
 .slim-editor-bridge p { margin: 0; line-height: 1.5; }
-.slim-rec-head,
 .slim-recorder[data-state="error"] > h3, .slim-recorder[data-state="error"] > p,
 .slim-recorder[data-state="error"] > .slim-row { margin-right: 20px; margin-left: 20px; }
 .slim-finished-actions { padding: 0 20px 20px; }
@@ -419,9 +425,10 @@
 .slim-path { display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
              font-family: var(--font-monospace); font-size: 13px; }
 .slim-seg {
-  padding: 3px 7px; border-radius: 3px;
+  padding: 3px 7px; border-radius: 3px; cursor: pointer;
   background: var(--background-secondary); border: 1px solid var(--background-modifier-border);
 }
+.slim-seg:hover { border-color: var(--background-modifier-border-hover); }
 .slim-seg-open {
   border-color: var(--interactive-accent); color: var(--text-accent);
 }
@@ -635,7 +642,7 @@
   display: flex; flex-direction: column; align-items: flex-start; gap: 1px; height: auto;
   padding: 6px 8px; text-align: left; background: none; box-shadow: none; border-radius: 6px;
 }
-.slim-slash-item:hover { background: var(--background-modifier-hover); }
+.slim-slash-item:hover, .slim-slash-item.is-selected { background: var(--background-modifier-hover); }
 .slim-slash-name { font-family: var(--font-monospace); font-size: var(--font-ui-small); }
 .slim-slash-about { color: var(--text-muted); font-size: var(--font-ui-smaller); white-space: normal; }
 .slim-slash-item.is-broken .slim-slash-about { color: var(--text-error); }
@@ -652,7 +659,6 @@
   content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--color-orange);
   animation: slim-pulse 0.8s ease-in-out infinite alternate;
 }
-@keyframes slim-pulse { from { opacity: 0.2; } to { opacity: 1; } }
 .slim-shimmer {
   background: linear-gradient(90deg, var(--text-muted) 20%, var(--text-normal) 50%, var(--text-muted) 80%);
   background-size: 220% 100%; -webkit-background-clip: text; background-clip: text; color: transparent;

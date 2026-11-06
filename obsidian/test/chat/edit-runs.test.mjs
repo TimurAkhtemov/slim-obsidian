@@ -138,6 +138,11 @@ test("the meta line's actions reach the note's editor", async () => {
   await click("See before");
   assert.deepEqual(live.calls.map((c) => c[0] === "before" ? [c[0], c[2], c[3]] : c.slice(0, 1)),
                    [["marks"], ["undoAll"], ["redo"], ["before", "# A\n\nold\n", true]]);
+  // Closing or cancelling the chat clears any active See before overlay so the editor is not left locked.
+  view.plugin.liveViews = new Set([editor]);
+  live.showing = () => ref;
+  view.cancel();
+  assert.deepEqual(live.calls.at(-1), ["before", ref, "", false]);
 });
 
 test("stop keeps a partial turn: what landed stays, with its copy from before", async () => {

@@ -11,6 +11,10 @@ const { beforeBlocks, changeMarks, excerpt, formatChange, markable, textDiff, wo
 test("words keep math, bold, code and links whole, so a mark never splits their syntax", () => {
   assert.deepEqual(wordTokens("a $x + y$ **b c** `d e` [[f g]] h"),
     ["a ", "$x + y$ ", "**b c** ", "`d e` ", "[[f g]] ", "h"]);
+  assert.deepEqual(wordTokens("Costs $5 and $10 today, or $5$ and $10$ in math"),
+    ["Costs ", "$5 ", "and ", "$10 ", "today, ", "or ", "$5$ ", "and ", "$10$ ", "in ", "math"]);
+  assert.deepEqual(wordTokens("**unclosed bold\nand **closed bold**"),
+    ["**unclosed ", "bold\n", "and ", "**closed bold**"]);
   assert.deepEqual(wordOps("For a vector, the softmax is:", "For a vector:"), [
     ["=", "For ", "For "], ["=", "a ", "a "], ["-", "vector, "], ["-", "the "], ["-", "softmax "],
     ["-", "is:"], ["+", "vector:"]]);

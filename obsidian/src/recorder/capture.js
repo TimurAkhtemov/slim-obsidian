@@ -199,7 +199,7 @@ module.exports = {
         analyser.getByteTimeDomainData(data);
         let peak = 0;
         for (let i = 0; i < data.length; i++) peak = Math.max(peak, Math.abs(data[i] - 128));
-        const bar = this.contentEl.querySelector(".slim-level-fill");
+        const bar = this.contentEl && this.contentEl.querySelector(".slim-level-fill");
         if (bar) bar.style.width = `${Math.min(100, (peak / 128) * 160)}%`;
         window.requestAnimationFrame(tick);
       };

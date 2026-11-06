@@ -24,7 +24,7 @@ const { makeWidgets } = require("./widgets");
  * reworked only SLIM's own text from this run: it is drawn, counted and undone as that one.
  */
 function makeLiveEditor(cm, host) {
-  const { StateField, StateEffect, ChangeSet, Text, Compartment, EditorState } = cm.state;
+  const { StateField, StateEffect, ChangeSet, Text, EditorState } = cm.state;
   const { EditorView, Decoration, WidgetType, ViewPlugin } = cm.view;
   const isolate = cm.commands?.isolateHistory;
   const AGENT = "slim.agent", UNDO = "slim.undo", REDO = "slim.redo", RESTORE = "slim.restore";
@@ -32,7 +32,6 @@ function makeLiveEditor(cm, host) {
   const clearRuns = StateEffect.define();
   const showBefore = StateEffect.define();  // {runId, text} or null
   const setDraft = StateEffect.define();    // {start: draft} | {grow: {id, text}} | {end: id} | {endRun: runId} | {rename: {from, to}}
-  const lock = new Compartment();
   const focused = new WeakMap();
   const leaving = new WeakMap();            // view → the timer that lets go of its hovered change
   const LEAVE_MS = 500;
@@ -68,9 +67,17 @@ function makeLiveEditor(cm, host) {
   const beforeField = StateField.define({
     create: () => null,
     update(value, tr) {
+      const path = pathOf(tr.state);
+      if (value && value.path && path && value.path !== path) value = null;
       for (const effect of tr.effects) if (effect.is(showBefore)) value = effect.value;
       return value;
     },
+    // Read-only while it shows, and no say at all otherwise: these facets take the first value
+    // given, so a value here would overrule whatever else makes the editor read-only.
+    provide: (field) => [
+      EditorView.editable.computeN([field], (state) => (state.field(field) ? [false] : [])),
+      EditorState.readOnly.computeN([field], (state) => (state.field(field) ? [true] : [])),
+    ],
   });
 
   const runOf = (state, runId) => state.field(runsField, false)?.get(runId) || null;
@@ -292,7 +299,7 @@ function makeLiveEditor(cm, host) {
   };
 
   const api = {
-    extension: [runsField, marksField, beforeField, beforeMarks, draftsField, draftMarks, tracker, lock.of([]),
+    extension: [runsField, marksField, beforeField, beforeMarks, draftsField, draftMarks, tracker,
       EditorView.domEventHandlers({
         mouseover: (event, view) => hover(view, event.target),
         mouseleave: (_event, view) => hover(view, null),
@@ -518,8 +525,7 @@ function makeLiveEditor(cm, host) {
       const shown = view.state.field(beforeField, false);
       if (!on && shown?.runId !== runId) return;
       view.dispatch({
-        effects: [showBefore.of(on ? { runId, text: String(beforeText) } : null),
-                  lock.reconfigure(on ? [EditorView.editable.of(false), EditorState.readOnly.of(true)] : [])],
+        effects: showBefore.of(on ? { runId, text: String(beforeText), path: pathOf(view.state) } : null),
       });
     },
     showing: (view) => view.state.field(beforeField, false)?.runId || null,
@@ -529,7 +535,7 @@ function makeLiveEditor(cm, host) {
     restore(view, beforeText) {
       view.dispatch(own({
         changes: textDiff(view.state.doc.toString(), String(beforeText)),
-        effects: [clearRuns.of(null), showBefore.of(null), lock.reconfigure([])],
+        effects: [clearRuns.of(null), showBefore.of(null)],
         userEvent: RESTORE,
       }));
     },

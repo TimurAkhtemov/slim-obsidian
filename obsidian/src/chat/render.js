@@ -11,15 +11,19 @@ module.exports = {
     const menu = this.el?.slash;
     if (!menu) return;
     clear(menu);
-    const hits = matchSkills(this.skills, slashQuery(this.draft));
+    const hits = this.slashDismissed ? [] : matchSkills(this.skills, slashQuery(this.draft));
     menu.hidden = !hits.length;
-    for (const skill of hits) {
-      const item = create(menu, "button", `slim-slash-item${skill.error ? " is-broken" : ""}`);
+    if (!hits.length) { this.slashIndex = 0; return; }
+    const idx = Math.min(Math.max(0, this.slashIndex || 0), hits.length - 1);
+    this.slashIndex = idx;
+    hits.forEach((skill, i) => {
+      const cls = `slim-slash-item${skill.error ? " is-broken" : ""}${i === idx ? " is-selected" : ""}`;
+      const item = create(menu, "button", cls);
       create(item, "span", "slim-slash-name", `/${skill.name}`);
       create(item, "small", "slim-slash-about", skill.error ? `Broken: ${skill.error}` : skill.description || "");
       item.onmousedown = (event) => event.preventDefault();     // keep the composer focused
-      item.onclick = () => this.pickSkill(skill);
-    }
+      item.onclick = () => { if (!skill.error) this.pickSkill(skill); };
+    });
   },
 
   imageURL(threadId, imageId) {
@@ -196,6 +200,8 @@ module.exports = {
     autoGrow(input);
     input.oninput = () => {
       this.draft = input.value;
+      this.slashDismissed = false;
+      this.slashIndex = 0;
       autoGrow(input);
       if (input.value === "/") this.loadSkills();
       else this.renderSlash();
@@ -205,12 +211,27 @@ module.exports = {
     this.el.input = input;
     input.onkeydown = (event) => {
       // A half-typed command completes before it sends: "/con" + Enter is "/consolidate… ".
-      const hits = matchSkills(this.skills, slashQuery(this.draft));
-      if (hits.length && (event.key === "Tab"
-          || (event.key === "Enter" && !event.shiftKey && this.draft.length > 1
-              && !hits.some((h) => `/${h.name}` === this.draft)))) {
+      const hits = this.slashDismissed ? [] : matchSkills(this.skills, slashQuery(this.draft));
+      if (hits.length && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
         event.preventDefault();
-        this.pickSkill(hits[0]);
+        const delta = event.key === "ArrowDown" ? 1 : -1;
+        this.slashIndex = ((this.slashIndex || 0) + delta + hits.length) % hits.length;
+        this.renderSlash();
+        return;
+      }
+      if (hits.length && event.key === "Escape") {
+        event.preventDefault();
+        this.slashDismissed = true;
+        this.renderSlash();
+        return;
+      }
+      const chosen = hits[Math.min(this.slashIndex || 0, hits.length - 1)];
+      const valid = chosen && !chosen.error ? chosen : hits.find((h) => !h.error);
+      if (valid && (event.key === "Tab"
+          || (event.key === "Enter" && !event.shiftKey && `/${valid.name}` !== this.draft
+              && (this.draft.length > 1 || this.slashIndex > 0)))) {
+        event.preventDefault();
+        this.pickSkill(valid);
         return;
       }
       if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); this.send(); }
@@ -228,6 +249,8 @@ module.exports = {
           input.value = `${input.value.slice(0, start)}${input.value.slice(end)}`;
           input.selectionStart = input.selectionEnd = start;
           this.draft = input.value;
+          this.slashDismissed = false;
+          autoGrow(input);
           this.renderSlash();
         }
       }

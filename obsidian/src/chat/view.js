@@ -316,6 +316,7 @@ class CopilotView extends ItemView {
     const outgoingImages = this.pendingImages;
     const question = String(text || "").trim() || (outgoingImages.length ? "Explain this image." : "");
     if (!question || !this.context || this.sending) return;
+    this.clearBefore();
     if (!this.activeThread) this.newThread();
     // A failed question waits under its error for Try again. Asking something else instead
     // takes it off the thread: it would be saved with the next answer and sent as history, and
@@ -517,7 +518,15 @@ class CopilotView extends ItemView {
     this.renderStage();
   }
 
+  clearBefore() {
+    for (const view of this.plugin.liveViews || []) {
+      const ref = this.plugin.live?.showing?.(view);
+      if (ref) this.plugin.live.showBefore(view, ref, "", false);
+    }
+  }
+
   cancel() {
+    this.clearBefore();
     if (this.abort) this.abort.abort();
     this.abort = null;
     this.sending = false;
