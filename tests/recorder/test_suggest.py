@@ -121,6 +121,14 @@ def test_tag_counts_reads_comma_separated_string_spelling(tmp_path):
     assert counts["svm"] == 1
 
 
+def test_tag_counts_reads_fences_with_trailing_space(tmp_path):
+    """The fences as `parse_frontmatter` reads them: `--- ` still opens and closes."""
+    p = tmp_path / "Notes/a/a.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("--- \ntopics: [svm]\n---  \n\nbody\n", encoding="utf-8")
+    assert suggest.tag_counts(tmp_path)["svm"] == 1
+
+
 def test_tag_counts_excludes_derived_folders(tmp_path):
     """_Reflections/ is derived and Attachments/ is binary — neither may seed a tag
     suggestion."""

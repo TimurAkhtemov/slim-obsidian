@@ -112,6 +112,7 @@ def connect(db_path=None) -> sqlite3.Connection:
     con = sqlite3.connect(path)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA journal_mode=WAL")
+    con.execute("PRAGMA busy_timeout=15000")
     con.execute("PRAGMA foreign_keys=ON")
     try:
         version = con.execute("PRAGMA user_version").fetchone()[0]

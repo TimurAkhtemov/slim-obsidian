@@ -171,6 +171,43 @@ def test_the_card_carries_the_folders_and_tag_counts_the_ui_needs(tmp_path, monk
     assert isinstance(out["card"]["tag_counts"], dict)
 
 
+def test_a_fresh_card_counts_the_filed_note_in_its_folder_but_not_its_topics(tmp_path, monkeypatch):
+    """Folders as the vault is once the note is filed; topics as they were before it, so a
+    topic only this recording uses still shows as new."""
+    from slim import llm
+    from slim.recorder import pipeline
+    from slim.capture import summarize, transcribe
+
+    (tmp_path / "Notes" / "school").mkdir(parents=True)
+    monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
+        text="the kernel trick", model="fake", audio_seconds=10.0, wall_seconds=1.0))
+    monkeypatch.setattr(summarize, "summarize", lambda *a, **k: summarize.Summary(overview="s"))
+    monkeypatch.setattr(llm, "chat_json", lambda *a, **k: (
+        {"dest_dir": "Notes/school", "confident_depth": 1, "type_tag": "lecture", "topics": ["svm"]}, {}))
+
+    out = pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="",
+                                 declared_type="lecture", title="SVMs", when=NOW, vault=tmp_path)
+    assert out["note"].startswith("Notes/school/")
+    counts = {f["path"]: f["count"] for f in out["card"]["folders"]}
+    assert counts["Notes/school"] == 1
+    assert "svm" not in out["card"]["tag_counts"]
+    assert "svm" in pipeline._card_lists(tmp_path)["tag_counts"]     # the note is on disk
+
+
+def test_note_images_resolve_relative_to_the_draft_path(tmp_path, monkeypatch):
+    from slim.recorder import pipeline
+    from slim.vault import note_images
+
+    seen = {}
+    monkeypatch.setattr(note_images, "load", lambda text, vault, *, note_rel=None, limit=15: (
+        seen.update(note_rel=note_rel), ([], []))[1])
+    draft = _draft(tmp_path, text="![[fig-01.png]]\n")
+    _fakes(monkeypatch)
+    pipeline.handle_record(audio_rel=_staged(tmp_path), draft_rel=draft, notes_md=None,
+                           declared_type="lecture", title="SVMs", when=NOW, vault=tmp_path)
+    assert seen.get("note_rel") == draft
+
+
 def test_the_summary_pass_thinks(tmp_path, monkeypatch):
     """The one ratified exception to think=False. If this regresses, invention doubles in the
     text they read and trusts, silently."""

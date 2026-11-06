@@ -77,7 +77,8 @@ def handle_record_summary(*, note: str, instructions: str = "", job_id: str = ""
 
     # Every knob matches the recording path, because this IS the recording path re-run: the
     # resident at its one context size, and thinking on (ratified 2026-08-26, lectures).
-    clean_notes, note_images = pipeline._extract_note_images(parts["notes"], vault)
+    clean_notes, note_images = pipeline._extract_note_images(
+        parts["notes"], vault, note_rel=str(src.relative_to(vault)))
     s = summarize.summarize(parts["transcript"], model=llm.RECORD_MODEL,
                             num_ctx=llm.RECORD_CTX, think=True, on_activity=activity,
                             notes=clean_notes, instructions=instructions,

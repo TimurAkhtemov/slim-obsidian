@@ -91,6 +91,20 @@ def folder_tree(vault: Path = VAULT) -> list[Folder]:
     return [Folder(path=p, count=counts.get(p, 0)) for p in sorted(found)]
 
 
+def _read_frontmatter_head(path: Path) -> str:
+    """Read only the leading YAML frontmatter block of `path`, never the note body."""
+    with path.open(encoding="utf-8") as fh:
+        first = fh.readline()
+        if first.strip() != "---":          # the fences as `parse_frontmatter` reads them
+            return ""
+        lines = [first]
+        for line in fh:
+            lines.append(line)
+            if line.strip() == "---":
+                return "".join(lines)
+    return ""
+
+
 def tag_counts(vault: Path = VAULT) -> dict[str, int]:
     """How often each `topics:` value is already used across eligible notes, lowercased.
 
@@ -99,7 +113,7 @@ def tag_counts(vault: Path = VAULT) -> dict[str, int]:
     """
     counts: Counter[str] = Counter()
     for rel in _eligible(vault):
-        fm, _ = parse_frontmatter((vault / rel).read_text(encoding="utf-8"))
+        fm, _ = parse_frontmatter(_read_frontmatter_head(vault / rel))
         raw = (fm or {}).get("topics")
         if isinstance(raw, str):
             values = [p.strip() for p in raw.split(",")]
@@ -149,7 +163,8 @@ class Card:
 
 
 def build_card(transcript: str, *, declared_type: str = "", title: str = "",
-               notes: str = "", vault: Path = VAULT, model: str | None = None) -> Card:
+               notes: str = "", vault: Path = VAULT, model: str | None = None,
+               tags: dict[str, int] | None = None) -> Card:
     """What the card should offer for this recording.
 
     Every judgement here is a CHOICE among things `folder_tree` and `tag_counts` already found.
@@ -164,8 +179,11 @@ def build_card(transcript: str, *, declared_type: str = "", title: str = "",
     are testimony in the same sense a declared type is, so both are shown first and labelled as
     their. ⚠ Neither may ever be model-generated: that is derived from this same transcript, so it
     adds no evidence and lets one guess reinforce the next.
+
+    `tags` is `tag_counts(vault)` when the caller already took it.
     """
     folders = folder_tree(vault)
+    tags = tag_counts(vault) if tags is None else tags
     known = {f.path for f in folders}
 
     listing = "\n".join(f"{f.path}  ({f.count})" for f in folders) or "(vault is empty)"
@@ -175,7 +193,7 @@ def build_card(transcript: str, *, declared_type: str = "", title: str = "",
     if notes.strip():
         named += f"Their notes while listening:\n{notes.strip()[:4000]}\n\n"
     vocab = ", ".join(f"{t} ({c})" for t, c in
-                      sorted(tag_counts(vault).items(), key=lambda kv: -kv[1])[:40])
+                      sorted(tags.items(), key=lambda kv: -kv[1])[:40])
     try:
         raw, _stats = llm.chat_json(
             [{"role": "system", "content": SYSTEM},

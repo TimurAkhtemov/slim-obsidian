@@ -55,7 +55,7 @@ def _draft_source(*, vault: Path, draft_rel: str, audio_rel: str | list[str],
 _MAX_NOTE_IMAGES = 15
 
 
-def _extract_note_images(notes_md: str, vault: Path) -> tuple[str, list[str]]:
+def _extract_note_images(notes_md: str, vault: Path, *, note_rel: str | None = None) -> tuple[str, list[str]]:
     """The images embedded in their notes, for the summary (`note_images.load`).
 
     Returns (cleaned_notes, base64_images) where cleaned_notes has the embeds stripped (a file
@@ -65,7 +65,7 @@ def _extract_note_images(notes_md: str, vault: Path) -> tuple[str, list[str]]:
     embeds = note_images.NOTE_EMBED_RE.findall(notes_md)
     if not embeds:
         return notes_md, []
-    found, skipped = note_images.load(notes_md, vault, limit=_MAX_NOTE_IMAGES)
+    found, skipped = note_images.load(notes_md, vault, note_rel=note_rel, limit=_MAX_NOTE_IMAGES)
     images = [data for _name, data in found]
     trace.record("record_images", {
         "embeds_found": len(embeds),
@@ -268,7 +268,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
             state.check_cancel(job_id)
             # ⚠ RECORD_MODEL is the resident (llm.py says why). Their notes ride along as
             # context — what they noticed, how they spell things — never as a filter.
-            clean_notes, embedded = _extract_note_images(notes_md or "", vault)
+            clean_notes, embedded = _extract_note_images(notes_md or "", vault, note_rel=draft_rel)
             s = summarize.summarize(text, model=llm.RECORD_MODEL,
                                     num_ctx=llm.RECORD_CTX, think=True,
                                     on_activity=activity, notes=clean_notes,
@@ -316,8 +316,10 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
     # which returns `JOURNAL_FOLDER` for a declared journal before it consults the model at all.
     state.check_cancel(job_id)
     progress("filing", "Choosing filing details", "Comparing the recording with the vault's existing structure")
+    # Taken before the note is written, so a topic only this recording uses badges as new.
+    tags = suggest.tag_counts(vault)
     card = suggest.build_card(text, declared_type=declared_type, title=declared_title,
-                              notes=notes_md, vault=vault, model=llm.RECORD_MODEL)
+                              notes=notes_md, vault=vault, model=llm.RECORD_MODEL, tags=tags)
     summary_md = summarize.render(
         summary, open_questions=card.type_tag not in summarize.LECTURE_TYPES
     ) if summary is not None else ""
@@ -355,15 +357,16 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
         "summary": summary_md,
         "card": {"dest_dir": card.dest_dir, "confident_depth": card.confident_depth,
                  "type_tag": card.type_tag,
-                 "topics": card.topics, **_card_lists(vault)},
+                 "topics": card.topics, **_card_lists(vault, tags)},
     }
 
 
-def _card_lists(vault: Path) -> dict:
-    """What the card browses and badges: every folder a note may go to, every tag in use.
-    Also served alone, for a pending card reopened after a reload (`/api/record/folders`)."""
+def _card_lists(vault: Path, tags: dict[str, int] | None = None) -> dict:
+    """What the card browses and badges: every folder a note may go to, as the vault is now,
+    and every tag in use (`tags` when the caller took them already). Also served alone, for a
+    pending card reopened after a reload (`/api/record/folders`)."""
     from . import suggest
-    return {"tag_counts": suggest.tag_counts(vault),
+    return {"tag_counts": suggest.tag_counts(vault) if tags is None else tags,
             "folders": [{"path": f.path, "count": f.count} for f in suggest.folder_tree(vault)]}
 
 
