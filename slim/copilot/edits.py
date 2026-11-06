@@ -387,6 +387,10 @@ def _edit_text(note: Note, args: dict, ctx: dict):
     raw = text.replace(old, new, 1)
     changed, folded = fold(raw, text)
     if i < note.properties_end():
+        # A `---` line here closes them early, and the rest spills into the note, yet still parses.
+        if any(line.strip() == "---" for line in f"{old}\n{new}".splitlines()):
+            raise ToolError(f"{target} is the note's properties; change only the lines between their "
+                            "--- fences", "properties")
         after = note.text()[:note.offset(i)] + note._new_text(i, j, changed.rstrip("\n")) + note.text()[note.offset(j):]
         if not parse_frontmatter(after)[1]:
             raise ToolError(f"{target} is the note's properties, which stay at its top", "properties")

@@ -174,6 +174,19 @@ def test_replace_edit_text_and_move_never_drop_or_move_a_notes_properties():
     assert "b1 is the note's properties; left it at the top" in said
 
 
+def test_edit_text_cannot_close_a_notes_properties_early():
+    """A `---` line written inside them ends them there, and the rest spills into the note, and
+    the result still parses: only the fence can tell."""
+    props = "---\ntitle: T\ntags: [a]\n---\n\n# H\n\nBody.\n"
+    for old, new in (("title: T", "---\ntitle: T"), ("tags: [a]", "tags: [a]\n---\nx: y"),
+                     ("---\ntitle: T\ntags: [a]\n---", "---\n---\ntitle: T\ntags: [a]")):
+        with pytest.raises(ToolError, match="is the note's properties"):
+            apply(Note(props), "edit_text", {"target": "b1", "old": old, "new": new}, change_id="c1", step=1)
+    note = Note(props)                          # a change between the fences is still a change
+    apply(note, "edit_text", {"target": "b1", "old": "title: T", "new": "title: U"}, change_id="c1", step=1)
+    assert note.text().startswith("---\ntitle: U\ntags: [a]\n---\n")
+
+
 def test_a_replace_never_writes_properties_of_its_own():
     """New properties in a replace would land below the real ones as a second `---` block, so
     the text's first line refuses it, whatever follows: a draft is placed or refused for good
