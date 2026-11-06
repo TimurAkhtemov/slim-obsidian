@@ -2,7 +2,8 @@
 #
 # Subject is the only folder axis: an id IS the folder name under `Notes/<id>` and
 # `Capture/<id>` (both derived in `config.project_prefixes`), so ids are single lowercase path
-# segments. `description` is what the labeling model (`enrich`) reads to pick a subject.
+# segments, and the copilot's scope widens across both. Filing does not read this file: the card
+# proposes folders that exist. `description` tells the titling model (`enrich`) what a subject is.
 
 # The name the prompts address you by. Only interpretation reads it — labels, summaries,
 # the nightly reflection; no path, id or filter ever does.

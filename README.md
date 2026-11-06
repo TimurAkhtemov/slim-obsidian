@@ -104,8 +104,8 @@ because identity is the content hash, not the path, a move keeps the note's hist
 saved copilot chats.
 
 Two degradations, both graceful. Without registered subjects, the copilot's scope ladder
-stops at the note's own folder instead of widening further. And a note with `type: journal`
-in its frontmatter is read by the nightly reflection wherever it sits, folder or no folder.
+stops at the note's own folder instead of widening further. And the nightly reflection reads
+journals under `Journal/` only, so a note with `type: journal` moved anywhere else drops out of it.
 
 ## How a recording is filed
 
@@ -206,8 +206,8 @@ that it did not.
 
 macOS on Apple Silicon. Transcription runs on MLX and the recorder takes system audio from
 Core Audio's process tap, so there is no Intel or Linux path. The generative model is the
-binding constraint: `qwen3.6:35b` holds roughly 25 GB resident at its full 131k context, which
-a 48 GB machine fits comfortably and a 16 GB machine does not.
+binding constraint: `qwen3.6:35b` holds roughly 32 GB resident with the two 262k slots below,
+which a 48 GB machine fits and a 16 GB machine does not.
 
 - **[uv](https://docs.astral.sh/uv/)** — every command is `uv run`, which builds the Python
   3.12+ environment on first use. There is no separate install step.
@@ -247,15 +247,17 @@ first transcription, so the first one is slow.
 discovery falls back to `~/Documents/Obsidian Vault` whether or not anything is there. An
 existing vault of any shape is fine — see [Your vault stays yours](#your-vault-stays-yours).
 
-**2. Name your subjects.** Copy the example and edit it: the subject ids become your folder
-names, the aliases are the words you actually say, and `owner` is how the prompts address you.
+**2. Name your subjects.** Copy the example and edit it: the subject ids are your folder names
+under `Notes/` and `Capture/`, which the copilot widens across, and `owner` is how the prompts
+address you.
 
 ```bash
 cp config/projects.example.yaml config/projects.yaml
 ```
 
-This file is gitignored and optional — without it SLIM still runs, but nothing is registered,
-so every recording lands in `Capture/_unfiled`.
+This file is gitignored and optional — without it SLIM still runs, but the copilot's scope stops
+at the note's own folder. Filing does not read it: the card proposes folders that exist, else
+`Capture/_unfiled`.
 
 **3. Install the plugin** into that same vault:
 
