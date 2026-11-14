@@ -310,7 +310,7 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
                 asked = f"{open_note_message(path, note)}\n\n---\n\n{question}"
         else:
             asked, no_edit = question, NO_NOTE
-        reader = lookup.Reader(con, vault, default_folder=scope,
+        reader = lookup.Reader(con, vault, default_folder=scope, pinned=(*held, *left),
                                open_note=(path, note) if note is not None else None)
         made: set[str] = set()
 

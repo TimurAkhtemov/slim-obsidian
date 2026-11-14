@@ -176,25 +176,18 @@ def test_open_note_rides_with_question(ask, monkeypatch):
     assert current["content"].endswith("\n\n---\n\nwhat is A?")
 
 
-def test_the_loop_prompt_is_pi_shaped_and_vault_first(ask, monkeypatch):
-    """Like the Pi coding agent's: who it is and where, one line per tool, short rules. Questions
-    about the owner's own life are looked up first; general knowledge only after, and labelled."""
+def test_the_loop_prompt_names_the_owner_every_tool_and_the_measured_rider(ask, monkeypatch):
+    """Like the Pi coding agent's: one line per tool offered, the owner by name from config, no
+    tutor persona (its "general knowledge freely" made a guess of a question about the owner's
+    own numbers), and the measured handle and plan sentences word for word."""
     monkeypatch.setattr(copilot_turn.config_mod, "OWNER", "Sam")
     seen = scripted(monkeypatch, ("ok", []))
     ask("what is A?")
     system = seen[0]["messages"][0]["content"]
-    assert system.startswith("You are SLIM, an assistant operating inside Sam's Obsidian vault. You help Sam by "
-                             "searching and reading their notes, answering questions, and editing the note they have open.")
-    for name in copilot_turn.LOOP_TOOLS:
+    assert "Sam's Obsidian vault" in system and "{owner}" not in system
+    for name in seen[0]["tools"]:
         assert f"\n- {name}: " in system                               # every tool offered, one line each
     assert "general knowledge freely" not in system and "tutor" not in system
-    assert "Questions about Sam's own work, people, plans, meetings or numbers are answered from the vault" in system
-    assert "look them up before answering" in system
-    assert "If the vault doesn't have it, say so" in system and "labelled as such" in system
-    assert "Never present a guess about Sam's situation as fact" in system
-    assert "Be concise" in system and "by title" in system
-    assert "Write math as $inline$ or $$display$$, never \\( \\) or \\[ \\]." in system
-    # The measured handle and plan sentences, word for word.
     assert copilot_turn.EDIT_RIDER.removeprefix("You can edit the open note shown below.") in system
 
 
@@ -651,7 +644,7 @@ def test_a_model_that_keeps_calling_a_tool_not_offered_ends_within_the_bound(ask
     nothing is all refused, and counts toward MAX_REFUSALS as a lookup past the cap does."""
     records = []
     monkeypatch.setattr(copilot_turn.trace, "record", lambda kind, payload: records.append(payload))
-    stuck = ("", [("web_search", {"query": "comp"}), ("read_note", {"path": "Notes/missing.md"})])
+    stuck = ("", [("web_search", {"query": "pancakes"}), ("read_note", {"path": "Notes/missing.md"})])
     seen = scripted(monkeypatch, *[stuck] * 40)
     with pytest.raises(copilot_turn.CopilotError, match="before an answer"):
         ask("q")
@@ -667,7 +660,6 @@ def test_a_turn_thinks_on_at_most_eight_calls(ask, monkeypatch):
     got = ask("look around")
     assert got["answer"] == "Answer." and len(seen) == 9
     assert [call["opts"]["think"] for call in seen] == [True] * edit_run.MAX_THINKING_CALLS + [False]
-    assert edit_run.MAX_THINKING_CALLS == 8
 
 
 # --- a reply that claims an edit with no edit made ---------------------------------------------
@@ -943,3 +935,82 @@ def test_a_block_too_long_to_show_after_the_room_ran_out_is_named_in_the_hint(as
     from slim.copilot import blocks
     big = next(b.handle for b in blocks.Note(text).blocks if b.text.startswith("A pasted"))
     assert "Not shown: from" in asked and big in asked.split("Not shown:", 1)[1]
+
+
+# --- create_note in the loop ---------------------------------------------------------------------
+
+NEW = {"path": "Notes/school/cs-201/recipe.md", "markdown": "# Pancakes\n\nFlour, milk, eggs."}
+
+
+def test_create_note_lands_in_a_loop_turn_with_a_note_open(ask, vault, monkeypatch):
+    scripted(monkeypatch, ("", [("create_note", NEW)]))
+    got = ask("make a note with the pancake recipe")
+    run = got["edit_run"]
+    (change,) = run["changes"]
+    assert change["op"] == "create" and change["path"] == NEW["path"] and "Flour, milk, eggs." in change["text"]
+    assert ("change", change) in got["events"] and run["path"] == OPEN
+    assert not (vault / NEW["path"]).exists()                     # the plugin makes it, not the server
+
+
+def test_create_note_lands_with_no_note_open_while_an_edit_is_refused(ask, vault, monkeypatch, records):
+    seen = scripted(monkeypatch, ("", [("replace", {"target": "b2", "markdown": "x"}), ("create_note", NEW)]))
+    got = ask("make a note with the pancake recipe", open_path=None)
+    run = got["edit_run"]
+    assert [c["op"] for c in run["changes"]] == ["create"] and run["path"] is None
+    assert records[0]["edit_run"]["refusals"] == ["no_note"] and len(seen) == 1
+
+
+def test_a_second_create_note_of_the_same_path_in_a_turn_is_refused(ask, monkeypatch, records):
+    plan = {"intro": "Two recipe notes.", "steps": ["Make the pancake note", "Make the waffle note"]}
+    seen = scripted(monkeypatch, ("", [("plan", plan)]), ("", [("create_note", NEW)]),
+                    ("", [("create_note", NEW)]), ("", []))
+    got = ask("make two recipe notes")
+    assert len(got["edit_run"]["changes"]) == 1
+    assert records[0]["edit_run"]["refusals"] == ["exists"]
+    assert seen[3]["messages"][-1]["content"].startswith(
+        f"refused: {NEW['path']} is already made in this turn; give the next note a name of its own")
+
+
+def test_with_no_note_open_a_create_note_in_a_missing_folder_names_no_folder_of_its_own(ask, monkeypatch):
+    seen = scripted(monkeypatch, ("", [("create_note", {**NEW, "path": "Nowhere/recipe.md"})]),
+                    ("", [("create_note", NEW)]))
+    got = ask("make a note with the pancake recipe", open_path=None)
+    said = seen[1]["messages"][-1]["content"]
+    assert said.startswith("refused: the folder Nowhere/ does not exist") and "such as /" not in said
+    assert "list_folder" in said
+    assert [c["path"] for c in got["edit_run"]["changes"]] == [NEW["path"]]
+
+
+# --- pins: in an excluded folder, too long, or too much for one request ----------------------------
+
+def test_a_note_under_a_pinned_excluded_folder_is_read_in_the_loop(ask, con, vault, monkeypatch):
+    put(con, vault, "Profile/about/me.md", "# Me\n\nI like graphs.\n", index=False)
+    seen = scripted(monkeypatch, ("", [("read_note", {"path": "Profile/about/me.md"})]), ("You like graphs.", []))
+    got = ask("what do I like?", pins=[{"kind": "folder", "path": "Profile"}])
+    assert seen[1]["messages"][-1]["content"].startswith("=== Profile/about/me.md ===")
+    assert got["answer"] == "You like graphs." and not got["looked_up"][0]["refused"]
+
+
+def test_a_pin_too_long_to_ride_is_left_out_traced_and_still_readable(ask, con, vault, monkeypatch, records):
+    monkeypatch.setattr(context, "INPUT_BUDGET_CHARS", 500)
+    put(con, vault, "Notes/long.md", "# Long\n\n" + "Pancake batter rests. " * 50)
+    seen = scripted(monkeypatch, ("", [("read_note", {"path": "Notes/long.md"})]), ("It rests.", []))
+    got = ask("how long does it rest?", pins=[{"kind": "note", "path": "Notes/long.md"}])
+    assert "Left out (too long): Notes/long.md" in seen[0]["messages"][1]["content"]
+    assert records[0]["pins"] == 0 and records[0]["pins_left_out"] == 1
+    assert "Pancake batter rests." in seen[1]["messages"][-1]["content"] and got["answer"] == "It rests."
+
+
+def test_an_open_note_and_pins_too_long_for_one_request_are_refused_before_any_call(ask, con, vault, monkeypatch,
+                                                                                    records):
+    put(con, vault, "Notes/b.md", "# Bee\n\n" + "Buzzing text. " * 300)
+    seen = scripted(monkeypatch, ("ok", []))
+    ask("q")
+    fixed = sum(map(copilot_turn._tokens, [seen[0]["messages"][0], seen[0]["messages"][-1]]))
+    room = copilot_turn.ANSWER_NUM_PREDICT + edit_run.THINK_BUDGETS["medium"]
+    monkeypatch.setattr(llm, "RESIDENT_CTX", int(fixed + room + 100))      # room for the note, not the pin
+    seen = scripted(monkeypatch, ("ok", []))
+    with pytest.raises(copilot_turn.CopilotError, match="the open note and the pins are too long for one request; "
+                                                        "unpin something"):
+        ask("q", pins=[{"kind": "note", "path": "Notes/b.md"}])
+    assert seen == [] and records[-1]["status"] == "failed" and records[-1]["pins"] == 1

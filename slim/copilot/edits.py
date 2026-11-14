@@ -646,9 +646,9 @@ def _with_origin(text: str) -> str:
 
 
 def create_note(vault: Path, raw_path: str, markdown: str, *, folder: str) -> dict:
-    """A new note a skill makes: {path, text}, or ToolError. A bare name goes in `folder`, the
-    open note's folder, in any folder that exists. Nothing is written here; the plugin creates
-    the note."""
+    """A new note a turn makes: {path, text}, or ToolError. A bare name goes in `folder`, the
+    open note's folder (the vault's top with no note open), in any folder that exists. Nothing is
+    written here; the plugin creates the note."""
     if not isinstance(raw_path, str) or not isinstance(markdown, str):
         raise ToolError("path and markdown must be text", "args")
     raw = _clean_path(raw_path)
@@ -660,8 +660,8 @@ def create_note(vault: Path, raw_path: str, markdown: str, *, folder: str) -> di
                         "path")
     parent = PurePosixPath(path).parent.as_posix()
     if not _exact(vault, parent):
-        raise ToolError(f"the folder {parent}/ does not exist; use a folder that does, such as {folder}/",
-                        "folder")
+        such = f"such as {folder}/" if folder not in ("", ".") else "list_folder shows them"
+        raise ToolError(f"the folder {parent}/ does not exist; use a folder that does, {such}", "folder")
     if (Path(vault) / path).exists():
         raise ToolError(f"{path} already exists; give the new note a name of its own", "exists")
     text = blocks.strip_labels(markdown)

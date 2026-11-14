@@ -1,4 +1,4 @@
-"""HTTP contract for the Obsidian open-note copilot."""
+"""HTTP contract for the Obsidian copilot."""
 
 import base64
 import json
@@ -61,7 +61,7 @@ def test_context_endpoint_returns_the_active_source(server_url, monkeypatch):
     assert json.loads(body)["source"]["id"] == "source-1"
 
 
-def test_copilot_thread_endpoints_require_and_return_source_metadata(server_url):
+def test_thread_save_takes_the_indexed_path_over_the_one_sent(server_url):
     seed_source()
     status, _headers, body = post(server_url, "/api/copilot/thread/save", {
         "id": "chat-1", "title": "Lesson", "turns": [], "source_id": "source-1",

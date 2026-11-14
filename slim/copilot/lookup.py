@@ -1,7 +1,8 @@
 """LOOKUP — three read-only tools that let the model look in the vault: `search` (the index),
 `read_note` (a note or one section of it) and `list_folder`. They see only what the index sees
 (`config.EXCLUDED_TOP` is closed to them), except the open note, which is read as the editor
-holds it, with its block handles. Nothing here writes. `Reader.call` never raises: bad input
+holds it, with its block handles, and what the owner `@`-pinned, which read_note and list_folder
+open wherever it is (search never sees an excluded folder). Nothing here writes. `Reader.call` never raises: bad input
 comes back as "refused: <reason>" for the model to read."""
 from __future__ import annotations
 
@@ -71,9 +72,10 @@ def _clean(raw) -> str:
     return path.rstrip("/") if path else ""
 
 
-def _check(path: str, *, open_path: str | None = None) -> PurePosixPath:
+def _check(path: str, *, open_path: str | None = None, pinned: tuple[str, ...] = ()) -> PurePosixPath:
     """The same rules as `edits.note_path`, for a note or a folder: inside the vault, no hidden
-    or excluded parts."""
+    or excluded parts. The open note, and a path at or under a `pinned` one, may be in an
+    excluded top folder: what the owner points at is fair game (the owner's ruling, 2026-11-13)."""
     if (any(ch in path for ch in "\\:\0") or any(ord(ch) < 32 for ch in path)
             or unicodedata.normalize("NFC", path) != path):
         raise _Refused(f"'{path}' is not a vault path")
@@ -83,17 +85,22 @@ def _check(path: str, *, open_path: str | None = None) -> PurePosixPath:
     parts = [p.casefold() for p in pure.parts]
     if any(p.startswith(".") or p in _DIRS_CF for p in parts):
         raise _Refused(f"'{path}' is not in the vault's notes")
-    if parts and parts[0] in _TOP_CF and path != open_path:
+    if parts and parts[0] in _TOP_CF and path != open_path and not _under(path, pinned):
         raise _Refused(f"'{path}' is not in the vault's notes")
     return pure
 
 
+def _under(path: str, pinned: tuple[str, ...]) -> bool:
+    return any(path == pin or path.startswith(pin + "/") for pin in pinned if pin)
+
+
 class Reader:
     def __init__(self, con, vault: Path, *, default_folder: str | None = None,
-                 open_note: tuple[str, blocks.Note] | None = None):
+                 open_note: tuple[str, blocks.Note] | None = None, pinned: tuple[str, ...] = ()):
         self.con, self.vault = con, Path(vault)
         self.default_folder = default_folder
         self.open_note = open_note
+        self.pinned = tuple(pinned)        # the chat's `@` pins: read_note and list_folder open them
         self.read: list[str] = []
         self.searched: list[str] = []
         self.seen: list[str] = []          # every note read or found, in the order it was looked at
@@ -161,7 +168,7 @@ class Reader:
 
     def _read_note(self, args: dict) -> str:
         raw = _clean(args.get("path"))
-        pure = _check(raw, open_path=self.open_note[0] if self.open_note else None)
+        pure = _check(raw, open_path=self.open_note[0] if self.open_note else None, pinned=self.pinned)
         path = pure.as_posix()
         if pure.suffix.lower() != ".md":
             raise _Refused(f"'{raw}' is not a note path; give a path ending in .md")
@@ -190,7 +197,7 @@ class Reader:
 
     def _resolve(self, path: str, raw: str) -> str:
         """The one note whose path ends with what the model wrote: it drops a top folder
-        (`job-search/…` for `Notes/job-search/…`, seen live 2026-11-14) or gives a bare file name.
+        (`school/…` for `Notes/school/…`, seen live 2026-11-14) or gives a bare file name.
         Several matches are named back; none is the plain refusal."""
         tail = "/" + path.casefold()
         pool = list(self.seen) + ([self.open_note[0]] if self.open_note else [])
@@ -198,7 +205,7 @@ class Reader:
             pool += [row[0] for row in self.con.execute(
                 "SELECT path FROM sources WHERE lower(path) LIKE ?", ("%" + path.casefold(),))]
         found = [p for p in dict.fromkeys(pool)
-                 if ("/" + p.casefold()).endswith(tail) and (searchable(p) or self._is_open(p))
+                 if ("/" + p.casefold()).endswith(tail) and (searchable(p) or self._is_open(p) or _under(p, self.pinned))
                  and edits._exact(self.vault, p) and (self.vault / p).is_file()]
         if len(found) == 1:
             return found[0]
@@ -281,7 +288,7 @@ class Reader:
 
     def _list_folder(self, args: dict) -> str:
         raw = _clean(args.get("path"))
-        pure = _check(raw)
+        pure = _check(raw, pinned=self.pinned)
         path = "" if pure.as_posix() == "." else pure.as_posix()
         if path and not (edits._exact(self.vault, path) and (self.vault / path).is_dir()):
             raise _Refused(f"there is no folder '{raw}'")

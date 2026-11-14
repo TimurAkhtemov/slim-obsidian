@@ -151,16 +151,16 @@ def test_a_long_open_note_shows_whole_blocks_and_shown_is_what_it_showed(vault):
     assert "Sections:\n" in out and out.endswith("[… the rest: read_note(path, section) for one section]")
 
 
-FILLER = " ".join(f"Databricks launchpad program detail number {i}." for i in range(40))
+FILLER = " ".join(f"Pancake batter step detail number {i}." for i in range(40))
 
 
 def test_a_search_passage_is_where_the_query_matched_not_the_section_head(con, vault):
-    # Live 2026-11-14: the figures sat 1,300 characters into the chunk; a head-only passage hid
-    # them and the model answered from a neighbouring note's "150 base".
-    path = write(vault, "Notes/jobs/Databricks/screen.md", f"# Notes\n\n{FILLER} Comp: OTE 151,800, 206,900 TC.\n")
+    # Live 2026-11-14: the figures asked about sat 1,300 characters into the chunk; a head-only
+    # passage hid them and the model answered from a neighbouring note's figure.
+    path = write(vault, "Notes/school/cs-201/pancakes.md", f"# Notes\n\n{FILLER} Oven: 180 degrees, 25 minutes.\n")
     ingest(con, vault, path)
-    out = lookup.Reader(con, vault).call("search", {"query": "Databricks total comp"})
-    assert "151,800" in out and "206,900" in out
+    out = lookup.Reader(con, vault).call("search", {"query": "pancakes oven minutes"})
+    assert "180 degrees" in out and "25 minutes" in out
     assert "… " in out                      # says the passage starts mid-section
 
 
@@ -187,3 +187,17 @@ def test_read_note_names_the_candidates_when_a_shortened_path_is_ambiguous(con, 
 def test_a_shortened_path_never_reaches_an_excluded_folder(con, vault):
     write(vault, "_Reflections/r.md", "# R\n\nsecret\n")
     assert lookup.Reader(con, vault).call("read_note", {"path": "r.md"}).startswith("refused:")
+
+
+def test_a_note_under_a_pinned_excluded_folder_may_be_read_and_listed(con, vault):
+    """What the owner points at is fair game (the owner's ruling, 2026-11-13): a note under a
+    pinned folder opens even in an excluded top folder. Search still never sees one."""
+    write(vault, "Profile/about/me.md", "# Me\n\nI like graphs.\n")
+    write(vault, "Skills/s.md", "# S\n\nx\n")
+    reader = lookup.Reader(con, vault, pinned=("Profile",))
+    out = reader.call("read_note", {"path": "Profile/about/me.md"})
+    assert out.startswith("=== Profile/about/me.md ===") and "I like graphs." in out
+    assert reader.call("list_folder", {"path": "Profile/about"}) == "me.md"
+    assert reader.call("read_note", {"path": "Skills/s.md"}).startswith("refused:")    # not pinned
+    assert reader.call("search", {"query": "graphs", "folder": "Profile"}).startswith("refused:")
+    assert lookup.Reader(con, vault).call("read_note", {"path": "Profile/about/me.md"}).startswith("refused:")
