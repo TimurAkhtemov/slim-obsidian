@@ -434,6 +434,22 @@ test("history names an edit turn's plan and what became of its changes", () => {
   assert.equal(historyText({ role: "you", text: "q" }), "q");
 });
 
+test("history names the note a question was on, and what each answer read and changed", () => {
+  assert.equal(historyText({ role: "you", text: "what is A?", note: "Notes/a.md" }), "(on Notes/a.md) what is A?");
+  const read = [{ n: 1, path: "Notes/b.md", title: "b" }, { n: 2, path: "Notes/c.md", title: "c" }];
+  assert.equal(historyText({ role: "slim", text: "An answer.", turn: { citations: read } }),
+               "An answer.\nread: Notes/b.md, Notes/c.md");
+  const run = { plan: { intro: "Rename it.", steps: [] }, path: "Notes/a.md",
+                changes: [{ state: "applied" }, { state: "applied" }, { state: "skipped" },
+                          { op: "create", path: "Notes/new.md", state: "applied" }] };
+  assert.equal(historyText({ role: "slim", text: "x", turn: { citations: read.slice(0, 1), edit_run: run } }),
+               "[Changed the note: Rename it.; 3 changes, 0 undone]\n"
+               + "read: Notes/b.md · edited: Notes/a.md (2 changes) · made: Notes/new.md");
+  assert.equal(historyText({ role: "slim", text: "x", turn: { citations: [], edit_run: {
+    plan: { intro: "Nothing.", steps: [] }, path: "Notes/a.md", changes: [{ state: "skipped" }] } } }),
+               "[Changed the note: Nothing.; 0 changes, 0 undone]");
+});
+
 test("a change made inside another counts as part of it, in the chat and in history", async () => {
   // The owner's run: c1 added a section; c2, c3 and c4 only rewrote what c1 and c2 wrote.
   const inside = (id, partOf, needs) => change(id, 1, { op: "replace", label: `Rewrote ${id}`, part_of: partOf, needs });
@@ -457,12 +473,12 @@ test("a change made inside another counts as part of it, in the chat and in hist
   assert.deepEqual(kept.changes.map((c) => [c.id, c.part_of ?? null]),
                    [["c1", null], ["c2", "c1"], ["c3", "c1"], ["c4", "c1"], ["c5", null]]);
   assert.equal("fixups" in kept, false);
-  assert.equal(historyText(turn), "[Changed the note: Adding an explanation.; 2 changes, 0 undone]");
+  assert.equal(historyText(turn), "[Changed the note: Adding an explanation.; 2 changes, 0 undone]\nedited: Notes/one.md (2 changes)");
   // ↺ on the section takes what was made inside it with it: one change undone, not four.
   for (const c of runs.get("1".repeat(32)).changes) if (c.id !== "c5") c.state = "undone";
   view.runChanged(editor, "1".repeat(32));
   await view.savingRuns;
-  assert.equal(historyText(turn), "[Changed the note: Adding an explanation.; 2 changes, 1 undone]");
+  assert.equal(historyText(turn), "[Changed the note: Adding an explanation.; 2 changes, 1 undone]\nedited: Notes/one.md (2 changes)");
   const { view: shown, root } = renderedView({ live, liveRunView: (id) => (live.state(editor, id) ? editor : null) });
   shown.turns = view.turns;
   shown.render();

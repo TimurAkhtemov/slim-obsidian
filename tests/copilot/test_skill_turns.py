@@ -144,7 +144,7 @@ def test_an_unknown_command_is_refused_not_asked(con, vault, monkeypatch):
 def test_a_skill_runs_at_its_own_depth_and_its_prompt_rides_in_history(con, vault, monkeypatch):
     meeting(vault, "Kickoff", "2026-09-01T09:00:00", "ship friday")
     source = open_source(con, vault, meeting(vault, "Review", "2026-09-08T09:00:00", "monday"))
-    seen = tooled(monkeypatch, ("Nothing to merge yet.", []), ("Right: 4.", []))
+    seen = tooled(monkeypatch, ("Nothing to merge yet.", []), ("Right: 4.", []), ("Right: 4.", []))
     turn = copilot_turn.run_turn(con, source["path"], "/consolidate-my-notes", [], "quick", vault=vault)
     assert turn["mode"] == "deep" and seen[0]["opts"]["think"] is True
     monkeypatch.setattr(context.search_mod, "hybrid", lambda *a, **k: [])
@@ -152,6 +152,11 @@ def test_a_skill_runs_at_its_own_depth_and_its_prompt_rides_in_history(con, vaul
     copilot_turn.run_turn(con, source["path"], "my answer is 4", [
         {"role": "you", "text": "/quiz"}, {"role": "slim", "text": "What is 2+2?"}], "quick", vault=vault)
     assert seen[1]["messages"][1]["content"].startswith("Quiz me on this note. Ask ONE question now")
+    # The plugin names the note an earlier question was asked on; the /command after it still expands.
+    copilot_turn.run_turn(con, source["path"], "my answer is 4", [
+        {"role": "you", "text": f"(on {source['path']}) /quiz"}, {"role": "slim", "text": "What is 2+2?"}],
+        "quick", vault=vault)
+    assert seen[2]["messages"][1]["content"].startswith(f"(on {source['path']}) Quiz me on this note.")
 
 
 def test_a_skill_reads_the_folder_when_the_invocation_says_so(con, vault, monkeypatch):

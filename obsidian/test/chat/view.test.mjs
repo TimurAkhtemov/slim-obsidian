@@ -102,6 +102,24 @@ test("sending streams deltas and stores the turn with the depth they picked", as
   assert.equal(saved[0].turns[0].note, "Notes/one.md");
 });
 
+test("history sent with a question names the note each earlier one was on and what its answer read", async () => {
+  const bodies = [];
+  const view = makeView({
+    postJSON: async (route) => route.endsWith("context") ? { source: { id: "source-1", path: "Notes/one.md" } } : {},
+    streamCopilot: async (body, handlers) => {
+      bodies.push(body);
+      handlers.turn({ answer: `Answer ${bodies.length}`, mode: "quick",
+                      citations: [{ n: 1, path: "Notes/two.md", title: "two" }] });
+    },
+  });
+  view.render = () => {};
+  view.openNote = { path: "Notes/one.md", id: "source-1" };
+  await view.send("What is A?");
+  await view.send("And B?");
+  assert.deepEqual(bodies[1].history.map((turn) => turn.text),
+                   ["(on Notes/one.md) What is A?", "Answer 1\nread: Notes/two.md"]);
+});
+
 test("cancel aborts the in-flight stream and returns the composer to idle", () => {
   const view = makeView();
   let aborted = false;
@@ -156,6 +174,7 @@ test("a failed question leaves the chat when something else is asked, and is nev
   view.turns.unshift({ role: "you", text: "/tidy" });
   await view.send("Ok make the revisions");
   assert.deepEqual(bodies[2].history.map((turn) => turn.text), ["Any places to expand?", "Answer 2"]);
+  assert.equal(view.turns.at(-2).note, undefined);           // asked with no note open: no "(on …)"
 });
 
 test("opening an old thread does not navigate", async () => {

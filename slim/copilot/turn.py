@@ -619,6 +619,18 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
     return result
 
 
+# The plugin starts an earlier question with the note it was asked on: "(on Notes/a.md) /quiz".
+_ASKED_ON = re.compile(r"\(on [^\n]*?\) (?=/)")
+
+
+def _expanded(text: str, loaded: dict) -> str:
+    """An earlier question as the model reads it: a /command is its skill's whole prompt, after
+    the note it was asked on."""
+    on = _ASKED_ON.match(text)
+    head = on.group() if on else ""
+    return head + skills_mod.expand(text[len(head):], loaded)
+
+
 def _source(con, vault: Path, open_path: str | None) -> dict | None:
     """The open note's source row, found by its path. In THE LOOP a note the index leaves out
     (`Profile/`, `_Reflections/`…) is still the open note, read from disk; a file that is not a
@@ -664,7 +676,7 @@ def run_turn(con, open_path: str | None, question: str, history: list[dict], mod
         mode = skill.mode                      # the skill's author chose its depth
     # A /command in an earlier turn is its whole prompt to the model: "/quiz" alone never told
     # the answering turn how to grade.
-    history = [{**turn, "text": skills_mod.expand(turn.get("text") or "", loaded)}
+    history = [{**turn, "text": _expanded(turn.get("text") or "", loaded)}
                if turn.get("role") == "you" else turn for turn in history]
     # Machine facts only (no prose, no reasoning): the thread JSON keeps completed turns,
     # so this is the one record of a refused or stopped turn.

@@ -226,11 +226,32 @@ var require_text = __commonJS({
       return { landed, undone };
     }
     function historyText(turn) {
+      if (turn?.role === "you") return turn.note ? `(on ${turn.note}) ${turn.text}` : turn.text;
       const run = turn?.turn?.edit_run;
-      if (turn?.role !== "slim" || !run) return turn?.text;
+      if (turn?.role !== "slim") return turn?.text;
+      const line = turnLine(turn.turn);
+      const said = run ? runText(run) : turn.text;
+      return line ? `${said}
+${line}` : said;
+    }
+    function runText(run) {
       const { landed, undone } = runCounts(run);
       const steps = run.plan?.steps || [];
       return `[Changed the note: ${run.plan?.intro || run.summary || "no plan"}${steps.length ? `; steps: ${steps.join("; ")}` : ""}; ${landed.length} change${landed.length === 1 ? "" : "s"}, ${undone} undone${run.stopped && steps.length ? `; stopped after ${run.steps_done || 0} of ${steps.length} steps` : ""}]`;
+    }
+    function turnLine(turn) {
+      const parts = [];
+      const read = [...new Set((turn?.citations || []).map((cited) => cited?.path).filter(Boolean))];
+      if (read.length) parts.push(`read: ${read.join(", ")}`);
+      const run = turn?.edit_run;
+      if (run) {
+        const { landed } = runCounts(run);
+        const edited = landed.filter((change) => change.op !== "create");
+        const made = landed.filter((change) => change.op === "create" && change.path).map((change) => change.path);
+        if (edited.length && run.path) parts.push(`edited: ${run.path} (${edited.length} change${edited.length === 1 ? "" : "s"})`);
+        if (made.length) parts.push(`made: ${made.join(", ")}`);
+      }
+      return parts.join(" \xB7 ");
     }
     var STOPPED_BECAUSE = {
       refusals: "its changes kept being refused",
