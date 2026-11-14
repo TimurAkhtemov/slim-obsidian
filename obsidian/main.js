@@ -1108,7 +1108,7 @@ var require_edit_run = __commonJS({
         const text = run.plan?.intro || "";
         return { role: "slim", text, turn: {
           answer: text,
-          effort: this.effort,
+          effort: run.effort || this.effort,
           citations: [],
           tools: [...this.liveTools || []],
           timing: { total_ms: Date.now() - run.started },
@@ -1151,7 +1151,7 @@ var require_edit_run = __commonJS({
         if (this.liveTools?.length) this.fillTools(create(parent, "ul", "slim-steps slim-tools"), this.liveTools);
         this.renderEditRun(parent, { plan: run.plan, step_states: run.steps, changes: run.changes }, null);
         const meta = create(parent, "div", "slim-edit-meta");
-        create(meta, "span", "", `${effortLabel(this.effort)} \xB7 ${Math.max(0, Math.round((Date.now() - run.started) / 1e3))} s`);
+        create(meta, "span", "", `${effortLabel(run.effort || this.effort)} \xB7 ${Math.max(0, Math.round((Date.now() - run.started) / 1e3))} s`);
       },
       renderEditRun(message, run, pending) {
         const box = create(message, "div", "slim-edit");
@@ -1808,6 +1808,7 @@ var require_view = __commonJS({
         let run = null;
         let local = null, tracked = null;
         const started = Date.now();
+        const effort = this.effort;
         const abort = new AbortController();
         this.abort = abort;
         const on = (handle) => (data) => {
@@ -1852,7 +1853,7 @@ var require_view = __commonJS({
             })),
             // A regenerated question re-sends its stored refs; the server has the bytes.
             images: outgoingImages.map(({ id, name, mime, data, bytes }) => data ? { name, mime, data } : { id, name, mime, bytes }),
-            effort: this.effort,
+            effort,
             ...doc === null ? {} : { doc, doc_hash: sha256Hex(doc) },
             selection: picked.text,
             ...picked.from === void 0 ? {} : { selection_from: picked.from }
@@ -1906,6 +1907,7 @@ var require_view = __commonJS({
                 view: claimed ? tracked : null,
                 path,
                 started,
+                effort,
                 thread,
                 turns
               };

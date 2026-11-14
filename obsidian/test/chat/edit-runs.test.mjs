@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { find } from "../fakes.mjs";
+import { fakeEl, find } from "../fakes.mjs";
 import { PLAN, change, editView, fakeLive, makeView, renderedView } from "../copilot-harness.mjs";
 
 const require = createRequire(import.meta.url);
@@ -205,6 +205,32 @@ test("a run that stops or fails keeps its question's pasted images as the server
     await view.saveRun(view.activeThread, view.turns);                 // a later save: ↺ on its change
     assert.deepEqual(saved.at(-1).turns[0].attachments, [ref], ending);
   }
+});
+
+test("a stopped run keeps the effort it was sent at, not the selector's at the stop", async () => {
+  const { live, editor } = fakeLive();
+  const saved = [];
+  let footer = "";
+  const view = editView({ live, editor, saved, events: (body, handlers, signal) => new Promise((_resolve, reject) => {
+    signal.addEventListener("abort", () => { const error = new Error("Cancelled"); error.name = "AbortError"; reject(error); });
+    assert.equal(body.effort, "high");
+    handlers.edit({ before_ref: "d".repeat(32), hash_before: "h0" });
+    handlers.plan(PLAN);
+    handlers.change(change("c1", 1));
+  }) });
+  view.effort = "high";
+  const sending = view.send("Rewrite it");
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  view.effort = "off";                                                 // changed while it runs
+  const live_ = fakeEl("div");
+  view.drawLiveEdit(live_);
+  footer = find(live_, (node) => node.cls === "slim-edit-meta").children[0].textContent;
+  view.cancel();
+  await sending;
+  assert.equal(view.turns.at(-1).turn.effort, "high");
+  assert.equal(saved.at(-1).turns.at(-1).turn.effort, "high");
+  assert.match(footer, /High · \d+ s/);
 });
 
 test("a question that failed before an answer never saves its pasted images: the server kept none", async () => {

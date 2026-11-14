@@ -14,7 +14,7 @@ const manifest = require("../manifest.json");
 
 // The plugin after `onload`, against a workspace that records what was registered. No server
 // is spawned and no live editor is built: neither is what these tests are about.
-async function loadedPlugin(leavesOfType = () => []) {
+async function loadedPlugin(leavesOfType = () => [], data = {}) {
   const p = Object.create(PluginClass.prototype);
   const got = { views: {}, commands: [], handlers: {}, blocks: {}, layoutReady: [] };
   const on = (name, fn) => { got.handlers[name] = fn; return name; };
@@ -24,7 +24,7 @@ async function loadedPlugin(leavesOfType = () => []) {
     vault: { on },
   };
   Object.assign(p, {
-    loadData: async () => ({}), setupLive() {}, ensureServer: async () => {},
+    loadData: async () => data, setupLive() {}, ensureServer: async () => {},
     registerMarkdownCodeBlockProcessor: (lang, fn) => { got.blocks[lang] = fn; },
     registerView: (type, factory) => { got.views[type] = factory; },
     addCommand: (command) => got.commands.push(command.id),
@@ -223,6 +223,13 @@ test("onload registers the copilot view and its command", async () => {
   assert.ok(got.commands.includes("open-note-copilot"));
   assert.ok(got.commands.includes("start-recording"));
   assert.equal(manifest.name, "SLIM");
+});
+
+test("the copilot view starts at the effort saved in the settings, read before it is built", async () => {
+  const { got } = await loadedPlugin(() => [], { effort: "low" });
+  assert.equal(got.views[VIEW_TYPE_COPILOT]({}).effort, "low");
+  const { got: fresh } = await loadedPlugin();
+  assert.equal(fresh.views[VIEW_TYPE_COPILOT]({}).effort, "medium");      // the default
 });
 
 test("the copilot follows the active note", async () => {

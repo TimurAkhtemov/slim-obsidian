@@ -435,6 +435,7 @@ class CopilotView extends ItemView {
     let run = null;                       // an editing run, from its `edit` event on
     let local = null, tracked = null;     // the editor tracking it from Send, and its name there
     const started = Date.now();
+    const effort = this.effort;           // what this turn runs at, whatever the selector says later
     const abort = new AbortController();
     this.abort = abort;
     // An editing run's events land in the note. One that throws must not end the stream (the
@@ -480,7 +481,7 @@ class CopilotView extends ItemView {
         // A regenerated question re-sends its stored refs; the server has the bytes.
         images: outgoingImages.map(({ id, name, mime, data, bytes }) =>
           data ? { name, mime, data } : { id, name, mime, bytes }),
-        effort: this.effort,
+        effort,
         ...(doc === null ? {} : { doc, doc_hash: sha256Hex(doc) }),
         selection: picked.text,
         ...(picked.from === undefined ? {} : { selection_from: picked.from }),
@@ -524,7 +525,7 @@ class CopilotView extends ItemView {
           const claimed = Boolean(local && this.plugin.live?.claimRun(tracked, local, ref));
           local = null;
           run = { ref, hash_before: data.hash_before, plan: null, steps: [], changes: [], pending: [],
-                  view: claimed ? tracked : null, path, started, thread, turns };
+                  view: claimed ? tracked : null, path, started, effort, thread, turns };
           this.editRun = run;
           if (path) Promise.resolve(this.plugin.showEditing?.(path)).catch((e) => console.warn("[slim] editing view", e));
           this.startEditClock();
