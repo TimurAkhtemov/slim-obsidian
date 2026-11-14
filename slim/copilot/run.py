@@ -28,6 +28,7 @@ ONE_REPLY = "(done in one reply)"      # the one step of a run whose first reply
 # a model that goes on asking is stopped after MAX_REFUSALS such replies.
 MAX_LOOKUPS = 6
 LOOKED_ENOUGH = "refused: answer or act now with what you have"
+NO_ROOM = "refused: no room left in this conversation; answer with what you have"
 
 
 class _Stopped(Exception):
@@ -360,7 +361,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
           temperature: float = FIRST_TEMPERATURE, first_predict: int, nudge: bool = False, on_edit,
           should_stop, on_stage=lambda _name: None, lookups: lookup_mod.Reader | None = None,
           on_reply=None, no_edit: str | None = None, looked_up: list | None = None,
-          on_reset=None) -> dict:
+          on_reset=None, fits=None) -> dict:
     """One editing turn. Every call offers the same `tools`, in the same order: they sit at the
     top of the prompt, and a different list re-reads the whole note. `step_tools` are those that
     change something. The first call answers in text, makes a small change at once, or plans a
@@ -377,7 +378,9 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
     a refusal or a step. `on_reply` hears each reply's text as it decodes. `looked_up`, when given,
     is the list each lookup's record goes into as it runs, so a turn that fails still names them.
     `on_reset()` hears each model call start after the first: the text streamed so far was that
-    call's (a lookup's preamble, a step's chatter), never the answer.
+    call's (a lookup's preamble, a step's chatter), never the answer. `fits(messages, results)`
+    says whether the conversation with these tool results still fits the window: a lookup whose
+    result would not is answered NO_ROOM instead, and what it read is neither a source nor editable.
 
     With `no_edit` (THE LOOP with no note it may change) the plan and edit tools are still offered,
     so the prompt stays the same, but every call to them is refused with that reason, counted as
@@ -409,11 +412,17 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
         elif drafts:
             drafts.part(kind, index, name, value)
 
-    def look(call: dict) -> str:
-        """One lookup, run; what it found goes back to the model, and what it was to the trace."""
+    def look(call: dict, pending: list[str]) -> str:
+        """One lookup, run; what it found goes back to the model, and what it was to the trace.
+        `pending` are the results of this reply's calls before it, not yet in `messages`."""
         args = call.get("arguments")
         on_stage(_looking(call["name"], args))
+        read, shown = len(lookups.read), set(lookups.shown)
         said = lookups.call(call["name"], args)
+        if fits is not None and not said.startswith("refused:") and not fits(messages, [*pending, said]):
+            said = NO_ROOM
+            del lookups.read[read:]
+            lookups.shown.intersection_update(shown)
         if note is not None and note.shown is not None:
             note.shown |= lookups.shown         # a section it read is a section it may change
         record = {"name": call["name"]}
@@ -540,7 +549,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
                     out["looked_up"].append({"name": call["name"], "refused": True, "said": LOOKED_ENOUGH})
                 else:
                     looked += 1
-                    results.append(look(call))
+                    results.append(look(call, results))
             refused = all(r.startswith("refused:") for r in results)
             over += refused and (looked >= MAX_LOOKUPS or any(c["name"] in barred for c in first.calls))
             if out["calls"] > MAX_CALLS:
@@ -647,7 +656,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
                     refused = True
                     break
                 if name in looks:           # answered; neither a refusal nor a change
-                    results.append(look(call))
+                    results.append(look(call, results))
                     continue
                 # Where the call points, read before it lands and moves the note's blocks.
                 aimed = current["target"] and note is not None and bool(

@@ -571,13 +571,20 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
             raise CopilotError("the open note and the pins are too long for one request; unpin something")
         recent = fit_window(transcript, fixed, room)
         messages = [system_turn, *pinned_turns, *recent, *embedded, current]
+
+        def fits(sent: list[dict], results: list[str]) -> bool:
+            """THE WINDOW RULE for what a lookup brings back: the prompt with these results and
+            the reply's room still inside the resident window."""
+            used = sum(map(_tokens, sent)) + sum(map(len, results)) / CHARS_PER_TOKEN
+            return used + room <= llm.RESIDENT_CTX
+
         out = edit_run._turn(list(messages), think=mode == "deep", tools=tools, step_tools=step_tools,
                              note=note, before_text=text or "", create=create,
                              temperature=edit_run.FIRST_TEMPERATURE, first_predict=room,
                              on_edit=on_edit or (lambda _event, _payload: None), should_stop=should_stop,
                              on_stage=stage, lookups=reader, on_reply=on_delta, no_edit=no_edit,
                              # filled as the turn runs: traced even when it fails or is refused
-                             looked_up=entry.setdefault("looked_up", []), on_reset=on_reset)
+                             looked_up=entry.setdefault("looked_up", []), on_reset=on_reset, fits=fits)
     if out["kind"] == "answer" and out["refusals"]:
         entry["refusals"] = [item["code"] for item in out["refusals"]]
     last = out["timing"][-1] if out["timing"] else {}

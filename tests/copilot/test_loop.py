@@ -418,3 +418,22 @@ def test_the_stage_line_names_each_lookup(ask, con, vault, monkeypatch):
     got = ask("zebras?")
     assert got["stages"] == ["Writing", "Searching", "Writing", "Reading zebra", "Writing",
                              "Listing Notes/school", "Listing the vault", "Writing"]
+
+
+def test_a_lookup_that_would_overflow_the_window_is_refused(ask, con, vault, monkeypatch):
+    put(con, vault, "Notes/small.md", "# Small\n\nA short note.\n")
+    put(con, vault, "Notes/big.md", "# Big\n\n" + "A long sentence of words. " * 400)
+    seen = scripted(monkeypatch, ("ok", []))
+    ask("q")
+    prompt = sum(map(copilot_turn._tokens, seen[0]["messages"]))
+    # Room for the prompt, the reply, and a little more: the small note fits, the big one not.
+    monkeypatch.setattr(llm, "RESIDENT_CTX", int(prompt + copilot_turn.QUICK_NUM_PREDICT + 200))
+    seen = scripted(monkeypatch, ("", [("read_note", {"path": "Notes/small.md"})]),
+                    ("", [("read_note", {"path": "Notes/big.md"})]), ("With what I have.", []))
+    got = ask("q")
+    assert seen[1]["messages"][-1]["content"].startswith("=== Notes/small.md ===")
+    assert seen[2]["messages"][-1]["content"] == ("refused: no room left in this conversation; "
+                                                  "answer with what you have")
+    assert got["answer"] == "With what I have."
+    assert [looked["refused"] for looked in got["looked_up"]] == [False, True]
+    assert [c["path"] for c in got["citations"]] == ["Notes/small.md"]   # what it never saw is no source
