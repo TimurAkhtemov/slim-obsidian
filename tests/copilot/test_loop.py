@@ -904,3 +904,42 @@ def test_a_turn_over_its_token_budget_while_looking_ends_before_an_answer(ask, m
     with pytest.raises(copilot_turn.CopilotError, match=r"the turn ended before an answer \(token budget\)"):
         ask("look around")
     assert len(seen) == 1
+
+
+# --- a block too long to show ------------------------------------------------------------------
+
+BIG_BLOCK_NOTE = "# Title\n\nShort intro.\n\n" + "A pasted sentence. " * 3200 + "\n\n## Later\n\nEnd text.\n"
+
+
+def test_a_block_too_long_to_show_is_named_paged_read_only_and_the_note_goes_on(ask, monkeypatch):
+    """One 60k-character paragraph: it is named where it stands and read a page at a time, never
+    changed by handle, and the owner's text after it is shown and editable."""
+    assert len(BIG_BLOCK_NOTE) > 60_000
+    seen = scripted(monkeypatch, ("", [("read_note", {"path": OPEN, "section": "b3"})]),
+                    ("", [("read_note", {"path": OPEN, "section": "b3#2"})]),
+                    ("", [("edit_text", {"target": "b3", "old": "A pasted sentence.", "new": "x"})]),
+                    ("", [("edit_text", {"target": "b5", "old": "End text.", "new": "The end."})]))
+    got = ask("what is in the pasted part?", text=BIG_BLOCK_NOTE)
+    asked = seen[0]["messages"][-1]["content"]
+    assert "[b5] End text." in asked and "[b4] ## Later" in asked           # the head goes on after it
+    assert "A pasted sentence." not in asked
+    assert f'read_note("{OPEN}", "b3")' in asked and "Not shown: from b3" not in asked
+    first, second = seen[1]["messages"][-1]["content"], seen[2]["messages"][-1]["content"]
+    assert first.startswith(f"=== {OPEN} ===\n[b3, page 1 of 2: too long to show whole, read-only]")
+    assert "A pasted sentence." in first and first.endswith(f'[Next page: read_note("{OPEN}", "b3#2")]')
+    assert "page 2 of 2" in second and "Next page" not in second
+    assert "read-only" in seen[3]["messages"][-1]["content"] and seen[3]["messages"][-1]["content"].startswith("refused:")
+    assert [c["label"] for c in got["edit_run"]["changes"]] and len(got["edit_run"]["changes"]) == 1
+    assert "The end." in edits.apply_splices(BIG_BLOCK_NOTE, got["edit_run"]["changes"][0]["splices"])
+    assert not any(looked["refused"] for looked in got["looked_up"])
+
+
+def test_a_block_too_long_to_show_after_the_room_ran_out_is_named_in_the_hint(ask, monkeypatch):
+    sections = "".join(f"## Part {n}\n\n" + "word " * 1500 + "\n\n" for n in range(6))
+    text = "# Title\n\n" + sections + "A pasted sentence. " * 3200 + "\n\nEnd text.\n"
+    seen = scripted(monkeypatch, ("ok", []))
+    ask("q", text=text)
+    asked = seen[0]["messages"][-1]["content"]
+    from slim.copilot import blocks
+    big = next(b.handle for b in blocks.Note(text).blocks if b.text.startswith("A pasted"))
+    assert "Not shown: from" in asked and big in asked.split("Not shown:", 1)[1]

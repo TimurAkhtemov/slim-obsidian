@@ -240,15 +240,15 @@ def test_blocks_a_run_writes_are_its_own_to_change_again():
 
 def test_head_renders_whole_blocks_within_the_limit():
     note = Note("# T\n\n" + "".join(f"Para {n} " + "x" * 50 + "\n\n" for n in range(10)))
-    text, kept = note.head(note.blocks, 200, "Notes/t.md")
+    text, kept, reached = note.head(note.blocks, 200, "Notes/t.md")
     assert len(text) <= 200 and text == note.render(kept) and kept == note.blocks[:len(kept)]
-    assert 1 < len(kept) < len(note.blocks)
+    assert 1 < len(kept) < len(note.blocks) and reached == len(kept)
 
 
 def test_head_names_a_locked_block_too_long_to_show_and_goes_on():
     long = "---\ntitle: x\n---\n\n```slim-meeting\n## Transcript\n\n" + "Me: words\n" * 200 + "```\n\nMy notes.\n"
     note = Note(long)
-    text, kept = note.head(note.blocks, 400, "Notes/call.md")
+    text, kept, _reached = note.head(note.blocks, 400, "Notes/call.md")
     fence = next(b for b in note.blocks if b.locked and "Me: words" in b.text).handle
     assert "My notes." in text and "Me: words" not in text
     assert f'[locked {fence}]' in text and f'read_note("Notes/call.md", "{fence}")' in text

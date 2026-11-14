@@ -220,10 +220,14 @@ class Reader:
         page = _PAGE.fullmatch(section)
         if page:
             block = next((b for b in note.blocks if b.handle == page[1]), None)
-            if block is not None and block.locked:
+            # A recording's part, or a block too long to read whole (one pasted 60k paragraph):
+            # a page at a time, read-only.
+            if block is not None and (block.locked or len(note.render([block])) > READ_MAX_CHARS):
+                if not block.locked:
+                    note.paged.add(block.handle)
                 return self._pages(path, block, int(page[2] or 1))
             if page[2]:
-                raise _Refused(f"{page[1]} is not a locked part of the recording; read it without a page")
+                raise _Refused(f"{page[1]} is short enough to read whole; read it without a page")
         if section:
             target = section
             if not _HANDLE.fullmatch(section):
@@ -244,7 +248,7 @@ class Reader:
         text = note.render(chosen)
         if len(text) > READ_MAX_CHARS:
             # Whole blocks only, so what it shows and what it may then change (`.shown`) agree.
-            text, chosen = note.head(chosen, READ_MAX_CHARS, path)
+            text, chosen, _reached = note.head(chosen, READ_MAX_CHARS, path)
             sections = "" if section else note.sections()
             text = (f"Sections:\n{sections}\n\n" if sections else "") + text + \
                 "[… the rest: read_note(path, section) for one section]"
@@ -253,8 +257,9 @@ class Reader:
 
     @staticmethod
     def _pages(path: str, block: blocks.Block, n: int) -> str:
-        """A recording's locked block (a long transcript), read-only, a page of READ_MAX_CHARS at a
-        time, each cut at a line where one is near. It never joins `.shown`: no tool may change it."""
+        """A recording's locked block (a long transcript), or a block too long to read whole,
+        read-only, a page of READ_MAX_CHARS at a time, each cut at a line where one is near. It never
+        joins `.shown`: no tool may change it."""
         pages, rest = [], block.text
         while len(rest) > READ_MAX_CHARS:
             cut = rest.rfind("\n", 0, READ_MAX_CHARS) + 1
@@ -266,7 +271,8 @@ class Reader:
         h = block.handle
         if not 1 <= n <= len(pages):
             raise _Refused(f"{h} has {len(pages)} page{'s' if len(pages) > 1 else ''}")
-        said = f"[locked {h}, page {n} of {len(pages)}: part of the recording, read-only]\n{pages[n - 1].rstrip()}"
+        what = "part of the recording" if block.locked else "too long to show whole"
+        said = f"[{'locked ' if block.locked else ''}{h}, page {n} of {len(pages)}: {what}, read-only]\n{pages[n - 1].rstrip()}"
         if n < len(pages):
             said += f'\n[Next page: read_note("{path}", "{h}#{n + 1}")]'
         return said

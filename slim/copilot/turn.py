@@ -186,18 +186,23 @@ def open_note_message(path: str, note: blocks.Note) -> str:
     if len(note.text()) <= context.ATTACH_MAX_CHARS:
         rendered = note.render()
     else:
-        rendered, kept = note.head(note.blocks, context.ATTACH_MAX_CHARS, path)
+        rendered, kept, reached = note.head(note.blocks, context.ATTACH_MAX_CHARS, path)
         note.shown = {b.handle for b in kept if b.kind != "blank" and not b.locked}
-        rest = [b for b in note.blocks if b.kind != "blank" and not b.locked and b.handle not in note.shown]
+        rest = [b for b in note.blocks[reached:] if b.kind != "blank" and not b.locked]
         if rest:
             span = f"{rest[0].handle}-{rest[-1].handle}" if len(rest) > 1 else rest[0].handle
             heads = [b for b in rest if b.level]
+            # A block in the rest too long to read whole is named too: a read of its range pages it.
+            big = [b.handle for b in rest if len(note.render([b])) > lookup.READ_MAX_CHARS]
+            paged = (f' {", ".join(big)} {"is" if len(big) == 1 else "are"} too long to show whole: '
+                     f'read_note("{path}", "{big[0]}") reads it a page at a time, read-only.' if big else "")
             rendered = rendered.rstrip("\n") + (
                 f'\n\n[Not shown: from {rest[0].handle} on. read_note("{path}", "s{heads[0].handle[1:]}") shows '
-                f'the first section not shown, with its handles; any s<N>, or a range like "{span}", works too.]'
+                f'the first section not shown, with its handles; any s<N>, or a range like "{span}", works too.'
+                f'{paged}]'
                 if heads else
                 f'\n\n[Not shown: from {rest[0].handle} on. read_note("{path}", "{span}") shows those blocks '
-                "with their handles.]")
+                f"with their handles.{paged}]")
     return f"=== {path} · the open note ===\n{shown}{rendered.rstrip()}"
 
 

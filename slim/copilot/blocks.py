@@ -267,6 +267,9 @@ class Note:
         # A note too long to send whole: the blocks the model has been shown (`head`, and the
         # sections it read). None is all of them. A tool may change only these, and what it writes.
         self.shown: set[str] | None = None
+        # Blocks too long to show whole (one pasted paragraph of 60k characters): read a page at a
+        # time and never shown, so no tool changes them; named so a refusal says why.
+        self.paged: set[str] = set()
         ranges = protected_ranges(text)
         pos = 0
         for block in self.blocks:
@@ -410,6 +413,10 @@ class Note:
         if only is not None and any(b.handle not in only for b in self.blocks[i:j] if b.kind != "blank"):
             allowed = ", ".join(sorted(only, key=lambda h: int(h[1:])))
             raise ToolError(f"{handle} is outside the selected text; change only {allowed}", "selection")
+        too_long = next((b.handle for b in self.blocks[i:j] if b.handle in self.paged), None)
+        if too_long:
+            raise ToolError(f"{too_long} is too long to show whole, so it is read-only here; "
+                            "the owner can edit it in Obsidian", "too_long")
         if self.shown is not None and any(b.handle not in self.shown for b in self.blocks[i:j] if b.kind != "blank"):
             raise ToolError(f"{handle} is in a part of the note you have not read; read_note it first", "unread")
 
@@ -593,25 +600,33 @@ class Note:
     def render(self, blocks: list[Block] | None = None) -> str:
         return "".join(self._label(b) + b.text for b in (self.blocks if blocks is None else blocks))
 
-    def head(self, chosen: list[Block], limit: int, path: str) -> tuple[str, list[Block]]:
-        """The leading blocks of `chosen` rendered whole within `limit` characters, and those
-        blocks: never a block cut. A locked block too long for the room left is named in one line
-        instead, with its handle and how to read it (`lookup`'s pages; no tool may change it), so
-        the owner's own text after a long transcript is still shown; the first other block that
-        does not fit ends the head. `path` is the note's, for that line."""
-        out, kept, size = [], [], 0
+    def head(self, chosen: list[Block], limit: int, path: str) -> tuple[str, list[Block], int]:
+        """The leading blocks of `chosen` rendered whole within `limit` characters, those blocks,
+        and how many of `chosen` it reached: never a block cut. A block too long for the room left
+        that is locked (a transcript), or too long for `limit` on its own (a pasted article with no
+        blank lines), is named in one line instead, with its handle and how to read it (`lookup`'s
+        pages; it is never shown whole, so no tool may change it), and the head goes on, so the
+        owner's own text after it is still shown; the first other block that does not fit ends the
+        head. `path` is the note's, for that line."""
+        out, kept, size, reached = [], [], 0, 0
         for block in chosen:
             piece = self.render([block])
             shown = size + len(piece) <= limit
-            if not shown and block.locked:
+            if not shown and (block.locked or len(piece) > limit):
                 h = block.handle
-                piece = (f"[locked {h}] (part of the recording, {len(block.text):,} characters; "
-                         f'read_note("{path}", "{h}") pages through it, or search(query, folder="{path}") '
-                         "finds passages)\n\n")
+                if block.locked:
+                    piece = (f"[locked {h}] (part of the recording, {len(block.text):,} characters; "
+                             f'read_note("{path}", "{h}") pages through it, or search(query, folder="{path}") '
+                             "finds passages)\n\n")
+                else:
+                    self.paged.add(h)
+                    piece = (f"[{h}: too long to show] ({len(block.text):,} characters; "
+                             f'read_note("{path}", "{h}") reads it a page at a time, read-only)\n\n')
             if size + len(piece) > limit:
                 break
             if shown:
                 kept.append(block)
             out.append(piece)
             size += len(piece)
-        return "".join(out), kept
+            reached += 1
+        return "".join(out), kept, reached
