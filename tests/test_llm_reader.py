@@ -17,7 +17,9 @@ def read(text, *, think=False, size=1, tools=TOOLS):
     reader = llm_render._Reader(think, tools, lambda *part: parts.append(part))
     for i in range(0, len(text), size):
         reader.feed(text[i:i + size])
-    return reader.close(), parts
+    closed = reader.close()
+    assert "".join(p[3] for p in parts if p[0] == "reply") == closed[0]     # the reply streams whole
+    return closed, parts
 
 
 @pytest.mark.parametrize("size", [1, 2, 5, 11, len(INSERT)])
@@ -26,7 +28,7 @@ def test_a_tool_call_is_read_the_same_however_the_reply_is_cut(size):
     assert content == "I'll add it." and thinking == 0
     assert calls == [{"name": "insert", "arguments": {"after": "b1", "markdown": "# T2\n\nA line."}}]
     assert raw == [{"function": {"name": "insert", "arguments": {"after": "b1", "markdown": "# T2\n\nA line."}}}]
-    assert [p for p in parts if p[0] != "text"] == [
+    assert [p for p in parts if p[0] not in ("text", "reply")] == [
         ("call", 0, "insert", None), ("parameter", 0, "after", None), ("value", 0, "after", "b1"),
         ("parameter", 0, "markdown", None), ("value", 0, "markdown", "# T2\n\nA line."), ("end", 0, None, None)]
     assert "".join(p[3] for p in parts if p[:3] == ("text", 0, "markdown")) == "# T2\n\nA line."
@@ -104,7 +106,7 @@ def test_a_call_that_turns_into_text_is_dropped_and_the_next_call_takes_its_inde
                                                                              ("end", 0)]
         assert calls == [{"name": "insert", "arguments": {"after": "b1", "markdown": "# T2\n\nA line."}}]
     (_content, _t, calls, _raw), parts = read("<tool_call>\n<function=insert>\n<parameter=markdown>\npartial")
-    assert calls == [] and parts[-1] == ("drop", 0, None, None)      # cut off: dropped as the reply closes
+    assert calls == [] and ("drop", 0, None, None) in parts      # cut off: dropped as the reply closes
 
 
 def test_line_endings_are_normalized_before_a_values_framing_newlines_go():
@@ -119,3 +121,34 @@ def test_what_follows_a_call_in_the_same_piece_is_trimmed_as_ollama_trims_it():
     call = "<tool_call>\n<function=insert>\n<parameter=markdown>\nx\n</parameter>\n</function>\n</tool_call>"
     assert read(f"A\n{call}\nB\n{call}", size=1000)[0][0] == "AB"
     assert read(f"A\n{call}\nB\n{call}", size=1)[0][0] == "A\nB"     # the token after </tool_call> is its own piece
+
+
+def test_reply_text_streams():
+    parts = []
+    reader = llm_render._Reader(False, TOOLS, lambda *part: parts.append(part))
+    reader.feed("Hel")
+    reader.feed("lo <")
+    assert [p for p in parts if p[0] == "reply"]                 # arrived before the last feed
+    reader.feed("b>")
+    assert "".join(p[3] for p in parts if p[0] == "reply") == "Hello <b>"
+    assert all(p[:3] == ("reply", -1, None) for p in parts if p[0] == "reply")
+    assert reader.close()[0] == "Hello <b>"
+
+
+@pytest.mark.parametrize("size", [1, 3, 7])
+def test_reply_text_never_includes_call(size):
+    (content, _, calls, _), parts = read(
+        "Sure.\n<tool_call>\n<function=insert>\n<parameter=after>\nb1\n</parameter>\n</function>\n</tool_call>",
+        size=size)
+    assert "".join(p[3] for p in parts if p[0] == "reply") == "Sure." == content and calls
+
+
+def test_reply_after_think():
+    _, parts = read("<think>x</think>\n\nAnswer", think=True, size=3)
+    assert "".join(p[3] for p in parts if p[0] == "reply") == "Answer"
+
+
+def test_a_dropped_call_is_reported_as_reply_text_after_the_drop():
+    (content, _, calls, _), parts = read("Hi <tool_call>\nnot a call\n</tool_call> bye", size=4)
+    assert calls == [] and content.startswith("Hi")
+    assert "".join(p[3] for p in parts if p[0] == "reply") == content

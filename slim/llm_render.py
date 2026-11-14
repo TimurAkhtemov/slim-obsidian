@@ -43,7 +43,10 @@ class _Reader:
     hands a value on as it arrives:
     `on_part(kind, index, name, value)` hears ("call", i, tool, None), ("parameter", i, name, None),
     ("text", i, name, chunk), ("value", i, name, value) and ("end", i, None, None) — or, for a call
-    that turns into text, ("drop", i, None, None), and the next call is i again."""
+    that turns into text, ("drop", i, None, None), and the next call is i again.
+    Reply text outside any call is also said, as ("reply", -1, None, chunk): the chunks joined are
+    `content`. Whitespace before a call, and what may begin one, wait; a dropped call's text is
+    said after its "drop"."""
 
     def __init__(self, think: bool, tools: list[dict] | None, on_part=None):
         self.types = {t["function"]["name"]: {k: (v or {}).get("type") for k, v in
@@ -93,11 +96,22 @@ class _Reader:
             self.skip = not self.buf
         at = self.buf.find(_CALL_OPEN)
         if at < 0:
+            # Streamed: all but what may begin a call, and the whitespace before it (a call trims it).
+            self._reply(self.buf[:len(self.buf) - _held(self.buf, _CALL_OPEN)].rstrip(_SPACE))
             return False
-        self.text.append(self.buf[:at].rstrip(_SPACE))
+        self._reply(self.buf[:at].rstrip(_SPACE), spent=False)
         self.buf = self.buf[at + len(_CALL_OPEN):]
         self.call, self.state = {"name": None, "arguments": {}, "written": "", "closed": False}, "call"
         return True
+
+    def _reply(self, chunk: str, spent: bool = True) -> None:
+        """Text outside any call, as `content` carries it: said as ("reply", -1, None, chunk), and
+        taken off the buffer's front when it came from there."""
+        if chunk:
+            self.on_part("reply", -1, None, chunk)
+            self.text.append(chunk)
+            if spent:
+                self.buf = self.buf[len(chunk):]
 
     def _in_call(self) -> bool:
         self.buf = _lf(self.buf)
@@ -110,8 +124,9 @@ class _Reader:
                 self.on_part("call", index, self.call["name"], None)
                 return True
             if end >= 0:                       # a call with no function: text, as the model wrote it
-                self.text.append(_CALL_OPEN + self.call["written"] + self.buf[:end + len(_CALL_CLOSE)])
+                lost = _CALL_OPEN + self.call["written"] + self.buf[:end + len(_CALL_CLOSE)]
                 self.buf, self.call, self.state = self.buf[end + len(_CALL_CLOSE):], None, "text"
+                self._reply(lost, spent=False)
                 return True
             return False
         found, closing = _PARAMETER.search(self.buf), self.buf.find(_FUNCTION_CLOSE)
@@ -128,9 +143,10 @@ class _Reader:
             self.call["closed"] = True
             return True
         if not self.call["closed"]:            # XML Ollama would refuse: text, never a call
-            self.text.append(_CALL_OPEN + self.call["written"] + self.buf[:end + len(_CALL_CLOSE)])
+            lost = _CALL_OPEN + self.call["written"] + self.buf[:end + len(_CALL_CLOSE)]
             self.buf, self.call, self.state = self.buf[end + len(_CALL_CLOSE):], None, "text"
             self.on_part("drop", index, None, None)
+            self._reply(lost, spent=False)
             return True
         self._eat(end + len(_CALL_CLOSE))
         self.calls.append({"name": self.call["name"], "arguments": self.call["arguments"]})
@@ -192,11 +208,11 @@ class _Reader:
         if self.state == "think":
             self.thinking += len(self.buf)
         elif self.state == "text":
-            self.text.append(self.buf)
+            self._reply(self.buf, spent=False)
         else:
-            self.text.append(_CALL_OPEN + self.call["written"] + self.buf)
             if self.call["name"] is not None:
                 self.on_part("drop", len(self.calls), None, None)
+            self._reply(_CALL_OPEN + self.call["written"] + self.buf, spent=False)
         self.buf = ""
         return ("".join(self.text), self.thinking, self.calls,
                 [{"function": {"name": c["name"], "arguments": c["arguments"]}} for c in self.calls])
