@@ -20,6 +20,12 @@ function create(parent, tag, cls, text) {
   return node;
 }
 
+// An Obsidian icon in `el`, where Obsidian is there to draw one.
+function icon(el, name) {
+  if (typeof setIcon === "function") setIcon(el, name);
+  return el;
+}
+
 function iconButton(parent, icon, label, cls = "clickable-icon") {
   const button = create(parent, "button", cls);
   button.setAttribute("aria-label", label);
@@ -40,4 +46,4 @@ function atBottom(element) {
   return element.scrollHeight - element.scrollTop - element.clientHeight <= 40;
 }
 
-module.exports = { clear, create, iconButton, autoGrow, atBottom };
+module.exports = { clear, create, icon, iconButton, autoGrow, atBottom };

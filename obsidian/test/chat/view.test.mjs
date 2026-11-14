@@ -1006,3 +1006,85 @@ test("the sidebar draws pin chips with a remove button and an ✕ on the open-no
   find(root, (n) => n.cls?.includes("slim-copilot-note-off")).onclick({ preventDefault() {}, stopPropagation() {} });
   assert.equal(view.activeThread.openNoteOff, true);
 });
+
+// --- the pickers: the arrows move the highlight and keep it in view ------------------------------
+
+function pickerView() {
+  const { view, root } = renderedView();
+  view.app.vault = {
+    getMarkdownFiles: () => [{ path: "Notes/school/Graphs and shortest paths.md" }, { path: "Notes/x.md" },
+                             { path: "top.md" }],
+    getAllLoadedFiles: () => [{ path: "Notes", children: [] }, { path: "Notes/school", children: [] }],
+  };
+  const sent = [];
+  view.send = () => sent.push(view.draft);
+  const input = () => find(root, (node) => node.tag === "textarea");
+  const key = (k) => input().onkeydown({ key: k, shiftKey: false, metaKey: false, altKey: false, ctrlKey: false,
+                                         preventDefault() {} });
+  const type = (text) => { input().value = text; input().selectionStart = text.length; input().oninput(); };
+  const rows = (cls) => {
+    const found = [];
+    find(root, (node) => { if (node.cls?.split(" ").includes(cls)) found.push(node); return false; });
+    return found;
+  };
+  view.render();
+  return { view, root, sent, key, type, rows };
+}
+
+test("the @ picker: arrows move the highlight into view; Enter and Tab pick; Escape closes; Enter never sends", () => {
+  const { view, sent, key, type, rows } = pickerView();
+  type("about @");
+  const items = () => rows("slim-mention-item");
+  assert.equal(items().length, 5);
+  assert.ok(items()[0].cls.includes("is-selected"));
+  key("ArrowDown");
+  assert.equal(view.mentionIndex, 1);
+  const selected = items().find((row) => row.cls.includes("is-selected"));
+  assert.equal(selected, items()[1]);
+  assert.deepEqual(selected.scrolledIntoView, [{ block: "nearest" }]);
+  key("ArrowUp");
+  assert.deepEqual(items()[0].scrolledIntoView, [{ block: "nearest" }]);
+  key("Enter");                                                   // picks, never sends
+  assert.deepEqual(sent, []);
+  assert.deepEqual(view.activeThread.pins, [{ kind: "folder", path: "Notes" }]);
+  type("about @");
+  key("ArrowDown");
+  key("Tab");
+  assert.deepEqual(view.activeThread.pins.map((pin) => pin.path), ["Notes", "Notes/school"]);
+  type("about @x");
+  key("Escape");
+  assert.equal(find(view.contentEl, (node) => node.cls === "slim-mention-menu").hidden, true);
+  assert.deepEqual(sent, []);
+  key("Enter");                                                   // closed: Enter sends again
+  assert.deepEqual(sent, ["about @x"]);
+});
+
+test("an @ row is a title or a folder name on the left and its parent folder faint on the right", () => {
+  const { type, rows } = pickerView();
+  type("@");
+  const [notes, school, top, x, graphs] = rows("slim-mention-item");      // folders, then notes, shortest first
+  const part = (row, cls) => find(row, (node) => node.cls?.split(" ").includes(cls));
+  assert.ok(part(notes, "slim-mention-icon"));                    // a folder has the folder icon
+  assert.equal(part(notes, "slim-mention-name").textContent, "Notes");
+  assert.equal(part(notes, "slim-mention-path"), null);           // at the root: no parent
+  assert.equal(part(school, "slim-mention-name").textContent, "school");
+  assert.equal(part(school, "slim-mention-path").textContent, "Notes");
+  assert.equal(part(top, "slim-mention-name").textContent, "top");
+  assert.equal(part(top, "slim-mention-icon"), null);
+  assert.equal(part(x, "slim-mention-name").textContent, "x");
+  assert.equal(part(graphs, "slim-mention-name").textContent, "Graphs and shortest paths");
+  assert.equal(part(graphs, "slim-mention-path").textContent, "Notes/school");
+  assert.equal(graphs.attrs.title, "Notes/school/Graphs and shortest paths.md");
+  assert.equal(rows("slim-slash-name").length, 0);                // not the slash menu's monospace
+});
+
+test("the / menu: arrows keep the highlighted skill in view", () => {
+  const { view, key, type, rows } = pickerView();
+  view.skills = [{ name: "actions", description: "a" }, { name: "quiz", description: "q" }];
+  type("/");
+  view.renderSlash();
+  key("ArrowDown");
+  const selected = rows("slim-slash-item").find((row) => row.cls.includes("is-selected"));
+  assert.equal(view.slashIndex, 1);
+  assert.deepEqual(selected.scrolledIntoView, [{ block: "nearest" }]);
+});

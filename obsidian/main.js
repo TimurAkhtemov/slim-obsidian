@@ -337,11 +337,15 @@ var require_dom = __commonJS({
       parent.appendChild(node);
       return node;
     }
-    function iconButton(parent, icon, label, cls = "clickable-icon") {
+    function icon(el, name) {
+      if (typeof setIcon === "function") setIcon(el, name);
+      return el;
+    }
+    function iconButton(parent, icon2, label, cls = "clickable-icon") {
       const button = create(parent, "button", cls);
       button.setAttribute("aria-label", label);
       button.setAttribute("title", label);
-      if (typeof setIcon === "function") setIcon(button, icon);
+      if (typeof setIcon === "function") setIcon(button, icon2);
       else button.textContent = label;
       return button;
     }
@@ -353,7 +357,7 @@ var require_dom = __commonJS({
     function atBottom(element) {
       return element.scrollHeight - element.scrollTop - element.clientHeight <= 40;
     }
-    module2.exports = { clear, create, iconButton, autoGrow, atBottom };
+    module2.exports = { clear, create, icon, iconButton, autoGrow, atBottom };
   }
 });
 
@@ -377,12 +381,13 @@ var require_render = __commonJS({
       stageLine,
       SUGGESTED_PROMPTS
     } = require_text();
-    var { clear, create, iconButton, autoGrow, atBottom } = require_dom();
+    var { clear, create, icon, iconButton, autoGrow, atBottom } = require_dom();
     module2.exports = {
       renderSlash() {
         const menu = this.el?.slash;
         if (!menu) return;
         clear(menu);
+        this.el.slashSelected = null;
         const hits = this.slashDismissed ? [] : matchSkills(this.skills, slashQuery(this.draft));
         menu.hidden = !hits.length;
         if (!hits.length) {
@@ -394,6 +399,7 @@ var require_render = __commonJS({
         hits.forEach((skill, i) => {
           const cls = `slim-slash-item${skill.error ? " is-broken" : ""}${i === idx ? " is-selected" : ""}`;
           const item = create(menu, "button", cls);
+          if (i === idx) this.el.slashSelected = item;
           create(item, "span", "slim-slash-name", `/${skill.name}`);
           create(item, "small", "slim-slash-about", skill.error ? `Broken: ${skill.error}` : skill.description || "");
           item.onmousedown = (event) => event.preventDefault();
@@ -402,11 +408,13 @@ var require_render = __commonJS({
           };
         });
       },
-      // The `@` picker, built like the slash menu: notes and folders, the chosen row highlighted.
+      // The `@` picker: one line per note or folder, its title (a folder's name, with the folder icon)
+      // on the left and its parent folder faint on the right, the chosen row highlighted.
       renderMention() {
         const menu = this.el?.mention;
         if (!menu) return;
         clear(menu);
+        this.el.mentionSelected = null;
         const hits = this.mentionDismissed ? [] : this.mentionHits();
         menu.hidden = !hits.length;
         if (!hits.length) {
@@ -416,9 +424,14 @@ var require_render = __commonJS({
         const idx = Math.min(Math.max(0, this.mentionIndex || 0), hits.length - 1);
         this.mentionIndex = idx;
         hits.forEach((hit, i) => {
-          const item = create(menu, "button", `slim-slash-item${i === idx ? " is-selected" : ""}`);
-          create(item, "span", "slim-slash-name", hit.kind === "folder" ? `${hit.path}/` : pathStem(hit.path));
-          create(item, "small", "slim-slash-about", hit.kind === "folder" ? "Folder" : hit.path);
+          const item = create(menu, "button", `slim-mention-item${i === idx ? " is-selected" : ""}`);
+          if (i === idx) this.el.mentionSelected = item;
+          item.setAttribute("title", hit.path);
+          const parts = hit.path.split("/");
+          const name = create(item, "span", "slim-mention-label");
+          if (hit.kind === "folder") icon(create(name, "span", "slim-mention-icon"), "folder");
+          create(name, "span", "slim-mention-name", hit.kind === "folder" ? parts.at(-1) : pathStem(hit.path));
+          if (parts.length > 1) create(item, "span", "slim-mention-path", parts.slice(0, -1).join("/"));
           item.onmousedown = (event) => event.preventDefault();
           item.onclick = () => this.pin(hit);
         });
@@ -649,7 +662,7 @@ var require_render = __commonJS({
         }
         const slash = create(composer, "div", "slim-slash-menu");
         this.el.slash = slash;
-        this.el.mention = create(composer, "div", "slim-slash-menu slim-mention-menu");
+        this.el.mention = create(composer, "div", "slim-mention-menu");
         const modes = create(composer, "select", "slim-mode-select");
         for (const value of ["quick", "deep"]) {
           const option = create(modes, "option", "", value[0].toUpperCase() + value.slice(1));
@@ -696,6 +709,7 @@ var require_render = __commonJS({
               event.preventDefault();
               this.mentionIndex = ((this.mentionIndex || 0) + (event.key === "ArrowDown" ? 1 : -1) + picks.length) % picks.length;
               this.renderMention();
+              this.el.mentionSelected?.scrollIntoView?.({ block: "nearest" });
               return;
             }
             if (event.key === "Escape") {
@@ -716,6 +730,7 @@ var require_render = __commonJS({
             const delta = event.key === "ArrowDown" ? 1 : -1;
             this.slashIndex = ((this.slashIndex || 0) + delta + hits.length) % hits.length;
             this.renderSlash();
+            this.el.slashSelected?.scrollIntoView?.({ block: "nearest" });
             return;
           }
           if (hits.length && event.key === "Escape") {

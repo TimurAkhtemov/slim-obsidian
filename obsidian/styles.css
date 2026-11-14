@@ -657,6 +657,26 @@
 .slim-slash-name { font-family: var(--font-monospace); font-size: var(--font-ui-small); }
 .slim-slash-about { color: var(--text-muted); font-size: var(--font-ui-smaller); white-space: normal; }
 .slim-slash-item.is-broken .slim-slash-about { color: var(--text-error); }
+/* The @ picker: one line per note or folder, the UI font, a title left and its folder faint right,
+   each cut with an ellipsis; about eight rows show, the rest scroll, never sideways. */
+.slim-mention-menu {
+  position: absolute; left: 0; right: 0; bottom: 100%; z-index: 10; margin-bottom: 4px;
+  display: flex; flex-direction: column; max-height: calc(8 * 28px + 8px); overflow-y: auto; overflow-x: hidden;
+  padding: 4px; background: var(--background-primary); border: 1px solid var(--background-modifier-border);
+  border-radius: 10px; box-shadow: var(--shadow-s);
+}
+.slim-mention-menu[hidden] { display: none; }
+.slim-mention-item {
+  flex: none; display: flex; align-items: center; gap: 8px; height: 28px; min-width: 0; width: 100%;
+  padding: 0 8px; text-align: left; background: none; box-shadow: none; border-radius: 6px;
+  font-family: var(--font-interface); font-size: var(--font-ui-small);
+}
+.slim-mention-item:hover, .slim-mention-item.is-selected { background: var(--background-modifier-hover); }
+.slim-mention-label { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 5px; }
+.slim-mention-icon { flex: none; display: inline-flex; color: var(--text-muted); }
+.slim-mention-icon svg { width: 14px; height: 14px; }
+.slim-mention-name, .slim-mention-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slim-mention-path { flex: 0 1 auto; max-width: 45%; color: var(--text-faint); font-size: var(--font-ui-smaller); }
 .slim-inputs { display: block; margin-top: 6px; color: var(--text-faint); font-size: var(--font-ui-smaller); }
 /* An edit turn: its intro, one muted line per step as it happens, then what came of it. */
 .slim-edit { display: grid; gap: 7px; }

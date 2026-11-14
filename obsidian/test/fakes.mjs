@@ -78,6 +78,7 @@ export function fakeEl(tag = "div", options = {}) {
     setAttribute(name, value) { el.attrs[name] = value; },
     addEventListener(type, fn) { (el.listeners[type] ||= []).push(fn); },
     focus() { el.focused = true; },
+    scrollIntoView(options) { (el.scrolledIntoView ||= []).push(options); },
     select() {},
     remove() { if (el.parent) el.parent.children = el.parent.children.filter((child) => child !== el); },
   };
