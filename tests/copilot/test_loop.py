@@ -76,7 +76,7 @@ def test_question_about_open_note_needs_no_tools(ask, monkeypatch):
     assert got["answer"] == "It introduces A." and got["edit_run"] is None
     assert got["deltas"] == ["It introduces A."]                # streamed as it decoded, said once
     assert got["looked_up"] == [] and got["citations"] == [] and len(seen) == 1
-    assert seen[0]["opts"]["temperature"] == llm.REPLY_TEMPERATURE and not seen.gate
+    assert seen[0]["opts"]["temperature"] == copilot_turn.LOOP_TEMPERATURE == 1.0 and not seen.gate
 
 
 def test_lookup_then_answer(ask, con, vault, monkeypatch):
@@ -105,7 +105,7 @@ def test_lookup_then_edit(ask, con, vault, monkeypatch):
     got = ask("use the intro from b.md")
     run = got["edit_run"]
     assert len(run["changes"]) == 1 and run["path"] == OPEN
-    assert seen[1]["opts"]["temperature"] == llm.REPLY_TEMPERATURE      # no edit had happened yet
+    assert seen[1]["opts"]["temperature"] == copilot_turn.LOOP_TEMPERATURE   # no edit had happened yet
     final = edits.apply_splices(NOTE, run["changes"][0]["splices"])
     assert "The better intro." in final and (Path(vault) / OPEN).read_text() == NOTE
 
@@ -506,6 +506,16 @@ def test_a_plan_step_stays_as_measured(ask, monkeypatch):
     assert first["think"] is True
     assert step["think"] is False and step["temperature"] == edit_run.STEP_TEMPERATURE == 0.0
     assert step["num_predict"] == edit_run.STEP_NUM_PREDICT
+    assert not {"top_p", "top_k", "presence_penalty"} & set(step)        # a step's decoding as measured
+
+
+def test_loop_calls_sample_as_qwen_recommends_for_thinking(ask, con, vault, monkeypatch):
+    put(con, vault, "Notes/school/cs-201/zebra.md", "# Zebras\n\nZebras have stripes.\n")
+    seen = scripted(monkeypatch, ("", [("search", {"query": "zebras"})]), ("Stripes.", []))
+    ask("zebras?")
+    for call in seen:
+        opts = call["opts"]
+        assert (opts["temperature"], opts["top_p"], opts["top_k"], opts["presence_penalty"]) == (1.0, 0.95, 20, 1.5)
 
 
 def test_a_chat_skill_thinks_as_before(ask, monkeypatch):
@@ -513,6 +523,7 @@ def test_a_chat_skill_thinks_as_before(ask, monkeypatch):
     ask("/quiz")
     assert seen[0]["opts"]["think"] is False
     assert seen[0]["opts"]["num_predict"] == copilot_turn.QUICK_NUM_PREDICT
+    assert seen[0]["opts"]["temperature"] == llm.REPLY_TEMPERATURE and "top_p" not in seen[0]["opts"]
 
 
 def test_each_thinking_call_has_its_own_allowance(ask, monkeypatch):

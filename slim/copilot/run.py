@@ -50,12 +50,13 @@ class _Reply:
 
 
 def _call(messages: list[dict], offered: list[str], *, think: bool, temperature: float,
-          num_predict: int, on_part=None, should_stop=None) -> _Reply:
+          num_predict: int, on_part=None, should_stop=None, sampling: dict | None = None) -> _Reply:
     """One model call with the `offered` tools. It streams: `on_part` hears its tool calls as they
-    decode (`llm_render._Reader`). A call's text is never JSON: `\\frac` and a real tab arrive as written."""
+    decode (`llm_render._Reader`). A call's text is never JSON: `\\frac` and a real tab arrive as written.
+    `sampling` is `llm.chat_tools`' top_p, top_k and presence_penalty, when given."""
     msg, stats = llm.chat_tools(messages, edits_mod.ollama_tools(offered), think=think,
                                 temperature=temperature, num_predict=num_predict,
-                                on_part=on_part, should_stop=should_stop)
+                                on_part=on_part, should_stop=should_stop, **(sampling or {}))
     calls = [{"name": c["name"], "arguments": c.get("arguments") or {}} for c in msg["tool_calls"]]
     # Ollama's own parser can leave a tool call in the text: unreadable, and never an answer.
     malformed = ["a tool call came back as text"] if "<tool_call>" in msg["content"] else []
@@ -366,7 +367,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
           should_stop, on_stage=lambda _name: None, lookups: lookup_mod.Reader | None = None,
           on_reply=None, no_edit: str | None = None, looked_up: list | None = None,
           on_reset=None, fits=None, too_long: str = NOTE_TOO_LONG, think_budget: int = THINK_BUDGET,
-          think_stage: str = "Thinking deeply") -> dict:
+          think_stage: str = "Thinking deeply", sampling: dict | None = None) -> dict:
     """One editing turn. Every call offers the same `tools`, in the same order: they sit at the
     top of the prompt, and a different list re-reads the whole note. `step_tools` are those that
     change something. The first call answers in text, makes a small change at once, or plans a
@@ -388,7 +389,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
     result would not is answered NO_ROOM instead, and what it read is neither a source nor editable.
     `too_long` is the refusal when the first answer's prompt lost its start (`ctx_saturated`).
     Every call that thinks adds `think_budget` to the run's output budget, and names its stage
-    `think_stage`.
+    `think_stage`. Every call but a step's samples with `sampling` too.
 
     With `no_edit` (THE LOOP with no note it may change) the plan and edit tools are still offered,
     so the prompt stays the same, but every call to them is refused with that reason, counted as
@@ -454,7 +455,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
         out["refusals"].append({"step": step, "tool": name, "code": "no_note"})
         return f"refused: {no_edit}"
 
-    def attempt(offered, think, temperature, num_predict):
+    def attempt(offered, think, temperature, num_predict, sample):
         if not out["stopped"] and should_stop():
             out["stopped"] = "stopped"
         if out["stopped"]:
@@ -466,22 +467,23 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
         if drafts:
             drafts.next_reply()
         reply = _call(messages, offered, think=think, temperature=temperature, num_predict=num_predict,
-                      on_part=heard if on_reply else drafts.part if drafts else None, should_stop=should_stop)
+                      on_part=heard if on_reply else drafts.part if drafts else None, should_stop=should_stop,
+                      sampling=sample)
         for index, call in enumerate(reply.calls):
             if drafts and drafts.of(index):
                 call["draft"] = drafts.of(index)
         return reply
 
-    def ask(offered, think, temperature, num_predict) -> _Reply:
+    def ask(offered, think, temperature, num_predict, sample=sampling) -> _Reply:
         nonlocal spent, budget
         budget += think_budget if think else 0
         try:
             try:
-                reply = attempt(offered, think, temperature, num_predict)
+                reply = attempt(offered, think, temperature, num_predict, sample)
             except llm.LLMError:        # a failed call (once Ollama's parser, now the transport): once more
                 out["retries"] += 1
                 try:
-                    reply = attempt(offered, think, temperature, num_predict)
+                    reply = attempt(offered, think, temperature, num_predict, sample)
                 except llm.LLMError as exc:
                     failed.append(exc)
                     out["stopped"] = f"error: {(str(exc) or type(exc).__name__).splitlines()[0][:200]}"
@@ -624,7 +626,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
             sections = note.sections() if note is not None else ""
             now = f"\n\nSections now:\n{sections}" if sections else ""
             messages.extend(_results(results, instruction + now))
-            reply = ask(tools, False, STEP_TEMPERATURE, STEP_NUM_PREDICT)
+            reply = ask(tools, False, STEP_TEMPERATURE, STEP_NUM_PREDICT, None)    # as measured
             return reply, apply_calls(reply.calls, number)
 
         def land(name: str, args, number: int) -> tuple[dict, str]:

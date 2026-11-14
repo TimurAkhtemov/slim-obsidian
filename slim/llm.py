@@ -229,7 +229,8 @@ def chat(messages: list[dict], schema: dict | None = None, model: str | None = N
 
 def chat_tools(messages: list[dict], tools: list[dict] | None = None, *, think: bool,
                temperature: float, num_predict: int, fmt: dict | None = None,
-               timeout: int = 600, on_part=None, should_stop=None) -> tuple[dict, dict]:
+               timeout: int = 600, on_part=None, should_stop=None, top_p: float | None = None,
+               top_k: int | None = None, presence_penalty: float | None = None) -> tuple[dict, dict]:
     """One bounded turn that may call tools. Returns ({content, tool_calls, raw_tool_calls},
     stats): tool_calls as [{name, arguments}], raw_tool_calls as the assistant message that goes
     back into the conversation carries them. The resident's one window, an explicit `think` and a
@@ -238,12 +239,17 @@ def chat_tools(messages: list[dict], tools: list[dict] | None = None, *, think: 
 
     With tools the call streams, raw (`_tools_raw`): `on_part` hears each tool call's parameters
     as they decode, and `should_stop()`, asked about once a second, abandons it (Stopped).
-    Without them (the intent gate) it is one chat call."""
+    Without them (the intent gate) it is one chat call.
+
+    `top_p`, `top_k` and `presence_penalty` (llama.cpp's names) go to the server only when given:
+    THE LOOP samples as Qwen recommends for thinking, as the Pi coding agent does."""
+    sampling = {name: value for name, value in
+                (("top_p", top_p), ("top_k", top_k), ("presence_penalty", presence_penalty)) if value is not None}
     if tools:
         return _tools_raw(messages, tools, think=think, temperature=temperature, num_predict=num_predict,
-                          fmt=fmt, timeout=timeout, on_part=on_part, should_stop=should_stop)
-    body = _body(messages, model=None, think=think, temperature=temperature,
-                 num_predict=num_predict, schema=fmt, stream=False)
+                          fmt=fmt, timeout=timeout, on_part=on_part, should_stop=should_stop, sampling=sampling)
+    body = {**_body(messages, model=None, think=think, temperature=temperature,
+                    num_predict=num_predict, schema=fmt, stream=False), **sampling}
     resp = _post(CHAT_URL, body, MODEL, timeout)
     choice = (resp.get("choices") or [{}])[0]
     msg = choice.get("message") or {}
@@ -265,14 +271,14 @@ def chat_tools(messages: list[dict], tools: list[dict] | None = None, *, think: 
 # call over the same history share their cached prefix.
 
 def _tools_raw(messages: list[dict], tools: list[dict], *, think: bool, temperature: float, num_predict: int,
-               fmt: dict | None, timeout: int, on_part, should_stop) -> tuple[dict, dict]:
+               fmt: dict | None, timeout: int, on_part, should_stop, sampling: dict | None = None) -> tuple[dict, dict]:
     rendered = _post(TEMPLATE_URL, {"messages": _wire(messages), "tools": tools,
                                     "chat_template_kwargs": {"enable_thinking": think}}, MODEL, timeout)
     images = [image for m in messages for image in m.get("images") or ()]
     # Each image is a media marker in the rendered prompt, in the order the images are sent.
     prompt = {"prompt_string": rendered["prompt"], "multimodal_data": images} if images else rendered["prompt"]
     body = {"prompt": prompt, "stream": True, "n_predict": num_predict, "temperature": temperature,
-            "cache_prompt": True}
+            "cache_prompt": True, **(sampling or {})}
     if fmt is not None:
         body["json_schema"] = fmt
     reader = llm_render._Reader(think, tools, on_part)

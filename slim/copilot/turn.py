@@ -75,6 +75,10 @@ LOOP_RIDER = ("You can edit the open note shown with their message."
               + EDIT_RIDER.removeprefix("You can edit the open note shown below.")
               + f"\n\n{CREATING}\n{CANNOT_EDIT}")
 LOOP_TOOLS = [*lookup.NAMES, "plan", *edit_run.STEP_TOOLS, "create_note"]
+# Qwen's recommended sampling with thinking on, the Pi coding agent's on the same server: every loop
+# call but a step's, which stays at STEP_TEMPERATURE with none of these (measured, 2026-10-12).
+LOOP_TEMPERATURE = 1.0
+LOOP_SAMPLING = {"top_p": 0.95, "top_k": 20, "presence_penalty": 1.5}
 
 # THE LOOP'S PROMPT is shaped like the Pi coding agent's (2026-11-14, the owner's call): who it is
 # and where, one line per tool, short rules, and the edit rider. Pi, on the same model and server,
@@ -621,7 +625,8 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
         out = edit_run._turn(list(messages), think=think, tools=tools, step_tools=step_tools,
                              note=note, before_text=text or "", create=create, think_budget=think_budget,
                              think_stage="Thinking deeply" if mode == "deep" else "Thinking",
-                             temperature=edit_run.FIRST_TEMPERATURE, first_predict=room,
+                             temperature=edit_run.FIRST_TEMPERATURE if skill else LOOP_TEMPERATURE,
+                             sampling=None if skill else LOOP_SAMPLING, first_predict=room,
                              on_edit=on_edit or (lambda _event, _payload: None), should_stop=should_stop,
                              on_stage=stage, lookups=reader, on_reply=on_delta, no_edit=no_edit,
                              # filled as the turn runs: traced even when it fails or is refused

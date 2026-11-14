@@ -109,6 +109,7 @@ def test_a_call_with_tools_is_the_servers_prompt_raw_and_streamed(monkeypatch):
     assert url == llm.COMPLETION_URL and body["stream"] is True and body["cache_prompt"] is True
     assert body["prompt"] == {"prompt_string": PROMPT, "multimodal_data": [PNG, PNG, PNG]}
     assert body["n_predict"] == 2048 and body["temperature"] == 0.0 and "json_schema" not in body
+    assert not {"top_p", "top_k", "presence_penalty"} & set(body)        # only when given
     assert msg["content"] == "I'll add it." and msg["tool_calls"][0]["arguments"]["markdown"] == "# T2\n\nA line."
     assert msg["raw_tool_calls"] == [{"function": msg["tool_calls"][0]}]
     assert stats["output_tokens"] == 12 and stats["prompt_tokens"] == 40 and stats["duration_s"] == 2.0
@@ -123,6 +124,15 @@ def test_a_call_without_images_sends_the_prompt_as_text(monkeypatch):
     (_url, template), (_url2, body) = sent
     assert template["chat_template_kwargs"] == {"enable_thinking": True}
     assert body["prompt"] == PROMPT
+
+
+def test_sampling_fields_go_in_the_completion_body_when_given(monkeypatch):
+    sent = _stream(monkeypatch, _chunks(INSERT))
+    llm.chat_tools(EDIT[:3], TOOLS, think=True, temperature=1.0, num_predict=64,
+                   top_p=0.95, top_k=20, presence_penalty=1.5)
+    (_url, template), (_url2, body) = sent
+    assert (body["temperature"], body["top_p"], body["top_k"], body["presence_penalty"]) == (1.0, 0.95, 20, 1.5)
+    assert not {"top_p", "top_k", "presence_penalty"} & set(template)
 
 
 def test_a_call_that_hits_its_cap_says_so(monkeypatch):
