@@ -423,22 +423,22 @@ const toolLines = (root) => {
 test("each lookup shows as a muted line above the streaming answer as it arrives", async () => {
   const { view, root } = renderedView({
     streamCopilot: async (_body, handlers) => {
-      handlers.tool({ name: "search", label: 'Searched the vault for "comp"', refused: false });
-      assert.deepEqual(toolLines(root), [[false, 'Searched the vault for "comp"']]);
-      handlers.delta({ text: "Your offer" });
+      handlers.tool({ name: "search", label: 'Searched the vault for "pollen"', refused: false });
+      assert.deepEqual(toolLines(root), [[false, 'Searched the vault for "pollen"']]);
+      handlers.delta({ text: "Bees carry" });
       handlers.tool({ name: "read_note", label: "Read nope — refused", refused: true });
-      assert.deepEqual(toolLines(root), [[false, 'Searched the vault for "comp"'], [true, "Read nope — refused"]]);
+      assert.deepEqual(toolLines(root), [[false, 'Searched the vault for "pollen"'], [true, "Read nope — refused"]]);
       const live = find(root, (node) => node.cls?.includes("is-streaming"));
       assert.ok(live.children[0].cls.includes("slim-tools"));          // above the answer
-      handlers.turn({ answer: "Your offer is fixed.", mode: "quick", citations: [],
-                      tools: [{ name: "search", label: 'Searched the vault for "comp"', refused: false },
+      handlers.turn({ answer: "Bees carry pollen home.", mode: "quick", citations: [],
+                      tools: [{ name: "search", label: 'Searched the vault for "pollen"', refused: false },
                               { name: "read_note", label: "Read nope — refused", refused: true }] });
     },
   });
   view.render();
-  await view.send("what is the total comp?");
+  await view.send("what do bees carry?");
   assert.deepEqual(view.liveTools, []);
-  assert.deepEqual(toolLines(root), [[false, 'Searched the vault for "comp"'], [true, "Read nope — refused"]]);
+  assert.deepEqual(toolLines(root), [[false, 'Searched the vault for "pollen"'], [true, "Read nope — refused"]]);
 });
 
 test("a saved turn shows its lookups again on reload, folded into one row; a turn with none shows no row", () => {
@@ -600,10 +600,10 @@ test("sending scrolls to the bottom and keeps it there as lookups, text and edit
       handlers.tool({ name: "search", label: "Searched the vault", refused: false });
       seen.push(transcript.scrollTop);
       transcript.scrollHeight = 1500;
-      handlers.delta({ text: "Year-one comp" });
+      handlers.delta({ text: "Hives hold" });
       seen.push(transcript.scrollTop);
       seen.push(find(root, (node) => node.cls?.includes("slim-jump")).hidden);
-      handlers.turn({ answer: "Year-one comp.", citations: [] });
+      handlers.turn({ answer: "Hives hold honey.", citations: [] });
     },
   });
   view.turns = [{ role: "you", text: "Q" }, { role: "slim", text: "A", turn: { citations: [] } }];

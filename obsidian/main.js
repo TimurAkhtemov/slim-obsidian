@@ -1862,7 +1862,7 @@ var require_view = __commonJS({
         return VIEW_TYPE_COPILOT;
       }
       getDisplayText() {
-        return "SLIM Copilot";
+        return "SLIM chat";
       }
       getIcon() {
         return "message-square-text";
@@ -6945,12 +6945,12 @@ var require_plugin = __commonJS({
         this.registerView(VIEW_TYPE_COPILOT, (leaf) => new CopilotView(leaf, this));
         this.addRibbonIcon(
           "message-square-text",
-          "SLIM: open-note copilot",
+          "SLIM: chat",
           () => this.activateCopilot()
         );
         this.addCommand({
           id: "open-note-copilot",
-          name: "Open note copilot",
+          name: "Open chat",
           callback: () => this.activateCopilot()
         });
         if (this.app.workspace && typeof this.app.workspace.on === "function") {

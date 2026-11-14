@@ -218,7 +218,7 @@ class CopilotView extends ItemView {
   }
 
   getViewType() { return VIEW_TYPE_COPILOT; }
-  getDisplayText() { return "SLIM Copilot"; }
+  getDisplayText() { return "SLIM chat"; }
   getIcon() { return "message-square-text"; }
 
   async onOpen() {

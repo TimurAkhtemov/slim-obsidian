@@ -56,9 +56,9 @@ class SlimRecorderPlugin extends Plugin {
     this.addCommand({ id: "start-recording", name: "Start recording",
                       callback: activate });
     this.registerView(VIEW_TYPE_COPILOT, (leaf) => new CopilotView(leaf, this));
-    this.addRibbonIcon("message-square-text", "SLIM: open-note copilot",
+    this.addRibbonIcon("message-square-text", "SLIM: chat",
                        () => this.activateCopilot());
-    this.addCommand({ id: "open-note-copilot", name: "Open note copilot",
+    this.addCommand({ id: "open-note-copilot", name: "Open chat",
                       callback: () => this.activateCopilot() });
     if (this.app.workspace && typeof this.app.workspace.on === "function") {
       this.registerEvent(this.app.workspace.on("active-leaf-change", () => {
