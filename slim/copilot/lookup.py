@@ -21,7 +21,8 @@ LIST_MAX = 200
 
 _TOP_CF = {name.casefold() for name in EXCLUDED_TOP}
 _DIRS_CF = {name.casefold() for name in EXCLUDED_DIRS}
-_HANDLE = re.compile(r"[bs]\d+")
+_HANDLE = re.compile(r"[bs]\d+(?:\s*[-–]\s*[bs]\d+)?")     # a block, a section, or a range
+_PAGE = re.compile(r"(b\d+)(?:#(\d+))?")                    # a locked block, or one page of it
 
 TOOLS: dict[str, dict] = {
     "search": {
@@ -29,7 +30,8 @@ TOOLS: dict[str, dict] = {
                        "with their note paths; read_note one to see more.",
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string", "description": "what to look for, in words"},
-            "folder": {"type": "string", "description": "optional: only notes under this folder"}},
+            "folder": {"type": "string",
+                       "description": "optional: only notes under this folder, or only this one note"}},
             "required": ["query"]},
         "apply": None},
     "read_note": {
@@ -105,10 +107,13 @@ class Reader:
     # --- search ---------------------------------------------------------------------------
 
     def _folder(self, raw) -> PurePosixPath:
+        """Where a search looks: a folder, or one note (a note's path is its own prefix)."""
         path = _clean(raw)
-        pure = _check(path)
-        if path and not (edits._exact(self.vault, pure.as_posix()) and (self.vault / pure).is_dir()):
-            raise _Refused(f"there is no folder '{path}'; list_folder shows what exists")
+        pure = _check(path, open_path=self.open_note[0] if self.open_note else None)
+        target = self.vault / pure
+        found = target.is_dir() or (pure.suffix.lower() == ".md" and target.is_file())
+        if path and not (edits._exact(self.vault, pure.as_posix()) and found):
+            raise _Refused(f"there is no folder or note '{path}'; list_folder shows what exists")
         return pure
 
     def _search(self, args: dict) -> str:
@@ -177,7 +182,14 @@ class Reader:
 
     def _open(self, section: str) -> str:
         """The open note as the editor holds it, with handles; what it renders is `.shown`."""
-        note = self.open_note[1]
+        path, note = self.open_note
+        page = _PAGE.fullmatch(section)
+        if page:
+            block = next((b for b in note.blocks if b.handle == page[1]), None)
+            if block is not None and block.locked:
+                return self._pages(path, block, int(page[2] or 1))
+            if page[2]:
+                raise _Refused(f"{page[1]} is not a locked part of the recording; read it without a page")
         if section:
             target = section
             if not _HANDLE.fullmatch(section):
@@ -198,12 +210,32 @@ class Reader:
         text = note.render(chosen)
         if len(text) > READ_MAX_CHARS:
             # Whole blocks only, so what it shows and what it may then change (`.shown`) agree.
-            text, chosen = note.head(chosen, READ_MAX_CHARS)
+            text, chosen = note.head(chosen, READ_MAX_CHARS, path)
             sections = "" if section else note.sections()
             text = (f"Sections:\n{sections}\n\n" if sections else "") + text + \
                 "[… the rest: read_note(path, section) for one section]"
         self.shown |= {b.handle for b in chosen if b.kind != "blank" and not b.locked}
         return text
+
+    @staticmethod
+    def _pages(path: str, block: blocks.Block, n: int) -> str:
+        """A recording's locked block (a long transcript), read-only, a page of READ_MAX_CHARS at a
+        time, each cut at a line where one is near. It never joins `.shown`: no tool may change it."""
+        pages, rest = [], block.text
+        while len(rest) > READ_MAX_CHARS:
+            cut = rest.rfind("\n", 0, READ_MAX_CHARS) + 1
+            if cut <= READ_MAX_CHARS // 2:
+                cut = READ_MAX_CHARS
+            pages.append(rest[:cut])
+            rest = rest[cut:]
+        pages.append(rest)
+        h = block.handle
+        if not 1 <= n <= len(pages):
+            raise _Refused(f"{h} has {len(pages)} page{'s' if len(pages) > 1 else ''}")
+        said = f"[locked {h}, page {n} of {len(pages)}: part of the recording, read-only]\n{pages[n - 1].rstrip()}"
+        if n < len(pages):
+            said += f'\n[Next page: read_note("{path}", "{h}#{n + 1}")]'
+        return said
 
     # --- list_folder ----------------------------------------------------------------------
 

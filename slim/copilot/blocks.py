@@ -593,17 +593,21 @@ class Note:
     def render(self, blocks: list[Block] | None = None) -> str:
         return "".join(self._label(b) + b.text for b in (self.blocks if blocks is None else blocks))
 
-    def head(self, chosen: list[Block], limit: int) -> tuple[str, list[Block]]:
+    def head(self, chosen: list[Block], limit: int, path: str) -> tuple[str, list[Block]]:
         """The leading blocks of `chosen` rendered whole within `limit` characters, and those
         blocks: never a block cut. A locked block too long for the room left is named in one line
-        instead (no tool may change it), so the owner's own text after a long transcript is still
-        shown; the first other block that does not fit ends the head."""
+        instead, with its handle and how to read it (`lookup`'s pages; no tool may change it), so
+        the owner's own text after a long transcript is still shown; the first other block that
+        does not fit ends the head. `path` is the note's, for that line."""
         out, kept, size = [], [], 0
         for block in chosen:
             piece = self.render([block])
             shown = size + len(piece) <= limit
             if not shown and block.locked:
-                piece = f"[locked] (part of the recording, {len(block.text):,} characters; not shown)\n\n"
+                h = block.handle
+                piece = (f"[locked {h}] (part of the recording, {len(block.text):,} characters; "
+                         f'read_note("{path}", "{h}") pages through it, or search(query, folder="{path}") '
+                         "finds passages)\n\n")
             if size + len(piece) > limit:
                 break
             if shown:

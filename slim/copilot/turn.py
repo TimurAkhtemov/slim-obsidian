@@ -70,6 +70,12 @@ NO_NOTE_RIDER = f"""No note is open. To answer, reply in text. When the question
 look for it with search, read_note and list_folder; a question that needs no note needs no tool.
 {CREATING}"""
 SKILL_RIDER = f"{ASK_RIDER}\n\n{LOOKING}"
+# A note the editing tools cannot take (Windows line endings, a byte-order mark) is still asked
+# about: it rides as plain text, with the tools of a turn with no note open.
+PLAIN_RIDER = f"""The open note is shown with their message as plain text: it cannot be changed from here, so if
+they ask for a change, give them the text to paste.
+{LOOKING}
+{CREATING}"""
 
 NEW_NOTE_RIDER = """You can create a new note with the create_note tool: its path, in a folder that already exists
 (the open note's folder is `{folder}/`), and its whole text in Markdown. Then call done with one
@@ -171,11 +177,27 @@ def open_note_message(path: str, note: blocks.Note) -> str:
     if len(note.text()) <= context.ATTACH_MAX_CHARS:
         rendered = note.render()
     else:
-        rendered, kept = note.head(note.blocks, context.ATTACH_MAX_CHARS)
+        rendered, kept = note.head(note.blocks, context.ATTACH_MAX_CHARS, path)
         note.shown = {b.handle for b in kept if b.kind != "blank" and not b.locked}
-        rendered = rendered.rstrip("\n") + (f'\n\n[The rest of this note: read_note("{path}", "s<N>") '
-                                            "shows a section with its handles.]")
+        rest = [b for b in note.blocks if b.kind != "blank" and not b.locked and b.handle not in note.shown]
+        if rest:
+            span = f"{rest[0].handle}-{rest[-1].handle}" if len(rest) > 1 else rest[0].handle
+            heads = [b for b in rest if b.level]
+            rendered = rendered.rstrip("\n") + (
+                f'\n\n[Not shown: from {rest[0].handle} on. read_note("{path}", "s{heads[0].handle[1:]}") shows '
+                f'the first section not shown, with its handles; any s<N>, or a range like "{span}", works too.]'
+                if heads else
+                f'\n\n[Not shown: from {rest[0].handle} on. read_note("{path}", "{span}") shows those blocks '
+                "with their handles.]")
     return f"=== {path} · the open note ===\n{shown}{rendered.rstrip()}"
+
+
+def plain_note_message(path: str, text: str) -> str:
+    """A note the editing tools cannot take, as it rides with the question: its text, no handles."""
+    text = text.lstrip("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
+    if len(text) > context.ATTACH_MAX_CHARS:
+        text = text[:context.ATTACH_MAX_CHARS] + "\n[… the rest: read_note(path, section) for one section]"
+    return f"=== {path} · the open note ===\n{text.rstrip()}"
 
 
 
@@ -498,17 +520,25 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
         note, text, cited, inputs = None, None, [], None
         if skill:                               # a chat skill: its notes, chosen by code
             pack = context.gather(con, vault, source, skill=skill, links_from=args, selection=selection)
-            cited = [doc_["path"] for doc_ in pack.docs if doc_["role"] != "selection"]
+            cited = [doc_["path"] for doc_ in pack.docs if doc_["role"] not in ("open", "selection")]
             inputs = context.pack_inputs(pack)
             rider, tools, step_tools = SKILL_RIDER, list(lookup.NAMES), ()
             asked = (f"Notes in view:\n\n{pack_docs(pack) or '(none)'}\n\n---\n\n"
                      f"{skills_mod.render_prompt(skill, args)}")
         elif source is not None:
-            text = doc if doc is not None else edit_run._note_text(vault, path)
-            note = blocks.Note(text)
-            step_tools = (*edit_run.STEP_TOOLS, "create_note")
-            rider, tools = LOOP_RIDER, [*lookup.NAMES, "plan", *step_tools]
-            asked = f"{open_note_message(path, note)}\n\n---\n\n{question}"
+            try:
+                text = doc if doc is not None else edits_mod._read(vault / path)
+            except (OSError, UnicodeDecodeError) as exc:
+                raise CopilotError("the open note could not be read; refresh the sidebar") from exc
+            if "\r" in text or text.startswith("\ufeff"):
+                rider, tools, step_tools = PLAIN_RIDER, [*lookup.NAMES, "create_note"], ("create_note",)
+                asked = f"{plain_note_message(path, text)}\n\n---\n\n{question}"
+                entry["plain_note"] = True
+            else:
+                note = blocks.Note(text)
+                step_tools = (*edit_run.STEP_TOOLS, "create_note")
+                rider, tools = LOOP_RIDER, [*lookup.NAMES, "plan", *step_tools]
+                asked = f"{open_note_message(path, note)}\n\n---\n\n{question}"
         else:
             rider, tools, step_tools = NO_NOTE_RIDER, [*lookup.NAMES, "create_note"], ("create_note",)
             asked = question
@@ -541,6 +571,7 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
                              temperature=edit_run.FIRST_TEMPERATURE, first_predict=room,
                              on_edit=on_edit or (lambda _event, _payload: None), should_stop=should_stop,
                              on_stage=stage, lookups=reader, on_reply=on_delta)
+    entry["looked_up"] = out["looked_up"]       # traced even when the checks below refuse the turn
     last = out["timing"][-1] if out["timing"] else {}
     run = None
     if out["kind"] == "answer":     # it streamed as it decoded (on_delta)
@@ -560,13 +591,11 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
                "summary": out["summary"]}
         answer = out["summary"] or out["plan"]["intro"]
         entry["edit_run"] = edit_run._facts(out, run)
-    # Sources are what code saw the turn read: a skill's notes, or, once it looked something up,
-    # the open note, the notes pinned, and what it read and searched into.
-    looked = reader.read + reader.searched
-    if not skill and looked:
-        notes = {str(pin.get("path") or "") for pin in pins if pin.get("kind") != "folder"}
-        cited = ([path] if path else []) + [p for p in held if p in notes]
-    paths = list(dict.fromkeys(cited + looked))
+    # Sources are the notes code saw the turn open: a skill's other notes, the notes pinned, and
+    # those it read with read_note. Never the open note, and never a search hit alone.
+    notes = {str(pin.get("path") or "") for pin in pins if pin.get("kind") != "folder"}
+    pinned_notes = [p for p in held if p in notes]
+    paths = [p for p in dict.fromkeys(cited + pinned_notes + reader.read) if p != path]
     result = {
         "answer": answer,
         "mode": mode,

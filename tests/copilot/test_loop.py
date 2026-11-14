@@ -84,7 +84,7 @@ def test_lookup_then_answer(ask, con, vault, monkeypatch):
                     ("They have stripes.", []))
     got = ask("what did I write about zebras?")
     assert got["answer"] == "They have stripes." and len(seen) == 3
-    assert [c["path"] for c in got["citations"]] == [OPEN, "Notes/school/cs-201/zebra.md"]
+    assert [c["path"] for c in got["citations"]] == ["Notes/school/cs-201/zebra.md"]   # opened, never the open note
     searched, read = seen[1]["messages"][-1], seen[2]["messages"][-1]
     assert searched["role"] == "tool" and "Notes/school/cs-201/zebra.md" in searched["content"]
     assert read["role"] == "tool" and read["content"].startswith("=== Notes/school/cs-201/zebra.md ===")
@@ -154,7 +154,9 @@ def test_long_note_edit_needs_read_section(ask, monkeypatch):
                     ("", [("replace", {"target": para, "markdown": "Short now."})]))
     got = ask("shorten the last part", text=text)
     asked = seen[0]["messages"][-1]["content"]
-    assert len(asked) < len(text) and f'read_note("{OPEN}", "s<N>")' in asked
+    first_unread = next(b.handle for b in note.blocks if b.level and f"[{b.handle}]" not in asked)
+    assert len(asked) < len(text) and f'read_note("{OPEN}", "s{first_unread[1:]}")' in asked
+    assert "a range like" in asked
     assert f"{section}  " in asked                                # the sections map names every section
     refused = seen[1]["messages"][-1]["content"]
     assert "read_note it first" in refused
@@ -206,12 +208,12 @@ def test_note_in_excluded_folder_is_context(ask, monkeypatch):
 
 def test_chat_skill_can_look_up(ask, con, vault, monkeypatch):
     put(con, vault, "Notes/school/cs-201/zebra.md", "# Zebras\n\nZebras have stripes.\n")
-    seen = scripted(monkeypatch, ("", [("search", {"query": "zebras"})]), ("Question 1: stripes?", []))
+    seen = scripted(monkeypatch, ("", [("search", {"query": "zebras"})]),
+                    ("", [("read_note", {"path": "Notes/school/cs-201/zebra.md"})]), ("Question 1: stripes?", []))
     got = ask("/quiz")
     assert seen[0]["tools"] == LOOKUPS
     assert got["answer"] == "Question 1: stripes?" and got["skill"] == "quiz"
-    paths = [c["path"] for c in got["citations"]]
-    assert OPEN in paths and "Notes/school/cs-201/zebra.md" in paths
+    assert [c["path"] for c in got["citations"]] == ["Notes/school/cs-201/zebra.md"]
     current = seen[0]["messages"][-1]["content"]
     assert f"=== {OPEN} · the open note ===" in current and "Quiz me on this note" in current
 
@@ -252,3 +254,80 @@ def test_a_lookup_inside_a_step_runs_and_the_step_goes_on(ask, con, vault, monke
     assert "Bee facts." in seen[2]["messages"][-1]["content"]          # the read went back to the step
     assert [p for e, p in got["events"] if e == "step"] == [{"index": 1, "state": "doing"},
                                                             {"index": 1, "state": "done"}]
+
+
+# --- fix round 1: a long transcript pages, failures trace their lookups, plain notes, sources --
+
+TRANSCRIPT_NOTE = ("---\ntitle: Call\n---\n\n```slim-meeting\n## Transcript\n\n"
+                   + "".join(f"Me: line {i} " + "word " * 20 + "\n" for i in range(1100))
+                   + "```\n\nMy notes after the call.\n")
+
+
+def _fence(text):
+    from slim.copilot import blocks
+    return next(b for b in blocks.Note(text).blocks if b.locked and "Me: line 0" in b.text).handle
+
+
+def test_long_recording_transcript_pages_through_read_note(ask, monkeypatch):
+    assert len(TRANSCRIPT_NOTE) > 120_000
+    fence = _fence(TRANSCRIPT_NOTE)
+    pages = [("", [("read_note", {"path": OPEN, "section": fence if n == 1 else f"{fence}#{n}"})]) for n in (1, 2, 3, 4)]
+    seen = scripted(monkeypatch, *pages, ("Done.", []))
+    got = ask("what did I say at the end?", text=TRANSCRIPT_NOTE)
+    asked = seen[0]["messages"][-1]["content"]
+    assert f"[locked {fence}]" in asked and f'read_note("{OPEN}", "{fence}")' in asked
+    assert "My notes after the call." in asked and "Me: line 5 " not in asked
+    first, second, last = (seen[n]["messages"][-1]["content"] for n in (1, 2, 4))
+    assert first.startswith(f"=== {OPEN} ===\n[locked {fence}, page 1 of 4") and "Me: line 0 " in first
+    assert first.endswith(f'[Next page: read_note("{OPEN}", "{fence}#2")]')
+    assert f"page 2 of 4" in second and second.endswith(f'"{fence}#3")]')
+    assert "page 4 of 4" in last and "Me: line 1099 " in last and "Next page" not in last
+    assert all(not looked["refused"] for looked in got["looked_up"])
+
+
+def test_locked_page_never_editable(ask, monkeypatch):
+    fence = _fence(TRANSCRIPT_NOTE)
+    seen = scripted(monkeypatch, ("", [("read_note", {"path": OPEN, "section": fence})]),
+                    ("", [("replace", {"target": fence, "markdown": "gone"})]), ("", []))
+    got = ask("delete the transcript", text=TRANSCRIPT_NOTE)
+    assert "part of the recording; SLIM never edits it" in seen[2]["messages"][-1]["content"]
+    assert got["edit_run"]["changes"] == []
+
+
+def test_search_can_look_inside_one_note(ask, con, vault, monkeypatch):
+    put(con, vault, "Notes/school/cs-201/zebra.md", "# Zebras\n\nZebras have stripes.\n")
+    put(con, vault, "Notes/school/cs-202/horse.md", "# Horses\n\nZebras are not horses.\n")
+    seen = scripted(monkeypatch, ("", [("search", {"query": "zebras", "folder": "Notes/school/cs-202/horse.md"})]),
+                    ("ok", []))
+    got = ask("q")
+    found = seen[1]["messages"][-1]["content"]
+    assert not found.startswith("refused:") and "Zebras are not horses." in found and "zebra.md" not in found
+    assert got["citations"] == []                                # a search hit alone is not a source
+
+
+def test_failed_turn_traces_lookups(ask, monkeypatch):
+    records = []
+    monkeypatch.setattr(copilot_turn.trace, "record", lambda kind, payload: records.append(payload))
+    scripted(monkeypatch, ("", [("list_folder", {"path": "Notes"})]), ("", []))
+    with pytest.raises(copilot_turn.CopilotError, match="no answer"):
+        ask("q")
+    (record,) = records
+    assert record["status"] == "failed" and record["open_path"] == OPEN
+    assert record["looked_up"] == [{"name": "list_folder", "path": "Notes", "refused": False}]
+
+
+def test_crlf_note_is_asked_about_not_refused(ask, monkeypatch):
+    seen = scripted(monkeypatch, ("It has two lines.", []))
+    got = ask("what is in it?", text="# Win\r\n\r\nLine one.\r\nLine two.\r\n", doc=False)
+    assert got["answer"] == "It has two lines." and got["edit_run"] is None
+    assert seen[0]["tools"] == ["search", "read_note", "list_folder", "create_note"]
+    current = seen[0]["messages"][-1]["content"]
+    assert current.startswith(f"=== {OPEN} · the open note ===\n# Win\n\nLine one.\nLine two.")
+    assert "[b1]" not in current and "Sections:" not in current and "\r" not in current
+
+
+def test_pinned_notes_are_sources(ask, con, vault, monkeypatch):
+    put(con, vault, "Notes/b.md", "# Bee\n\nBuzzing text.\n")
+    scripted(monkeypatch, ("ok", []))
+    got = ask("q", pins=[{"kind": "note", "path": "Notes/b.md"}, {"kind": "folder", "path": "Notes/school"}])
+    assert [c["path"] for c in got["citations"]] == ["Notes/b.md"]
