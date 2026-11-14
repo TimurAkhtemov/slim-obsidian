@@ -131,6 +131,8 @@ sentence for the owner saying what you made."""
 SOURCES_QUESTION = """Which of these notes did your reply actually draw on? Answer with their numbers only, or an
 empty list if you answered from general knowledge."""
 SOURCES_NUM_PREDICT = 64
+# THE LOOP's sources: the notes a turn looked at, a chip each under the answer.
+SOURCES_MAX = 8
 
 
 # 1400 clipped a worked example mid-sentence, and Quick is the mode nearly every turn uses.
@@ -656,11 +658,13 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
                "summary": out["summary"]}
         answer = out["summary"] or out["plan"]["intro"]
         entry["edit_run"] = edit_run._facts(out, run)
-    # Sources are the notes code saw the turn open: a skill's other notes, the notes pinned, and
-    # those it read with read_note. Never the open note, and never a search hit alone.
+    # Sources are the notes code saw the turn look at, with no call to decide them: a skill's other
+    # notes, then those it read or its searches found (in order, at most SOURCES_MAX), then the
+    # notes pinned. The open note only when a tool read it: it rides with every question.
     notes = {str(pin.get("path") or "") for pin in pins if pin.get("kind") != "folder"}
     pinned_notes = [p for p in held if p in notes]
-    paths = [p for p in dict.fromkeys(cited + pinned_notes + reader.read) if p != path]
+    looked = [p for p in dict.fromkeys(reader.seen) if p != path or p in reader.read][:SOURCES_MAX]
+    paths = [p for p in dict.fromkeys(cited + looked + pinned_notes) if p != path or p in reader.read]
     result = {
         "answer": answer,
         "mode": mode,

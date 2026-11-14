@@ -465,11 +465,11 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
         `pending` are the results of this reply's calls before it, not yet in `messages`."""
         args = call.get("arguments")
         on_stage(_looking(call["name"], args))
-        read, shown = len(lookups.read), set(lookups.shown)
+        read, searched, seen, shown = len(lookups.read), len(lookups.searched), len(lookups.seen), set(lookups.shown)
         said = lookups.call(call["name"], args)
         if fits is not None and not said.startswith("refused:") and not fits(messages, [*pending, said]):
             said = NO_ROOM
-            del lookups.read[read:]
+            del lookups.read[read:], lookups.searched[searched:], lookups.seen[seen:]
             lookups.shown.intersection_update(shown)
         if note is not None and note.shown is not None:
             note.shown |= lookups.shown         # a section it read is a section it may change

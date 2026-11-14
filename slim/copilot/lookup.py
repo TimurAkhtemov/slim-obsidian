@@ -95,6 +95,7 @@ class Reader:
         self.open_note = open_note
         self.read: list[str] = []
         self.searched: list[str] = []
+        self.seen: list[str] = []          # every note read or found, in the order it was looked at
         self.shown: set[str] = set()
 
     def call(self, name: str, args: dict) -> str:
@@ -149,6 +150,7 @@ class Reader:
             out.append(f"{head}\n{passage}")
             if hit.path not in self.searched:
                 self.searched.append(hit.path)
+            self.seen.append(hit.path)
         return "\n\n".join(out) if out else "no notes matched"
 
     # --- read_note ------------------------------------------------------------------------
@@ -182,6 +184,7 @@ class Reader:
             body = self._cap(text, blocks.headings(text) if not section else [])
         if path not in self.read:
             self.read.append(path)
+        self.seen.append(path)
         return f"=== {path} ===\n{body}"
 
     @staticmethod

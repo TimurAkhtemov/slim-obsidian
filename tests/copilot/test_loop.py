@@ -88,7 +88,7 @@ def test_lookup_then_answer(ask, con, vault, monkeypatch):
                     ("They have stripes.", []))
     got = ask("what did I write about zebras?")
     assert got["answer"] == "They have stripes." and len(seen) == 3
-    assert [c["path"] for c in got["citations"]] == ["Notes/school/cs-201/zebra.md"]   # opened, never the open note
+    assert [c["path"] for c in got["citations"]] == ["Notes/school/cs-201/zebra.md"]   # searched and read: once
     searched, read = seen[1]["messages"][-1], seen[2]["messages"][-1]
     assert searched["role"] == "tool" and "Notes/school/cs-201/zebra.md" in searched["content"]
     assert read["role"] == "tool" and read["content"].startswith("=== Notes/school/cs-201/zebra.md ===")
@@ -333,7 +333,7 @@ def test_search_can_look_inside_one_note(ask, con, vault, monkeypatch):
     got = ask("q")
     found = seen[1]["messages"][-1]["content"]
     assert not found.startswith("refused:") and "Zebras are not horses." in found and "zebra.md" not in found
-    assert got["citations"] == []                                # a search hit alone is not a source
+    assert [c["path"] for c in got["citations"]] == ["Notes/school/cs-202/horse.md"]   # a search hit is looked at
 
 
 def test_failed_turn_traces_lookups(ask, monkeypatch):
@@ -583,3 +583,40 @@ def test_a_pinned_folder_names_where_a_search_looked(ask, con, vault, monkeypatc
 def test_a_turn_with_no_lookups_has_no_tools(ask, monkeypatch):
     scripted(monkeypatch, ("Hi.", []))
     assert ask("hi")["tools"] == []
+
+
+# --- sources: the notes the turn looked at -------------------------------------------------------
+
+def test_sources_are_the_notes_read_and_found_in_order_then_the_pins(ask, con, vault, monkeypatch):
+    put(con, vault, "Notes/school/cs-201/zebra.md", "# Zebras\n\nZebras have stripes.\n")
+    put(con, vault, "Notes/school/cs-202/horse.md", "# Horses\n\nZebras are not horses.\n")
+    put(con, vault, "Notes/b.md", "# Bee\n\nBuzzing text.\n")
+    seen = scripted(monkeypatch, ("", [("read_note", {"path": "Notes/b.md"})]),
+                    ("", [("search", {"query": "zebras"})]), ("Stripes.", []))
+    got = ask("zebras?", pins=[{"kind": "note", "path": "Notes/b.md"}])
+    paths = [c["path"] for c in got["citations"]]
+    assert paths[0] == "Notes/b.md" and paths.count("Notes/b.md") == 1      # read first; pinned too: once
+    assert set(paths[1:]) == {"Notes/school/cs-201/zebra.md", "Notes/school/cs-202/horse.md"}
+    assert [c["n"] for c in got["citations"]] == [1, 2, 3]
+    assert got["citations"][1]["title"] == Path(paths[1]).stem
+    assert len(seen) == 3                                                    # no call to decide them
+
+
+def test_the_open_note_is_a_source_only_when_read_with_a_tool(ask, con, vault, monkeypatch):
+    scripted(monkeypatch, ("", [("search", {"query": "Intro para"})]), ("It is the intro.", []))
+    got = ask("where is the intro?")
+    assert OPEN not in [c["path"] for c in got["citations"]]                # a search hit of the open note
+    scripted(monkeypatch, ("", [("read_note", {"path": OPEN, "section": "s3"})]), ("Text a.", []))
+    got = ask("what is under A?")
+    assert [c["path"] for c in got["citations"]] == [OPEN]
+
+
+def test_at_most_eight_looked_at_notes_are_sources(ask, con, vault, monkeypatch):
+    for n in range(10):
+        put(con, vault, f"Notes/many/n{n}.md", f"# N{n}\n\nZebra fact {n}.\n")
+    put(con, vault, "Notes/other/late.md", "# Late\n\nNothing here.\n")
+    scripted(monkeypatch, ("", [("search", {"query": "zebra fact"})]),
+             ("", [("read_note", {"path": "Notes/other/late.md"})]), ("Many.", []))
+    got = ask("all of them?")
+    paths = [c["path"] for c in got["citations"]]
+    assert len(paths) == 8 and all(p.startswith("Notes/many/") for p in paths)   # the ninth looked at is not listed
