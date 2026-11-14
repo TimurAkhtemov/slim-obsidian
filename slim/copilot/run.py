@@ -349,7 +349,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
           note: blocks.Note | None, before_text: str, only: set[str] | None = None, create=None,
           temperature: float = FIRST_TEMPERATURE, first_predict: int, nudge: bool = False, on_edit,
           should_stop, on_stage=lambda _name: None, lookups: lookup_mod.Reader | None = None,
-          on_reply=None) -> dict:
+          on_reply=None, no_edit: str | None = None) -> dict:
     """One editing turn. Every call offers the same `tools`, in the same order: they sit at the
     top of the prompt, and a different list re-reads the whole note. `step_tools` are those that
     change something. The first call answers in text, makes a small change at once, or plans a
@@ -363,7 +363,11 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
     With `lookups`, a reply whose calls look things up (and neither plan nor change anything) is
     answered with what they found, and the same call is made again: MAX_LOOKUPS of them before
     the first answer, plan or edit. Inside a run a lookup is answered too, and costs a call, never
-    a refusal or a step. `on_reply` hears each reply's text as it decodes."""
+    a refusal or a step. `on_reply` hears each reply's text as it decodes.
+
+    With `no_edit` (THE LOOP with no note it may change) the plan and edit tools are still offered,
+    so the prompt stays the same, but every call to them is refused with that reason, counted as
+    a refusal; a reply of nothing else is answered like a lookup."""
     out = {"kind": "answer", "answer": "", "plan": None, "changes": [], "steps_done": 0, "calls": 0,
            "refusals": [], "malformed": [], "empty_steps": 0, "stopped": None, "summary": "",
            "finished_early": False, "replanned": False, "outline": None, "outline_met": None,
@@ -372,6 +376,9 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
            "first_temperature": temperature, "looked_up": []}
     spent, failed = 0, []
     looks = lookup_mod.NAMES if lookups is not None else ()
+    barred = {"plan", *STEP_TOOLS} if no_edit else set()
+    acting = tuple(name for name in step_tools if name not in barred)
+    planning = "plan" in tools and "plan" not in barred
     # Deep's thinking has its own allowance: it would otherwise eat the steps' budget.
     budget = RUN_OUTPUT_TOKENS + (THINK_BUDGET if think else 0)
     # The step(s) being worked; `target` the blocks the step names (None: not judged), `hit` whether
@@ -405,8 +412,14 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
         return said
 
     def looking(reply: _Reply) -> bool:
+        """Only lookups, or calls refused for want of a note: answered, and the call made again."""
         names = [c["name"] for c in reply.calls]
-        return any(n in looks for n in names) and not any(n == "plan" or n in step_tools for n in names)
+        return (any(n in looks or n in barred for n in names)
+                and not any((n == "plan" or n in step_tools) and n not in barred for n in names))
+
+    def bar(name: str, step: int) -> str:
+        out["refusals"].append({"step": step, "tool": name, "code": "no_note"})
+        return f"refused: {no_edit}"
 
     def attempt(offered, think, temperature, num_predict):
         if not out["stopped"] and should_stop():
@@ -488,9 +501,9 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
 
     def split(reply: _Reply):
         """A first reply's plan, and its other calls if any of them changes something."""
-        plans = [c for c in reply.calls if c["name"] == "plan"]
-        others = [c for c in reply.calls if c["name"] != "plan"]
-        acts = any(c["name"] in step_tools for c in others) or (plans and any(c["name"] in looks for c in others))
+        plans = [c for c in reply.calls if c["name"] == "plan" and planning]
+        others = [c for c in reply.calls if c not in plans]
+        acts = any(c["name"] in acting for c in others) or (plans and any(c["name"] in looks for c in others))
         return plans, others if acts else []
 
     try:
@@ -500,7 +513,9 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
             results = []
             for call in first.calls:
                 out["calls"] += 1
-                if call["name"] not in looks:
+                if call["name"] in barred:
+                    results.append(bar(call["name"], 0))
+                elif call["name"] not in looks:
                     results.append(f"refused: {call['name']} is not available now")
                 elif looked >= MAX_LOOKUPS:
                     results.append(LOOKED_ENOUGH)
@@ -508,11 +523,12 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
                 else:
                     looked += 1
                     results.append(look(call))
-            over += looked >= MAX_LOOKUPS and all(r.startswith("refused:") for r in results)
+            refused = all(r.startswith("refused:") for r in results)
+            over += refused and (looked >= MAX_LOOKUPS or any(c["name"] in barred for c in first.calls))
             if out["calls"] > MAX_CALLS:
                 out["stopped"] = "call limit"
             elif over >= MAX_REFUSALS:
-                out["stopped"] = "lookups"
+                out["stopped"] = "refusals" if out["refusals"] else "lookups"
             if out["stopped"]:
                 break
             messages.extend({"role": "tool", "content": result} for result in results)
@@ -520,13 +536,13 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
         plans, edits = split(first)
         unread = first.malformed and not first.calls
         if not plans and not edits and not out["stopped"]:
-            if unread or first.calls and "plan" in tools:
+            if unread or first.calls and planning:
                 # Calls that change nothing, or a call code could not read: the plan asked for once
                 # more (a new note, where there is no plan, once more).
                 out["replanned"] = True
                 said = _unreadable(first.malformed) if unread else "refused: start with a plan"
                 messages.extend(_results([said], "Make the plan first: one sentence for the owner, and the "
-                                                 "steps in order." if "plan" in tools else
+                                                 "steps in order." if planning else
                                                  "Make the new note with the create_note tool."))
             elif nudge and not first.calls:     # the gate said change, and the reply is only text
                 out["nudged"] = True
@@ -598,6 +614,13 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
                 if name == "done" and "done" in tools:
                     out.update(summary=plain(_summary(call)), finished_early=True)
                     break
+                if name in barred:          # no note it may change: refused, and counted
+                    results.append(bar(name, at))
+                    refused, in_row = True, in_row + 1
+                    if in_row >= MAX_REFUSALS:
+                        out["stopped"] = out["stopped"] or "refusals"
+                        break
+                    continue
                 if name == "plan":          # the plan restated: answered, and neither a refusal nor a change
                     results.append("ok: the plan is already set; make this step's changes")
                     continue

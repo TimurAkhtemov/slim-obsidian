@@ -14,6 +14,7 @@ from .conftest import scripted
 OPEN = "Notes/school/n.md"
 NOTE = "# Title\n\nIntro para.\n\n## A\n\nText a.\n"
 LOOKUPS = ["search", "read_note", "list_folder"]
+ALL_TOOLS = [*LOOKUPS, "plan", "replace", "edit_text", "insert", "move", "create_note"]
 
 
 @pytest.fixture
@@ -118,10 +119,10 @@ def test_lookup_cap(ask, monkeypatch):
     assert got["looked_up"][-1]["refused"] is True and len(got["looked_up"]) == 7
 
 
-def test_no_open_note_offers_lookups_and_create_only(ask, monkeypatch):
+def test_no_open_note_offers_the_same_tools(ask, monkeypatch):
     seen = scripted(monkeypatch, ("Hello.", []))
     got = ask("hi", open_path=None)
-    assert seen[0]["tools"] == ["search", "read_note", "list_folder", "create_note"]
+    assert seen[0]["tools"] == ALL_TOOLS
     assert got["answer"] == "Hello." and got["source"] is None
     assert seen[0]["messages"][-1] == {"role": "user", "content": "hi"}
 
@@ -129,8 +130,7 @@ def test_no_open_note_offers_lookups_and_create_only(ask, monkeypatch):
 def test_with_an_open_note_the_tools_are_lookups_then_edits(ask, monkeypatch):
     seen = scripted(monkeypatch, ("ok", []))
     ask("q")
-    assert seen[0]["tools"] == ["search", "read_note", "list_folder", "plan", "replace", "edit_text",
-                                "insert", "move", "create_note"]
+    assert seen[0]["tools"] == ALL_TOOLS
 
 
 def test_note_skill_without_open_note_refuses(ask, monkeypatch):
@@ -320,7 +320,7 @@ def test_crlf_note_is_asked_about_not_refused(ask, monkeypatch):
     seen = scripted(monkeypatch, ("It has two lines.", []))
     got = ask("what is in it?", text="# Win\r\n\r\nLine one.\r\nLine two.\r\n", doc=False)
     assert got["answer"] == "It has two lines." and got["edit_run"] is None
-    assert seen[0]["tools"] == ["search", "read_note", "list_folder", "create_note"]
+    assert seen[0]["tools"] == ALL_TOOLS
     current = seen[0]["messages"][-1]["content"]
     assert current.startswith(f"=== {OPEN} · the open note ===\n# Win\n\nLine one.\nLine two.")
     assert "[b1]" not in current and "Sections:" not in current and "\r" not in current
@@ -331,3 +331,51 @@ def test_pinned_notes_are_sources(ask, con, vault, monkeypatch):
     scripted(monkeypatch, ("ok", []))
     got = ask("q", pins=[{"kind": "note", "path": "Notes/b.md"}, {"kind": "folder", "path": "Notes/school"}])
     assert [c["path"] for c in got["citations"]] == ["Notes/b.md"]
+
+
+# --- fix round 2: one prompt, one tool list; no room; stages; the failure trace ---------------
+
+CRLF = "# Win\r\n\r\nLine one.\r\nLine two.\r\n"
+
+
+def test_one_system_message_and_tool_list_whatever_is_open(ask, monkeypatch):
+    """The system message and the tools sit at the top of the prompt: a note, no note, a note the
+    tools cannot take, and one too long to edit all read the same prefix."""
+    monkeypatch.setattr(edits, "MAX_EDIT_CHARS", 20)
+    seen = scripted(monkeypatch, *[("ok", [])] * 5)
+    ask("q", text="# T\n\nx\n")                                 # a Markdown note, small enough
+    ask("q", open_path=None)                                       # no note, or the chip's ✕
+    ask("q", text=CRLF, doc=False)                                 # Windows line endings
+    ask("q", doc=False)                                            # over the plugin's limit: no doc
+    ask("/quiz")                                                   # a skill keeps its own
+    assert len({c["messages"][0]["content"] for c in seen[:4]}) == 1
+    assert all(c["tools"] == ALL_TOOLS for c in seen[:4])
+    assert seen[4]["tools"] == LOOKUPS
+    assert "[b2]" not in seen[3]["messages"][-1]["content"]       # shown without handles
+
+
+@pytest.mark.parametrize("open_path, text, doc, said", [
+    (None, None, True, "refused: no note is open to change"),
+    (OPEN, CRLF, False, "refused: this note can't be changed here; give the text to paste"),
+])
+def test_an_edit_call_with_no_editable_note_is_refused_and_the_turn_answers(
+        ask, monkeypatch, open_path, text, doc, said):
+    records = []
+    monkeypatch.setattr(copilot_turn.trace, "record", lambda kind, payload: records.append(payload))
+    seen = scripted(monkeypatch, ("", [("replace", {"target": "b2", "markdown": "New."})]),
+                    ("Paste this: New.", []))
+    got = ask("change it", open_path=open_path, text=text, doc=doc)
+    assert seen[1]["messages"][-1]["role"] == "tool"
+    assert seen[1]["messages"][-1]["content"].startswith(said)
+    assert got["answer"] == "Paste this: New." and got["edit_run"] is None
+    assert got["events"] == []
+    assert records[0]["refusals"] == ["no_note"]
+
+
+def test_a_plan_with_no_note_is_refused_too(ask, monkeypatch):
+    seen = scripted(monkeypatch, ("", [("plan", {"intro": "x", "steps": ["a", "b"]})]),
+                    ("", [("plan", {"intro": "x", "steps": ["a", "b"]})]),
+                    ("", [("insert", {"after": "b1", "markdown": "y"})]))
+    with pytest.raises(copilot_turn.CopilotError, match="before an answer"):
+        ask("plan it", open_path=None)
+    assert len(seen) == 3                                          # MAX_REFUSALS in a row stop it

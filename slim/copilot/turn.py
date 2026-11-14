@@ -58,24 +58,26 @@ Use the replace, edit_text, insert and move tools for a small change and for eac
 # handle and plan text, the note now with their message, and a paragraph on the lookups. Nothing
 # in it asks for citations: sources are what code saw the turn read. Off, a turn takes the gate
 # and the Ask path, as before, until the owner has compared the two.
+#
+# ONE system message and ONE tool list (LOOP_TOOLS, in this order) for every turn that is not a
+# skill's: the tools render into the system prompt, so a rider or a list that followed the open
+# note (none, plain, too long) changed the prompt from its first token and re-read the pins and
+# the history. With no note it may change, a call to an edit tool is refused (`run._turn`'s
+# `no_edit`), with a reason the model reads.
 LOOP = True
 LOOKING = """When the question needs a note you have not been shown, look for it with search, read_note and
 list_folder. The open note is already shown: never look it up, except a part it says is not shown.
 A plain question about the open note needs no tool."""
 CREATING = "create_note makes a new note, in a folder that already exists."
+CANNOT_EDIT = ("When no note is shown, or a note is shown without handles, it can't be edited here: if they ask\n"
+               "for a change, give them the text to paste.")
 LOOP_RIDER = ("You can edit the open note shown with their message."
               + EDIT_RIDER.removeprefix("You can edit the open note shown below.")
-              + f"\n\n{LOOKING}\n{CREATING}")
-NO_NOTE_RIDER = f"""No note is open. To answer, reply in text. When the question needs a note from the vault,
-look for it with search, read_note and list_folder; a question that needs no note needs no tool.
-{CREATING}"""
+              + f"\n\n{LOOKING}\n{CREATING}\n{CANNOT_EDIT}")
+LOOP_TOOLS = [*lookup.NAMES, "plan", *edit_run.STEP_TOOLS, "create_note"]
+NO_NOTE = "no note is open to change; give the text to paste"
+PLAIN_NOTE = "this note can't be changed here; give the text to paste"
 SKILL_RIDER = f"{ASK_RIDER}\n\n{LOOKING}"
-# A note the editing tools cannot take (Windows line endings, a byte-order mark) is still asked
-# about: it rides as plain text, with the tools of a turn with no note open.
-PLAIN_RIDER = f"""The open note is shown with their message as plain text: it cannot be changed from here, so if
-they ask for a change, give them the text to paste.
-{LOOKING}
-{CREATING}"""
 
 NEW_NOTE_RIDER = """You can create a new note with the create_note tool: its path, in a folder that already exists
 (the open note's folder is `{folder}/`), and its whole text in Markdown. Then call done with one
@@ -503,9 +505,11 @@ def _answer_or_edit(con, vault: Path, source: dict, question: str, history: list
 def _loop(con, vault: Path, source: dict | None, question: str, history: list[dict], mode: str, *,
           pins, skill, args: str, images, selection: str, doc: str | None, on_stage, on_delta,
           on_edit, should_stop, entry: dict) -> dict:
-    """One turn of THE LOOP. Every call offers the lookups and, with a note open, the edit tools
-    and create_note; with none, the lookups and create_note; a chat skill, the lookups alone, its
-    notes (`gather`) in the open note's place. The messages: the persona and the rider, the pins
+    """One turn of THE LOOP. Every call offers LOOP_TOOLS under one system message, whatever is
+    open; with no note it may change (none, the chip's ✕, a note the tools cannot take, or one
+    sent without the editor's text for being over MAX_EDIT_CHARS), the edit tools refuse. A chat
+    skill offers the lookups alone, its notes (`gather`) in the open note's place. The messages:
+    the persona and the rider, the pins
     and an assistant's "Noted." (roles alternate), the history that fits, the open note's images,
     then the open note and the question. Reply text streams through `on_delta`."""
     stage = on_stage or (lambda _name: None)
@@ -517,7 +521,8 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
     scope = next((held_path for held_path in held if held_path in folders), None)
     entry.update(pins=len(held), pins_left_out=len(left))
     with llm.hold():
-        note, text, cited, inputs = None, None, [], None
+        note, text, cited, inputs, no_edit = None, None, [], None, None
+        rider, tools, step_tools = LOOP_RIDER, LOOP_TOOLS, (*edit_run.STEP_TOOLS, "create_note")
         if skill:                               # a chat skill: its notes, chosen by code
             pack = context.gather(con, vault, source, skill=skill, links_from=args, selection=selection)
             cited = [doc_["path"] for doc_ in pack.docs if doc_["role"] not in ("open", "selection")]
@@ -530,18 +535,17 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
                 text = doc if doc is not None else edits_mod._read(vault / path)
             except (OSError, UnicodeDecodeError) as exc:
                 raise CopilotError("the open note could not be read; refresh the sidebar") from exc
-            if "\r" in text or text.startswith("\ufeff"):
-                rider, tools, step_tools = PLAIN_RIDER, [*lookup.NAMES, "create_note"], ("create_note",)
-                asked = f"{plain_note_message(path, text)}\n\n---\n\n{question}"
+            # A note the editing tools cannot take (Windows line endings, a byte-order mark), or one
+            # the plugin sent no editor text for (over MAX_EDIT_CHARS), is still asked about: it
+            # rides as plain text, and the edit tools refuse.
+            if "\r" in text or text.startswith("\ufeff") or (doc is None and len(text) > edits_mod.MAX_EDIT_CHARS):
+                asked, no_edit = f"{plain_note_message(path, text)}\n\n---\n\n{question}", PLAIN_NOTE
                 entry["plain_note"] = True
             else:
                 note = blocks.Note(text)
-                step_tools = (*edit_run.STEP_TOOLS, "create_note")
-                rider, tools = LOOP_RIDER, [*lookup.NAMES, "plan", *step_tools]
                 asked = f"{open_note_message(path, note)}\n\n---\n\n{question}"
         else:
-            rider, tools, step_tools = NO_NOTE_RIDER, [*lookup.NAMES, "create_note"], ("create_note",)
-            asked = question
+            asked, no_edit = question, NO_NOTE
         reader = lookup.Reader(con, vault, default_folder=scope,
                                open_note=(path, note) if note is not None else None)
         made: set[str] = set()
@@ -570,8 +574,10 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
                              note=note, before_text=text or "", create=create,
                              temperature=edit_run.FIRST_TEMPERATURE, first_predict=room,
                              on_edit=on_edit or (lambda _event, _payload: None), should_stop=should_stop,
-                             on_stage=stage, lookups=reader, on_reply=on_delta)
+                             on_stage=stage, lookups=reader, on_reply=on_delta, no_edit=no_edit)
     entry["looked_up"] = out["looked_up"]       # traced even when the checks below refuse the turn
+    if out["kind"] == "answer" and out["refusals"]:
+        entry["refusals"] = [item["code"] for item in out["refusals"]]
     last = out["timing"][-1] if out["timing"] else {}
     run = None
     if out["kind"] == "answer":     # it streamed as it decoded (on_delta)
