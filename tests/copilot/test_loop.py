@@ -50,7 +50,7 @@ def put(con, vault, path: str, text: str, *, index: bool = True) -> str:
 def ask(con, vault):
     """run_turn in loop mode on `open_path` (written with `text` when given). Returns the result,
     and its on_edit events, deltas and stages."""
-    def go(question, *, open_path=OPEN, text=NOTE, pins=(), history=(), mode="quick", doc=True):
+    def go(question, *, open_path=OPEN, text=NOTE, pins=(), history=(), mode="quick", doc=True, tools=None):
         sent = {}
         if open_path is not None and text is not None:
             put(con, vault, open_path, text, index=not open_path.startswith("Profile/"))
@@ -60,7 +60,8 @@ def ask(con, vault):
         result = copilot_turn.run_turn(con, open_path, question, list(history), mode, pins=list(pins),
                                        vault=vault, on_edit=lambda e, p: events.append((e, p)),
                                        on_delta=deltas.append, on_reset=lambda: deltas.append(RESET),
-                                       on_stage=stages.append, **sent)
+                                       on_stage=stages.append, on_tool=tools.append if tools is not None else None,
+                                       **sent)
         result["events"], result["deltas"], result["stages"] = events, deltas, stages
         return result
     return go
@@ -533,3 +534,52 @@ def test_each_thinking_call_has_its_own_allowance(ask, monkeypatch):
     seen = scripted(monkeypatch, *[("", [("list_folder", {"path": "Notes"})], many)] * 4, ("Found it.", []))
     got = ask("look around")
     assert got["answer"] == "Found it." and len(seen) == 5
+
+
+# --- every lookup shown in the chat, as Pi shows each tool call --------------------------------
+
+def test_each_lookup_is_shown_as_it_runs_and_kept_with_the_turn(ask, con, vault, monkeypatch):
+    put(con, vault, "Notes/school/cs-201/zebra.md", "# Zebras\n\nZebras have stripes.\n\n## Food\n\nGrass.\n")
+    scripted(monkeypatch,
+             ("", [("search", {"query": "zebras"}), ("search", {"query": "grass", "folder": "Notes/school/cs-201/"})]),
+             ("", [("read_note", {"path": "Notes/school/cs-201/zebra.md", "section": "Food"})]),
+             ("", [("list_folder", {"path": "Notes/school"}), ("list_folder", {"path": ""})]),
+             ("", [("read_note", {"path": "Notes/nope.md"})]),
+             ("Grass.", []))
+    heard = []
+    got = ask("what do zebras eat?", tools=heard)
+    assert [(t["label"], t["refused"]) for t in got["tools"]] == [
+        ('Searched the vault for "zebras"', False),
+        ('Searched Notes/school/cs-201 for "grass"', False),
+        ("Read zebra § Food", False),
+        ("Listed Notes/school/", False),
+        ("Listed the vault", False),
+        ("Read nope — refused", True)]
+    assert [t["name"] for t in got["tools"]] == ["search", "search", "read_note", "list_folder", "list_folder",
+                                                 "read_note"]
+    assert heard == got["tools"]                                  # heard one by one, as each ran
+
+
+def test_a_section_of_the_open_note_is_named_by_its_text_never_a_handle(ask, monkeypatch):
+    scripted(monkeypatch, ("", [("read_note", {"path": OPEN, "section": "s3"})]), ("ok", []))
+    got = ask("q")
+    assert got["tools"][0]["label"] == "Read n § “A”"
+
+
+def test_a_lookup_past_the_cap_and_one_with_no_room_are_shown_refused(ask, monkeypatch):
+    scripted(monkeypatch, *[("", [("list_folder", {"path": "Notes"})])] * 7, ("Done.", []))
+    got = ask("look around")
+    assert got["tools"][-1] == {"name": "list_folder", "label": "Listed Notes/ — refused", "refused": True}
+    assert [t["refused"] for t in got["tools"]] == [False] * 6 + [True]
+
+
+def test_a_pinned_folder_names_where_a_search_looked(ask, con, vault, monkeypatch):
+    put(con, vault, "Notes/school/cs-202/sorting.md", "# Sorting\n\nDijkstra is not a sort.\n")
+    scripted(monkeypatch, ("", [("search", {"query": "Dijkstra"})]), ("ok", []))
+    got = ask("q", pins=[{"kind": "folder", "path": "Notes/school/cs-202"}])
+    assert got["tools"][0]["label"] == 'Searched Notes/school/cs-202 for "Dijkstra"'
+
+
+def test_a_turn_with_no_lookups_has_no_tools(ask, monkeypatch):
+    scripted(monkeypatch, ("Hi.", []))
+    assert ask("hi")["tools"] == []

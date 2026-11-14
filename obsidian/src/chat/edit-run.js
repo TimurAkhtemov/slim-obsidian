@@ -114,7 +114,7 @@ module.exports = {
   async partialTurn(run, stopped) {
     const edit_run = await this.settleRun(run, { stopped });
     const text = run.plan?.intro || "";
-    return { role: "slim", text, turn: { answer: text, mode: this.mode, citations: [],
+    return { role: "slim", text, turn: { answer: text, mode: this.mode, citations: [], tools: [...(this.liveTools || [])],
                                          timing: { total_ms: Date.now() - run.started }, edit_run } };
   },
 
@@ -152,6 +152,7 @@ module.exports = {
   drawLiveEdit(parent) {
     const run = this.editRun;
     if (!run) return;
+    if (this.liveTools?.length) this.fillTools(create(parent, "ul", "slim-steps slim-tools"), this.liveTools);
     this.renderEditRun(parent, { plan: run.plan, step_states: run.steps, changes: run.changes }, null);
     const meta = create(parent, "div", "slim-edit-meta");
     create(meta, "span", "", `${this.mode === "deep" ? "Deep" : "Quick"} · ${Math.max(0, Math.round((Date.now() - run.started) / 1000))} s`);

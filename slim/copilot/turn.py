@@ -545,7 +545,7 @@ def _answer_or_edit(con, vault: Path, source: dict, question: str, history: list
 
 def _loop(con, vault: Path, source: dict | None, question: str, history: list[dict], mode: str, *,
           pins, skill, args: str, images, selection: str, doc: str | None, on_stage, on_delta,
-          on_edit, should_stop, entry: dict, on_reset=None) -> dict:
+          on_edit, should_stop, entry: dict, on_reset=None, on_tool=None) -> dict:
     """One turn of THE LOOP. Every call offers LOOP_TOOLS under one system message, whatever is
     open; with no note it may change (none, the chip's ✕, a note the tools cannot take, or one
     sent without the editor's text for being over MAX_EDIT_CHARS), the edit tools refuse. A chat
@@ -631,6 +631,7 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
                              on_stage=stage, lookups=reader, on_reply=on_delta, no_edit=no_edit,
                              # filled as the turn runs: traced even when it fails or is refused
                              looked_up=entry.setdefault("looked_up", []), on_reset=on_reset, fits=fits,
+                             on_tool=on_tool,
                              # pins, lookups and history fill it too, not only the note
                              too_long="this conversation no longer fits the model's window; "
                                       "start a new chat or unpin something")
@@ -670,6 +671,7 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
                    "answer": out["timing"][0] if out["timing"] else {}, "sources": {}},
         "edit_run": run,
         "looked_up": out["looked_up"],
+        "tools": out["tools"],
     }
     if inputs is not None:
         result["inputs"] = inputs
@@ -715,7 +717,7 @@ def _source(con, vault: Path, open_path: str | None) -> dict | None:
 def run_turn(con, open_path: str | None, question: str, history: list[dict], mode: str,
              *, pins=(), images=None, on_stage=None, on_delta=None, on_edit=None, selection: str = "",
              selection_from: int | None = None, vault: Path | None = None, doc: str | None = None,
-             doc_hash: str | None = None, should_stop=lambda: False, on_reset=None) -> dict:
+             doc_hash: str | None = None, should_stop=lambda: False, on_reset=None, on_tool=None) -> dict:
     """One sidebar turn, on the note open at `open_path` (None: no note open), with the chat's
     `@` pins. With LOOP it is one loop that answers, looks things up and edits (`_loop`); an edit
     or new-note skill runs as before. Off, a `/command` whose output is chat reads whole notes
@@ -724,7 +726,8 @@ def run_turn(con, open_path: str | None, question: str, history: list[dict], mod
     match — or else from disk; `selection_from` is where the selection starts in it, in UTF-16
     units. `on_edit(event, payload)` gets each part of an edit as it lands; nothing is written
     here: the plugin applies each change through the editor. In THE LOOP `on_reset()` hears each
-    model call after a turn's first start: what `on_delta` streamed before it is not the answer."""
+    model call after a turn's first start: what `on_delta` streamed before it is not the answer, and
+    `on_tool(tool)` each lookup once it ran, {name, label, refused}: the turn keeps them as "tools"."""
     vault = Path(vault or config_mod.VAULT)
     source = _source(con, vault, open_path)
     loaded = skills_mod.load(vault)
@@ -764,7 +767,7 @@ def run_turn(con, open_path: str | None, question: str, history: list[dict], mod
             result = _loop(con, vault, source, question, history, mode, pins=pins, skill=skill, args=args,
                            images=images, selection=selection, doc=doc, on_stage=on_stage,
                            on_delta=on_delta, on_edit=on_edit, should_stop=should_stop, entry=entry,
-                           on_reset=on_reset)
+                           on_reset=on_reset, on_tool=on_tool)
         elif skill and skill.output == "chat":
             pack = context.gather(con, vault, source, skill=skill, links_from=args, selection=selection)
             cited = [{"n": i + 1, "path": doc["path"], "title": doc["title"]}
@@ -793,6 +796,7 @@ def run_turn(con, open_path: str | None, question: str, history: list[dict], mod
         raise
     result.update({"source": source, "retrieval_levels": levels, "skill": entry["skill"]})
     result.setdefault("looked_up", [])
+    result.setdefault("tools", [])
     if result["edit_run"]:
         result["edit_run"]["path"] = source["path"] if source else None
     record = {

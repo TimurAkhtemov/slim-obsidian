@@ -666,6 +666,11 @@
 .slim-step { display: flex; gap: 7px; align-items: baseline; }
 .slim-step-icon { flex: none; width: 14px; text-align: center; color: var(--text-faint); }
 .slim-step.is-partial .slim-step-icon { color: var(--color-orange); }
+/* A turn's lookups, a step line each, above its answer or its run. */
+.slim-tools { margin-bottom: 6px; }
+.slim-tools[hidden] { display: none; }
+.slim-tool .slim-step-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slim-tool.is-refused .slim-step-text { color: var(--text-faint); }
 .slim-step.is-doing .slim-step-icon::before {
   content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--color-orange);
   animation: slim-pulse 0.8s ease-in-out infinite alternate;

@@ -76,6 +76,7 @@ class CopilotView extends ItemView {
     this.error = "";
     this.sending = false;
     this.streamingText = "";
+    this.liveTools = [];            // the lookups of the turn streaming now, a line each
     this.abort = null;
     this.deleteArmed = null;
     this.retryQuestion = "";
@@ -425,6 +426,7 @@ class CopilotView extends ItemView {
     this.error = "";
     let streamed = "";
     this.streamingText = "";
+    this.liveTools = [];
     this.streamingThread = thread;
     this.streamingTurns = turns;
     let completed = null;
@@ -494,6 +496,12 @@ class CopilotView extends ItemView {
           this.streamingText = "";
           this.renderDelta();
         },
+        // A lookup once it ran: a line above the answer, kept with the turn (`turn.tools`).
+        tool: on((data) => {
+          this.liveTools.push({ name: String(data.name || ""), label: String(data.label || ""),
+                                refused: Boolean(data.refused) });
+          this.renderTools();
+        }),
         draft: on((data) => {
           const [view, id] = drafting();
           if (view) this.plugin.live?.startDraft?.(view, id, data);
@@ -580,6 +588,7 @@ class CopilotView extends ItemView {
       this.sending = false;
       this.stopLiveRender();
       this.streamingText = "";
+      this.liveTools = [];
       this.streamingThread = null;
       this.streamingTurns = null;
       this.stage = "";

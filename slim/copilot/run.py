@@ -361,13 +361,42 @@ def _looking(name: str, args) -> str:
     return "Searching"
 
 
+# What the chat shows of a lookup once it ran, as Pi shows each tool call: never a handle.
+QUERY_CHARS = 80
+_PAGED = re.compile(r"(b\d+)#(\d+)")
+
+
+def _tool_label(name: str, args, lookups: lookup_mod.Reader, plain) -> str:
+    """`Searched <where> for "<query>"`, `Read <title>[ § <section>]` or `Listed <folder>/`. A
+    section of the open note asked for by handle is named by its text (`plain`)."""
+    args = args if isinstance(args, dict) else {}
+    text = lambda key: str(args.get(key) or "").strip() if isinstance(args.get(key), (str, type(None))) else ""
+    if name == "search":
+        folder = args.get("folder")
+        where = lookups.default_folder if folder is None else folder if isinstance(folder, str) else ""
+        where = (where or "").strip().strip("/")
+        if where.lower().endswith(".md"):
+            where = PurePosixPath(where).stem
+        query = " ".join(text("query").split())
+        query = query if len(query) <= QUERY_CHARS else query[:QUERY_CHARS - 1] + "…"
+        return f'Searched {where or "the vault"} for "{query}"'
+    path = text("path").strip("/")
+    if name == "list_folder":
+        return f"Listed {path}/" if path else "Listed the vault"
+    section = text("section")
+    if section and lookups.open_note is not None and path == lookups.open_note[0]:
+        paged = _PAGED.fullmatch(section)
+        section = (f"{plain(paged[1])}, page {paged[2]}" if paged else plain(section)) or section
+    return f"Read {PurePosixPath(path).stem or 'a note'}" + (f" § {section}" if section else "")
+
+
 def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tuple[str, ...],
           note: blocks.Note | None, before_text: str, only: set[str] | None = None, create=None,
           temperature: float = FIRST_TEMPERATURE, first_predict: int, nudge: bool = False, on_edit,
           should_stop, on_stage=lambda _name: None, lookups: lookup_mod.Reader | None = None,
           on_reply=None, no_edit: str | None = None, looked_up: list | None = None,
           on_reset=None, fits=None, too_long: str = NOTE_TOO_LONG, think_budget: int = THINK_BUDGET,
-          think_stage: str = "Thinking deeply", sampling: dict | None = None) -> dict:
+          think_stage: str = "Thinking deeply", sampling: dict | None = None, on_tool=None) -> dict:
     """One editing turn. Every call offers the same `tools`, in the same order: they sit at the
     top of the prompt, and a different list re-reads the whole note. `step_tools` are those that
     change something. The first call answers in text, makes a small change at once, or plans a
@@ -389,7 +418,8 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
     result would not is answered NO_ROOM instead, and what it read is neither a source nor editable.
     `too_long` is the refusal when the first answer's prompt lost its start (`ctx_saturated`).
     Every call that thinks adds `think_budget` to the run's output budget, and names its stage
-    `think_stage`. Every call but a step's samples with `sampling` too.
+    `think_stage`. Every call but a step's samples with `sampling` too. `on_tool` hears each lookup
+    once it ran, as {name, label, refused} (`_tool_label`); the turn keeps them all in "tools".
 
     With `no_edit` (THE LOOP with no note it may change) the plan and edit tools are still offered,
     so the prompt stays the same, but every call to them is refused with that reason, counted as
@@ -399,7 +429,8 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
            "finished_early": False, "replanned": False, "outline": None, "outline_met": None,
            "retries": 0, "first_call_edits": 0, "timing": [], "nudged": False,
            "outline_details": None, "corrections": 0, "steps_missed": 0,
-           "first_temperature": temperature, "looked_up": looked_up if looked_up is not None else []}
+           "first_temperature": temperature, "looked_up": looked_up if looked_up is not None else [],
+           "tools": []}
     spent, failed, started = 0, [], [0]
     looks = lookup_mod.NAMES if lookups is not None else ()
     barred = {"plan", *STEP_TOOLS} if no_edit else set()
@@ -422,6 +453,13 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
         elif drafts:
             drafts.part(kind, index, name, value)
 
+    def tell(call: dict, refused: bool) -> None:
+        label = _tool_label(call["name"], call.get("arguments"), lookups, plain)
+        tool = {"name": call["name"], "label": label + (" — refused" if refused else ""), "refused": refused}
+        out["tools"].append(tool)
+        if on_tool:
+            on_tool(tool)
+
     def look(call: dict, pending: list[str]) -> str:
         """One lookup, run; what it found goes back to the model, and what it was to the trace.
         `pending` are the results of this reply's calls before it, not yet in `messages`."""
@@ -443,6 +481,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
         if record["refused"]:
             record["said"] = said.splitlines()[0][:200]
         out["looked_up"].append(record)
+        tell(call, record["refused"])
         return said
 
     def looking(reply: _Reply) -> bool:
@@ -559,6 +598,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
                 elif looked >= MAX_LOOKUPS:
                     results.append(LOOKED_ENOUGH)
                     out["looked_up"].append({"name": call["name"], "refused": True, "said": LOOKED_ENOUGH})
+                    tell(call, True)
                 else:
                     looked += 1
                     results.append(look(call, results))

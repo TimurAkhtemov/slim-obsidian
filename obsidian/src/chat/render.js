@@ -116,6 +116,25 @@ module.exports = {
     }).catch((e) => console.error("[slim] live render", e));
   },
 
+  // The turn's lookups, a muted line each, as Pi shows each tool call: drawn live as each one ran
+  // (`liveTools`), and again from the saved turn. The edit run's step style.
+  fillTools(list, tools) {
+    clear(list);
+    list.hidden = !tools?.length;
+    for (const tool of tools || []) {
+      const item = create(list, "li", `slim-step slim-tool${tool.refused ? " is-refused" : ""}`);
+      create(item, "span", "slim-step-icon", tool.refused ? "–" : "✓");
+      create(item, "span", "slim-step-text", String(tool.label || tool.name || ""));
+    }
+    return list;
+  },
+
+  renderTools() {
+    if (this.el?.liveEdit) this.renderEdit();
+    else if (this.el?.liveTools) this.fillTools(this.el.liveTools, this.liveTools);
+    else this.renderSoon();
+  },
+
   renderStage() {
     if (!this.el) { this.render(); return; }
     if (!this.el.stage) return;
@@ -437,6 +456,9 @@ module.exports = {
     for (const turn of this.turns) {
       const message = create(transcript, "article", `slim-message is-${turn.role}`);
       const run = turn.role === "slim" ? turn.turn?.edit_run : null;
+      if (turn.role === "slim" && turn.turn?.tools?.length) {
+        this.fillTools(create(message, "ul", "slim-steps slim-tools"), turn.turn.tools);
+      }
       if (run) {
         this.renderEditRun(message, run, pending);
       } else if (turn.role === "slim") {
@@ -474,6 +496,7 @@ module.exports = {
         this.el.liveEdit = live;
         this.drawLiveEdit(live);
       } else {
+        this.el.liveTools = this.fillTools(create(live, "ul", "slim-steps slim-tools"), this.liveTools);
         this.el.liveText = create(live, "div", "slim-message-text", this.streamingText);
       }
       this.el.stage = create(transcript, "div", "slim-copilot-stage", stageLine(this.stage, this.stageSince, Date.now()));

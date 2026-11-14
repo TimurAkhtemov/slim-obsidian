@@ -498,6 +498,23 @@ var require_render = __commonJS({
           if (follow) el.transcript.scrollTop = el.transcript.scrollHeight;
         }).catch((e) => console.error("[slim] live render", e));
       },
+      // The turn's lookups, a muted line each, as Pi shows each tool call: drawn live as each one ran
+      // (`liveTools`), and again from the saved turn. The edit run's step style.
+      fillTools(list, tools) {
+        clear(list);
+        list.hidden = !tools?.length;
+        for (const tool of tools || []) {
+          const item = create(list, "li", `slim-step slim-tool${tool.refused ? " is-refused" : ""}`);
+          create(item, "span", "slim-step-icon", tool.refused ? "\u2013" : "\u2713");
+          create(item, "span", "slim-step-text", String(tool.label || tool.name || ""));
+        }
+        return list;
+      },
+      renderTools() {
+        if (this.el?.liveEdit) this.renderEdit();
+        else if (this.el?.liveTools) this.fillTools(this.el.liveTools, this.liveTools);
+        else this.renderSoon();
+      },
       renderStage() {
         if (!this.el) {
           this.render();
@@ -837,6 +854,9 @@ var require_render = __commonJS({
         for (const turn of this.turns) {
           const message = create(transcript, "article", `slim-message is-${turn.role}`);
           const run = turn.role === "slim" ? turn.turn?.edit_run : null;
+          if (turn.role === "slim" && turn.turn?.tools?.length) {
+            this.fillTools(create(message, "ul", "slim-steps slim-tools"), turn.turn.tools);
+          }
           if (run) {
             this.renderEditRun(message, run, pending);
           } else if (turn.role === "slim") {
@@ -872,6 +892,7 @@ var require_render = __commonJS({
             this.el.liveEdit = live;
             this.drawLiveEdit(live);
           } else {
+            this.el.liveTools = this.fillTools(create(live, "ul", "slim-steps slim-tools"), this.liveTools);
             this.el.liveText = create(live, "div", "slim-message-text", this.streamingText);
           }
           this.el.stage = create(transcript, "div", "slim-copilot-stage", stageLine(this.stage, this.stageSince, Date.now()));
@@ -1070,6 +1091,7 @@ var require_edit_run = __commonJS({
           answer: text,
           mode: this.mode,
           citations: [],
+          tools: [...this.liveTools || []],
           timing: { total_ms: Date.now() - run.started },
           edit_run
         } };
@@ -1107,6 +1129,7 @@ var require_edit_run = __commonJS({
       drawLiveEdit(parent) {
         const run = this.editRun;
         if (!run) return;
+        if (this.liveTools?.length) this.fillTools(create(parent, "ul", "slim-steps slim-tools"), this.liveTools);
         this.renderEditRun(parent, { plan: run.plan, step_states: run.steps, changes: run.changes }, null);
         const meta = create(parent, "div", "slim-edit-meta");
         create(meta, "span", "", `${this.mode === "deep" ? "Deep" : "Quick"} \xB7 ${Math.max(0, Math.round((Date.now() - run.started) / 1e3))} s`);
@@ -1424,6 +1447,7 @@ var require_view = __commonJS({
         this.error = "";
         this.sending = false;
         this.streamingText = "";
+        this.liveTools = [];
         this.abort = null;
         this.deleteArmed = null;
         this.retryQuestion = "";
@@ -1754,6 +1778,7 @@ var require_view = __commonJS({
         this.error = "";
         let streamed = "";
         this.streamingText = "";
+        this.liveTools = [];
         this.streamingThread = thread;
         this.streamingTurns = turns;
         let completed = null;
@@ -1822,6 +1847,15 @@ var require_view = __commonJS({
               this.streamingText = "";
               this.renderDelta();
             },
+            // A lookup once it ran: a line above the answer, kept with the turn (`turn.tools`).
+            tool: on((data) => {
+              this.liveTools.push({
+                name: String(data.name || ""),
+                label: String(data.label || ""),
+                refused: Boolean(data.refused)
+              });
+              this.renderTools();
+            }),
             draft: on((data) => {
               const [view2, id] = drafting();
               if (view2) this.plugin.live?.startDraft?.(view2, id, data);
@@ -1918,6 +1952,7 @@ var require_view = __commonJS({
           this.sending = false;
           this.stopLiveRender();
           this.streamingText = "";
+          this.liveTools = [];
           this.streamingThread = null;
           this.streamingTurns = null;
           this.stage = "";

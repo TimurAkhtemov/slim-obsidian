@@ -515,6 +515,8 @@ class _Handler(BaseHTTPRequestHandler):
                 on_stage=lambda stage: emit("stage", {"stage": stage}),
                 on_delta=on_delta,
                 on_reset=lambda: quietly(lambda: emit("delta_reset", {})),
+                # Each lookup once it ran, as Pi shows each tool call: the chat keeps a line for it.
+                on_tool=lambda tool: quietly(lambda: emit("tool", tool)),
                 on_edit=on_edit, should_stop=should_stop)
             turn["attachments"] = attachments
             if turn.get("edit_run"):

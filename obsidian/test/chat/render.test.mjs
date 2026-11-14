@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import { find } from "../fakes.mjs";
+import { fakeEl, find } from "../fakes.mjs";
 import { PLAN, change, editView, fakeLive, makeView, renderedView,
          text } from "../copilot-harness.mjs";
 
@@ -365,4 +365,64 @@ test("a click that is not on a wikilink is left alone", () => {
   view.onLinkClick(event);
   assert.equal(event.prevented, undefined);
   assert.deepEqual(opened, []);
+});
+
+// ---- every lookup a line in the chat, as Pi shows each tool call --------------------------------
+
+const toolLines = (root) => {
+  const rows = [];
+  find(root, (node) => { if (node.cls?.split(" ").includes("slim-tool")) rows.push(node); return false; });
+  return rows.map((row) => [row.cls.includes("is-refused"), row.children.at(-1).textContent]);
+};
+
+test("each lookup shows as a muted line above the streaming answer as it arrives", async () => {
+  const { view, root } = renderedView({
+    streamCopilot: async (_body, handlers) => {
+      handlers.tool({ name: "search", label: 'Searched the vault for "comp"', refused: false });
+      assert.deepEqual(toolLines(root), [[false, 'Searched the vault for "comp"']]);
+      handlers.delta({ text: "Your offer" });
+      handlers.tool({ name: "read_note", label: "Read nope — refused", refused: true });
+      assert.deepEqual(toolLines(root), [[false, 'Searched the vault for "comp"'], [true, "Read nope — refused"]]);
+      const live = find(root, (node) => node.cls?.includes("is-streaming"));
+      assert.ok(live.children[0].cls.includes("slim-tools"));          // above the answer
+      handlers.turn({ answer: "Your offer is fixed.", mode: "quick", citations: [],
+                      tools: [{ name: "search", label: 'Searched the vault for "comp"', refused: false },
+                              { name: "read_note", label: "Read nope — refused", refused: true }] });
+    },
+  });
+  view.render();
+  await view.send("what is the total comp?");
+  assert.deepEqual(view.liveTools, []);
+  assert.deepEqual(toolLines(root), [[false, 'Searched the vault for "comp"'], [true, "Read nope — refused"]]);
+});
+
+test("a saved turn shows its lookups again on reload, and a turn with none shows no list", () => {
+  const { view, root } = renderedView();
+  view.turns = [{ role: "slim", text: "Fixed.", turn: { citations: [], tools: [
+    { name: "read_note", label: "Read Screen notes", refused: false }] } }];
+  view.render();
+  const message = find(root, (node) => node.cls === "slim-message is-slim");
+  assert.ok(message.children[0].cls.includes("slim-tools"));
+  assert.deepEqual(toolLines(root), [[false, "Read Screen notes"]]);
+  view.turns = [{ role: "slim", text: "Hi.", turn: { citations: [] } }];
+  view.render();
+  assert.equal(find(root, (node) => node.cls?.includes("slim-tools")), null);
+});
+
+test("lookups before an edit stay above the run's steps", async () => {
+  const { live, editor } = fakeLive();
+  const view = editView({ live, editor, events: async (_body, handlers) => {
+    handlers.tool({ name: "read_note", label: "Read Bee facts", refused: false });
+    handlers.edit({ before_ref: "a".repeat(32), hash_before: sha256Hex("# A\n\nold\n") });
+    handlers.plan(PLAN);
+    const root = view.contentEl;
+    view.render();
+    assert.deepEqual(toolLines(root), [[false, "Read Bee facts"]]);
+    handlers.turn({ answer: PLAN.intro, mode: "quick", citations: [], edit_run: {},
+                    tools: [{ name: "read_note", label: "Read Bee facts", refused: false }] });
+  } });
+  view.contentEl = fakeEl("div");
+  delete view.render;                                             // editView stubs it; draw for real
+  await view.send("add the bee facts");
+  assert.equal(view.turns.at(-1).turn.tools[0].label, "Read Bee facts");
 });
