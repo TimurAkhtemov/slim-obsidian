@@ -19,7 +19,7 @@ live. The queue is `BACKLOG.md`; the README is for outsiders.
 ## Commands
 
 ```bash
-uv run pytest -q                        # ~890 tests; `uv` always — the system python is 3.9
+uv run pytest -q                        # ~975 tests; `uv` always — the system python is 3.9
 node --test "obsidian/test/**/*.test.mjs"   # plugin tests; they load obsidian/src/ directly
 (cd obsidian && npm install && npm run build)   # src/ -> the committed main.js; bundle.test.mjs fails if stale
 uv run slim chat --reload               # dev server; respawns on any slim/**/*.py save (not .yaml)
@@ -112,9 +112,10 @@ moves can hit this.
    owner's own act.
    - **Chats stand on their own** (`copilot/threads.py`, outside the vault with their pasted
      images, never evidence): one history list, newest first, with a search box. Switching notes
-     never ends or swaps a chat; the sidebar reopens the latest. A question keeps the note it was
-     asked on, and an earlier answer one line naming what it looked at and changed; tool results
-     are not replayed, so history stays small and the model looks again if it needs to.
+     never ends or swaps a chat, and the sidebar reopens the latest: chats bound to a note were
+     hard to find again (the owner, 2026-11-13). A question keeps the note it was asked on, and
+     an earlier answer one line naming what it looked at and changed; tool results are not
+     replayed, so history stays small and the model looks again if it needs to.
    - **One loop, no gate** (`turn._loop` over `run._turn`): every call is offered the lookups, the
      edit tools and `create_note`, and the model decides whether to answer, look or edit. The
      one loop tried on 2026-10-13 was replaced that day by an intent gate, on Ollama: every
@@ -132,33 +133,43 @@ moves can hit this.
      edit limit, which rides as plain text), an edit call is refused with a reason the model
      reads. A note over `context.ATTACH_MAX_CHARS` (40k) rides as its sections map and the head
      that fits: a long transcript is not prefilled every turn, `read_note` shows the rest by
-     section with its handles, and a part the turn has not been shown cannot be edited.
+     section with its handles, and a part the turn has not been shown cannot be edited. A block
+     too long to show whole (a pasted article with no blank lines) is named where it stands, as a
+     transcript is, and the head goes on after it: shown only whole, it and everything after it
+     were unreachable.
    - **`@` pins** a note or a folder: one message before the history, which changes only when the
-     pins do (`context.pinned_message`). A pinned note is read from disk whatever its folder: any
-     note the owner points at is fair game. A pinned folder is where search looks by default.
+     pins do (`context.pinned_message`). A pinned note is read from disk whatever its folder, and
+     `read_note` and `list_folder` open what is under a pin even in an excluded folder: any note
+     the owner points at is fair game (2026-11-13). A pinned folder is where search looks by
+     default, if search can see it.
    - **Lookups** (`copilot/lookup.py`, read-only): `search` returns the passage where the query
-     matched; `read_note` reads a note whole or by section, pages a long note or transcript, and
-     finds the one note a shortened path names; `list_folder`. They see only what the index sees
-     (`EXCLUDED_TOP` closed, except the open note), so SLIM never finds its own reflections as
-     evidence. At most 6 before the first answer or edit (`run.MAX_LOOKUPS`); one whose result
-     would overflow the window is refused. Each is a line in the chat, live as it runs.
+     matched; `read_note` reads a note whole or by section (a long one shows its outline and the
+     head that fits, the rest by section), pages a transcript or a block too long to show,
+     read-only, and finds the one note a shortened path names; `list_folder`. They see only what
+     the index sees (`EXCLUDED_TOP` closed, except the open note and the pins), so SLIM never
+     finds its own reflections as evidence. At most 6 before the first answer or edit
+     (`run.MAX_LOOKUPS`); one whose result would overflow the window is refused. A call to a tool
+     not offered (a misspelt lookup) is refused with the tools there are and counts toward the
+     refusals: told to make a plan instead, a plain question could become an edit nobody asked
+     for (found in review, 2026-11-14). Each is a line in the chat, live as it runs.
    - **Effort is Pi's thinking levels** (2026-11-14, replacing Quick and Deep), the ones the Pi
      coding agent cycles through on the same model: Off, Low 4096 thinking tokens, Medium 8192
      (the default), High 16384 (`run.THINK_BUDGETS`). Every call but a plan step's thinks within
-     its level's budget, each call its own allowance, at most 8 calls a turn
-     (`run.MAX_THINKING_CALLS`), and samples as Qwen recommends (thinking: 1.0, top_p 0.95, top_k
-     20, presence 1.5; Off: 0.7, top_p 0.8). Off is fastest but looks things up less reliably:
-     the live answer that invented the owner's numbers with no lookup ran with thinking off
-     (2026-11-13). The selector keeps the last level chosen (the plugin's settings); each answer
-     names its own, and a turn saved as Quick or Deep reads as Medium or High. A skill keeps its
-     measured setup, thinking only at High; its frontmatter may name an effort, which wins
-     (`mode: quick|deep` still reads). The loop's prompt is Pi-shaped and vault-first: the tutor
-     persona's "use your general knowledge freely" made a question about the owner's own numbers
-     a guess with no lookup (2026-11-13).
-   - **Sources are what code saw**: the notes a turn read or its searches found (at most 8), then
-     the pins; the open note only when a tool read it. Code knows what the turn looked at, so no
-     model call decides them, and no prompt asks for citations: [n] markers made a citation bot
-     (2026-09-01).
+     its level's budget, each call its own allowance, and samples as Qwen recommends (thinking:
+     1.0, top_p 0.95, top_k 20, presence 1.5; Off: 0.7, top_p 0.8). At most 8 calls a turn think
+     (`run.MAX_THINKING_CALLS`), which bounds a turn's output (the arithmetic is in `run.py`); the
+     calls after them run with thinking off, at the level's sampling and cap still. Off is fastest
+     but looks things up less reliably: the live answer that invented the owner's numbers with no
+     lookup ran with thinking off (2026-11-13). The selector keeps the last level chosen (the
+     plugin's settings); each answer names its own, and a turn saved as Quick or Deep reads as
+     Medium or High. A skill keeps its measured setup, thinking only at High; its frontmatter may
+     name an effort, which wins (`mode: quick|deep` still reads). The loop's prompt is Pi-shaped
+     and vault-first: the tutor persona's "use your general knowledge freely" made a question
+     about the owner's own numbers a guess with no lookup (2026-11-13).
+   - **Sources are what code saw**: a chat skill's own notes first, then the notes a turn read or
+     its searches found (at most `turn.SOURCES_MAX`), then the pins; the open note only when a
+     tool read it. Code knows what the turn looked at, so no model call decides them, and no
+     prompt asks for citations: [n] markers made a citation bot (2026-09-01).
    - The open note's embedded images ride with every turn, at most 6
      (`copilot.context.MAX_NOTE_IMAGES`), in note order: what an image says is not searchable.
      Nearby notes, under the note's chip, are its neighbours by PATH (folder → course → subject,
@@ -175,8 +186,9 @@ moves can hit this.
      per step, a step at temperature 0.0 with no thinking (retyping at 0.7 drifted), and nothing
      after the steps (fix-ups for the plan's outline were cut: every time they fired they wasted
      calls or undid work). Code holds the plan and the limits (`copilot/run.py`: 8 steps, 30
-     calls, 3 refusals in a row, 12k output tokens beside the thinking allowances) and refuses
-     what a call must not do, with a reason the model reads back: among them, a later step
+     calls, 3 refusals in a row, 12k output tokens beside the thinking allowances; a step whose
+     prompt would no longer fit the window is not called, as the server would refuse it) and
+     refuses what a call must not do, with a reason the model reads back: among them, a later step
      rewriting what an earlier step wrote, and new HTML blocks, which Obsidian renders no
      Markdown inside (a new `<details>` is written as a folded callout instead,
      `copilot.edits.fold`). A change that reworks only the run's own text is `part_of` the
@@ -202,12 +214,13 @@ moves can hit this.
      New text put above a plain note's properties goes right after them.
    - **A claimed edit is checked by code**: a reply with no tool call that says it changed the
      note (`run.claims_edit`, a narrow English matcher: "I've replaced…", "Let me … now", "Done")
-     while the note is editable and nothing landed is told so once, in one more call; a reply
-     that claims it again keeps "No change was made to the note." under it (traced as
-     `claimed_edit`). One run in 5 of one edit request wrote the new text in the chat and said
-     "I've replaced…" with nothing changed (2026-11-14), and a prompt rule alone is not a fix.
-     It is off once the chat holds an earlier SLIM edit (`turn.edited_before`): "I replaced the
-     intro…" is then as likely a recap, and the change marks still show what landed.
+     while the note is editable and nothing landed is told so once, in one more call, which asks
+     for the change only if the owner asked for it (a false match told to make it could edit the
+     note unasked); a reply that claims it again keeps "No change was made to the note." under it
+     (traced as `claimed_edit`). One run in 5 of one edit request wrote the new text in the chat
+     and said "I've replaced…" with nothing changed (2026-11-14), and a prompt rule alone is not a
+     fix. It is off once the chat holds an earlier SLIM edit (`turn.edited_before`): "I replaced
+     the intro…" is then as likely a recap, and the change marks still show what landed.
 
 ## Where things live
 
@@ -340,7 +353,8 @@ that reacts to a vault `delete` must first ask whether the server caused it (202
   interpretation, classification, synthesis, language. A model guessing a fact the machine
   already knows is a bug that varies run to run.
 - **Raw sources are never rewritten.** Derived state is rebuildable — but a rebuild mints new
-  source ids and orphans saved copilot chats, so schema changes are migrations.
+  source ids, and a saved chat then finds the note it started on only by the path saved with it,
+  which a later move makes stale; so schema changes are migrations.
 - **Derived artifacts are excluded from ingestion** — `_Reflections/`, `Profile/` and
   `Skills/` (`config.EXCLUDED_TOP`); the recorder's summary is fenced and blanked before
   chunking — so the brain never retrieves its own opinions as evidence.

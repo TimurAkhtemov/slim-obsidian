@@ -177,8 +177,8 @@ question, so switching notes never ends a conversation; `@` pins a note or a fol
 chat. Code holds every limit: lookups before an answer, plan steps, calls, refusals, output
 tokens.
 
-Two deliberate details. The lookups see only what the index sees, so SLIM never finds its own
-reflections and treats them as evidence. And a turn's sources are the notes code saw it look
+Two deliberate details. The lookups see only what the index sees, plus the open note and what
+you pin, so SLIM never finds its own reflections and treats them as evidence. And a turn's sources are the notes code saw it look
 at: no model call decides them and nothing in the prompt asks for citations, so an answer
 reads like an assistant talking, not a footnoted report.
 
@@ -200,7 +200,7 @@ and it is create-only — it never overwrites an existing reflection.
 | Where | What | If you deleted it |
 |---|---|---|
 | the vault | Every note, its frontmatter, its full transcript, archived audio, the reflections. Plain Markdown, readable with SLIM uninstalled. | Everything is gone — this is the only copy that matters. |
-| `slim.db` | `sources`, `fragments`, `fragments_fts`, `embeddings`. In Application Support, never in a synced folder. | `slim ingest` rebuilds it — but new source ids orphan saved chats, so schema changes are migrations. |
+| `slim.db` | `sources`, `fragments`, `fragments_fts`, `embeddings`. In Application Support, never in a synced folder. | `slim ingest` rebuilds it — but new source ids cut a saved chat's link to the note it started on, so schema changes are migrations. |
 | outside both | Copilot threads, pasted images, JSONL traces, and the vault pin that stops ingest sweeping the wrong vault. | Chat history and the audit trail are lost; your notes are untouched. |
 
 Raw sources are never rewritten, and derived artifacts are never re-ingested — `_Reflections/`

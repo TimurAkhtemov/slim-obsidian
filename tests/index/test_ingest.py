@@ -163,7 +163,7 @@ def test_authored_at_falls_back_to_created_time():
     assert ingest_mod.source_fields({})["authored_at"] is None
 
 
-# --- the single-note path (`ingest_note`, used by the open-note copilot) must make the SAME
+# --- the single-note path (`ingest_note`, used by the copilot) must make the SAME
 # identity decisions as the sweep, or a note opened in Obsidian can rewrite the archive.
 
 def test_a_leftover_roots_source_is_swept_on_the_next_ingest(tmp_path):
