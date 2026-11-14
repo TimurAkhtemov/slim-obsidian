@@ -513,7 +513,7 @@ class _Handler(BaseHTTPRequestHandler):
             turn = copilot_turn.run_turn(
                 con, open_path, question, history, effort, pins=pins, vault=config.VAULT, images=images,
                 selection=selection, selection_from=selection_from, doc=doc, doc_hash=doc_hash,
-                on_stage=lambda stage: emit("stage", {"stage": stage}),
+                on_stage=lambda stage: quietly(lambda: emit("stage", {"stage": stage})),
                 on_delta=on_delta,
                 on_reset=lambda: quietly(lambda: emit("delta_reset", {})),
                 # Each lookup once it ran, as Pi shows each tool call: the chat keeps a line for it.

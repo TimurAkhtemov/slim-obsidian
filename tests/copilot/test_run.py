@@ -250,23 +250,33 @@ def test_a_refused_first_edit_is_tried_once_more(turn, monkeypatch):
     assert len(got["edit_run"]["changes"]) == 1 and len(seen) == 2
 
 
-def test_a_first_reply_with_only_done_is_asked_for_a_plan_once_then_answers(turn, monkeypatch):
+def test_a_first_reply_with_only_done_is_refused_as_not_offered_then_answers(turn, monkeypatch):
     seen = scripted(monkeypatch, ("", [("done", {"summary": "Nothing to do."})]), ("A is the first section.", []))
     got, events = turn("what is A?")
-    assert seen[1]["messages"][-1] == {"role": "tool", "content": "refused: start with a plan\n\nMake the plan first: "
-                                                                  "one sentence for the owner, and the steps in order."}
+    assert seen[1]["messages"][-1] == {"role": "tool", "content": "refused: done is not available now; the tools "
+                                                                  "are " + ", ".join(LOOP_TOOLS)}
     assert seen[0]["opts"]["temperature"] == seen[1]["opts"]["temperature"] == copilot_turn.LOOP_TEMPERATURE
     assert got["edit_run"] is None and got["answer"] == "A is the first section." and events == []
 
 
-def test_a_first_call_that_could_not_be_read_is_asked_for_a_plan_once_more(turn, monkeypatch):
+def test_a_first_call_that_could_not_be_read_is_asked_for_once_more(turn, monkeypatch):
     seen = scripted(monkeypatch, ("<tool_call>{broken", []),
                     ("", [("plan", {"intro": "Rename A.", "steps": ["Rename A"]})]),
                     ("", [("replace", {"target": "b3", "markdown": "## A renamed"})]))
     got, _ = turn("rename A")
-    assert "refused: your tool call could not be read (a tool call came back as text); write it again" in \
-        seen[1]["messages"][-1]["content"]
+    assert seen[1]["messages"][-1]["content"] == ("refused: your tool call could not be read (a tool call came "
+                                                  "back as text); write it again\n\nOr answer in text, if no "
+                                                  "tool is needed.")
     assert "## A renamed" in got["final"]
+
+
+def test_an_edit_skills_unreadable_first_call_is_asked_for_its_plan(turn, monkeypatch):
+    seen = scripted(monkeypatch, ("<tool_call>{broken", []),
+                    ("", [("replace", {"target": "b5", "markdown": "- **one**"})]))
+    got, _ = turn("/tidy", selection="- one")
+    assert seen[1]["messages"][-1]["content"].endswith("Make the plan first: one sentence for the owner, "
+                                                       "and the steps in order.")
+    assert "- **one**" in got["final"]
 
 
 def test_an_out_of_order_heading_triggers_no_fix_up(turn, monkeypatch):
@@ -1054,7 +1064,7 @@ def test_a_reply_mixing_a_lookup_and_a_tool_not_offered_runs_the_lookup(vault, m
                                          ("", [("list_folder", {"path": "Notes"}), ("done", {"summary": "x"})]),
                                          ("ok", []))
     results = [m["content"] for m in seen[1]["messages"] if m["role"] == "tool"]
-    assert results[0].startswith("school/") and results[1] == "refused: done is not available now"
+    assert results[0].startswith("school/") and results[1].startswith("refused: done is not available now; the tools are search")
     assert out["answer"] == "ok"
 
 

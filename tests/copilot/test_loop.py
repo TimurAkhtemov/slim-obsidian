@@ -737,6 +737,8 @@ def test_a_claimed_edit_that_made_none_is_corrected_once_and_then_lands(ask, mon
     got = ask("make the intro simpler")
     assert len(seen) == 2
     assert seen[1]["messages"][-1] == {"role": "user", "content": edit_run.CLAIMED_EDIT}
+    # A false match must not order an edit: the change is made only if the owner asked for it.
+    assert "If the owner asked for this change" in edit_run.CLAIMED_EDIT
     assert seen[1]["messages"][-2]["content"].endswith("I've replaced the intro with this.")
     assert len(got["edit_run"]["changes"]) == 1 and edit_run.FLAGGED not in got["answer"]
     assert RESET in got["deltas"]                       # the false claim is not left as the answer
@@ -851,3 +853,54 @@ def test_a_first_call_edit_on_an_overflowing_window_lands_nothing_and_says_why(c
         copilot_turn.run_turn(con, OPEN, "shorten the intro", [], "medium", vault=vault, doc=NOTE,
                               doc_hash=edits.digest(NOTE), on_edit=lambda e, p: events.append(e))
     assert len(seen) == 1 and events == []
+
+
+# --- a call to a tool the loop does not offer ---------------------------------------------------
+
+def test_a_question_whose_call_is_not_offered_is_refused_and_never_becomes_an_edit(ask, monkeypatch, records):
+    """A misspelt lookup is refused with the tools there are, as a lookup past the cap is: it is
+    never told to make a plan, which pushed a plain question into an edit nobody asked for."""
+    seen = scripted(monkeypatch, ("", [("read_file", {"path": OPEN})]), ("It introduces A.", []))
+    got = ask("what does my note say?")
+    said = seen[1]["messages"][-1]
+    assert said == {"role": "tool", "content": "refused: read_file is not available now; the tools are "
+                                               + ", ".join(ALL_TOOLS)}
+    assert got["answer"] == "It introduces A." and got["edit_run"] is None and got["events"] == []
+    assert records[0]["refusals"] == ["not_offered"]
+
+
+def test_a_reply_of_only_done_in_the_loop_is_refused_and_the_question_answered(ask, monkeypatch, records):
+    seen = scripted(monkeypatch, ("", [("done", {"summary": "Nothing to do."})]), ("A is the first section.", []))
+    got = ask("what is A?")
+    assert seen[1]["messages"][-1]["content"].startswith("refused: done is not available now")
+    assert got["edit_run"] is None and got["answer"] == "A is the first section." and got["events"] == []
+    assert records[0]["refusals"] == ["not_offered"]
+
+
+def test_with_no_note_a_call_not_offered_is_refused_and_the_next_reply_is_the_answer(ask, monkeypatch):
+    seen = scripted(monkeypatch, ("", [("read_file", {"path": "Notes/x.md"})]), ("There is no such note.", []))
+    got = ask("what does my note x say?", open_path=None)
+    assert seen[1]["messages"][-1]["content"].startswith("refused: read_file is not available now")
+    assert got["answer"] == "There is no such note." and got["edit_run"] is None
+
+
+def test_calls_not_offered_count_toward_the_refusals_that_end_a_turn(ask, monkeypatch):
+    seen = scripted(monkeypatch, *[("", [("read_file", {"path": "x.md"})])] * 10)
+    with pytest.raises(copilot_turn.CopilotError, match="before an answer"):
+        ask("q")
+    assert len(seen) == edit_run.MAX_REFUSALS
+
+
+def test_a_turn_stopped_while_looking_does_not_answer_with_the_lookups_preamble(ask, monkeypatch):
+    """Its text was "Let me search…", said before a lookup: never the answer."""
+    seen = scripted(monkeypatch, *[("Let me search your notes for that.", [("list_folder", {"path": "Notes"})])] * 20)
+    with pytest.raises(copilot_turn.CopilotError, match="the turn ended before an answer"):
+        ask("look around")
+    assert len(seen) == edit_run.MAX_LOOKUPS + edit_run.MAX_REFUSALS
+
+
+def test_a_turn_over_its_token_budget_while_looking_ends_before_an_answer(ask, monkeypatch):
+    seen = scripted(monkeypatch, ("Let me look.", [("list_folder", {"path": "Notes"})], 10**6))
+    with pytest.raises(copilot_turn.CopilotError, match=r"the turn ended before an answer \(token budget\)"):
+        ask("look around")
+    assert len(seen) == 1

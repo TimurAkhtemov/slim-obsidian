@@ -543,7 +543,8 @@ def test_a_client_that_hangs_up_stops_the_run_after_the_current_call(server_url,
 
 def test_a_delta_to_a_closed_client_never_raises_into_the_models_stream(server_url, monkeypatch):
     """A write into a closed socket raised BrokenPipe inside the model's stream, which read as a
-    failed call and was retried. The delta is quiet and should_stop() says stop."""
+    failed call and was retried. The delta is quiet, and so is a stage line (one raised out of the
+    turn lost its trace), and should_stop() says stop."""
     import socket
     from urllib.parse import urlparse
 
@@ -555,6 +556,7 @@ def test_a_delta_to_a_closed_client_never_raises_into_the_models_stream(server_u
         try:
             for _ in range(200):
                 kwargs["on_delta"]("more text " * 50)
+                kwargs["on_stage"]("Thinking")
                 threading.Event().wait(0.002)
             said["raised"] = None
         except Exception as exc:                # noqa: BLE001

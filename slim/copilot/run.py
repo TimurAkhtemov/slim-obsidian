@@ -53,9 +53,12 @@ NOTE_TOO_LONG = "this note is too long for one request; edit it in Obsidian"
 # had changed. A prompt rule alone is not a fix, so code catches it: a tool-call-free reply that
 # claims a change (`claims_edit`) when the note is editable and none landed gets ONE corrective
 # message (`_turn`); a reply that still claims one keeps FLAGGED under it. The matcher is narrow
-# on purpose: a miss costs what it cost before, a false match one more model call.
-CLAIMED_EDIT = ("No change was made to the note: your reply says you changed it, but you called no edit "
-                "tool. Make the change with the tools now, or say that you did not change the note.")
+# on purpose: a miss costs what it cost before, a false match one more model call. The message
+# makes the change only if the owner asked for it: told "make the change now", a false match (the
+# owner's own "I moved the meeting…", unquoted) could become an edit nobody asked for.
+CLAIMED_EDIT = ("Your reply says you changed the note, but no change was made in this turn. If the owner "
+                "asked for this change, make it with the tools now; otherwise answer again without saying "
+                "you changed the note.")
 FLAGGED = "No change was made to the note."
 _EDITED = ("replaced|updated|changed|added|rewrote|rewritten|edited|renamed|inserted|removed|deleted|"
            "moved|simplified|condensed|shortened")
@@ -545,9 +548,10 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
         return said
 
     def looking(reply: _Reply) -> bool:
-        """Only lookups, or calls refused for want of a note: answered, and the call made again."""
+        """Only lookups, calls refused for want of a note, or calls to a tool not offered (a misspelt
+        lookup, `done` in the loop): answered, and the call made again."""
         names = [c["name"] for c in reply.calls]
-        return (any(n in looks or n in barred for n in names)
+        return (any(n in looks or n in barred or n not in tools for n in names)
                 and not any((n == "plan" or n in step_tools) and n not in barred for n in names))
 
     def bar(name: str, step: int) -> str:
@@ -672,7 +676,11 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
                     if call["name"] in barred:
                         results.append(bar(call["name"], 0))
                     elif call["name"] not in looks:
-                        results.append(f"refused: {call['name']} is not available now")
+                        # Not offered at all: refused with the tools there are, never "make a plan"
+                        # (that pushed a plain question into an unasked edit).
+                        out["refusals"].append({"step": 0, "tool": call["name"], "code": "not_offered"})
+                        results.append(f"refused: {call['name']} is not available now; the tools are "
+                                       f"{', '.join(tools)}")
                     elif looked >= MAX_LOOKUPS:
                         results.append(LOOKED_ENOUGH)
                         out["looked_up"].append({"name": call["name"], "refused": True, "said": LOOKED_ENOUGH})
@@ -693,19 +701,22 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
                     break
                 messages.extend({"role": "tool", "content": result} for result in results)
                 first = ask(tools, think, temperature, first_predict)
+            if looking(first):
+                # Stopped while still looking (the lookup cap, the call limit, the token budget): its
+                # text was a lookup's preamble ("Let me search…"), never the answer.
+                return answered(claimed or "")
             plans, edits = split(first)
-            unread = first.malformed and not first.calls
-            if not plans and not edits and not out["stopped"] and not out["replanned"] and (
-                    unread or first.calls and planning):
-                # Calls that change nothing, or a call code could not read: the plan asked for once
-                # more (a new note, where there is no plan, once more).
+            if first.malformed and not first.calls and not out["stopped"] and not out["replanned"]:
+                # A call code could not read: asked for once more. A skill's run was asked for a
+                # change, so it is pointed at its plan or its new note; the loop's may have been a
+                # lookup, so it may answer instead.
                 out["replanned"] = True
-                said = _unreadable(first.malformed) if unread else "refused: start with a plan"
-                messages.extend(_results([said], "Make the plan first: one sentence for the owner, and the "
-                                                 "steps in order." if planning else
-                                                 "Make the new note with the create_note tool."))
+                messages.extend(_results([_unreadable(first.malformed)],
+                                         "Or answer in text, if no tool is needed." if lookups is not None else
+                                         "Make the plan first: one sentence for the owner, and the steps in "
+                                         "order." if planning else "Make the new note with the create_note tool."))
                 first = ask(tools, think, temperature, first_predict)
-                plans, edits = split(first)
+                continue
             if plans or edits:
                 break
             answer = first.content.strip() or next((_summary(c) for c in first.calls if c["name"] == "done"), "")
