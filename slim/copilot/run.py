@@ -530,7 +530,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
 
     def split(reply: _Reply):
         """A first reply's plan, and its other calls if any of them changes something."""
-        plans = [c for c in reply.calls if c["name"] == "plan" and planning]
+        plans = [c for c in reply.calls if c["name"] == "plan" and "plan" not in barred]
         others = [c for c in reply.calls if c not in plans]
         acts = any(c["name"] in acting for c in others) or (plans and any(c["name"] in looks for c in others))
         return plans, others if acts else []
