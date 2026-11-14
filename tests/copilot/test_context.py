@@ -166,7 +166,8 @@ def test_pinned_notes_and_folders(con, vault):
         {"kind": "folder", "path": "Notes/school/cs-202"}])
     assert text.startswith("Context I've pinned:\n")
     assert "Buzzing." in text and "I like graphs." in text            # a pin is read whatever its folder
-    assert "sorting.md" in text and "Searches default to Notes/school/cs-202/." in text
+    assert "sorting.md" in text
+    assert 'Searches default to Notes/school/cs-202/; pass folder "" to search the whole vault.' in text
     assert read == ["Notes/school/b.md", "Profile/me.md", "Notes/school/cs-202"] and left == []
 
 
@@ -174,6 +175,15 @@ def test_a_pinned_excluded_folder_still_lists(con, vault):
     write(vault, "Profile/me.md", "x")
     text, read, _left = context.pinned_message(con, vault, [{"kind": "folder", "path": "Profile"}])
     assert "me.md" in text and read == ["Profile"]
+    assert "Searches default" not in text                             # search never looks there
+
+
+def test_searches_default_to_the_first_searchable_folder(con, vault):
+    write(vault, "Profile/me.md", "x")
+    write(vault, "Notes/school/cs-202/sorting.md", "Quicksort.")
+    text, _read, _left = context.pinned_message(con, vault, [
+        {"kind": "folder", "path": "Profile"}, {"kind": "folder", "path": "Notes/school/cs-202"}])
+    assert "Searches default to Notes/school/cs-202/" in text and "Searches default to Profile" not in text
 
 
 def test_pins_share_the_budget_and_one_that_does_not_fit_is_named(con, vault, monkeypatch):

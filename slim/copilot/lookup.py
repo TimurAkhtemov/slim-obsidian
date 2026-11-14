@@ -31,7 +31,8 @@ TOOLS: dict[str, dict] = {
         "parameters": {"type": "object", "properties": {
             "query": {"type": "string", "description": "what to look for, in words"},
             "folder": {"type": "string",
-                       "description": "optional: only notes under this folder, or only this one note"}},
+                       "description": "optional: only notes under this folder, or only this one note; "
+                                      "\"\" searches the whole vault"}},
             "required": ["query"]},
         "apply": None},
     "read_note": {
@@ -54,6 +55,12 @@ NAMES = ("search", "read_note", "list_folder")
 
 class _Refused(Exception):
     pass
+
+
+def searchable(path: str) -> bool:
+    """Whether search can look under this folder: a pinned folder in an excluded one (`Skills/`)
+    is never a search's default, or every default search would be refused."""
+    return path.split("/")[0].casefold() not in _TOP_CF
 
 
 def _clean(raw) -> str:
@@ -122,7 +129,12 @@ class Reader:
         query = args.get("query")
         if not isinstance(query, str) or not query.strip():
             raise _Refused("query must be words to look for")
-        folder = args.get("folder") or self.default_folder
+        # No folder is the default one (a pinned folder); "" or "/" is the whole vault, said outright.
+        folder = args.get("folder")
+        if folder is None:
+            folder = self.default_folder
+        elif isinstance(folder, str) and folder.strip() in ("", "/"):
+            folder = None
         prefix = self._folder(folder).as_posix() if folder else ""
         prefixes = (prefix,) if prefix not in ("", ".") else None
         hits = search_mod.hybrid(self.con, query, k=SEARCH_HITS, prefixes=prefixes)

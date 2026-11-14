@@ -376,8 +376,8 @@ def pinned_message(con, vault: Path, pins: list[dict]) -> tuple[str, list[str], 
     """What a chat has `@`-pinned, as one message: (its text, the paths it holds, the paths left
     out). A note is its whole text and a folder its listing, both read from disk whatever their
     folder: any note the owner points at is fair game, though search never sees an excluded one.
-    Searches default to the first folder pinned. Pins share INPUT_BUDGET_CHARS, in order; one
-    that does not fit, or is not there, is named instead."""
+    Searches default to the first folder pinned that search can see. Pins share
+    INPUT_BUDGET_CHARS, in order; one that does not fit, or is not there, is named instead."""
     vault = Path(vault)
     parts, read, too_long, missing = [], [], [], []
     budget, scoped = INPUT_BUDGET_CHARS, None
@@ -394,8 +394,8 @@ def pinned_message(con, vault: Path, pins: list[dict]) -> tuple[str, list[str], 
                 if not target.is_dir():
                     raise FileNotFoundError(raw)
                 body = f"=== {path}/ · a folder I pinned ===\n{lookup.listing(target, root=False)}"
-                if scoped is None:
-                    body += f"\nSearches default to {path}/."
+                if scoped is None and lookup.searchable(path):
+                    body += f'\nSearches default to {path}/; pass folder "" to search the whole vault.'
             else:
                 if not target.is_file():
                     raise FileNotFoundError(raw)
@@ -406,7 +406,7 @@ def pinned_message(con, vault: Path, pins: list[dict]) -> tuple[str, list[str], 
         if len(body) > budget:
             too_long.append(path)
             continue
-        if kind == "folder" and scoped is None:
+        if kind == "folder" and scoped is None and lookup.searchable(path):
             scoped = path
         budget -= len(body)
         parts.append(body)

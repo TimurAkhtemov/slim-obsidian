@@ -58,6 +58,14 @@ def test_search_folder_scopes(con, vault, two):
     assert "cs-201" not in out and "cs-202" in out
 
 
+@pytest.mark.parametrize("whole", ["", "/"])
+def test_an_explicit_empty_folder_searches_the_whole_vault(con, vault, two, whole):
+    reader = lookup.Reader(con, vault, default_folder="Notes/school/cs-202")
+    out = reader.call("search", {"query": "Dijkstra", "folder": whole})
+    assert not out.startswith("refused:") and "cs-201" in out and "cs-202" in out
+    assert '""' in lookup.TOOLS["search"]["parameters"]["properties"]["folder"]["description"]
+
+
 def test_search_excludes_excluded_top(con, vault, two):
     write(vault, "_Reflections/r.md", "# R\n\nDijkstra reflection.\n")
     try:

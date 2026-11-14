@@ -518,7 +518,7 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
     started = time.time()
     pinned, held, left = context.pinned_message(con, vault, list(pins))
     folders = {str(pin.get("path") or "").rstrip("/") for pin in pins if pin.get("kind") == "folder"}
-    scope = next((held_path for held_path in held if held_path in folders), None)
+    scope = next((held_path for held_path in held if held_path in folders and lookup.searchable(held_path)), None)
     entry.update(pins=len(held), pins_left_out=len(left))
     with llm.hold():
         note, text, cited, inputs, no_edit = None, None, [], None, None

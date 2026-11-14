@@ -194,7 +194,7 @@ def test_pinned_folder_scopes_search(ask, con, vault, monkeypatch):
     put(con, vault, "Notes/school/cs-202/sorting.md", "# Sorting\n\nDijkstra is not a sort.\n")
     seen = scripted(monkeypatch, ("", [("search", {"query": "Dijkstra"})]), ("ok", []))
     ask("q", pins=[{"kind": "folder", "path": "Notes/school/cs-202"}])
-    assert "Searches default to Notes/school/cs-202/." in seen[0]["messages"][1]["content"]
+    assert "Searches default to Notes/school/cs-202/;" in seen[0]["messages"][1]["content"]
     found = seen[1]["messages"][-1]["content"]
     assert "cs-202/sorting.md" in found and "cs-201" not in found
 
@@ -379,3 +379,12 @@ def test_a_plan_with_no_note_is_refused_too(ask, monkeypatch):
     with pytest.raises(copilot_turn.CopilotError, match="before an answer"):
         ask("plan it", open_path=None)
     assert len(seen) == 3                                          # MAX_REFUSALS in a row stop it
+
+
+def test_a_pinned_excluded_folder_never_scopes_search(ask, con, vault, monkeypatch):
+    put(con, vault, "Notes/school/cs-201/graphs.md", "# Graphs\n\nDijkstra shortest path.\n")
+    put(con, vault, "Skills/s.md", "# S\n\nx\n", index=False)
+    seen = scripted(monkeypatch, ("", [("search", {"query": "Dijkstra"})]), ("ok", []))
+    ask("q", pins=[{"kind": "folder", "path": "Skills"}])
+    found = seen[1]["messages"][-1]["content"]
+    assert not found.startswith("refused:") and "cs-201/graphs.md" in found
