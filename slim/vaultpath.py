@@ -1,14 +1,13 @@
-"""Where the Obsidian vault is. ONE copy of that answer, for four callers.
+"""Where the Obsidian vault is. ONE copy of that answer, for three callers.
 
-`slim/config.py` imports it; `.claude/hooks/private-content-guard.py` and `scripts/backup.sh`
-load this FILE directly, so it must stand alone:
+`slim/config.py` imports it; `scripts/backup.sh` and
+`scripts/pdf2md.py` load this FILE directly, so it must stand alone:
 
-  - stdlib only (the hook and the backup run on the system python, not the project venv),
+  - stdlib only (the backup and pdf2md run on the system python, not the project venv),
   - no relative import (it is loaded by path, and run as `python3 slim/vaultpath.py`),
   - `from __future__ import annotations`, because the system python may be 3.9.
 
-A second copy of this logic in the hook would be a copy that goes stale — and the copy that
-went stale is exactly how the guard came to protect a folder that no longer existed.
+A second copy of this logic would go stale and point at a folder that no longer exists.
 """
 
 from __future__ import annotations

@@ -441,7 +441,6 @@ def vault(tmp_path):
     (root / "Notes/school").mkdir(parents=True)
     (root / "Notes/school/a.md").write_text("alpha\nbeta\n", encoding="utf-8")
     (root / "Journal").mkdir()
-    (root / "Inbox/Journal").mkdir(parents=True)
     return root
 
 
@@ -461,14 +460,18 @@ def test_a_new_note_goes_in_an_existing_folder_and_says_who_made_it(vault):
     ("Notes/school/A.md", "Notes/school", "already exists"),
     ("Notes/elsewhere/new.md", "Notes/school", "the folder Notes/elsewhere/ does not exist"),
     ("notes/School/new.md", "Notes/school", "the folder notes/School/ does not exist"),
-    ("Journal/new.md", "Notes/school", "never creates a note in Journal/"),
-    ("Inbox/Journal/new.md", "Notes/school", "never creates a note in Journal/"),
-    ("Notes/school/new.md", "Journal", "a Journal note's text stays in Journal/"),
-    ("Notes/school/new.md", "Inbox/Journal", "a Journal note's text stays in Journal/"),
 ])
 def test_a_new_note_is_refused_where_it_may_not_go(vault, raw, folder, reason):
     with pytest.raises(ToolError, match=reason):
         edits.create_note(vault, raw, "x", folder=folder)
+
+
+@pytest.mark.parametrize("raw, folder", [
+    ("Journal/new.md", "Notes/school"),
+    ("Notes/school/new.md", "Journal"),
+])
+def test_create_note_allows_journal(vault, raw, folder):
+    assert edits.create_note(vault, raw, "x", folder=folder)["path"] == raw
 
 
 def test_a_new_note_needs_text_and_a_size_the_sidebar_can_carry(vault):

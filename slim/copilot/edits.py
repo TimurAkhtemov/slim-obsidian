@@ -12,7 +12,7 @@ here writes a note.
 What may be touched is decided here, not by the model. A recorded note's frontmatter, its
 `slim-meeting` block and its transcript are `recorder/note.py`'s and the raw source: their blocks are
 [locked] and every call that touches them is refused. A new note goes in a folder that already
-exists, never into `Journal/`, and a Journal note's text never leaves it (`create_note`).
+exists (`create_note`).
 """
 from __future__ import annotations
 
@@ -631,10 +631,6 @@ def _exact(vault: Path, path: str) -> bool:
     return True
 
 
-def _on_floor(path: str) -> bool:
-    return path.casefold().startswith(("journal/", "inbox/journal/"))
-
-
 def _read(target: Path) -> str:
     with open(target, encoding="utf-8", newline="") as handle:   # as Obsidian reads it: no \r\n folding
         return handle.read()
@@ -649,8 +645,8 @@ def _with_origin(text: str) -> str:
 
 def create_note(vault: Path, raw_path: str, markdown: str, *, folder: str) -> dict:
     """A new note a skill makes: {path, text}, or ToolError. A bare name goes in `folder`, the
-    open note's folder. `Journal/` is the floor (CLAUDE.md): nothing is created in it, and a
-    Journal note's words never leave it. Nothing is written here; the plugin creates the note."""
+    open note's folder, in any folder that exists. Nothing is written here; the plugin creates
+    the note."""
     if not isinstance(raw_path, str) or not isinstance(markdown, str):
         raise ToolError("path and markdown must be text", "args")
     raw = _clean_path(raw_path)
@@ -660,10 +656,6 @@ def create_note(vault: Path, raw_path: str, markdown: str, *, folder: str) -> di
     if path is None:
         raise ToolError(f"'{raw_path}' is not a note path in this vault; give a path ending in .md",
                         "path")
-    if _on_floor(path):
-        raise ToolError("SLIM never creates a note in Journal/", "journal")
-    if _on_floor(folder.rstrip("/") + "/"):
-        raise ToolError("a Journal note's text stays in Journal/", "journal")
     parent = PurePosixPath(path).parent.as_posix()
     if not _exact(vault, parent):
         raise ToolError(f"the folder {parent}/ does not exist; use a folder that does, such as {folder}/",

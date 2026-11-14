@@ -51,8 +51,6 @@ def scope_levels(path: str) -> list[tuple[str, tuple[str, ...]]]:
     parent = note.parent.as_posix()
     if note.is_absolute() or ".." in note.parts or parent == ".":
         return []
-    if note.parts[0].casefold() == "journal":
-        return [("folder", (parent,))]
     subject_prefixes = ()
     for project_id in config_mod.registry():
         prefixes = config_mod.project_prefixes(project_id)

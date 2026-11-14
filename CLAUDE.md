@@ -29,9 +29,8 @@ cp obsidian/{main.js,manifest.json,styles.css} \
 lsof -tiTCP:7546 -sTCP:LISTEN | xargs kill   # free the port; the plugin respawns the server on demand
 ```
 
-Two hooks run for every Claude Code session here: `.claude/hooks/stale-server-check.sh`
-warns at start if the server on 7546 is older than the code; `private-content-guard.py`
-refuses any tool call that would put `Journal/` content on screen.
+A hook runs at the start of every Claude Code session here: `.claude/hooks/stale-server-check.sh`
+warns if the server on 7546 is older than the code.
 
 ## The pipeline
 
@@ -136,7 +135,7 @@ against it). The server's own edit-and-move passes the old path, so only hand mo
      reads (steps, labels, summary) names text, never a handle (`copilot.blocks.Note.plain`,
      `copilot.blocks.quote`). `llm.hold()` keeps the model lock for the run. An `edit` skill
      runs the same loop (tidy: the selection's blocks only); a `new-note` skill only
-     `create_note`s, in existing folders, never `Journal/`.
+     `create_note`s, in existing folders.
      **The server never writes the note** (2026-10-12): the note is open in the owner's editor, and
      writing the file behind it would fight their typing and the editor's undo.
      It works on the editor's text (`doc` + its hash) and streams each change as UTF-16 splices;
@@ -156,7 +155,7 @@ against it). The server's own edit-and-move passes the old path, so only hand mo
 ## Where things live
 
 ```
-Journal/            private floor · flat · never routes out
+Journal/            flat · never routes out
 Capture/<subject>/  every recording, router-owned; `_unfiled` when no subject is known
 Notes/<subject>/    curated writing; any depth below level 2 is the owner's
 Profile/            the owner's self-description; not indexed, not injected
@@ -171,11 +170,10 @@ The file also carries `owner`, the name the prompts address; nothing else reads 
 are frontmatter, where they can be queried. The only folder SLIM invents is `Capture/_unfiled`
 (the card files into folders that exist), so folders don't multiply across every axis; depth the owner creates is theirs, and the card files into it.
 
-**(owner)** **`Journal/` is the floor, and the floor is a path.** Permanent, flat, a top-level
-sibling of `Capture/`; no route ever carries a note out of it (test-enforced). If a cloud
-provider ever lands, the one check is "is the path under `Journal/`". `reflect` checks it too:
-it reads `type = 'journal'` notes under `Journal/` only, so one placed elsewhere by hand is not
-in the nightly synthesis.
+**`Journal/` is flat, a top-level sibling of `Capture/`:** the card files a journal there, and no
+route carries a note out of it (test-enforced). `reflect` reads `type = 'journal'` notes under
+`Journal/` only, so one placed elsewhere by hand is not in the nightly synthesis. Privacy gates
+on `Journal/` were removed on the owner's word (2026-11-13).
 
 The code, `slim/`: subpackages are feature folders. Imports run one way:
 `vault <- index <- copilot`, `vault <- capture <- recorder` (which also uses
@@ -294,8 +292,8 @@ that reacts to a vault `delete` must first ask whether the server caused it (202
   current vault, and discovery can change that path with nobody asking. Every command that can
   write to the vault checks the pin first. A real move, or an index made before the pin, is
   `slim ingest --vault-moved`.
-- **`slim/vaultpath.py` stays where it is, stdlib-only and 3.9-safe:** the backup script, the
-  privacy hook and `scripts/pdf2md.py` load it BY PATH with the system python (3.9).
+- **`slim/vaultpath.py` stays where it is, stdlib-only and 3.9-safe:** the backup script and
+  `scripts/pdf2md.py` load it BY PATH with the system python (3.9).
 - **Full Disk Access goes to `restic` only, never `/bin/bash` or an interpreter:** that would
   hand the whole disk to anything that interpreter runs.
 - **A public repo: nothing user-specific in code, comments or commit messages.** Vocabulary and
@@ -307,12 +305,6 @@ that reacts to a vault `delete` must first ask whether the server caused it (202
 
 These are value calls, not technical constraints; they change only on the owner's word.
 
-- **The ONLY privacy rule is `Journal/`** (2026-08-31). Everything else in the vault the owner
-  sends to cloud models themselves, routinely. Do not cite privacy to gate, block or flag a
-  change, and do not raise it as a concern.
-- **Journal transcripts are PRIVATE — do not read them** (2026-08-01). The local model reads
-  them; for a journal an agent's verification is metadata only. Every OTHER transcript is
-  ordinary working material: read it, quote it, measure on it.
 - **Autonomous writes are fine** (2026-07-31): enrichment, reflection and the recorder write
   without confirmation; provenance stays in frontmatter.
 - **ONE generative model, `qwen3.6:35b` (`llm.MODEL`), for everything** (2026-09-01) — chosen
@@ -320,7 +312,7 @@ These are value calls, not technical constraints; they change only on the owner'
   do not call it "the model the bake-off chose"). Embedder `embeddinggemma`: its task prefixes
   are load-bearing (`index/embed.py`); changing it means deleting the brain DB and re-ingesting.
 - Also marked **(owner)** above: one click with no settings, the card's filing roots, no
-  vault-wide Q&A and no profile injection, the `Journal/` floor, and the cut list.
+  vault-wide Q&A and no profile injection, and the cut list.
 
 ## Environment
 
