@@ -584,7 +584,10 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
                              on_edit=on_edit or (lambda _event, _payload: None), should_stop=should_stop,
                              on_stage=stage, lookups=reader, on_reply=on_delta, no_edit=no_edit,
                              # filled as the turn runs: traced even when it fails or is refused
-                             looked_up=entry.setdefault("looked_up", []), on_reset=on_reset, fits=fits)
+                             looked_up=entry.setdefault("looked_up", []), on_reset=on_reset, fits=fits,
+                             # pins, lookups and history fill it too, not only the note
+                             too_long="this conversation no longer fits the model's window; "
+                                      "start a new chat or unpin something")
     if out["kind"] == "answer" and out["refusals"]:
         entry["refusals"] = [item["code"] for item in out["refusals"]]
     last = out["timing"][-1] if out["timing"] else {}

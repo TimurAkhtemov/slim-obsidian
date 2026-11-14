@@ -437,3 +437,16 @@ def test_a_lookup_that_would_overflow_the_window_is_refused(ask, con, vault, mon
     assert got["answer"] == "With what I have."
     assert [looked["refused"] for looked in got["looked_up"]] == [False, True]
     assert [c["path"] for c in got["citations"]] == ["Notes/small.md"]   # what it never saw is no source
+
+
+def test_a_saturated_window_names_the_conversation_not_the_note(ask, monkeypatch):
+    seen = scripted(monkeypatch, ("", [("list_folder", {"path": "Notes"})]), ("cut", []))
+    real = copilot_turn.llm.chat_tools
+
+    def saturated(messages, tools=None, **opts):
+        msg, stats = real(messages, tools, **opts)
+        return msg, {**stats, "ctx_saturated": len(seen) == 2}
+    monkeypatch.setattr(copilot_turn.llm, "chat_tools", saturated)
+    with pytest.raises(copilot_turn.CopilotError,
+                       match="this conversation no longer fits the model's window; start a new chat or unpin something"):
+        ask("q")
