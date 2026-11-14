@@ -477,7 +477,8 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
     `on_reset()` hears each model call start after the first: the text streamed so far was that
     call's (a lookup's preamble, a step's chatter), never the answer. `fits(messages, results)`
     says whether the conversation with these tool results still fits the window: a lookup whose
-    result would not is answered NO_ROOM instead, and what it read is neither a source nor editable.
+    result would not is answered NO_ROOM instead, and what it read is neither a source nor editable;
+    a step whose prompt would not is never called, and the run stops with what landed.
     `too_long` is the refusal when the first answer's prompt lost its start (`ctx_saturated`).
     Every call that thinks adds `think_budget` to the run's output budget, and names its stage
     `think_stage`; after MAX_THINKING_CALLS of them, calls run with thinking off. Every call but a step's samples with `sampling` too. `on_tool` hears each lookup
@@ -758,6 +759,11 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
             sections = note.sections() if note is not None else ""
             now = f"\n\nSections now:\n{sections}" if sections else ""
             messages.extend(_results(results, instruction + now))
+            # Every earlier call's arguments and the map are in this prompt: checked before the
+            # call, so the run stops with what landed rather than on the server's HTTP 400.
+            if fits is not None and not fits(messages, []):
+                out["stopped"] = "error: the conversation no longer fits the model's window"
+                raise _Stopped
             reply = ask(tools, False, STEP_TEMPERATURE, STEP_NUM_PREDICT, None)    # as measured
             return reply, apply_calls(reply.calls, number)
 
@@ -842,7 +848,9 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
             return f"Step {k + 1} of {len(steps)}: {steps[k]}\nMake this step's changes now."
 
         k, retried, pending, again = 0, False, first if edits else None, False
-        while k < len(steps) and not out["stopped"]:
+        # The first reply's edits land even when that reply crossed the token budget: they are
+        # decoded and paid for. The run stops after them.
+        while k < len(steps) and (not out["stopped"] or pending is not None):
             if not retried and not again:
                 open_step(k, covered if pending else 1)
             again = False

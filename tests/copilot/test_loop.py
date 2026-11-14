@@ -1014,3 +1014,33 @@ def test_an_open_note_and_pins_too_long_for_one_request_are_refused_before_any_c
                                                         "unpin something"):
         ask("q", pins=[{"kind": "note", "path": "Notes/b.md"}])
     assert seen == [] and records[-1]["status"] == "failed" and records[-1]["pins"] == 1
+
+
+# --- the run's own messages count against the window and the budget -----------------------------
+
+def test_the_first_edits_land_when_their_reply_crosses_the_token_budget(ask, monkeypatch):
+    """They are decoded and paid for: the run stops after them, not before."""
+    seen = scripted(monkeypatch, ("", [("edit_text", {"target": "b2", "old": "Intro para.", "new": "Intro."})], 10**6))
+    got = ask("shorten the intro")
+    run = got["edit_run"]
+    assert len(seen) == 1 and run["stopped"] == "token budget" and len(run["changes"]) == 1
+    assert "Intro." in edits.apply_splices(NOTE, run["changes"][0]["splices"])
+
+
+def test_a_step_that_would_not_fit_the_window_is_not_called(ask, monkeypatch):
+    """A step's prompt carries every earlier call's arguments and the sections map: counted, and
+    checked before the call, so the run stops with what landed instead of an HTTP 400."""
+    plan = {"intro": "Two steps.", "steps": ["Rewrite the intro", "Rename A"]}
+    long = "A rewritten intro sentence. " * 120
+    replies = [("", [("plan", plan)]), ("", [("replace", {"target": "b2", "markdown": long})]),
+               ("", [("replace", {"target": "b3", "markdown": "## A renamed"})])]
+    seen = scripted(monkeypatch, *replies)
+    ask("rewrite it")
+    room = copilot_turn.ANSWER_NUM_PREDICT + edit_run.THINK_BUDGETS["medium"]
+    window = int(sum(map(copilot_turn._tokens, seen[1]["messages"])) + room + 400)
+    monkeypatch.setattr(llm, "RESIDENT_CTX", window)
+    seen = scripted(monkeypatch, *replies)
+    got = ask("rewrite it")
+    run = got["edit_run"]
+    assert len(seen) == 2 and len(run["changes"]) == 1
+    assert run["stopped"] == "error: the conversation no longer fits the model's window"

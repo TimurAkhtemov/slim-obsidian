@@ -4,6 +4,7 @@ plugin as it lands. An edit or new-note skill runs the same editing run on its o
 `server.py`'s sidebar routes. What it reads is `copilot/context.py`'s; the run is `copilot/run.py`'s."""
 from __future__ import annotations
 
+import json
 import re
 import time
 from pathlib import Path, PurePosixPath
@@ -215,8 +216,11 @@ def plain_note_message(path: str, text: str) -> str:
 
 
 def _tokens(message: dict) -> float:
-    """A message's tokens as THE WINDOW RULE estimates them."""
-    return len(message["content"]) / CHARS_PER_TOKEN + IMAGE_TOKENS * len(message.get("images") or ())
+    """A message's tokens as THE WINDOW RULE estimates them: its text, and the arguments of the
+    tool calls it made (a step's replace can carry a whole section), which the template renders."""
+    calls = message.get("tool_calls")
+    called = len(json.dumps(calls, ensure_ascii=False)) if calls else 0
+    return (len(message["content"]) + called) / CHARS_PER_TOKEN + IMAGE_TOKENS * len(message.get("images") or ())
 
 
 def fit_window(transcript: list[dict], others: list[dict], num_predict: int) -> list[dict]:
@@ -340,8 +344,8 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
         messages = [system_turn, *pinned_turns, *recent, *embedded, current]
 
         def fits(sent: list[dict], results: list[str]) -> bool:
-            """THE WINDOW RULE for what a lookup brings back: the prompt with these results and
-            the reply's room still inside the resident window."""
+            """THE WINDOW RULE for what a lookup brings back, and before each step: the prompt
+            with these results and the reply's room still inside the resident window."""
             used = sum(map(_tokens, sent)) + sum(map(len, results)) / CHARS_PER_TOKEN
             return used + room <= llm.RESIDENT_CTX
 
