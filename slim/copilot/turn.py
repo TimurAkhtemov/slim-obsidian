@@ -1,7 +1,8 @@
-"""The open-note copilot: gather the notes around the one they have open, run one turn against
-them, and name which notes the answer used — or, when the turn edits, carry out the edit one
-model call at a time and hand each change to the plugin as it lands. Called by `server.py`'s
-sidebar routes. What it reads is `copilot/context.py`'s; the editing run is `copilot/run.py`'s."""
+"""The sidebar's copilot: one turn of THE LOOP, which answers, looks things up in the vault
+(`copilot/lookup.py`) and edits the open note one model call at a time, handing each change to the
+plugin as it lands. Behind `LOOP = False`, the turn as it was: the intent gate, then the Ask path
+(the notes around the open one, and which the answer used) or the editing run. Called by
+`server.py`'s sidebar routes. What it reads is `copilot/context.py`'s; the run is `copilot/run.py`'s."""
 from __future__ import annotations
 
 import json
@@ -10,7 +11,7 @@ import time
 from pathlib import Path, PurePosixPath
 
 from .. import config as config_mod, llm, trace
-from . import blocks, context, edits as edits_mod, run as edit_run, skills as skills_mod
+from . import blocks, context, edits as edits_mod, lookup, run as edit_run, skills as skills_mod
 from .context import CopilotError
 
 # The persona is short on purpose: ~3,800 words of prompt read as lobotomized (2026-07-31), and
@@ -50,6 +51,25 @@ the note's headings in their final order (each with its # marks), and the steps 
 You will then be given one step at a time; make that step's changes, pointing at handles.
 For a small wording fix, use edit_text instead of retyping the block.
 Use the replace, edit_text, insert and move tools for a small change and for each step, and the plan tool to start a larger change."""
+
+# THE LOOP (2026-11-13, the owner's call): one loop answers, looks things up and edits; the model
+# decides, with no gate. The open note rides with the question (`open_note_message`), so the
+# system message holds no note and stays a cached prefix. LOOP_RIDER is EDIT_RIDER's measured
+# handle and plan text, the note now with their message, and a paragraph on the lookups. Nothing
+# in it asks for citations: sources are what code saw the turn read. Off, a turn takes the gate
+# and the Ask path, as before, until the owner has compared the two.
+LOOP = True
+LOOKING = """When the question needs a note you have not been shown, look for it with search, read_note and
+list_folder. The open note is already shown: never look it up, except a part it says is not shown.
+A plain question about the open note needs no tool."""
+CREATING = "create_note makes a new note, in a folder that already exists."
+LOOP_RIDER = ("You can edit the open note shown with their message."
+              + EDIT_RIDER.removeprefix("You can edit the open note shown below.")
+              + f"\n\n{LOOKING}\n{CREATING}")
+NO_NOTE_RIDER = f"""No note is open. To answer, reply in text. When the question needs a note from the vault,
+look for it with search, read_note and list_folder; a question that needs no note needs no tool.
+{CREATING}"""
+SKILL_RIDER = f"{ASK_RIDER}\n\n{LOOKING}"
 
 NEW_NOTE_RIDER = """You can create a new note with the create_note tool: its path, in a folder that already exists
 (the open note's folder is `{folder}/`), and its whole text in Markdown. Then call done with one
@@ -130,13 +150,32 @@ def edit_message(path: str, note: blocks.Note) -> str:
 
 
 
-def pack_message(pack: context.Pack, rider: str) -> str:
+def pack_docs(pack: context.Pack) -> str:
     labels = {"open": "the open note", "selection": "the text they selected in this note",
               "linked": "a note they linked"}
-    rendered = "\n\n".join(
+    return "\n\n".join(
         f"=== {doc['path']} · {labels.get(doc['role']) or doc['date'] or 'a note in this folder'} ===\n"
         f"{doc['text']}" for doc in pack.docs)
-    return "\n\n".join([PERSONA, rider, "Notes in view:\n\n" + (rendered or "(none)")])
+
+
+def pack_message(pack: context.Pack, rider: str) -> str:
+    return "\n\n".join([PERSONA, rider, "Notes in view:\n\n" + (pack_docs(pack) or "(none)")])
+
+
+def open_note_message(path: str, note: blocks.Note) -> str:
+    """The open note as it rides with the question: its sections map, then its blocks with their
+    handles, whole up to ATTACH_MAX_CHARS. A longer note shows the whole blocks that fit, and those
+    are all a tool may change (`note.shown`) until it reads another section of it."""
+    sections = note.sections()
+    shown = f"Sections:\n{sections}\n\n" if sections else ""
+    if len(note.text()) <= context.ATTACH_MAX_CHARS:
+        rendered = note.render()
+    else:
+        rendered, kept = note.head(note.blocks, context.ATTACH_MAX_CHARS)
+        note.shown = {b.handle for b in kept if b.kind != "blank" and not b.locked}
+        rendered = rendered.rstrip("\n") + (f'\n\n[The rest of this note: read_note("{path}", "s<N>") '
+                                            "shows a section with its handles.]")
+    return f"=== {path} · the open note ===\n{shown}{rendered.rstrip()}"
 
 
 
@@ -439,23 +478,149 @@ def _answer_or_edit(con, vault: Path, source: dict, question: str, history: list
     return result, [], []
 
 
-def run_turn(con, source_id: str, question: str, history: list[dict], mode: str,
-             *, images=None, on_stage=None, on_delta=None, on_edit=None, selection: str = "",
+def _loop(con, vault: Path, source: dict | None, question: str, history: list[dict], mode: str, *,
+          pins, skill, args: str, images, selection: str, doc: str | None, on_stage, on_delta,
+          on_edit, should_stop, entry: dict) -> dict:
+    """One turn of THE LOOP. Every call offers the lookups and, with a note open, the edit tools
+    and create_note; with none, the lookups and create_note; a chat skill, the lookups alone, its
+    notes (`gather`) in the open note's place. The messages: the persona and the rider, the pins
+    and an assistant's "Noted." (roles alternate), the history that fits, the open note's images,
+    then the open note and the question. Reply text streams through `on_delta`."""
+    stage = on_stage or (lambda _name: None)
+    path = source["path"] if source else None
+    folder = PurePosixPath(path).parent.as_posix() if path else ""
+    started = time.time()
+    pinned, held, left = context.pinned_message(con, vault, list(pins))
+    folders = {str(pin.get("path") or "").rstrip("/") for pin in pins if pin.get("kind") == "folder"}
+    scope = next((held_path for held_path in held if held_path in folders), None)
+    entry.update(pins=len(held), pins_left_out=len(left))
+    with llm.hold():
+        note, text, cited, inputs = None, None, [], None
+        if skill:                               # a chat skill: its notes, chosen by code
+            pack = context.gather(con, vault, source, skill=skill, links_from=args, selection=selection)
+            cited = [doc_["path"] for doc_ in pack.docs if doc_["role"] != "selection"]
+            inputs = context.pack_inputs(pack)
+            rider, tools, step_tools = SKILL_RIDER, list(lookup.NAMES), ()
+            asked = (f"Notes in view:\n\n{pack_docs(pack) or '(none)'}\n\n---\n\n"
+                     f"{skills_mod.render_prompt(skill, args)}")
+        elif source is not None:
+            text = doc if doc is not None else edit_run._note_text(vault, path)
+            note = blocks.Note(text)
+            step_tools = (*edit_run.STEP_TOOLS, "create_note")
+            rider, tools = LOOP_RIDER, [*lookup.NAMES, "plan", *step_tools]
+            asked = f"{open_note_message(path, note)}\n\n---\n\n{question}"
+        else:
+            rider, tools, step_tools = NO_NOTE_RIDER, [*lookup.NAMES, "create_note"], ("create_note",)
+            asked = question
+        reader = lookup.Reader(con, vault, default_folder=scope,
+                               open_note=(path, note) if note is not None else None)
+        made: set[str] = set()
+
+        def create(new_path, markdown):
+            new = edits_mod.create_note(vault, new_path, markdown, folder=folder)
+            if new["path"].casefold() in made:
+                raise blocks.ToolError(f"{new['path']} is already made in this turn; give the next "
+                                       "note a name of its own", "exists")
+            made.add(new["path"].casefold())
+            return new
+
+        shown, skipped = context.open_note_images(vault, source, []) if source else ([], [])
+        entry.update(note_images=len(shown), note_images_skipped=len(skipped))
+        transcript, embedded, current = _conversation(history, asked, images, shown)
+        system_turn = {"role": "system", "content": f"{PERSONA}\n\n{rider}"}
+        pinned_turns = ([{"role": "user", "content": pinned}, {"role": "assistant", "content": "Noted."}]
+                        if pinned else [])
+        room = QUICK_NUM_PREDICT + (edit_run.THINK_BUDGET if mode == "deep" else 0)
+        fixed = [system_turn, *pinned_turns, *embedded, current]
+        if sum(map(_tokens, fixed)) + room > llm.RESIDENT_CTX:
+            raise CopilotError("the open note and the pins are too long for one request; unpin something")
+        recent = fit_window(transcript, fixed, room)
+        messages = [system_turn, *pinned_turns, *recent, *embedded, current]
+        out = edit_run._turn(list(messages), think=mode == "deep", tools=tools, step_tools=step_tools,
+                             note=note, before_text=text or "", create=create,
+                             temperature=edit_run.FIRST_TEMPERATURE, first_predict=room,
+                             on_edit=on_edit or (lambda _event, _payload: None), should_stop=should_stop,
+                             on_stage=stage, lookups=reader, on_reply=on_delta)
+    last = out["timing"][-1] if out["timing"] else {}
+    run = None
+    if out["kind"] == "answer":     # it streamed as it decoded (on_delta)
+        answer = out["answer"]
+        if not answer and last.get("thinking_ate_the_budget"):
+            raise CopilotError("the model spent its whole output budget thinking and wrote no "
+                               "answer — ask again in Quick mode, or ask a narrower question")
+        if not answer and out["stopped"]:
+            raise CopilotError(f"the turn ended before an answer ({out['stopped']})")
+        if not answer:
+            raise CopilotError("the local model returned no answer")
+    else:
+        run = {"plan": out["plan"], "steps_done": min(out["steps_done"], len(out["plan"]["steps"])),
+               "changes": out["changes"], "stopped": out["stopped"], "outline_met": out["outline_met"],
+               "hash_before": edits_mod.digest(text or ""),
+               "hash_after": edits_mod.digest(note.text() if note is not None else text or ""),
+               "summary": out["summary"]}
+        answer = out["summary"] or out["plan"]["intro"]
+        entry["edit_run"] = edit_run._facts(out, run)
+    # Sources are what code saw the turn read: a skill's notes, or, once it looked something up,
+    # the open note, the notes pinned, and what it read and searched into.
+    looked = reader.read + reader.searched
+    if not skill and looked:
+        notes = {str(pin.get("path") or "") for pin in pins if pin.get("kind") != "folder"}
+        cited = ([path] if path else []) + [p for p in held if p in notes]
+    paths = list(dict.fromkeys(cited + looked))
+    result = {
+        "answer": answer,
+        "mode": mode,
+        "citations": [{"n": i + 1, "path": p, "title": PurePosixPath(p).stem} for i, p in enumerate(paths)],
+        "verification": {"truncated": bool(last.get("output_truncated"))},
+        "history_dropped": len(transcript) - len(recent),
+        "timing": {"total_ms": round((time.time() - started) * 1000), "gate": {},
+                   "answer": out["timing"][0] if out["timing"] else {}, "sources": {}},
+        "edit_run": run,
+        "looked_up": out["looked_up"],
+    }
+    if inputs is not None:
+        result["inputs"] = inputs
+    return result
+
+
+def _source(con, vault: Path, open_path: str | None) -> dict | None:
+    """The open note's source row, found by its path. In THE LOOP a note the index leaves out
+    (`Profile/`, `_Reflections/`…) is still the open note, read from disk; a file that is not a
+    note, or none, is no note open. Off, the gate's path needs an indexed note."""
+    if open_path is None:
+        if not LOOP:
+            raise CopilotError("open a note to ask about it")
+        return None
+    pure = PurePosixPath(open_path) if isinstance(open_path, str) else None
+    if pure is None or not open_path.strip() or pure.is_absolute() or ".." in pure.parts:
+        raise CopilotError("the open note's path is not a vault path")
+    row = con.execute("SELECT id, path, title, type, current_hash FROM sources "
+                      "WHERE path=? AND deleted=0", (open_path,)).fetchone()
+    if row is not None:
+        return dict(row)
+    if not LOOP:
+        raise CopilotError("the note is no longer indexed; refresh the sidebar")
+    if pure.suffix.lower() != ".md":
+        return None
+    if not (Path(vault) / open_path).is_file():
+        raise CopilotError("the open note could not be read; refresh the sidebar")
+    return {"id": None, "path": open_path, "title": pure.stem}
+
+
+def run_turn(con, open_path: str | None, question: str, history: list[dict], mode: str,
+             *, pins=(), images=None, on_stage=None, on_delta=None, on_edit=None, selection: str = "",
              selection_from: int | None = None, vault: Path | None = None, doc: str | None = None,
              doc_hash: str | None = None, should_stop=lambda: False) -> dict:
-    """One sidebar turn. A `/command` whose output is chat reads whole notes chosen by code
-    (`gather`) and answers. Every other turn is one chat that answers or edits: it may answer in
-    text, or change the open note, which it reads from `doc` — the editor's text, whose
-    `doc_hash` must match — or else from disk; `selection_from` is where the selection starts
-    in it, in UTF-16 units. `on_edit(event, payload)` gets each part of an edit as it lands;
-    nothing is written here: the plugin applies each change through the editor."""
+    """One sidebar turn, on the note open at `open_path` (None: no note open), with the chat's
+    `@` pins. With LOOP it is one loop that answers, looks things up and edits (`_loop`); an edit
+    or new-note skill runs as before. Off, a `/command` whose output is chat reads whole notes
+    chosen by code (`gather`) and answers, and every other turn meets the intent gate. A turn may
+    change the open note, which it reads from `doc` — the editor's text, whose `doc_hash` must
+    match — or else from disk; `selection_from` is where the selection starts in it, in UTF-16
+    units. `on_edit(event, payload)` gets each part of an edit as it lands; nothing is written
+    here: the plugin applies each change through the editor."""
     vault = Path(vault or config_mod.VAULT)
-    source_row = con.execute(
-        "SELECT id, path, title, type, current_hash FROM sources "
-        "WHERE id=? AND deleted=0", (source_id,)).fetchone()
-    if source_row is None:
-        raise CopilotError("the note is no longer indexed; refresh the sidebar")
-    source = dict(source_row)
+    source = _source(con, vault, open_path)
     loaded = skills_mod.load(vault)
     found = skills_mod.invocation(question, loaded) if question.startswith("/") else None
     skill, args = found or (None, "")
@@ -467,7 +632,8 @@ def run_turn(con, source_id: str, question: str, history: list[dict], mode: str,
                if turn.get("role") == "you" else turn for turn in history]
     # Machine facts only (no prose, no reasoning): the thread JSON keeps completed turns,
     # so this is the one record of a refused or stopped turn.
-    entry = {"question": question, "source": source["path"], "source_id": source_id,
+    entry = {"question": question, "source": source["path"] if source else None,
+             "source_id": source["id"] if source else None, "open_path": open_path,
              "mode": mode, "history_turns": len(history),
              "images": len(images or []),
              "history_images": sum(len(turn.get("images") or []) for turn in history),
@@ -486,7 +652,13 @@ def run_turn(con, source_id: str, question: str, history: list[dict], mode: str,
             raise CopilotError(f"there is no /{unknown.group(1)} skill; type / to see them")
         if doc is not None and edits_mod.digest(doc) != doc_hash:
             raise CopilotError("the note changed while sending; try again")
-        if skill and skill.output == "chat":
+        if LOOP and skill and source is None:
+            raise CopilotError(f"/{skill.name} works on the open note: open a note first")
+        if LOOP and not (skill and skill.output != "chat"):
+            result = _loop(con, vault, source, question, history, mode, pins=pins, skill=skill, args=args,
+                           images=images, selection=selection, doc=doc, on_stage=on_stage,
+                           on_delta=on_delta, on_edit=on_edit, should_stop=should_stop, entry=entry)
+        elif skill and skill.output == "chat":
             pack = context.gather(con, vault, source, skill=skill, links_from=args, selection=selection)
             cited = [{"n": i + 1, "path": doc["path"], "title": doc["title"]}
                      for i, doc in enumerate(d for d in pack.docs if d["role"] != "selection")]
@@ -513,11 +685,15 @@ def run_turn(con, source_id: str, question: str, history: list[dict], mode: str,
         trace.record("copilot", failure)
         raise
     result.update({"source": source, "retrieval_levels": levels, "skill": entry["skill"]})
+    result.setdefault("looked_up", [])
+    if result["edit_run"]:
+        result["edit_run"]["path"] = source["path"] if source else None
     record = {
         **entry, "status": "edited" if result["edit_run"] else "answered",
         "cited": sorted({item["path"] for item in result["citations"]}),
         "truncated": result["verification"]["truncated"],
         "history_dropped": result["history_dropped"], "timing": result["timing"],
+        "looked_up": result["looked_up"],
     }
     if "inputs" in result:
         record["inputs"] = result["inputs"]

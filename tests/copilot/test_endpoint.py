@@ -12,6 +12,12 @@ from slim import server, db
 from slim.copilot import context, images as chat_images, turn as copilot_turn
 
 
+@pytest.fixture(autouse=True)
+def no_real_vault(tmp_path, monkeypatch):
+    """The stream route reads the open note from the vault: never the real one."""
+    monkeypatch.setattr(server.config, "VAULT", tmp_path / "no-vault")
+
+
 @pytest.fixture
 def server_url():
     httpd = server.make_server("127.0.0.1", 0)
@@ -99,14 +105,14 @@ def test_get_thread_without_source(server_url):
 
 
 def test_stream_endpoint_emits_stage_delta_and_turn(server_url, monkeypatch):
-    def fake_run(con, source_id, question, history, mode, **kwargs):
+    def fake_run(con, open_path, question, history, mode, **kwargs):
         kwargs["on_stage"]("Thinking deeply")
         kwargs["on_delta"]("Grounded")
         return {"answer": "Grounded", "mode": "deep", "citations": []}
 
     monkeypatch.setattr(copilot_turn, "run_turn", fake_run)
     status, headers, body = post(server_url, "/api/copilot/stream", {
-        "thread_id": "chat-1", "source_id": "source-1", "question": "Compare",
+        "thread_id": "chat-1", "path": "Notes/school/lesson.md", "question": "Compare",
         "history": [], "reasoning_mode": "deep"})
     assert status == 200
     assert headers.get_content_type() == "text/event-stream"
@@ -123,14 +129,14 @@ def test_stream_endpoint_persists_images_and_passes_current_and_history_bytes(se
         {"name": "old.png", "mime": "image/png", "data": encoded}])
     seen = {}
 
-    def fake_run(_con, _source_id, _question, history, _mode, **kwargs):
+    def fake_run(_con, _open_path, _question, history, _mode, **kwargs):
         seen["history"] = history
         seen["images"] = kwargs["images"]
         return {"answer": "Equation", "mode": "quick", "citations": []}
 
     monkeypatch.setattr(copilot_turn, "run_turn", fake_run)
     status, _headers, body = post(server_url, "/api/copilot/stream", {
-        "thread_id": "chat-1", "source_id": "source-1", "question": "Explain",
+        "thread_id": "chat-1", "path": "Notes/school/lesson.md", "question": "Explain",
         "history": [{"role": "you", "text": "Earlier", "attachments": old_refs}],
         "images": [{"name": "new.png", "mime": "image/png", "data": encoded}],
         "reasoning_mode": "quick"})
@@ -166,7 +172,7 @@ def test_stream_endpoint_emits_error_event_not_a_dead_socket(server_url, monkeyp
         copilot_turn, "run_turn",
         lambda *args, **kwargs: (_ for _ in ()).throw(copilot_turn.CopilotError("local-only")))
     status, _headers, body = post(server_url, "/api/copilot/stream", {
-        "thread_id": "chat-1", "source_id": "source-1", "question": "Question",
+        "thread_id": "chat-1", "path": "Notes/school/lesson.md", "question": "Question",
         "history": [], "reasoning_mode": "quick"})
     assert status == 200
     assert "event: error\ndata: {\"error\": \"local-only\"}" in body
@@ -273,19 +279,19 @@ def test_thread_listing_and_load_report_the_source_current_path(server_url):
 def test_stream_endpoint_passes_a_bounded_selection(server_url, monkeypatch):
     seen = {}
 
-    def fake_run(con, source_id, question, history, mode, **kwargs):
+    def fake_run(con, open_path, question, history, mode, **kwargs):
         seen.update(selection=kwargs["selection"], selection_from=kwargs["selection_from"], edit="edit" in kwargs)
         return {"answer": "ok", "mode": "quick", "citations": [], "edit_run": None}
 
     monkeypatch.setattr(copilot_turn, "run_turn", fake_run)
     post(server_url, "/api/copilot/stream", {
-        "thread_id": "chat-1", "source_id": "source-1", "question": "tidy", "history": [],
+        "thread_id": "chat-1", "path": "Notes/school/lesson.md", "question": "tidy", "history": [],
         "edit": True, "selection": "x" * (context.MAX_SELECTION_CHARS + 50), "selection_from": 13})
     assert seen == {"selection": "x" * context.MAX_SELECTION_CHARS, "selection_from": 13,
                     "edit": False}                                      # no Edit mode left
     for where in (-1, "13", True, 1.5, None):
         post(server_url, "/api/copilot/stream", {
-            "thread_id": "chat-1", "source_id": "source-1", "question": "tidy", "history": [],
+            "thread_id": "chat-1", "path": "Notes/school/lesson.md", "question": "tidy", "history": [],
             "selection": 5, "selection_from": where})
         assert seen == {"selection": "", "selection_from": None, "edit": False}, where
 
@@ -342,6 +348,7 @@ def a_note(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "VAULT", vault)
     monkeypatch.setattr(context.search_mod, "hybrid", lambda *a, **k: [])
     monkeypatch.setattr(copilot_turn.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
+    monkeypatch.setattr(context.embed_mod, "embed_source", lambda *a, **k: {"embedded": 0})
     con = db.connect()
     source = context.sync_note(con, vault, "Notes/n.md", embed=False)
     con.close()
@@ -352,6 +359,8 @@ def a_note(tmp_path, monkeypatch):
                 return {"content": json.dumps({"change_note": intent}), "tool_calls": [], "raw_tool_calls": []}, {}
             content, calls = replies[script.calls]
             script.calls += 1
+            if opts.get("on_part") and content:
+                opts["on_part"]("reply", -1, None, content)
             return ({"content": content, "tool_calls": [{"name": n, "arguments": a} for n, a in calls],
                      "raw_tool_calls": []}, {"duration_s": 1, "output_tokens": 5})
         def chat_stream(messages, **opts):     # today's Ask path
@@ -367,7 +376,7 @@ def a_note(tmp_path, monkeypatch):
 
 def stream(url, source, question, **extra):
     return post(url, "/api/copilot/stream", {
-        "thread_id": "chat-1", "source_id": source["id"], "question": question, "history": [],
+        "thread_id": "chat-1", "path": source["path"], "question": question, "history": [],
         "reasoning_mode": "quick", "doc": NOTE, "doc_hash": edits.digest(NOTE), **extra})
 
 
@@ -400,14 +409,24 @@ def test_the_stream_emits_the_edit_events_in_order(server_url, a_note):
     assert (config.VAULT / "Notes/n.md").read_text() == NOTE         # the server never writes the note
 
 
-def test_a_text_answer_streams_as_today_with_no_edit_events(server_url, a_note):
+def test_a_text_answer_streams_as_it_decodes_with_no_edit_events(server_url, a_note):
+    source, script = a_note
+    script(("It is a note.", []))
+    _status, _headers, body = stream(server_url, source, "what is this?")
+    events = events_of(body)
+    assert [e for e, _ in events] == ["stage", "delta", "turn"]
+    assert events[1][1] == {"text": "It is a note."}
+    assert events[-1][1]["edit_run"] is None and events[-1][1]["answer"] == "It is a note."
+
+
+def test_the_gate_path_answers_as_before_when_the_loop_is_off(server_url, a_note, monkeypatch):
+    monkeypatch.setattr(copilot_turn, "LOOP", False)
     source, script = a_note
     script(("It is a note.", []), intent=False)
     _status, _headers, body = stream(server_url, source, "what is this?")
     events = events_of(body)
     assert [e for e, _ in events] == ["stage", "delta", "stage", "turn"]
     assert events[1][1] == {"text": "It is a note."} and events[2][1] == {"stage": "Noting sources"}
-    assert events[-1][1]["edit_run"] is None
 
 
 def test_a_doc_hash_that_does_not_match_reaches_the_plugin_as_an_error(server_url, a_note):
@@ -419,6 +438,7 @@ def test_a_doc_hash_that_does_not_match_reaches_the_plugin_as_an_error(server_ur
 
 
 def test_a_doc_too_large_to_edit_is_still_asked_about_and_one_not_text_is_refused(server_url, a_note, monkeypatch):
+    monkeypatch.setattr(copilot_turn, "LOOP", False)          # the gate path's refusal; the loop reads by section
     source, script = a_note
     monkeypatch.setattr(edits, "MAX_EDIT_CHARS", 10)
     script(("It is a note.", []), intent=False)
@@ -472,7 +492,7 @@ def test_a_client_that_hangs_up_stops_the_run_after_the_current_call(server_url,
 
     png = base64.b64encode(base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")).decode()
-    body = json.dumps({"thread_id": "chat-1", "source_id": source["id"], "question": "go", "history": [],
+    body = json.dumps({"thread_id": "chat-1", "path": source["path"], "question": "go", "history": [],
                        "reasoning_mode": "quick", "doc": NOTE, "doc_hash": edits.digest(NOTE),
                        "images": [{"name": "eq.png", "mime": "image/png", "data": png}]}).encode()
     host, port = urlparse(server_url).hostname, urlparse(server_url).port
@@ -508,7 +528,7 @@ def test_a_run_keeps_its_images_from_its_start_and_its_start_names_them(server_u
     sees the `turn` that would. A request that fails before a run starts leaves nothing behind."""
     source, _script = a_note
 
-    def run_turn(_con, _source_id, question, _history, _mode, **kwargs):
+    def run_turn(_con, _open_path, question, _history, _mode, **kwargs):
         if question == "go":
             kwargs["on_edit"]("start", {"before_text": NOTE})
         raise copilot_turn.CopilotError("the model failed")
@@ -586,3 +606,39 @@ def test_an_inserts_text_reaches_the_stream_as_a_draft_before_its_change(server_
     assert [e for e, _ in events] == ["stage", "draft", "draft_text", "draft_text", "edit", "plan", "change", "turn"]
     assert events[1][1] == {"id": "d1.0", "from": NOTE.index("## A"), "to": NOTE.index("## A"), "text": ""}
     assert events[6][1]["draft"] == "d1.0" and "draft" not in events[-1][1]["edit_run"]["changes"][0]
+
+
+# --- the loop's body: the open note by path, if any, and the chat's pins (2026-11-13) -----------
+
+def test_the_stream_passes_the_open_path_and_the_pins(server_url, monkeypatch):
+    seen = []
+
+    def fake_run(con, open_path, question, history, mode, **kwargs):
+        seen.append((open_path, kwargs["pins"]))
+        return {"answer": "ok", "mode": "quick", "citations": [], "edit_run": None}
+    monkeypatch.setattr(copilot_turn, "run_turn", fake_run)
+    pins = [{"kind": "note", "path": "Notes/a.md"}, {"kind": "folder", "path": "Notes/school/"}]
+    post(server_url, "/api/copilot/stream", {"thread_id": "chat-1", "path": "Notes/x.md", "pins": pins,
+                                             "question": "q", "history": []})
+    post(server_url, "/api/copilot/stream", {"thread_id": "chat-1", "path": None, "question": "q", "history": []})
+    post(server_url, "/api/copilot/stream", {"thread_id": "chat-1", "question": "q", "history": []})
+    assert seen == [("Notes/x.md", [{"kind": "note", "path": "Notes/a.md"}, {"kind": "folder", "path": "Notes/school"}]),
+                    (None, []), (None, [])]
+    for bad in ({"path": "../x.md"}, {"path": 5}, {"pins": "Notes/a.md"}, {"pins": [{"kind": "tag", "path": "x"}]}):
+        status, _headers, body = post(server_url, "/api/copilot/stream",
+                                      {"thread_id": "chat-1", "question": "q", "history": [], **bad})
+        assert status == 400 and "error" in json.loads(body), bad
+    assert len(seen) == 3
+
+
+def test_the_stream_syncs_an_indexable_open_note_first(server_url, a_note, monkeypatch):
+    source, script = a_note
+    (config.VAULT / "Profile").mkdir()
+    (config.VAULT / "Profile/me.md").write_text("# Me\n", encoding="utf-8")
+    synced = []
+    real = context.sync_note
+    monkeypatch.setattr(context, "sync_note", lambda con, vault, path, **k: synced.append(path) or real(con, vault, path, **k))
+    script(("one", []), ("two", []), ("three", []))
+    for path in ("Notes/n.md", "Profile/me.md", "Notes/gone.md"):
+        post(server_url, "/api/copilot/stream", {"thread_id": "chat-1", "path": path, "question": "q", "history": []})
+    assert synced == ["Notes/n.md"]

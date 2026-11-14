@@ -9,6 +9,12 @@ from slim import server, db
 from slim.copilot import context, turn as copilot_turn
 
 
+@pytest.fixture(autouse=True)
+def gate_path(monkeypatch):
+    """These tests script the intent gate: they run the turn as it was before THE LOOP."""
+    monkeypatch.setattr(copilot_turn, "LOOP", False)
+
+
 @pytest.fixture
 def con(tmp_path):
     return db.connect(tmp_path / "copilot.db")
@@ -65,7 +71,7 @@ def test_auto_mode_is_refused(con, vault, monkeypatch):
     source = context.sync_note(con, vault, "Notes/school/lesson.md", embed=False)
     monkeypatch.setattr(context.search_mod, "hybrid", lambda *a, **k: [])
     with pytest.raises(copilot_turn.CopilotError, match="must be quick or deep"):
-        copilot_turn.run_turn(con, source["id"], "q", [], "auto")
+        copilot_turn.run_turn(con, source["path"], "q", [], "auto")
 
 
 def test_sources_come_from_a_bounded_follow_up_on_the_same_prefix(monkeypatch):
@@ -254,7 +260,7 @@ def test_run_turn_writes_a_replayable_trace(con, vault, monkeypatch):
     monkeypatch.setattr(copilot_turn.llm, "chat_json", lambda *a, **k: ({"notes": [1]}, {"duration_s": 0.3}))
     records = []
     monkeypatch.setattr(copilot_turn.trace, "record", lambda kind, payload: records.append((kind, payload)))
-    copilot_turn.run_turn(con, source["id"], "What is this?", [{"role": "you", "text": "hi"}], "quick",
+    copilot_turn.run_turn(con, source["path"], "What is this?", [{"role": "you", "text": "hi"}], "quick",
                           vault=vault)
     (kind, payload), = records
     assert kind == "copilot"
@@ -281,7 +287,7 @@ def test_the_trace_counts_the_turns_the_window_dropped(con, vault, monkeypatch):
     window = "w" * (copilot_turn.llm.RESIDENT_CTX * copilot_turn.CHARS_PER_TOKEN)
     history = [{"role": "you", "text": "a" + window}, {"role": "slim", "text": "b" + window},
                {"role": "you", "text": "short"}, {"role": "slim", "text": "reply"}]
-    got = copilot_turn.run_turn(con, source["id"], "What is this?", history, "quick", vault=vault)
+    got = copilot_turn.run_turn(con, source["path"], "What is this?", history, "quick", vault=vault)
     assert got["history_dropped"] == 2
     assert records[0]["history_turns"] == 4 and records[0]["history_dropped"] == 2
 
@@ -294,7 +300,7 @@ def test_run_turn_traces_a_refused_turn(con, vault, monkeypatch):
     records = []
     monkeypatch.setattr(copilot_turn.trace, "record", lambda kind, payload: records.append((kind, payload)))
     with pytest.raises(copilot_turn.CopilotError):
-        copilot_turn.run_turn(con, source["id"], "What is this?", [], "quick", vault=vault)
+        copilot_turn.run_turn(con, source["path"], "What is this?", [], "quick", vault=vault)
     (kind, payload), = records
     assert kind == "copilot" and payload["status"] == "failed"
     assert "no answer" in payload["error"]
@@ -313,7 +319,7 @@ def test_a_turn_that_fails_in_a_callback_is_traced_with_the_error_type(con, vaul
     def gone(_stage):
         raise BrokenPipeError(32, "Broken pipe")
     with pytest.raises(BrokenPipeError):
-        copilot_turn.run_turn(con, source["id"], "What is this?", [], "quick", vault=vault, on_stage=gone)
+        copilot_turn.run_turn(con, source["path"], "What is this?", [], "quick", vault=vault, on_stage=gone)
     (kind, payload), = records
     assert kind == "copilot" and payload["status"] == "failed" and payload["error_type"] == "BrokenPipeError"
     assert "duration_ms" in payload and payload["intent"] is False
@@ -338,7 +344,7 @@ def test_the_profile_is_never_injected_even_when_the_file_is_there(con, vault, m
     source = context.sync_note(con, vault, "Notes/school/lesson.md", embed=False)
     seen = {}
     _answering(monkeypatch, seen)
-    copilot_turn.run_turn(con, source["id"], "q", [], "quick", vault=vault)
+    copilot_turn.run_turn(con, source["path"], "q", [], "quick", vault=vault)
     system = seen["messages"][0]["content"]
     assert system.startswith(copilot_turn.PERSONA)
     assert "I am Alex" not in system
@@ -374,7 +380,7 @@ def test_the_model_sees_the_images_beside_the_passages_it_reads(con, vault, monk
     records = []
     monkeypatch.setattr(copilot_turn.trace, "record", lambda kind, payload: records.append(payload))
 
-    copilot_turn.run_turn(con, source["id"], "What does the chain rule say?", [], "quick", vault=vault)
+    copilot_turn.run_turn(con, source["path"], "What does the chain rule say?", [], "quick", vault=vault)
 
     *_, shown, asked = sent["messages"]
     assert asked == {"role": "user", "content": "What does the chain rule say?"}
@@ -396,7 +402,7 @@ def test_a_screenshot_heavy_note_sends_only_the_capped_few(con, vault, monkeypat
     sent = {}
     answering(monkeypatch, seen=sent)
     monkeypatch.setattr(copilot_turn.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
-    copilot_turn.run_turn(con, source["id"], "Quiz me", [], "quick", vault=vault)
+    copilot_turn.run_turn(con, source["path"], "Quiz me", [], "quick", vault=vault)
     shown = sent["messages"][-2]
     assert len(shown["images"]) == context.MAX_NOTE_IMAGES
     assert "`slide-00.png`" in shown["content"]
@@ -409,7 +415,7 @@ def test_a_note_without_images_adds_no_message(con, vault, monkeypatch):
     sent = {}
     answering(monkeypatch, seen=sent)
     monkeypatch.setattr(copilot_turn.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
-    copilot_turn.run_turn(con, source["id"], "Hm?", [], "quick", vault=vault)
+    copilot_turn.run_turn(con, source["path"], "Hm?", [], "quick", vault=vault)
     assert [m["role"] for m in sent["messages"]] == ["system", "user"]
 
 

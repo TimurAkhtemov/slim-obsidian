@@ -28,10 +28,11 @@ import threading
 import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import parse_qs, urlparse
 
 from . import config, db
+from .index import ingest as ingest_mod
 from .recorder import routes
 from .copilot import (blocks, context, edits as edits_mod, images as chat_images,
                       skills as skills_mod, threads as threads_mod, turn as copilot_turn)
@@ -392,15 +393,25 @@ class _Handler(BaseHTTPRequestHandler):
         if data is None:
             return
         question = str(data.get("question") or "").strip()
-        source_id = str(data.get("source_id") or "").strip()
+        # The note open when they sent, if any (a chat is no longer a note's), and the chat's pins.
+        open_path = data.get("path")
+        if open_path is not None and not isinstance(open_path, str):
+            self._send_json(400, {"error": "path must be text"})
+            return
+        open_path = (open_path or "").strip() or None
+        if open_path and (PurePosixPath(open_path).is_absolute() or ".." in PurePosixPath(open_path).parts):
+            self._send_json(400, {"error": "path must be vault-relative"})
+            return
+        try:
+            pins = threads_mod._clean_pins(data.get("pins"))
+        except threads_mod.ThreadError as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
         if not question:
             self._send_json(400, {"error": "question is required"})
             return
         if len(question) > MAX_QUESTION_CHARS:
             self._send_json(400, {"error": f"question exceeds {MAX_QUESTION_CHARS} chars"})
-            return
-        if not source_id:
-            self._send_json(400, {"error": "source id is required"})
             return
         history = clean_history(data.get("history"))
         # Quick unless they asked for Deep. There is no third setting to resolve (2026-09-03).
@@ -412,8 +423,7 @@ class _Handler(BaseHTTPRequestHandler):
         selection_from = data.get("selection_from")
         if type(selection_from) is not int or selection_from < 0:
             selection_from = None
-        # The editor's text and its hash: an editing run works on exactly what the owner sees. A
-        # note too big to edit is still asked about; run_turn refuses only an edit of it.
+        # The editor's text and its hash: an editing run works on exactly what the owner sees.
         doc, doc_hash = data.get("doc"), data.get("doc_hash")
         if doc is not None and not (isinstance(doc, str) and isinstance(doc_hash, str)):
             self._send_json(400, {"error": "doc and doc_hash must be text"})
@@ -484,8 +494,13 @@ class _Handler(BaseHTTPRequestHandler):
         completed = False
         try:
             con = db.connect()
+            # The open note as it is now, indexed and embedded, so search finds what they just
+            # wrote; a note the index leaves out is read from disk by the turn instead.
+            if (open_path and open_path.lower().endswith(".md") and ingest_mod.indexable(Path(open_path))
+                    and (Path(config.VAULT) / open_path).is_file()):
+                context.sync_note(con, config.VAULT, open_path)
             turn = copilot_turn.run_turn(
-                con, source_id, question, history, mode, vault=config.VAULT, images=images,
+                con, open_path, question, history, mode, pins=pins, vault=config.VAULT, images=images,
                 selection=selection, selection_from=selection_from, doc=doc, doc_hash=doc_hash,
                 on_stage=lambda stage: emit("stage", {"stage": stage}),
                 on_delta=lambda text: emit("delta", {"text": text}),

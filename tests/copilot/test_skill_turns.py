@@ -10,6 +10,12 @@ from slim import db
 from slim.copilot import context, edits, blocks, skills, run as edit_run, turn as copilot_turn
 
 
+@pytest.fixture(autouse=True)
+def gate_path(monkeypatch):
+    """These tests script the intent gate: they run the turn as it was before THE LOOP."""
+    monkeypatch.setattr(copilot_turn, "LOOP", False)
+
+
 @pytest.fixture
 def con(tmp_path):
     return db.connect(tmp_path / "skills.db")
@@ -119,7 +125,7 @@ def test_a_question_names_no_mode_on_either_path(con, vault, monkeypatch):
     monkeypatch.setattr(context.search_mod, "hybrid", lambda *a, **k: [])
     monkeypatch.setattr(copilot_turn.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
     seen = tooled(monkeypatch, ("ok", []))
-    turn = copilot_turn.run_turn(con, source["id"], "what is /usr/bin for?", [], "quick", vault=vault)
+    turn = copilot_turn.run_turn(con, source["path"], "what is /usr/bin for?", [], "quick", vault=vault)
     system = seen[0]["messages"][0]["content"]
     assert copilot_turn.ASK_RIDER in system and copilot_turn.EDIT_RIDER not in system
     edit_system = copilot_turn.edit_message("Notes/work/a.md", blocks.Note("text\n"))
@@ -132,18 +138,18 @@ def test_an_unknown_command_is_refused_not_asked(con, vault, monkeypatch):
     source = open_source(con, vault, note(vault, "Notes/work/a.md", "text\n"))
     fake_model(monkeypatch, "never", {})
     with pytest.raises(copilot_turn.CopilotError, match="no /quizz skill"):
-        copilot_turn.run_turn(con, source["id"], "/quizz me", [], "quick", vault=vault)
+        copilot_turn.run_turn(con, source["path"], "/quizz me", [], "quick", vault=vault)
 
 
 def test_a_skill_runs_at_its_own_depth_and_its_prompt_rides_in_history(con, vault, monkeypatch):
     meeting(vault, "Kickoff", "2026-09-01T09:00:00", "ship friday")
     source = open_source(con, vault, meeting(vault, "Review", "2026-09-08T09:00:00", "monday"))
     seen = tooled(monkeypatch, ("Nothing to merge yet.", []), ("Right: 4.", []))
-    turn = copilot_turn.run_turn(con, source["id"], "/consolidate-my-notes", [], "quick", vault=vault)
+    turn = copilot_turn.run_turn(con, source["path"], "/consolidate-my-notes", [], "quick", vault=vault)
     assert turn["mode"] == "deep" and seen[0]["opts"]["think"] is True
     monkeypatch.setattr(context.search_mod, "hybrid", lambda *a, **k: [])
     monkeypatch.setattr(copilot_turn.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
-    copilot_turn.run_turn(con, source["id"], "my answer is 4", [
+    copilot_turn.run_turn(con, source["path"], "my answer is 4", [
         {"role": "you", "text": "/quiz"}, {"role": "slim", "text": "What is 2+2?"}], "quick", vault=vault)
     assert seen[1]["messages"][1]["content"].startswith("Quiz me on this note. Ask ONE question now")
 
@@ -153,7 +159,7 @@ def test_a_skill_reads_the_folder_when_the_invocation_says_so(con, vault, monkey
     source = open_source(con, vault, meeting(vault, "Review", "2026-09-08T09:00:00", "monday"))
     seen = {}
     fake_model(monkeypatch, "- [ ] ship — Me", seen)
-    turn = copilot_turn.run_turn(con, source["id"], "/actions folder only mine", [], "quick", vault=vault)
+    turn = copilot_turn.run_turn(con, source["path"], "/actions folder only mine", [], "quick", vault=vault)
     assert turn["inputs"]["used"] == [kickoff, source["path"]]
     assert "=== Capture/work/Kickoff.md · 2026-09-01 ===" in seen["messages"][0]["content"]
     assert seen["messages"][-1]["content"].endswith("only mine")
@@ -168,7 +174,7 @@ def test_an_overflowing_prompt_never_makes_a_note(con, vault, monkeypatch):
          "raw_tool_calls": []}, {"ctx_saturated": True}))
     events = []
     with pytest.raises(copilot_turn.CopilotError, match="too long for one request"):
-        copilot_turn.run_turn(con, source["id"], "/consolidate-my-notes", [], "quick", vault=vault,
+        copilot_turn.run_turn(con, source["path"], "/consolidate-my-notes", [], "quick", vault=vault,
                               on_edit=lambda *event: events.append(event))
     assert events == []
 
@@ -195,7 +201,7 @@ def test_a_broken_vault_skill_says_which_file_to_fix(con, vault, monkeypatch):
     source = open_source(con, vault, note(vault, "Notes/work/a.md", "text\n"))
     fake_model(monkeypatch, "never", {})
     with pytest.raises(copilot_turn.CopilotError, match=r"/bad cannot run: input must be .*Skills/bad.md"):
-        copilot_turn.run_turn(con, source["id"], "/bad", [], "quick", vault=vault)
+        copilot_turn.run_turn(con, source["path"], "/bad", [], "quick", vault=vault)
 
 
 def test_a_question_never_sends_the_selection(con, vault, monkeypatch):
@@ -204,7 +210,7 @@ def test_a_question_never_sends_the_selection(con, vault, monkeypatch):
     monkeypatch.setattr(context.search_mod, "hybrid", lambda *a, **k: [])
     monkeypatch.setattr(copilot_turn.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
     seen = tooled(monkeypatch, ("ok", []))
-    copilot_turn.run_turn(con, source["id"], "what does this mean?", [], "quick",
+    copilot_turn.run_turn(con, source["path"], "what does this mean?", [], "quick",
                           selection="leftover", vault=vault)
     assert seen[0]["messages"][-1]["content"] == "what does this mean?"
     assert "leftover" not in str(seen[0]["messages"])
@@ -221,7 +227,7 @@ def test_a_turn_that_may_edit_sees_the_open_notes_images(con, vault, monkeypatch
     monkeypatch.setattr(context.search_mod, "hybrid", lambda *a, **k: [])
     monkeypatch.setattr(copilot_turn.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
     seen = tooled(monkeypatch, ("Nothing to change.", []), ("Still nothing.", []), intent=True)
-    copilot_turn.run_turn(con, source["id"], "write the equation under its screenshot", [], "quick",
+    copilot_turn.run_turn(con, source["path"], "write the equation under its screenshot", [], "quick",
                           vault=vault)
     assert seen[0]["tools"]                                        # the edit path
     shown = seen[0]["messages"][-2]
@@ -240,7 +246,7 @@ def test_consolidation_makes_a_new_note_as_a_change_and_writes_nothing(con, vaul
                                      ("create_note", {"path": "Capture/work/Consolidated.md", "markdown": body}),
                                      ("done", {"summary": "Merged your two meetings."})]))
     events = []
-    turn = copilot_turn.run_turn(con, source["id"], "/consolidate-my-notes focus on dates", [], "deep",
+    turn = copilot_turn.run_turn(con, source["path"], "/consolidate-my-notes focus on dates", [], "deep",
                                  vault=vault, on_edit=lambda event, payload: events.append((event, payload)))
     system, user = seen[0]["messages"][0]["content"], seen[0]["messages"][-1]["content"]
     assert seen[0]["tools"] == ["create_note", "done"] and len(seen) == 1
@@ -270,7 +276,7 @@ def test_a_selection_skill_changes_only_the_selected_blocks_and_only_with_replac
     seen = tooled(monkeypatch, ("", [("replace", {"target": "b5", "markdown": "Changed."}),
                                      ("replace", {"target": "b2", "markdown": "- **Lexical**: bank"}),
                                      ("replace", {"target": "b3", "markdown": "- **Pragmatics**: salt"})]))
-    turn = copilot_turn.run_turn(con, source["id"], "/tidy", [], "quick", vault=vault, selection=selected,
+    turn = copilot_turn.run_turn(con, source["path"], "/tidy", [], "quick", vault=vault, selection=selected,
                                  doc=LIST_NOTE, doc_hash=edits.digest(LIST_NOTE))
     assert seen[0]["tools"] == ["plan", "replace", "edit_text"] and seen[0]["opts"]["temperature"] == 0.0
     assert seen[0]["messages"][-1]["content"].endswith("Selected text:\n" + selected)
@@ -282,9 +288,9 @@ def test_a_selection_skill_changes_only_the_selected_blocks_and_only_with_replac
     assert [c["label"] for c in run["changes"]] == ["Rewrote “Lexical: bank”", "Rewrote “Pragmatics: salt”"]
     assert turn["citations"] == [{"n": 1, "path": "Notes/work/why.md", "title": "why"}]
     with pytest.raises(copilot_turn.CopilotError, match="select some in the note first"):
-        copilot_turn.run_turn(con, source["id"], "/tidy", [], "quick", vault=vault)
+        copilot_turn.run_turn(con, source["path"], "/tidy", [], "quick", vault=vault)
     with pytest.raises(copilot_turn.CopilotError, match="not in the note as it is now"):
-        copilot_turn.run_turn(con, source["id"], "/tidy", [], "quick", vault=vault, selection="gone text")
+        copilot_turn.run_turn(con, source["path"], "/tidy", [], "quick", vault=vault, selection="gone text")
 
 
 TWICE = "# Todo 📚\n\n- [ ] review chapter\n\n## Later\n\n- [ ] review chapter\n"
@@ -297,7 +303,7 @@ def test_a_selection_is_the_one_made_when_its_words_are_in_the_note_twice(con, v
     selected, second = "- [ ] review chapter", TWICE.rindex("- [ ] review chapter")
     tooled(monkeypatch, ("", [("replace", {"target": "b2", "markdown": "- [x] review chapter"}),
                               ("replace", {"target": "b4", "markdown": "- [x] review chapter"})]))
-    turn = copilot_turn.run_turn(con, source["id"], "/tidy", [], "quick", vault=vault, selection=selected,
+    turn = copilot_turn.run_turn(con, source["path"], "/tidy", [], "quick", vault=vault, selection=selected,
                                  selection_from=edits.u16(TWICE[:second]), doc=TWICE, doc_hash=edits.digest(TWICE))
     text = TWICE
     for change in turn["edit_run"]["changes"]:
@@ -305,7 +311,7 @@ def test_a_selection_is_the_one_made_when_its_words_are_in_the_note_twice(con, v
     assert text == TWICE[:second] + "- [x] review chapter\n"           # the first is outside the selection
     for where in (None, second):        # no place, or one in code points: one unit short of it
         with pytest.raises(copilot_turn.CopilotError, match="appears 2 times in the note"):
-            copilot_turn.run_turn(con, source["id"], "/tidy", [], "quick", vault=vault, selection=selected,
+            copilot_turn.run_turn(con, source["path"], "/tidy", [], "quick", vault=vault, selection=selected,
                                   selection_from=where, doc=TWICE, doc_hash=edits.digest(TWICE))
 
 
@@ -314,7 +320,7 @@ def test_a_new_note_call_that_could_not_be_read_is_asked_for_once_more(con, vaul
     source = open_source(con, vault, meeting(vault, "Review", "2026-09-08T09:00:00", "monday"))
     seen = tooled(monkeypatch, ("<tool_call>{broken", []),
                   ("", [("create_note", {"path": "All.md", "markdown": "# All"})]))
-    turn = copilot_turn.run_turn(con, source["id"], "/consolidate-my-notes", [], "deep", vault=vault)
+    turn = copilot_turn.run_turn(con, source["path"], "/consolidate-my-notes", [], "deep", vault=vault)
     assert seen[1]["messages"][-1] == {"role": "tool", "content": (
         "refused: your tool call could not be read (a tool call came back as text); write it again\n\n"
         "Make the new note with the create_note tool.")}
@@ -337,7 +343,7 @@ def test_brief_makes_one_new_note_in_the_open_notes_folder(con, vault, monkeypat
     seen = tooled(monkeypatch, ("", [("create_note", {"path": "Pricing brief.md", "markdown": "## Goal\n\nx"}),
                                      ("done", {"summary": "Wrote the brief."})]))
     events = []
-    turn = copilot_turn.run_turn(con, source["id"], "/brief", [], "quick", vault=vault,
+    turn = copilot_turn.run_turn(con, source["path"], "/brief", [], "quick", vault=vault,
                                  on_edit=lambda event, payload: events.append((event, payload)))
     assert seen[0]["tools"] == ["create_note", "done"] and seen[0]["opts"]["think"] is True    # its own depth
     assert "ONE new note in this folder" in seen[0]["messages"][-1]["content"]
@@ -351,5 +357,5 @@ def test_a_new_notes_prose_list_is_never_read_as_a_plan(con, vault, monkeypatch)
     source = open_source(con, vault, meeting(vault, "Review", "2026-09-08T09:00:00", "monday"))
     prose = "Merged them.\n- Shipping\n- Dates\n- Owners"
     seen = tooled(monkeypatch, (prose, [("create_note", {"path": "All.md", "markdown": "# All"})]))
-    turn = copilot_turn.run_turn(con, source["id"], "/consolidate-my-notes", [], "deep", vault=vault)
+    turn = copilot_turn.run_turn(con, source["path"], "/consolidate-my-notes", [], "deep", vault=vault)
     assert len(seen) == 1 and turn["edit_run"]["plan"]["steps"] == []

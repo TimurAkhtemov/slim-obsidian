@@ -12,6 +12,12 @@ from slim.index import chunk
 from .conftest import scripted
 
 
+@pytest.fixture(autouse=True)
+def gate_path(monkeypatch):
+    """These tests script the intent gate: they run the turn as it was before THE LOOP."""
+    monkeypatch.setattr(copilot_turn, "LOOP", False)
+
+
 @pytest.fixture
 def con(tmp_path):
     return db.connect(tmp_path / "copilot.db")
@@ -70,7 +76,7 @@ def turn(con, vault, monkeypatch):
         source = context.sync_note(con, vault, path, embed=False)
         events, deltas, stages = [], [], []
         sent = {"doc": text, "doc_hash": edits.digest(text)} if doc else {}
-        result = copilot_turn.run_turn(con, source["id"], question, list(history), mode, vault=vault,
+        result = copilot_turn.run_turn(con, source["path"], question, list(history), mode, vault=vault,
                                        on_edit=lambda event, payload: events.append((event, payload)),
                                        on_delta=deltas.append, on_stage=stages.append, should_stop=should_stop,
                                        selection=selection, **sent)
@@ -107,7 +113,7 @@ def test_an_answer_reaches_the_chat_through_on_delta(con, vault, monkeypatch):
     monkeypatch.setattr(copilot_turn.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
     scripted(monkeypatch, ("It descends.", []), intent=False)
     deltas, stages = [], []
-    copilot_turn.run_turn(con, source["id"], "What is it?", [], "quick", vault=vault,
+    copilot_turn.run_turn(con, source["path"], "What is it?", [], "quick", vault=vault,
                           on_delta=deltas.append, on_stage=stages.append)
     assert deltas == ["It descends."] and stages[0] == "Writing"
 
@@ -163,7 +169,8 @@ def test_a_plan_streams_its_events_in_order_and_returns_the_run(turn, monkeypatc
     assert (change["id"], change["step"], change["op"], change["label"]) == ("c1", 1, "replace", "Renamed “A” to “A renamed”")
     run = got["edit_run"]
     assert set(run) == {"plan", "steps_done", "changes", "stopped", "outline_met",
-                        "hash_before", "hash_after", "summary"}
+                        "hash_before", "hash_after", "summary", "path"}
+    assert run["path"] == "Notes/school/n.md"
     assert run["steps_done"] == 2 and run["stopped"] is None and run["outline_met"] is True
     assert run["summary"] == "Rename A and move B up." and got["answer"] == run["summary"]
     assert got["final"].index("## B") < got["final"].index("## A renamed")
@@ -440,7 +447,7 @@ def test_the_note_changed_while_sending_is_refused(turn, monkeypatch, con, vault
     write(vault, "Notes/school/h.md", "x")
     source = context.sync_note(con, vault, "Notes/school/h.md", embed=False)
     with pytest.raises(copilot_turn.CopilotError, match="the note changed while sending; try again"):
-        copilot_turn.run_turn(con, source["id"], "q", [], "quick", vault=vault, doc=NOTE, doc_hash=edits.digest("other"))
+        copilot_turn.run_turn(con, source["path"], "q", [], "quick", vault=vault, doc=NOTE, doc_hash=edits.digest("other"))
 
 
 def test_without_the_editors_text_the_note_is_read_from_the_vault(turn, monkeypatch):
@@ -1083,7 +1090,7 @@ def test_a_draft_end_that_cannot_be_sent_is_counted_and_the_run_goes_on(con, vau
         if event == "draft_end":
             raise RuntimeError("the chat is gone")
         events.append(event)
-    got = copilot_turn.run_turn(con, source["id"], "add", [], "quick", vault=vault, doc=NOTE,
+    got = copilot_turn.run_turn(con, source["path"], "add", [], "quick", vault=vault, doc=NOTE,
                                 doc_hash=edits.digest(NOTE), on_edit=on_edit)
     assert len(got["edit_run"]["changes"]) == 1 and records[-1]["edit_run"]["draft_failures"] == 1
 
