@@ -21,6 +21,14 @@ THINK_BUDGET = 8192              # on top of the first call's cap in Deep; think
 # THE LOOP thinks on every call but a step's, as the Pi coding agent does on the same model:
 # Quick at Pi's default "medium" (THINK_BUDGET), Deep at its "high".
 DEEP_THINK_BUDGET = 16_384
+# At most this many calls of a turn think; the rest run with thinking off, as a step does. Each
+# call that thinks adds its think budget to the run's output budget (`_turn`'s `ask`), and the
+# reply that crosses that budget is used and the run stops, so the WORST CASE for one turn is
+# RUN_OUTPUT_TOKENS + MAX_THINKING_CALLS * the think budget + one more call's cap:
+#   Quick: 12,000 + 8 * 8,192 + 10,592 (2,400 + 8,192)   =  88,128 output tokens
+#   Deep:  12,000 + 8 * 16,384 + 18,784 (2,400 + 16,384) = 161,856 output tokens
+# (MAX_CALLS and MAX_REFUSALS usually end it far sooner.)
+MAX_THINKING_CALLS = 8
 RUN_OUTPUT_TOKENS = 12_000       # the reply that crosses it is used, then the run stops (one ran to 25k)
 STEP_TEMPERATURE = 0.0           # a step, and any call that makes a wanted change, writes at 0.0
 STEP_TOOLS = ("replace", "edit_text", "insert", "move")
@@ -418,7 +426,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
     result would not is answered NO_ROOM instead, and what it read is neither a source nor editable.
     `too_long` is the refusal when the first answer's prompt lost its start (`ctx_saturated`).
     Every call that thinks adds `think_budget` to the run's output budget, and names its stage
-    `think_stage`. Every call but a step's samples with `sampling` too. `on_tool` hears each lookup
+    `think_stage`; after MAX_THINKING_CALLS of them, calls run with thinking off. Every call but a step's samples with `sampling` too. `on_tool` hears each lookup
     once it ran, as {name, label, refused} (`_tool_label`); the turn keeps them all in "tools".
 
     With `no_edit` (THE LOOP with no note it may change) the plan and edit tools are still offered,
@@ -431,7 +439,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
            "outline_details": None, "corrections": 0, "steps_missed": 0,
            "first_temperature": temperature, "looked_up": looked_up if looked_up is not None else [],
            "tools": []}
-    spent, failed, started = 0, [], [0]
+    spent, failed, started, thought = 0, [], [0], 0
     looks = lookup_mod.NAMES if lookups is not None else ()
     barred = {"plan", *STEP_TOOLS} if no_edit else set()
     acting = tuple(name for name in step_tools if name not in barred)
@@ -514,7 +522,9 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
         return reply
 
     def ask(offered, think, temperature, num_predict, sample=sampling) -> _Reply:
-        nonlocal spent, budget
+        nonlocal spent, budget, thought
+        think = think and thought < MAX_THINKING_CALLS
+        thought += think
         budget += think_budget if think else 0
         try:
             try:
@@ -603,7 +613,10 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
                     looked += 1
                     results.append(look(call, results))
             refused = all(r.startswith("refused:") for r in results)
-            over += refused and (looked >= MAX_LOOKUPS or any(c["name"] in barred for c in first.calls))
+            # A reply all refused counts when it asked past the cap, or for a tool it may not use
+            # (barred, or not offered at all): a model stuck on one ends after MAX_REFUSALS.
+            over += refused and (looked >= MAX_LOOKUPS or any(c["name"] in barred or c["name"] not in looks
+                                                              for c in first.calls))
             if out["calls"] > MAX_CALLS:
                 out["stopped"] = "call limit"
             elif over >= MAX_REFUSALS:

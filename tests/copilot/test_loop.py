@@ -620,3 +620,29 @@ def test_at_most_eight_looked_at_notes_are_sources(ask, con, vault, monkeypatch)
     got = ask("all of them?")
     paths = [c["path"] for c in got["citations"]]
     assert len(paths) == 8 and all(p.startswith("Notes/many/") for p in paths)   # the ninth looked at is not listed
+
+
+# --- a turn's thinking is bounded -----------------------------------------------------------------
+
+def test_a_model_that_keeps_calling_a_tool_not_offered_ends_within_the_bound(ask, monkeypatch):
+    """A tool the loop never offers (one the model made up): a reply of it and a lookup that finds
+    nothing is all refused, and counts toward MAX_REFUSALS as a lookup past the cap does."""
+    records = []
+    monkeypatch.setattr(copilot_turn.trace, "record", lambda kind, payload: records.append(payload))
+    stuck = ("", [("web_search", {"query": "comp"}), ("read_note", {"path": "Notes/missing.md"})])
+    seen = scripted(monkeypatch, *[stuck] * 40)
+    with pytest.raises(copilot_turn.CopilotError, match="before an answer"):
+        ask("q")
+    assert len(seen) == edit_run.MAX_REFUSALS
+    (record,) = records
+    assert record["status"] == "failed" and len(record["looked_up"]) == edit_run.MAX_REFUSALS
+    assert all(looked["refused"] for looked in record["looked_up"])
+
+
+def test_a_turn_thinks_on_at_most_eight_calls(ask, monkeypatch):
+    looks = [("", [("list_folder", {"path": "Notes"})])] * 8
+    seen = scripted(monkeypatch, *looks, ("Answer.", []))
+    got = ask("look around")
+    assert got["answer"] == "Answer." and len(seen) == 9
+    assert [call["opts"]["think"] for call in seen] == [True] * edit_run.MAX_THINKING_CALLS + [False]
+    assert edit_run.MAX_THINKING_CALLS == 8
