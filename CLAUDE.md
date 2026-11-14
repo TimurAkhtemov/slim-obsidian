@@ -142,11 +142,19 @@ moves can hit this.
      (`EXCLUDED_TOP` closed, except the open note), so SLIM never finds its own reflections as
      evidence. At most 6 before the first answer or edit (`run.MAX_LOOKUPS`); one whose result
      would overflow the window is refused. Each is a line in the chat, live as it runs.
-   - **Thinking on, as Pi does**: every call but a plan step's thinks (Quick 8192 tokens, Deep
-     16384, each call its own allowance, at most 8 calls a turn: `run.MAX_THINKING_CALLS`) and
-     samples as Qwen recommends with thinking (1.0, top_p 0.95, top_k 20, presence 1.5). Its
-     prompt is Pi-shaped and vault-first: the tutor persona's "use your general knowledge
-     freely" made a question about the owner's own numbers a guess with no lookup (2026-11-13).
+   - **Effort is Pi's thinking levels** (2026-11-14, replacing Quick and Deep), the ones the Pi
+     coding agent cycles through on the same model: Off, Low 4096 thinking tokens, Medium 8192
+     (the default), High 16384 (`run.THINK_BUDGETS`). Every call but a plan step's thinks within
+     its level's budget, each call its own allowance, at most 8 calls a turn
+     (`run.MAX_THINKING_CALLS`), and samples as Qwen recommends (thinking: 1.0, top_p 0.95, top_k
+     20, presence 1.5; Off: 0.7, top_p 0.8). Off is fastest but looks things up less reliably:
+     the live answer that invented the owner's numbers with no lookup ran with thinking off
+     (2026-11-13). The selector keeps the last level chosen (the plugin's settings); each answer
+     names its own, and a turn saved as Quick or Deep reads as Medium or High. A skill keeps its
+     measured setup, thinking only at High; its frontmatter may name an effort, which wins
+     (`mode: quick|deep` still reads). The loop's prompt is Pi-shaped and vault-first: the tutor
+     persona's "use your general knowledge freely" made a question about the owner's own numbers
+     a guess with no lookup (2026-11-13).
    - **Sources are what code saw**: the notes a turn read or its searches found (at most 8), then
      the pins; the open note only when a tool read it. Code knows what the turn looked at, so no
      model call decides them, and no prompt asks for citations: [n] markers made a citation bot
@@ -289,14 +297,14 @@ qwen3.6's prompt with its own Go renderer, whose open bugs hit the thinking-then
 llama-server finished 8 of 8. Ollama keeps the embedder. `qwen3.6` thinks
 by default and thinking tokens count against the output cap, so an unset `think` returns
 `content=""`; every call sets `enable_thinking` explicitly (`think=True` for the recorder's summary, every
-copilot loop call but a plan step's, and a skill's Deep mode), and turns off the server's
+copilot loop call but a plan step's at any effort but Off, and a skill's at High), and turns off the server's
 thinking budget, which is the coding agent's. Greedy decoding into a JSON grammar loops forever on an unbounded
 string: cap `num_predict`, put `maxLength` on short fields (Ollama could not compile one above
 ~1500; llama.cpp's limit is unmeasured). LaTeX does not survive JSON — `\b \f \n \r \t` collide
 with `\beta \frac \nabla \rho \text` — so the summarizer bans backslashes and
 `capture.summarize._repair` reverses the decode.
 `llm.py` serializes live calls; temperature 0.0 for structured work, 0.7 for prose a person
-reads, and the copilot loop's thinking calls 1.0 with Qwen's recommended sampling. A call with tools goes RAW: its prompt rendered by the server (`/apply-template`, the
+reads, and the copilot loop's calls Qwen's recommended sampling (1.0 thinking, 0.7 at Off). A call with tools goes RAW: its prompt rendered by the server (`/apply-template`, the
 GGUF's own chat template) and completed by `/completion`, streamed, its reply read by
 `llm_render._Reader` — the chat endpoint would parse the call into JSON arguments, and the draft
 shows a parameter's text as it decodes. A model with another tool-call format needs its own

@@ -23,7 +23,7 @@ def test_images_round_trip_as_refs_and_thread_json_keeps_no_base64():
 
     threads.save_copilot(
         "chat-1", "Equation", [{"role": "you", "text": "Explain", "attachments": refs}],
-        source_id="source-1", source_path="Notes/math.md", reasoning_mode="quick")
+        source_id="source-1", source_path="Notes/math.md")
     stored = threads.load("chat-1")
     assert stored["turns"][0]["attachments"] == refs
     body = (threads.THREADS_DIR / "chat-1.json").read_text()
@@ -80,7 +80,7 @@ def test_image_path_finds_a_stored_file_by_validated_id_only():
 def test_thread_delete_removes_its_images_too():
     chat_images.save_images("chat-1", [raw_image()])
     threads.save_copilot("chat-1", "Equation", [], source_id="src1",
-                         source_path="Notes/x.md", reasoning_mode="quick")
+                         source_path="Notes/x.md")
     assert (threads.THREADS_DIR / "chat-1.images").is_dir()
     assert threads.delete_thread("chat-1") is True
     assert not (threads.THREADS_DIR / "chat-1.images").exists()

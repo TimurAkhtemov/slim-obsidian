@@ -17,17 +17,22 @@ MAX_STEPS = 8
 MAX_CALLS = 30                   # tool calls in one run
 MAX_REFUSALS = 3                 # refused calls in a row end the run
 STEP_NUM_PREDICT = 2048          # a step's reply: room for one section's new text
-THINK_BUDGET = 8192              # on top of the first call's cap in Deep; thinking counts against it
-# THE LOOP thinks on every call but a step's, as the Pi coding agent does on the same model:
-# Quick at Pi's default "medium" (THINK_BUDGET), Deep at its "high".
-DEEP_THINK_BUDGET = 16_384
+# EFFORT (`skills.EFFORTS`): Pi's thinking levels and their budgets, which the Pi coding agent on
+# the same model cycles through. THE LOOP thinks on every call but a step's within its level's
+# budget (thinking counts against a call's cap); Off thinks on none. Medium is the default.
+THINK_BUDGETS = {"off": 0, "low": 4096, "medium": 8192, "high": 16_384}
+# A skill keeps its measured setup: it thinks only at High, with this (Deep's, before effort).
+THINK_BUDGET = 8192
 # At most this many calls of a turn think; the rest run with thinking off, as a step does. Each
 # call that thinks adds its think budget to the run's output budget (`_turn`'s `ask`), and the
 # reply that crosses that budget is used and the run stops, so the WORST CASE for one turn is
-# RUN_OUTPUT_TOKENS + MAX_THINKING_CALLS * the think budget + one more call's cap:
-#   Quick: 12,000 + 8 * 8,192 + 10,592 (2,400 + 8,192)   =  88,128 output tokens
-#   Deep:  12,000 + 8 * 16,384 + 18,784 (2,400 + 16,384) = 161,856 output tokens
-# (MAX_CALLS and MAX_REFUSALS usually end it far sooner.)
+# RUN_OUTPUT_TOKENS + MAX_THINKING_CALLS * the think budget + one more call's cap (2,400 + budget):
+#   Off:    12,000 +              2,400                  =  14,400 output tokens
+#   Low:    12,000 + 8 *  4,096 +  6,496 (2,400 +  4,096) =  51,264
+#   Medium: 12,000 + 8 *  8,192 + 10,592 (2,400 +  8,192) =  88,128
+#   High:   12,000 + 8 * 16,384 + 18,784 (2,400 + 16,384) = 161,856
+# A claimed edit's corrective call is one of these calls, made only inside the budget: the bound
+# holds. (MAX_CALLS and MAX_REFUSALS usually end a turn far sooner.)
 MAX_THINKING_CALLS = 8
 RUN_OUTPUT_TOKENS = 12_000       # the reply that crosses it is used, then the run stops (one ran to 25k)
 # A step, and an edit skill's first call, writes at 0.0: retyping at 0.7 drifted (a plural

@@ -4,7 +4,7 @@
 
 const { ItemView, Modal } = require("obsidian");
 const { MAX_COPILOT_IMAGES, resizeCopilotImage } = require("./images");
-const { sha256Hex, editorSelection, MAX_EDIT_CHARS, quickOrDeep, titleFromQuestion, threadId,
+const { sha256Hex, editorSelection, MAX_EDIT_CHARS, effortOf, titleFromQuestion, threadId,
         cancelledError, historyText, threadRows, mentionQuery, mentionMatches } = require("./text");
 const { clear, create } = require("./dom");
 const MAX_PINS = 12;     // the server refuses more (copilot.turn)
@@ -70,7 +70,7 @@ class CopilotView extends ItemView {
     this.noteVersion = 0;
     this.activeThread = null;
     this.turns = [];
-    this.mode = "quick";
+    this.effort = effortOf(plugin.settings?.effort);   // kept across restarts; medium unless changed
     this.stage = "";
     this.draft = "";
     this.error = "";
@@ -320,7 +320,7 @@ class CopilotView extends ItemView {
 
   newThread() {
     this.activeThread = {
-      id: threadId(), title: "New chat", reasoning_mode: this.mode, pins: [],
+      id: threadId(), title: "New chat", pins: [],
       ...(this.openNote ? { source_id: this.openNote.id, source_path: this.openNote.path } : {}),
     };
     this.turns = [];
@@ -333,6 +333,15 @@ class CopilotView extends ItemView {
     this.render();
   }
 
+  // The effort every question runs at from now on (a skill may name its own), kept in the
+  // plugin's settings: the selector shows the last one chosen, in every chat and after a restart.
+  setEffort(value) {
+    this.effort = effortOf(value);
+    if (!this.plugin.settings) return;
+    this.plugin.settings.effort = this.effort;
+    Promise.resolve(this.plugin.saveSettings?.()).catch((error) => { this.error = error.message || String(error); });
+  }
+
   // Any chat opens as it is: it never moves the note the owner has open.
   async openThread(id) {
     const version = ++this.threadVersion;
@@ -342,9 +351,6 @@ class CopilotView extends ItemView {
     this.turns = data.turns || [];
     this.pendingImages = [];
     this.retryImages = [];
-    // A legacy "auto" on disk must not reach the mode selector; `saveRecord` normalizes the
-    // record itself, so nothing has to correct `data` here.
-    this.mode = quickOrDeep(data.reasoning_mode);
     this.showThreads = false;
     this.render();
   }
@@ -362,10 +368,6 @@ class CopilotView extends ItemView {
       ...(thread.source_id ? { source_id: thread.source_id } : {}),
       ...(thread.source_path ? { source_path: thread.source_path } : {}),
       ...(thread.pins ? { pins: thread.pins } : {}),
-      // ⚠ Normalized HERE, not at the point a thread is opened: `renameThread` fetches a
-      // thread it never opened and hands it straight to this method, so a pre-2026-09-03
-      // conversation would post "auto" and be refused with nothing catching it.
-      reasoning_mode: quickOrDeep(thread.reasoning_mode || this.mode),
     };
     const saved = await this.plugin.postJSON("/api/copilot/thread/save", body);
     Object.assign(thread, saved);
@@ -478,7 +480,7 @@ class CopilotView extends ItemView {
         // A regenerated question re-sends its stored refs; the server has the bytes.
         images: outgoingImages.map(({ id, name, mime, data, bytes }) =>
           data ? { name, mime, data } : { id, name, mime, bytes }),
-        reasoning_mode: this.mode,
+        effort: this.effort,
         ...(doc === null ? {} : { doc, doc_hash: sha256Hex(doc) }),
         selection: picked.text,
         ...(picked.from === undefined ? {} : { selection_from: picked.from }),
@@ -550,7 +552,6 @@ class CopilotView extends ItemView {
       turns.push({ role: "slim", text: completed.answer || streamed, turn: completed });
       this.retryQuestion = "";
       this.retryImages = [];
-      thread.reasoning_mode = this.mode;
       await this.saveRecord(thread, turns);
     } catch (error) {
       const stopped = error.name === "AbortError";
@@ -559,7 +560,6 @@ class CopilotView extends ItemView {
         // copy from before, so See before and Restore work after a reload too.
         turns.push(await this.partialTurn(run, stopped ? "stopped" : `error: ${error.message || error}`));
         if (!stopped) this.error = error.message || String(error);
-        thread.reasoning_mode = this.mode;
         if (!this.deletedThreads.has(thread.id)) {
           await this.saveRecord(thread, turns).catch((e) => { this.error = e.message || String(e); });
         }
@@ -605,7 +605,7 @@ class CopilotView extends ItemView {
   }
 
   // The server names a stage as each model call starts. The same one again is that call still
-  // running (Deep's heartbeat while it thinks); a new one, or a new step, starts the count again.
+  // running (its heartbeat while it thinks); a new one, or a new step, starts the count again.
   setStage(name) {
     const stage = name || "Working";
     if (stage !== this.stage) {

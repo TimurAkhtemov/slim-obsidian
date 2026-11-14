@@ -50,14 +50,14 @@ def put(con, vault, path: str, text: str, *, index: bool = True) -> str:
 def ask(con, vault):
     """run_turn in loop mode on `open_path` (written with `text` when given). Returns the result,
     and its on_edit events, deltas and stages."""
-    def go(question, *, open_path=OPEN, text=NOTE, pins=(), history=(), mode="quick", doc=True, tools=None):
+    def go(question, *, open_path=OPEN, text=NOTE, pins=(), history=(), effort="medium", doc=True, tools=None):
         sent = {}
         if open_path is not None and text is not None:
             put(con, vault, open_path, text, index=not open_path.startswith("Profile/"))
             if doc:
                 sent = {"doc": text, "doc_hash": edits.digest(text)}
         events, deltas, stages = [], [], []
-        result = copilot_turn.run_turn(con, open_path, question, list(history), mode, pins=list(pins),
+        result = copilot_turn.run_turn(con, open_path, question, list(history), effort, pins=list(pins),
                                        vault=vault, on_edit=lambda e, p: events.append((e, p)),
                                        on_delta=deltas.append, on_reset=lambda: deltas.append(RESET),
                                        on_stage=stages.append, on_tool=tools.append if tools is not None else None,
@@ -445,7 +445,7 @@ def test_a_lookup_that_would_overflow_the_window_is_refused(ask, con, vault, mon
     ask("q")
     prompt = sum(map(copilot_turn._tokens, seen[0]["messages"]))
     # Room for the prompt, the reply, and a little more: the small note fits, the big one not.
-    monkeypatch.setattr(llm, "RESIDENT_CTX", int(prompt + copilot_turn.QUICK_NUM_PREDICT + edit_run.THINK_BUDGET + 200))
+    monkeypatch.setattr(llm, "RESIDENT_CTX", int(prompt + copilot_turn.ANSWER_NUM_PREDICT + edit_run.THINK_BUDGET + 200))
     seen = scripted(monkeypatch, ("", [("read_note", {"path": "Notes/small.md"})]),
                     ("", [("read_note", {"path": "Notes/big.md"})]), ("With what I have.", []))
     got = ask("q")
@@ -472,18 +472,42 @@ def test_a_saturated_window_names_the_conversation_not_the_note(ask, monkeypatch
 
 # --- Pi's setup: thinking on every loop call, a step as measured --------------------------------
 
-@pytest.mark.parametrize("mode, budget, stage", [("quick", 8192, "Thinking"), ("deep", 16384, "Thinking deeply")])
-def test_every_loop_call_thinks_within_its_own_budget(ask, con, vault, monkeypatch, mode, budget, stage):
-    """Like Pi's default "medium" (Quick) and "high" (Deep). Thinking tokens count against the
-    cap, so a call's cap is the answer's and the budget."""
+@pytest.mark.parametrize("effort, budget, stage", [("low", 4096, "Thinking"), ("medium", 8192, "Thinking"),
+                                                   ("high", 16384, "Thinking deeply")])
+def test_every_loop_call_thinks_within_its_efforts_budget(ask, con, vault, monkeypatch, effort, budget, stage):
+    """Pi's thinking levels. Thinking tokens count against the cap, so a call's cap is the
+    answer's and the budget."""
     put(con, vault, "Notes/school/cs-201/zebra.md", "# Zebras\n\nZebras have stripes.\n")
     seen = scripted(monkeypatch, ("", [("search", {"query": "zebras"})]), ("Stripes.", []))
-    got = ask("zebras?", mode=mode)
-    assert {edit_run.THINK_BUDGET, edit_run.DEEP_THINK_BUDGET} == {8192, 16384}
+    got = ask("zebras?", effort=effort)
+    assert edit_run.THINK_BUDGETS == {"off": 0, "low": 4096, "medium": 8192, "high": 16384}
     for call in seen:
         assert call["opts"]["think"] is True
-        assert call["opts"]["num_predict"] == copilot_turn.QUICK_NUM_PREDICT + budget
-    assert got["stages"][0] == stage
+        assert call["opts"]["num_predict"] == copilot_turn.ANSWER_NUM_PREDICT + budget
+        opts = call["opts"]
+        assert (opts["temperature"], opts["top_p"], opts["top_k"], opts["presence_penalty"]) == (1.0, 0.95, 20, 1.5)
+    assert got["stages"][0] == stage and got["effort"] == effort
+
+
+def test_effort_off_thinks_on_no_call_and_samples_as_qwen_recommends_without(ask, con, vault, monkeypatch):
+    put(con, vault, "Notes/school/cs-201/zebra.md", "# Zebras\n\nZebras have stripes.\n")
+    seen = scripted(monkeypatch, ("", [("search", {"query": "zebras"})]), ("Stripes.", []))
+    got = ask("zebras?", effort="off")
+    for call in seen:
+        opts = call["opts"]
+        assert opts["think"] is False and opts["num_predict"] == copilot_turn.ANSWER_NUM_PREDICT
+        assert (opts["temperature"], opts["top_p"], opts["top_k"], opts["presence_penalty"]) == (0.7, 0.8, 20, 1.5)
+    assert got["stages"][0] == "Writing" and got["answer"] == "Stripes."
+
+
+def test_effort_off_keeps_a_plan_step_as_measured(ask, monkeypatch):
+    seen = scripted(monkeypatch,
+                    ("", [("plan", {"intro": "Add a line.", "steps": ["Add a line after b2"]})]),
+                    ("", [("insert", {"after": "b2", "markdown": "A line."})]))
+    ask("add a line", effort="off")
+    step = seen[1]["opts"]
+    assert step["think"] is False and step["temperature"] == edit_run.STEP_TEMPERATURE
+    assert not {"top_p", "top_k", "presence_penalty"} & set(step)
 
 
 def test_a_plan_step_stays_as_measured(ask, monkeypatch):
@@ -508,11 +532,20 @@ def test_loop_calls_sample_as_qwen_recommends_for_thinking(ask, con, vault, monk
         assert (opts["temperature"], opts["top_p"], opts["top_k"], opts["presence_penalty"]) == (1.0, 0.95, 20, 1.5)
 
 
-def test_a_chat_skill_thinks_as_before(ask, monkeypatch):
+@pytest.mark.parametrize("effort", ["off", "low", "medium"])
+def test_a_chat_skill_thinks_as_measured_below_high(ask, monkeypatch, effort):
     seen = scripted(monkeypatch, ("Question 1?", []))
-    ask("/quiz")
+    ask("/quiz", effort=effort)
     assert seen[0]["opts"]["think"] is False
-    assert seen[0]["opts"]["num_predict"] == copilot_turn.QUICK_NUM_PREDICT
+    assert seen[0]["opts"]["num_predict"] == copilot_turn.ANSWER_NUM_PREDICT
+    assert seen[0]["opts"]["temperature"] == llm.REPLY_TEMPERATURE and "top_p" not in seen[0]["opts"]
+
+
+def test_a_chat_skill_thinks_at_high_with_its_measured_budget(ask, monkeypatch):
+    seen = scripted(monkeypatch, ("Question 1?", []))
+    ask("/quiz", effort="high")
+    assert seen[0]["opts"]["think"] is True
+    assert seen[0]["opts"]["num_predict"] == copilot_turn.ANSWER_NUM_PREDICT + edit_run.THINK_BUDGET == 2400 + 8192
     assert seen[0]["opts"]["temperature"] == llm.REPLY_TEMPERATURE and "top_p" not in seen[0]["opts"]
 
 
@@ -767,6 +800,6 @@ def test_a_first_call_edit_on_an_overflowing_window_lands_nothing_and_says_why(c
     monkeypatch.setattr(copilot_turn.llm, "chat_tools", saturated)
     events = []
     with pytest.raises(copilot_turn.CopilotError, match="this conversation no longer fits the model's window"):
-        copilot_turn.run_turn(con, OPEN, "shorten the intro", [], "quick", vault=vault, doc=NOTE,
+        copilot_turn.run_turn(con, OPEN, "shorten the intro", [], "medium", vault=vault, doc=NOTE,
                               doc_hash=edits.digest(NOTE), on_edit=lambda e, p: events.append(e))
     assert len(seen) == 1 and events == []

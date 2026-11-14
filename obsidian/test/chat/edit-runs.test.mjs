@@ -93,7 +93,7 @@ test("the chat shows the intro, a line per step, the outcome and the meta line",
   (function walk(el) { if (el.textContent) texts.push(el.textContent); el.children.forEach(walk); })(root);
   for (const want of [PLAN.intro, "Rename the heading", "Tighten the intro",
                       "Done 1 of 2 steps. Not done: the rest of Tighten the intro.", "2 changes, 1 undone",
-                      "Undo all", "Redo", "See before", "Hide marks", "Quick · 41 s"]) {
+                      "Undo all", "Redo", "See before", "Hide marks", "Medium · 41 s"]) {   // saved as Quick
     assert.ok(texts.includes(want), `${want} in ${JSON.stringify(texts)}`);
   }
   assert.ok(texts.some((t) => /Inserted after b9/.test(t) && /you edited this here/.test(t)), texts.join(" | "));

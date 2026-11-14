@@ -59,7 +59,7 @@ def flaky(monkeypatch, seen, *failing):
 def turn(con, vault, monkeypatch):
     """run_turn on a note holding `text`, sent as the editor's text and its hash. Returns the
     turn, and every on_edit event as (event, payload)."""
-    def go(question, *, text=NOTE, path="Notes/school/n.md", mode="quick", history=(),
+    def go(question, *, text=NOTE, path="Notes/school/n.md", effort="medium", history=(),
            should_stop=lambda: False, selection="", doc=True):
         target = vault / path
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -67,7 +67,7 @@ def turn(con, vault, monkeypatch):
         source = context.sync_note(con, vault, path, embed=False)
         events, deltas, stages = [], [], []
         sent = {"doc": text, "doc_hash": edits.digest(text)} if doc else {}
-        result = copilot_turn.run_turn(con, source["path"], question, list(history), mode, vault=vault,
+        result = copilot_turn.run_turn(con, source["path"], question, list(history), effort, vault=vault,
                                        on_edit=lambda event, payload: events.append((event, payload)),
                                        on_delta=deltas.append, on_stage=stages.append, should_stop=should_stop,
                                        selection=selection, **sent)
@@ -95,7 +95,7 @@ def test_an_edit_skill_carries_the_rider_and_the_note_with_handles(turn, monkeyp
     assert rest[-1]["content"].endswith("Selected text:\n- one")
     opts = seen[0]["opts"]
     assert opts["think"] is False and opts["temperature"] == edit_run.STEP_TEMPERATURE == 0.0
-    assert opts["num_predict"] == copilot_turn.QUICK_NUM_PREDICT >= edit_run.STEP_NUM_PREDICT
+    assert opts["num_predict"] == copilot_turn.ANSWER_NUM_PREDICT >= edit_run.STEP_NUM_PREDICT
 
 
 def test_the_rider_is_the_measured_one():
@@ -116,11 +116,11 @@ def test_an_edit_skill_that_claims_a_change_it_never_made_is_told_once(turn, mon
 
 def test_deep_gives_an_edit_skills_first_call_room_to_think(turn, monkeypatch):
     seen = scripted(monkeypatch, ("", [("replace", {"target": "b5", "markdown": "- **one**"})]))
-    turn("/tidy", selection="- one", mode="deep")
+    turn("/tidy", selection="- one", effort="high")
     assert seen[0]["opts"]["think"] is True
-    assert seen[0]["opts"]["num_predict"] == copilot_turn.QUICK_NUM_PREDICT + edit_run.THINK_BUDGET
+    assert seen[0]["opts"]["num_predict"] == copilot_turn.ANSWER_NUM_PREDICT + edit_run.THINK_BUDGET
     assert edit_run.THINK_BUDGET == 8192
-    assert copilot_turn.QUICK_NUM_PREDICT + edit_run.THINK_BUDGET < edit_run.RUN_OUTPUT_TOKENS
+    assert copilot_turn.ANSWER_NUM_PREDICT + edit_run.THINK_BUDGET < edit_run.RUN_OUTPUT_TOKENS
 
 
 def test_a_plan_streams_its_events_in_order_and_returns_the_run(turn, monkeypatch):
@@ -129,7 +129,7 @@ def test_a_plan_streams_its_events_in_order_and_returns_the_run(turn, monkeypatc
                                     "steps": ["Rename A", "Move B above A"]})]),
                     ("", [("replace", {"target": "b3", "markdown": "## A renamed"})]),
                     ("", [("move", {"target": "s7", "before": "s3"})]))
-    got, events = turn("Rename A and put B first", mode="deep")
+    got, events = turn("Rename A and put B first", effort="high")
     assert [e for e, _ in events] == ["start", "plan", "step", "change", "step", "step", "change", "step"]
     assert events[0][1] == {"before_text": NOTE}
     assert events[1][1] == {"intro": "Rename A and move B up.", "steps": ["Rename A", "Move B above A"],
@@ -422,7 +422,7 @@ def test_the_note_changed_while_sending_is_refused(turn, monkeypatch, con, vault
     write(vault, "Notes/school/h.md", "x")
     source = context.sync_note(con, vault, "Notes/school/h.md", embed=False)
     with pytest.raises(copilot_turn.CopilotError, match="the note changed while sending; try again"):
-        copilot_turn.run_turn(con, source["path"], "q", [], "quick", vault=vault, doc=NOTE, doc_hash=edits.digest("other"))
+        copilot_turn.run_turn(con, source["path"], "q", [], "medium", vault=vault, doc=NOTE, doc_hash=edits.digest("other"))
 
 
 def test_without_the_editors_text_the_note_is_read_from_the_vault(turn, monkeypatch):
@@ -647,12 +647,12 @@ def test_two_edits_beside_a_four_item_plan_count_as_its_first_two_steps(turn, mo
 
 # --- M2: thinking has its own allowance, beside the run's budget ---------------------------------
 
-@pytest.mark.parametrize("mode", ["quick", "deep"])
-def test_the_first_calls_thinking_does_not_eat_the_steps_budget(turn, monkeypatch, mode):
+@pytest.mark.parametrize("effort", ["medium", "high"])
+def test_the_first_calls_thinking_does_not_eat_the_steps_budget(turn, monkeypatch, effort):
     seen = scripted(monkeypatch, ("", [("plan", {"intro": "x", "steps": ["Rename A", "Rename B"]})], 9000),
                     ("", [("replace", {"target": "b3", "markdown": "## A2"})], 4000),
                     ("", [("replace", {"target": "b7", "markdown": "## B2"})], 500))
-    got, _ = turn("rename both", mode=mode)
+    got, _ = turn("rename both", effort=effort)
     assert got["edit_run"]["stopped"] is None and len(seen) == 3 and len(got["edit_run"]["changes"]) == 2
     assert edit_run.RUN_OUTPUT_TOKENS + edit_run.THINK_BUDGET == 20192
 
@@ -677,7 +677,7 @@ def test_a_step_whose_prompt_overflowed_stops_the_run_before_its_calls_land(turn
 
 def test_a_note_too_long_for_the_window_is_refused_before_its_edit_call(turn, monkeypatch):
     seen = scripted(monkeypatch, ("", [("replace", {"target": "b3", "markdown": "## A2"})]))
-    monkeypatch.setattr(copilot_turn.llm, "RESIDENT_CTX", copilot_turn.QUICK_NUM_PREDICT + 50)
+    monkeypatch.setattr(copilot_turn.llm, "RESIDENT_CTX", copilot_turn.ANSWER_NUM_PREDICT + 50)
     with pytest.raises(copilot_turn.CopilotError, match="too long for one request"):
         turn("rename A")
     assert seen == []
@@ -752,7 +752,7 @@ def test_every_model_call_of_an_edit_run_names_its_stage_as_it_starts(turn, monk
     scripted(monkeypatch, ("", [("plan", {"intro": "Capitalize both.", "outline": [], "steps": ["Fix a", "Fix b"]})]),
              ("", [("edit_text", {"target": "b4", "old": "Text a.", "new": "Text A."})]),
              ("", [("edit_text", {"target": "b8", "old": "Text b.", "new": "Text B."})]))
-    got, _ = turn("Capitalize both", mode="deep")
+    got, _ = turn("Capitalize both", effort="high")
     assert got["edit_run"]["steps_done"] == 2
     assert got["stages"] == ["Thinking deeply", "Writing", "Writing"]
 
@@ -954,7 +954,7 @@ def test_a_draft_end_that_cannot_be_sent_is_counted_and_the_run_goes_on(con, vau
         if event == "draft_end":
             raise RuntimeError("the chat is gone")
         events.append(event)
-    got = copilot_turn.run_turn(con, source["path"], "add", [], "quick", vault=vault, doc=NOTE,
+    got = copilot_turn.run_turn(con, source["path"], "add", [], "medium", vault=vault, doc=NOTE,
                                 doc_hash=edits.digest(NOTE), on_edit=on_edit)
     assert len(got["edit_run"]["changes"]) == 1 and records[-1]["edit_run"]["draft_failures"] == 1
 

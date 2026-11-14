@@ -15,7 +15,8 @@ retrieval, and never the model:
     section: Notes                       keep only this heading's section of each note
     output:  chat | edit | new-note      edit changes the open note, new-note creates notes;
                                          either lands at once, each change undoable
-    mode:    quick | deep                the depth this skill always runs at
+    effort:  off | low | medium | high   the effort this skill always runs at (`mode: quick`
+                                         or `deep`, the old words, read as medium or high)
 """
 from __future__ import annotations
 
@@ -29,7 +30,10 @@ VAULT_DIR = "Skills"
 BUILTIN_DIR = Path(__file__).parent.parent / "skills"
 INPUTS = ("note", "selection", "folder")
 OUTPUTS = ("chat", "edit", "new-note")
-MODES = ("quick", "deep")
+# Effort: Pi's thinking levels (2026-11-14, replacing Quick and Deep); what each costs is
+# `run.THINK_BUDGETS`. The old words still arrive, from old skills, plugins and saved chats.
+EFFORTS = ("off", "low", "medium", "high")
+FROM_MODE = {"quick": "medium", "deep": "high"}
 _NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
 _FRONTMATTER = re.compile(r"\A---\s*\n(.*?)\n---\s*(?:\n|\Z)", re.DOTALL)
 
@@ -43,13 +47,13 @@ class Skill:
     filter: dict = field(default_factory=dict)
     section: str = ""
     output: str = "chat"
-    mode: str = ""
+    effort: str = ""
     origin: str = "builtin"
     error: str = ""
 
     def listing(self) -> dict:
         return {"name": self.name, "description": self.description, "input": self.input,
-                "output": self.output, "mode": self.mode, "origin": self.origin,
+                "output": self.output, "effort": self.effort, "origin": self.origin,
                 "error": self.error}
 
 
@@ -75,14 +79,20 @@ def parse_skill(name: str, text: str, origin: str) -> Skill:
     skill.input = str(meta.get("input") or "note").strip().lower()
     skill.section = str(meta.get("section") or "").strip()
     skill.output = str(meta.get("output") or "chat").strip().lower()
-    skill.mode = str(meta.get("mode") or "").strip().lower()
+    effort = meta.get("effort")
+    # YAML reads a bare `off` as false
+    effort = "off" if effort is False else str(effort or "").strip().lower()
+    mode = str(meta.get("mode") or "").strip().lower()
+    skill.effort = effort or FROM_MODE.get(mode, "")
     raw_filter = meta.get("filter") or {}
     if skill.input not in INPUTS:
         skill.error = f"input must be one of {', '.join(INPUTS)}"
     elif skill.output not in OUTPUTS:
         skill.error = f"output must be one of {', '.join(OUTPUTS)}"
-    elif skill.mode and skill.mode not in MODES:
-        skill.error = f"mode must be one of {', '.join(MODES)}"
+    elif effort and effort not in EFFORTS:
+        skill.error = f"effort must be one of {', '.join(EFFORTS)}"
+    elif mode and not effort and mode not in FROM_MODE:
+        skill.error = f"mode must be quick or deep (or set effort: {', '.join(EFFORTS)})"
     elif not isinstance(raw_filter, dict):
         skill.error = "filter must be key: value pairs"
     elif not skill.prompt:

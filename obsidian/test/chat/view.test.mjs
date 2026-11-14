@@ -75,7 +75,7 @@ test("the active Markdown view is saved before its note is synchronized", async 
   assert.deepEqual(order, ["save", "context"]);
 });
 
-test("sending streams deltas and stores the turn with the depth they picked", async () => {
+test("sending streams deltas and stores the turn with the effort they picked", async () => {
   const saved = [];
   const view = makeView({
     postJSON: async (route, body) => {
@@ -88,15 +88,15 @@ test("sending streams deltas and stores the turn with the depth they picked", as
       handlers.delta({ text: "Grounded " });
       assert.equal(view.streamingText, "Grounded ");
       handlers.delta({ text: "answer" });
-      handlers.turn({ answer: "Grounded answer", mode: "deep", citations: [] });
+      handlers.turn({ answer: "Grounded answer", effort: "high", citations: [] });
     },
   });
   view.render = () => {};
   view.openNote = { path: "Notes/one.md", id: "source-1" };
-  view.mode = "deep";
+  view.effort = "high";
   await view.send("Compare these");
   assert.equal(view.turns.at(-1).text, "Grounded answer");
-  assert.equal(view.turns.at(-1).turn.mode, "deep");
+  assert.equal(view.turns.at(-1).turn.effort, "high");
   assert.equal(saved.length, 1);
   assert.equal(saved[0].source_id, "source-1");
   assert.equal(saved[0].turns[0].note, "Notes/one.md");
@@ -216,30 +216,14 @@ test("opening an old thread does not navigate", async () => {
   assert.deepEqual(view.openNote, { path: "B.md", id: "s2" });
 });
 
-test("a thread saved as Auto still opens, with Quick selected", async () => {
-  // Auto went on 2026-09-03, but threads written before it say "auto" on disk forever, and
-  // the server refuses that word now. Opening one must not put a mode in the selector that
-  // the next save cannot post.
-  const view = makeView({
-    getJSON: async () => ({
-      id: "old", source_id: "source-1", source_path: "Notes/one.md", turns: [],
-      reasoning_mode: "auto",
-    }),
-  });
-  view.render = () => {};
-  view.context = { source: { id: "source-1", path: "Notes/one.md" }, related: [] };
-  await view.openThread("old");
-  assert.equal(view.mode, "quick");
-});
-
-test("renaming a thread saved as Auto posts Quick, not the word the server refuses", async () => {
-  // ⚠ `renameThread` fetches a thread it never OPENED, so a coercion that lived only in
-  // openThread missed this path entirely: the save was rejected and the click handler has no
-  // catch, so renaming an old conversation failed silently.
+test("an old thread opens and renames without touching the effort", async () => {
+  // A chat saved before effort says "quick", "deep" or even "auto" on disk. A chat no longer has
+  // an effort of its own: the selector stays as chosen, and a save posts none.
   const saves = [];
   const view = makeView({
+    settings: { effort: "low" }, saveSettings: async () => {},
     getJSON: async () => ({
-      id: "old", title: "Old", source_id: "source-2", source_path: "Notes/two.md",
+      id: "old", title: "Old", source_id: "source-1", source_path: "Notes/one.md",
       reasoning_mode: "auto", turns: [{ role: "you", text: "Keep me" }],
     }),
     postJSON: async (_route, body) => { saves.push(body); return body; },
@@ -247,11 +231,43 @@ test("renaming a thread saved as Auto posts Quick, not the word the server refus
   view.render = () => {};
   view.promptTitle = async () => "Renamed";
   view.context = { source: { id: "source-1", path: "Notes/one.md" }, related: [] };
-  view.mode = "deep";                       // the selector must not leak into an old thread
+  await view.openThread("old");
+  assert.equal(view.effort, "low");
   await view.renameThread("old");
   assert.equal(saves.length, 1);
-  assert.equal(saves[0].reasoning_mode, "quick");
   assert.equal(saves[0].title, "Renamed");
+  assert.equal("reasoning_mode" in saves[0] || "effort" in saves[0], false);
+});
+
+test("the effort selector offers Pi's four levels, starts at the saved one and keeps the last chosen", async () => {
+  const settings = { port: 7546, effort: "high" };
+  let writes = 0;
+  const bodies = [];
+  const { view, root } = renderedView({
+    settings, saveSettings: async () => { writes += 1; },
+    streamCopilot: async (body, handlers) => { bodies.push(body); handlers.turn({ answer: "ok", effort: body.effort, citations: [] }); },
+  });
+  view.render();
+  const select = find(root, (node) => node.cls === "slim-effort");
+  assert.deepEqual(select.children.map((o) => [o.value, o.textContent]),
+                   [["off", "Off"], ["low", "Low"], ["medium", "Medium"], ["high", "High"]]);
+  assert.deepEqual(select.children.filter((o) => o.selected).map((o) => o.value), ["high"]);
+  select.value = "off";
+  select.onchange();
+  assert.equal(view.effort, "off");
+  assert.equal(settings.effort, "off");
+  assert.equal(writes, 1);
+  await view.send("Quick one");
+  assert.equal(bodies[0].effort, "off");
+  assert.equal("reasoning_mode" in bodies[0], false);
+  assert.equal(view.turns.at(-1).turn.effort, "off");
+});
+
+test("with no effort saved, or one that is not a level, the selector starts at Medium", () => {
+  assert.equal(makeView().effort, "medium");
+  assert.equal(makeView({ settings: {} }).effort, "medium");
+  assert.equal(makeView({ settings: { effort: "deep" } }).effort, "medium");
+  assert.equal(makeView({ settings: { effort: "low" } }).effort, "low");
 });
 
 test("re-selecting the note that is already active neither cancels the answer nor re-syncs", async () => {
@@ -547,14 +563,14 @@ test("copy and regenerate sit under an answer; regenerate re-asks with the store
   view.activeThread = { id: "chat-1", source_id: "s1", source_path: "Notes/one.md" };
   view.turns = [
     { role: "you", text: "First?" },
-    { role: "slim", text: "One", turn: { mode: "deep", timing: { total_ms: 42000 } } },
+    { role: "slim", text: "One", turn: { mode: "deep", timing: { total_ms: 42000 } } },      // saved as Deep
     { role: "you", text: "Explain", attachments: [ref] },
     { role: "slim", text: "Two", turn: { mode: "quick", timing: { total_ms: 8200 } } },
   ];
   view.render();
   const metas = [];
   find(root, (node) => { if (node.cls === "slim-message-meta") metas.push(node.textContent); return false; });
-  assert.deepEqual(metas, ["Deep · 42 s", "Quick · 8 s"]);
+  assert.deepEqual(metas, ["High · 42 s", "Medium · 8 s"]);
   const regenerates = [];
   find(root, (node) => { if (node.attrs["aria-label"] === "Regenerate") regenerates.push(node); return false; });
   assert.equal(regenerates.length, 1);                                // the last answer only
@@ -564,7 +580,10 @@ test("copy and regenerate sit under an answer; regenerate re-asks with the store
   assert.equal(bodies[0].question, "Explain");
   assert.deepEqual(bodies[0].images, [ref]);                          // refs, no bytes
   assert.deepEqual(view.turns.map((turn) => turn.text), ["First?", "One", "Explain", "Second"]);
-  assert.equal(metaText({ mode: "quick" }), "Quick");
+  assert.equal(metaText({ mode: "quick" }), "Medium");
+  assert.equal(metaText({ effort: "low", mode: "deep", timing: { total_ms: 46000 } }), "Low · 46 s");
+  assert.equal(metaText({ effort: "off" }), "Off");
+  assert.equal(metaText({}), "Medium");
 });
 
 test("the streaming answer renders as Markdown in place, and a stale render never lands", async () => {

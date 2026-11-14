@@ -639,7 +639,7 @@
 .slim-copilot-composer {
   position: relative;
   flex: 0 0 auto; display: grid; grid-template-columns: minmax(80px, auto) 1fr 32px 32px;
-  grid-template-areas: "pins pins pins pins" "previews previews previews previews" "input input input input" "mode . attach send";
+  grid-template-areas: "pins pins pins pins" "previews previews previews previews" "input input input input" "effort . attach send";
   gap: 6px; border-top: 1px solid var(--background-modifier-border); padding-top: 8px;
 }
 .slim-slash-menu {
@@ -783,8 +783,8 @@
   .slim-arrive { animation: none; }
   .slim-undo, .slim-undo-tip { transition: none; }
 }
-.slim-mode-select {
-  grid-area: mode; justify-self: start; height: 28px; min-width: 0; padding: 0 24px 0 10px;
+.slim-effort {
+  grid-area: effort; justify-self: start; height: 28px; min-width: 0; padding: 0 24px 0 10px;
   border-radius: 999px; box-shadow: none; font-size: var(--font-ui-smaller); color: var(--text-muted);
   background-color: var(--background-secondary); border: 1px solid var(--background-modifier-border);
 }

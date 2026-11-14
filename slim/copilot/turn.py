@@ -71,9 +71,12 @@ LOOP_RIDER = ("You can edit the open note shown with their message."
               + f"\n\n{CREATING}\n{CANNOT_EDIT}")
 LOOP_TOOLS = [*lookup.NAMES, "plan", *edit_run.STEP_TOOLS, "create_note"]
 # Qwen's recommended sampling with thinking on, the Pi coding agent's on the same server: every loop
-# call but a step's, which stays at STEP_TEMPERATURE with none of these (measured, 2026-10-12).
+# call but a step's, which stays at STEP_TEMPERATURE with none of these (measured, 2026-10-12). At
+# effort Off, Qwen's recommended sampling with thinking off.
 LOOP_TEMPERATURE = 1.0
 LOOP_SAMPLING = {"top_p": 0.95, "top_k": 20, "presence_penalty": 1.5}
+OFF_TEMPERATURE = 0.7
+OFF_SAMPLING = {"top_p": 0.8, "top_k": 20, "presence_penalty": 1.5}
 
 # THE LOOP'S PROMPT is shaped like the Pi coding agent's (2026-11-14, the owner's call): who it is
 # and where, one line per tool, short rules, and the edit rider. Pi, on the same model and server,
@@ -124,9 +127,9 @@ sentence for the owner saying what you made."""
 SOURCES_MAX = 8
 
 
-# 1400 clipped a worked example mid-sentence, and Quick is the mode nearly every turn uses.
-# It is the first call's cap, beside its thinking: that call may be the answer.
-QUICK_NUM_PREDICT = 2400
+# 1400 clipped a worked example mid-sentence. It is the first call's cap, beside its thinking:
+# that call may be the answer.
+ANSWER_NUM_PREDICT = 2400
 # THE WINDOW RULE (`fit_window`): the conversation goes to the model whole, and the resident
 # window is its only limit. Ollama has no tokenize endpoint, so tokens are estimated from
 # characters. Real copilot prompts rebuilt from the threads and divided by the prompt_tokens
@@ -202,7 +205,7 @@ def _tokens(message: dict) -> float:
 def fit_window(transcript: list[dict], others: list[dict], num_predict: int) -> list[dict]:
     """The newest messages of `transcript`, each whole, that fit the resident window beside
     `others` (the system message, the open note's images, the question) and the reply's
-    `num_predict`, which in Deep mode holds the thinking too. When the conversation does not
+    `num_predict`, which holds the thinking too. When the conversation does not
     fit, its OLDEST messages go, whole: a cut inside one (1,000 characters, never measured)
     kept the start of an answer and dropped its end, where the plan or the offer sits."""
     room = llm.RESIDENT_CTX - num_predict - sum(map(_tokens, others))
@@ -245,7 +248,7 @@ def _conversation(history: list[dict], question: str, images=None,
     return transcript, embedded, current
 
 
-def _loop(con, vault: Path, source: dict | None, question: str, history: list[dict], mode: str, *,
+def _loop(con, vault: Path, source: dict | None, question: str, history: list[dict], effort: str, *,
           pins, skill, args: str, images, selection: str, doc: str | None, on_stage, on_delta,
           on_edit, should_stop, entry: dict, on_reset=None, on_tool=None) -> dict:
     """One turn of THE LOOP. Every call offers LOOP_TOOLS under one system message, whatever is
@@ -308,10 +311,11 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
         system_turn = {"role": "system", "content": f"{PERSONA}\n\n{SKILL_RIDER}" if skill else loop_system()}
         pinned_turns = ([{"role": "user", "content": pinned}, {"role": "assistant", "content": "Noted."}]
                         if pinned else [])
-        # Pi's setup: every call but a step's thinks, a skill's as before (Deep only).
-        think = mode == "deep" or not skill
-        think_budget = edit_run.DEEP_THINK_BUDGET if mode == "deep" and not skill else edit_run.THINK_BUDGET
-        room = QUICK_NUM_PREDICT + (think_budget if think else 0)
+        # Pi's setup: every call but a step's thinks within the effort's budget, none at Off; a
+        # skill as measured (at High only).
+        think_budget = edit_run.THINK_BUDGET if skill else edit_run.THINK_BUDGETS[effort]
+        think = effort == "high" if skill else think_budget > 0
+        room = ANSWER_NUM_PREDICT + (think_budget if think else 0)
         fixed = [system_turn, *pinned_turns, *embedded, current]
         if sum(map(_tokens, fixed)) + room > llm.RESIDENT_CTX:
             raise CopilotError("the open note and the pins are too long for one request; unpin something")
@@ -326,9 +330,11 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
 
         out = edit_run._turn(list(messages), think=think, tools=tools, step_tools=step_tools,
                              note=note, before_text=text or "", create=create, think_budget=think_budget,
-                             think_stage="Thinking deeply" if mode == "deep" else "Thinking",
-                             temperature=edit_run.FIRST_TEMPERATURE if skill else LOOP_TEMPERATURE,
-                             sampling=None if skill else LOOP_SAMPLING, first_predict=room,
+                             think_stage="Thinking deeply" if effort == "high" else "Thinking",
+                             temperature=(edit_run.FIRST_TEMPERATURE if skill else
+                                          LOOP_TEMPERATURE if think else OFF_TEMPERATURE),
+                             sampling=None if skill else LOOP_SAMPLING if think else OFF_SAMPLING,
+                             first_predict=room,
                              on_edit=on_edit or (lambda _event, _payload: None), should_stop=should_stop,
                              on_stage=stage, lookups=reader, on_reply=on_delta, no_edit=no_edit,
                              # filled as the turn runs: traced even when it fails or is refused
@@ -346,7 +352,7 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
         answer = out["answer"]
         if not answer and last.get("thinking_ate_the_budget"):
             raise CopilotError("the model spent its whole output budget thinking and wrote no answer — "
-                               + ("ask again in Quick mode, or " if mode == "deep" else "") + "ask a narrower question")
+                               "ask again with lower effort, or ask a narrower question")
         if not answer and out["stopped"]:
             raise CopilotError(f"the turn ended before an answer ({out['stopped']})")
         if not answer:
@@ -368,7 +374,7 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
     paths = [p for p in dict.fromkeys(cited + looked + pinned_notes) if p != path or p in reader.read]
     result = {
         "answer": answer,
-        "mode": mode,
+        "effort": effort,
         "citations": [{"n": i + 1, "path": p, "title": PurePosixPath(p).stem} for i, p in enumerate(paths)],
         "verification": {"truncated": bool(last.get("output_truncated"))},
         "history_dropped": len(transcript) - len(recent),
@@ -383,7 +389,7 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
     return result
 
 
-def _skill_run(con, vault: Path, source: dict, mode: str, history: list[dict], *, skill, args: str,
+def _skill_run(con, vault: Path, source: dict, effort: str, history: list[dict], *, skill, args: str,
                images, selection: str, selection_from: int | None, doc: str | None, on_stage, on_delta,
                on_edit, should_stop, entry: dict) -> dict:
     """An edit or new-note skill: the editing run on the skill's own prompt (`edit_message`, or
@@ -433,12 +439,13 @@ def _skill_run(con, vault: Path, source: dict, mode: str, history: list[dict], *
 
         transcript, embedded, current = _conversation(history, prompt, images, shown)
         system_turn = {"role": "system", "content": system}
-        room = QUICK_NUM_PREDICT + (edit_run.THINK_BUDGET if mode == "deep" else 0)
+        think = effort == "high"            # as measured: a skill thinks at High only
+        room = ANSWER_NUM_PREDICT + (edit_run.THINK_BUDGET if think else 0)
         if sum(map(_tokens, [system_turn, *embedded, current])) + room > llm.RESIDENT_CTX:
             raise CopilotError("this note is too long for one request; edit it in Obsidian")
         recent = fit_window(transcript, [system_turn, *embedded, current], room)
         messages = [system_turn, *recent, *embedded, current]
-        out = edit_run._turn(list(messages), think=mode == "deep", tools=tools, step_tools=step_tools,
+        out = edit_run._turn(list(messages), think=think, tools=tools, step_tools=step_tools,
                              note=note, before_text=text, only=only, create=create,
                              temperature=temperature, first_predict=room,
                              on_edit=on_edit or (lambda _event, _payload: None),
@@ -450,7 +457,7 @@ def _skill_run(con, vault: Path, source: dict, mode: str, history: list[dict], *
         answer = out["answer"]
         if not answer and last.get("thinking_ate_the_budget"):
             raise CopilotError("the model spent its whole output budget thinking and wrote no "
-                               "answer — ask again in Quick mode, or ask a narrower question")
+                               "answer — ask again with lower effort, or ask a narrower question")
         if not answer:
             raise CopilotError("the local model returned no answer")
         (on_delta or (lambda _text: None))(answer)
@@ -464,7 +471,7 @@ def _skill_run(con, vault: Path, source: dict, mode: str, history: list[dict], *
         entry["edit_run"] = edit_run._facts(out, run)
     result = {
         "answer": answer,
-        "mode": mode,
+        "effort": effort,
         "citations": cited,
         "verification": {"truncated": bool(last.get("output_truncated"))},
         "history_dropped": len(transcript) - len(recent),
@@ -510,14 +517,15 @@ def _source(con, vault: Path, open_path: str | None) -> dict | None:
     return {"id": None, "path": open_path, "title": pure.stem}
 
 
-def run_turn(con, open_path: str | None, question: str, history: list[dict], mode: str,
+def run_turn(con, open_path: str | None, question: str, history: list[dict], effort: str,
              *, pins=(), images=None, on_stage=None, on_delta=None, on_edit=None, selection: str = "",
              selection_from: int | None = None, vault: Path | None = None, doc: str | None = None,
              doc_hash: str | None = None, should_stop=lambda: False, on_reset=None, on_tool=None) -> dict:
     """One sidebar turn, on the note open at `open_path` (None: no note open), with the chat's
     `@` pins: one loop that answers, looks things up and edits (`_loop`); a `/command` whose output
     is chat runs in it on its own prompt, and an edit or new-note skill runs the editing run on its
-    own (`_skill_run`). A turn may change the open note, which it reads from `doc` — the editor's
+    own (`_skill_run`). `effort` is one of `skills.EFFORTS`; a skill that names its own wins. A
+    turn may change the open note, which it reads from `doc` — the editor's
     text, whose `doc_hash` must match — or else from disk; `selection_from` is where the selection
     starts in it, in UTF-16 units. `on_edit(event, payload)` gets each part of an edit as it lands;
     nothing is written here: the plugin applies each change through the editor. In the loop
@@ -529,8 +537,8 @@ def run_turn(con, open_path: str | None, question: str, history: list[dict], mod
     loaded = skills_mod.load(vault)
     found = skills_mod.invocation(question, loaded) if question.startswith("/") else None
     skill, args = found or (None, "")
-    if skill and skill.mode in ("quick", "deep"):
-        mode = skill.mode                      # the skill's author chose its depth
+    if skill and skill.effort:
+        effort = skill.effort                  # the skill's author chose its effort
     # A /command in an earlier turn is its whole prompt to the model: "/quiz" alone never told
     # the answering turn how to grade.
     history = [{**turn, "text": _expanded(turn.get("text") or "", loaded)}
@@ -539,15 +547,15 @@ def run_turn(con, open_path: str | None, question: str, history: list[dict], mod
     # so this is the one record of a refused or stopped turn.
     entry = {"question": question, "source": source["path"] if source else None,
              "source_id": source["id"] if source else None, "open_path": open_path,
-             "mode": mode, "history_turns": len(history),
+             "effort": effort, "history_turns": len(history),
              "images": len(images or []),
              "history_images": sum(len(turn.get("images") or []) for turn in history),
              "skill": skill.name if skill else None,
              "selection_chars": len(selection or "")}
     started = time.time()
     try:
-        if mode not in {"quick", "deep"}:
-            raise CopilotError("reasoning mode must be quick or deep")
+        if effort not in skills_mod.EFFORTS:
+            raise CopilotError(f"effort must be one of {', '.join(skills_mod.EFFORTS)}")
         if skill and skill.error:
             raise CopilotError(f"/{skill.name} cannot run: {skill.error} "
                                f"({skills_mod.VAULT_DIR}/{skill.name}.md)")
@@ -559,12 +567,12 @@ def run_turn(con, open_path: str | None, question: str, history: list[dict], mod
         if skill and source is None:
             raise CopilotError(f"/{skill.name} works on the open note: open a note first")
         if skill and skill.output != "chat":
-            result = _skill_run(con, vault, source, mode, history, skill=skill, args=args, images=images,
+            result = _skill_run(con, vault, source, effort, history, skill=skill, args=args, images=images,
                                 selection=selection, selection_from=selection_from, doc=doc,
                                 on_stage=on_stage, on_delta=on_delta, on_edit=on_edit,
                                 should_stop=should_stop, entry=entry)
         else:
-            result = _loop(con, vault, source, question, history, mode, pins=pins, skill=skill, args=args,
+            result = _loop(con, vault, source, question, history, effort, pins=pins, skill=skill, args=args,
                            images=images, selection=selection, doc=doc, on_stage=on_stage,
                            on_delta=on_delta, on_edit=on_edit, should_stop=should_stop, entry=entry,
                            on_reset=on_reset, on_tool=on_tool)

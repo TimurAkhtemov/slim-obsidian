@@ -183,13 +183,21 @@ var require_text = __commonJS({
       return parts.map((part, index) => index % 2 ? part : part.replace(/\\\[([\s\S]*?)\\\](?!\()/g, (match, inner) => looksLikeMath(inner) ? `$$${inner}$$` : match).replace(/\\\((.*?)\\\)(?!\()/g, (match, inner) => looksLikeMath(inner) ? `$${inner}$` : match)).join("");
     }
     var LIVE_RENDER_MS = 350;
-    function quickOrDeep(value) {
-      return value === "deep" ? "deep" : "quick";
+    var EFFORTS = ["off", "low", "medium", "high"];
+    function effortOf(value) {
+      return EFFORTS.includes(value) ? value : "medium";
+    }
+    function effortLabel(effort) {
+      return effortOf(effort)[0].toUpperCase() + effortOf(effort).slice(1);
+    }
+    function turnEffort(turn) {
+      if (EFFORTS.includes(turn?.effort)) return turn.effort;
+      return turn?.mode === "deep" ? "high" : "medium";
     }
     function metaText(turn) {
-      const mode = turn?.mode === "deep" ? "Deep" : "Quick";
+      const label = effortLabel(turnEffort(turn));
       const ms = Number(turn?.timing?.total_ms);
-      return Number.isFinite(ms) && ms > 0 ? `${mode} \xB7 ${Math.max(1, Math.round(ms / 1e3))} s` : mode;
+      return Number.isFinite(ms) && ms > 0 ? `${label} \xB7 ${Math.max(1, Math.round(ms / 1e3))} s` : label;
     }
     function stageLine(stage, since, now) {
       const seconds = since ? Math.floor((now - since) / 1e3) : 0;
@@ -293,7 +301,10 @@ ${line}` : said;
       looksLikeMath,
       normalizeMath,
       LIVE_RENDER_MS,
-      quickOrDeep,
+      EFFORTS,
+      effortOf,
+      effortLabel,
+      turnEffort,
       metaText,
       stageLine,
       SUGGESTED_PROMPTS,
@@ -368,6 +379,8 @@ var require_render = __commonJS({
       inputsText,
       normalizeMath,
       LIVE_RENDER_MS,
+      EFFORTS,
+      effortLabel,
       metaText,
       stageLine,
       SUGGESTED_PROMPTS
@@ -464,7 +477,7 @@ var require_render = __commonJS({
         for (const host of this.liveHosts || []) this.removeChild?.(host);
         this.liveHosts = /* @__PURE__ */ new Set();
       },
-      // Each live pass renders under its own child component, dropped with its buffer: a Deep
+      // Each live pass renders under its own child component, dropped with its buffer: a long
       // answer is ~170 passes, and post-processor children registered on the shared mdHost would
       // otherwise pile up until the turn's full render.
       liveHost(buffer) {
@@ -654,15 +667,15 @@ var require_render = __commonJS({
         const slash = create(composer, "div", "slim-slash-menu");
         this.el.slash = slash;
         this.el.mention = create(composer, "div", "slim-mention-menu");
-        const modes = create(composer, "select", "slim-mode-select");
-        for (const value of ["quick", "deep"]) {
-          const option = create(modes, "option", "", value[0].toUpperCase() + value.slice(1));
+        const effort = create(composer, "select", "slim-effort");
+        effort.setAttribute("aria-label", "Effort");
+        effort.setAttribute("title", "Effort: how much the model thinks before it answers");
+        for (const value of EFFORTS) {
+          const option = create(effort, "option", "", effortLabel(value));
           option.value = value;
-          option.selected = value === this.mode;
+          option.selected = value === this.effort;
         }
-        modes.onchange = () => {
-          this.mode = modes.value;
-        };
+        effort.onchange = () => this.setEffort(effort.value);
         const input = create(composer, "textarea", "slim-copilot-input");
         input.placeholder = "Ask SLIM, or / for skills";
         input.value = this.draft;
@@ -978,7 +991,7 @@ var require_edit_run = __commonJS({
   "src/chat/edit-run.js"(exports2, module2) {
     "use strict";
     var { Notice } = require("obsidian");
-    var { sha256Hex, metaText, runCounts, editOutcome } = require_text();
+    var { sha256Hex, effortLabel, metaText, runCounts, editOutcome } = require_text();
     var { clear, create, atBottom } = require_dom();
     module2.exports = {
       // ---- an editing run, as it lands ------------------------------------------------------------
@@ -1095,7 +1108,7 @@ var require_edit_run = __commonJS({
         const text = run.plan?.intro || "";
         return { role: "slim", text, turn: {
           answer: text,
-          mode: this.mode,
+          effort: this.effort,
           citations: [],
           tools: [...this.liveTools || []],
           timing: { total_ms: Date.now() - run.started },
@@ -1138,7 +1151,7 @@ var require_edit_run = __commonJS({
         if (this.liveTools?.length) this.fillTools(create(parent, "ul", "slim-steps slim-tools"), this.liveTools);
         this.renderEditRun(parent, { plan: run.plan, step_states: run.steps, changes: run.changes }, null);
         const meta = create(parent, "div", "slim-edit-meta");
-        create(meta, "span", "", `${this.mode === "deep" ? "Deep" : "Quick"} \xB7 ${Math.max(0, Math.round((Date.now() - run.started) / 1e3))} s`);
+        create(meta, "span", "", `${effortLabel(this.effort)} \xB7 ${Math.max(0, Math.round((Date.now() - run.started) / 1e3))} s`);
       },
       renderEditRun(message, run, pending) {
         const box = create(message, "div", "slim-edit");
@@ -1183,7 +1196,7 @@ var require_edit_run = __commonJS({
           }
         }
       },
-      // N changes · Undo all · Redo · See before · Hide marks · Quick · T s, while the note's editor
+      // N changes · Undo all · Redo · See before · Hide marks · Medium · T s, while the note's editor
       // holds the run; once it has closed, or after a reload: N changes · See before · Restore.
       renderEditMeta(message, run, turn) {
         const meta = create(message, "div", "slim-edit-meta");
@@ -1377,7 +1390,7 @@ var require_view = __commonJS({
       sha256Hex,
       editorSelection,
       MAX_EDIT_CHARS,
-      quickOrDeep,
+      effortOf,
       titleFromQuestion,
       threadId,
       cancelledError,
@@ -1447,7 +1460,7 @@ var require_view = __commonJS({
         this.noteVersion = 0;
         this.activeThread = null;
         this.turns = [];
-        this.mode = "quick";
+        this.effort = effortOf(plugin.settings?.effort);
         this.stage = "";
         this.draft = "";
         this.error = "";
@@ -1686,7 +1699,6 @@ var require_view = __commonJS({
         this.activeThread = {
           id: threadId(),
           title: "New chat",
-          reasoning_mode: this.mode,
           pins: [],
           ...this.openNote ? { source_id: this.openNote.id, source_path: this.openNote.path } : {}
         };
@@ -1699,6 +1711,16 @@ var require_view = __commonJS({
         this.showThreads = false;
         this.render();
       }
+      // The effort every question runs at from now on (a skill may name its own), kept in the
+      // plugin's settings: the selector shows the last one chosen, in every chat and after a restart.
+      setEffort(value) {
+        this.effort = effortOf(value);
+        if (!this.plugin.settings) return;
+        this.plugin.settings.effort = this.effort;
+        Promise.resolve(this.plugin.saveSettings?.()).catch((error) => {
+          this.error = error.message || String(error);
+        });
+      }
       // Any chat opens as it is: it never moves the note the owner has open.
       async openThread(id) {
         const version = ++this.threadVersion;
@@ -1708,7 +1730,6 @@ var require_view = __commonJS({
         this.turns = data.turns || [];
         this.pendingImages = [];
         this.retryImages = [];
-        this.mode = quickOrDeep(data.reasoning_mode);
         this.showThreads = false;
         this.render();
       }
@@ -1724,11 +1745,7 @@ var require_view = __commonJS({
           }),
           ...thread.source_id ? { source_id: thread.source_id } : {},
           ...thread.source_path ? { source_path: thread.source_path } : {},
-          ...thread.pins ? { pins: thread.pins } : {},
-          // ⚠ Normalized HERE, not at the point a thread is opened: `renameThread` fetches a
-          // thread it never opened and hands it straight to this method, so a pre-2026-09-03
-          // conversation would post "auto" and be refused with nothing catching it.
-          reasoning_mode: quickOrDeep(thread.reasoning_mode || this.mode)
+          ...thread.pins ? { pins: thread.pins } : {}
         };
         const saved = await this.plugin.postJSON("/api/copilot/thread/save", body);
         Object.assign(thread, saved);
@@ -1835,7 +1852,7 @@ var require_view = __commonJS({
             })),
             // A regenerated question re-sends its stored refs; the server has the bytes.
             images: outgoingImages.map(({ id, name, mime, data, bytes }) => data ? { name, mime, data } : { id, name, mime, bytes }),
-            reasoning_mode: this.mode,
+            effort: this.effort,
             ...doc === null ? {} : { doc, doc_hash: sha256Hex(doc) },
             selection: picked.text,
             ...picked.from === void 0 ? {} : { selection_from: picked.from }
@@ -1923,14 +1940,12 @@ var require_view = __commonJS({
           turns.push({ role: "slim", text: completed.answer || streamed, turn: completed });
           this.retryQuestion = "";
           this.retryImages = [];
-          thread.reasoning_mode = this.mode;
           await this.saveRecord(thread, turns);
         } catch (error) {
           const stopped = error.name === "AbortError";
           if (run && turns.at(-1) === asked) {
             turns.push(await this.partialTurn(run, stopped ? "stopped" : `error: ${error.message || error}`));
             if (!stopped) this.error = error.message || String(error);
-            thread.reasoning_mode = this.mode;
             if (!this.deletedThreads.has(thread.id)) {
               await this.saveRecord(thread, turns).catch((e) => {
                 this.error = e.message || String(e);
@@ -1975,7 +1990,7 @@ var require_view = __commonJS({
         this.stageClock.unref?.();
       }
       // The server names a stage as each model call starts. The same one again is that call still
-      // running (Deep's heartbeat while it thinks); a new one, or a new step, starts the count again.
+      // running (its heartbeat while it thinks); a new one, or a new step, starts the count again.
       setStage(name) {
         const stage = name || "Working";
         if (stage !== this.stage) {
@@ -6435,7 +6450,9 @@ var require_settings_tab = __commonJS({
       repoPath: `${os.homedir()}/Programming/Personal/slim-public`,
       uvPath: `${os.homedir()}/.local/bin/uv`,
       recordVoice: true,
-      lastType: "meeting-note"
+      lastType: "meeting-note",
+      effort: "medium"
+      // the copilot's effort, as last chosen in the sidebar
     };
     var SlimSettingTab = class extends PluginSettingTab {
       constructor(app, plugin) {

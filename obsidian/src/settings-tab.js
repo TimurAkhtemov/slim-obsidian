@@ -13,6 +13,7 @@ const DEFAULTS = {
   uvPath: `${os.homedir()}/.local/bin/uv`,
   recordVoice: true,
   lastType: "meeting-note",
+  effort: "medium",          // the copilot's effort, as last chosen in the sidebar
 };
 
 class SlimSettingTab extends PluginSettingTab {

@@ -93,6 +93,8 @@ test("the stage line stays under the steps while the run's calls go on", () => {
   const stage = find(root, (node) => node.cls === "slim-copilot-stage");
   assert.equal(stage?.textContent, "Writing…");
   assert.equal(transcript.children.at(-1), stage);           // after the run's steps
+  const meta = find(root, (node) => node.cls === "slim-edit-meta");
+  assert.equal(meta?.children[0].textContent, "Medium · 0 s");   // the effort it runs at
 });
 
 test("the transcript follows the streaming answer when they were reading the bottom", () => {

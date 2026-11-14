@@ -163,7 +163,7 @@ Index before and after a move, and a rename is free.
 
 ```mermaid
 flowchart LR
-    Q["your question<br/>with the open note and any @ pins"] --> L["one agent loop<br/>a model call at a time, thinking on"]
+    Q["your question<br/>with the open note and any @ pins"] --> L["one agent loop<br/>a model call at a time, thinking at your effort"]
     L -- "search · read_note · list_folder" --> I["the index<br/>BM25 + cosine, fused by reciprocal rank"]
     I --> L
     L -- "replace · edit_text · insert · move · plan" --> E["the open note<br/>each change applied in the editor"]
@@ -182,7 +182,11 @@ reflections and treats them as evidence. And a turn's sources are the notes code
 at: no model call decides them and nothing in the prompt asks for citations, so an answer
 reads like an assistant talking, not a footnoted report.
 
-Quick and Deep both think; Deep has a larger budget. The copilot has no profile in its prompt,
+How hard it thinks is an effort selector in the composer, with the coding agent Pi's levels:
+Off, Low, Medium (the default) and High, each a larger thinking budget per model call. Off is
+fastest but looks things up less reliably. A plan's steps never think, at any level, and a
+slash-command skill keeps its own setup: it thinks only at High, and its file may name the
+effort it always runs at. The copilot has no profile in its prompt,
 edits only the open note (it may also create a new note in an existing folder), with every
 change applied in the editor and undoable, and its chat history lives outside the vault and is
 never treated as evidence.

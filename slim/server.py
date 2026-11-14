@@ -209,7 +209,7 @@ class _Handler(BaseHTTPRequestHandler):
                 {"id": item.id, "title": item.title, "updated_at": item.updated_at,
                  "turns": item.turns, "source_id": item.source_id,
                  "source_path": live.get(item.source_id, item.source_path),
-                 "reasoning_mode": item.reasoning_mode, "pins": list(item.pins)}
+                 "pins": list(item.pins)}
                 for item in listed]})
             return
         if url.path == "/api/copilot/skills":
@@ -351,15 +351,14 @@ class _Handler(BaseHTTPRequestHandler):
             summary = threads_mod.save_copilot(
                 data.get("id"), str(data.get("title") or ""), data.get("turns"),
                 source_id=source_id or None, source_path=source_path,
-                reasoning_mode=data.get("reasoning_mode"), pins=data.get("pins"))
+                pins=data.get("pins"))
         except threads_mod.ThreadError as exc:
             self._send_json(400, {"error": str(exc)})
             return
         self._send_json(200, {
             "status": "saved", "id": summary.id, "updated_at": summary.updated_at,
             "turns": summary.turns, "source_id": summary.source_id,
-            "source_path": summary.source_path, "reasoning_mode": summary.reasoning_mode,
-            "pins": list(summary.pins)})
+            "source_path": summary.source_path, "pins": list(summary.pins)})
 
     def _handle_copilot_restore(self):
         """The note as it was before an editing run, to put back — unless the recording's own parts
@@ -414,8 +413,14 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": f"question exceeds {MAX_QUESTION_CHARS} chars"})
             return
         history = clean_history(data.get("history"))
-        # Quick unless they asked for Deep. There is no third setting to resolve (2026-09-03).
-        mode = str(data.get("reasoning_mode") or "quick").strip().lower()
+        # The effort they chose (medium unless they chose another); a plugin from before effort
+        # sends Quick or Deep, read as medium or high.
+        effort = data.get("effort")
+        if effort is None:
+            effort = skills_mod.FROM_MODE.get(str(data.get("reasoning_mode") or "quick").strip().lower())
+        if effort not in skills_mod.EFFORTS:
+            self._send_json(400, {"error": f"effort must be one of {', '.join(skills_mod.EFFORTS)}"})
+            return
         # The selection is the input of a selection skill; it writes nothing here. Where it
         # starts, in the editor's UTF-16 units: the same words can be in the note twice.
         selection = data.get("selection")
@@ -506,7 +511,7 @@ class _Handler(BaseHTTPRequestHandler):
                     and (Path(config.VAULT) / open_path).is_file()):
                 context.sync_note(con, config.VAULT, open_path)
             turn = copilot_turn.run_turn(
-                con, open_path, question, history, mode, pins=pins, vault=config.VAULT, images=images,
+                con, open_path, question, history, effort, pins=pins, vault=config.VAULT, images=images,
                 selection=selection, selection_from=selection_from, doc=doc, doc_hash=doc_hash,
                 on_stage=lambda stage: emit("stage", {"stage": stage}),
                 on_delta=on_delta,

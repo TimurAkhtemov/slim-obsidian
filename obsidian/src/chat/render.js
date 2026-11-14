@@ -3,7 +3,7 @@
 
 const { MarkdownRenderer, MarkdownRenderChild } = require("obsidian");
 const { threadRows, shortDate, pathStem, groupCitations, slashQuery, matchSkills, mentionQuery, inputsText,
-        normalizeMath, LIVE_RENDER_MS, metaText, stageLine, SUGGESTED_PROMPTS } = require("./text");
+        normalizeMath, LIVE_RENDER_MS, EFFORTS, effortLabel, metaText, stageLine, SUGGESTED_PROMPTS } = require("./text");
 const { clear, create, icon, iconButton, autoGrow, atBottom } = require("./dom");
 
 module.exports = {
@@ -90,7 +90,7 @@ module.exports = {
     this.liveHosts = new Set();
   },
 
-  // Each live pass renders under its own child component, dropped with its buffer: a Deep
+  // Each live pass renders under its own child component, dropped with its buffer: a long
   // answer is ~170 passes, and post-processor children registered on the shared mdHost would
   // otherwise pile up until the turn's full render.
   liveHost(buffer) {
@@ -263,13 +263,16 @@ module.exports = {
     const slash = create(composer, "div", "slim-slash-menu");
     this.el.slash = slash;
     this.el.mention = create(composer, "div", "slim-mention-menu");
-    const modes = create(composer, "select", "slim-mode-select");
-    for (const value of ["quick", "deep"]) {
-      const option = create(modes, "option", "", value[0].toUpperCase() + value.slice(1));
+    // How hard the model thinks, as Pi's levels; the last one chosen is kept in the settings.
+    const effort = create(composer, "select", "slim-effort");
+    effort.setAttribute("aria-label", "Effort");
+    effort.setAttribute("title", "Effort: how much the model thinks before it answers");
+    for (const value of EFFORTS) {
+      const option = create(effort, "option", "", effortLabel(value));
       option.value = value;
-      option.selected = value === this.mode;
+      option.selected = value === this.effort;
     }
-    modes.onchange = () => { this.mode = modes.value; };
+    effort.onchange = () => this.setEffort(effort.value);
     const input = create(composer, "textarea", "slim-copilot-input");
     input.placeholder = "Ask SLIM, or / for skills";
     input.value = this.draft;

@@ -134,19 +134,29 @@ function normalizeMath(markdown) {
 // is async and tore scroll and focus (2026-08-26); 350 ms reads as live and costs nothing.
 const LIVE_RENDER_MS = 350;
 
-/* ⚠ A thread saved before 2026-09-03 can say "auto" on disk, and the server refuses that word
- * now (threads.save_copilot). Coerce rather than refuse, in the ONE place every save passes
- * through: an old conversation must still open, still rename and still take a new turn. Quick
- * is what Auto resolved to nearly every time, so it is the honest fallback.
- */
-function quickOrDeep(value) {
-  return value === "deep" ? "deep" : "quick";
+// Effort: Pi's thinking levels, which replaced Quick and Deep (2026-11-14). Medium is the default.
+const EFFORTS = ["off", "low", "medium", "high"];
+
+// A level, or medium for anything else (a setting saved by hand, a word from an older plugin).
+function effortOf(value) {
+  return EFFORTS.includes(value) ? value : "medium";
+}
+
+function effortLabel(effort) {
+  return effortOf(effort)[0].toUpperCase() + effortOf(effort).slice(1);
+}
+
+// The effort an answer ran at. A turn saved before effort names its mode: Quick ran as Medium
+// runs now, Deep as High. Saved chats are read this way, never rewritten.
+function turnEffort(turn) {
+  if (EFFORTS.includes(turn?.effort)) return turn.effort;
+  return turn?.mode === "deep" ? "high" : "medium";
 }
 
 function metaText(turn) {
-  const mode = turn?.mode === "deep" ? "Deep" : "Quick";
+  const label = effortLabel(turnEffort(turn));
   const ms = Number(turn?.timing?.total_ms);
-  return Number.isFinite(ms) && ms > 0 ? `${mode} · ${Math.max(1, Math.round(ms / 1000))} s` : mode;
+  return Number.isFinite(ms) && ms > 0 ? `${label} · ${Math.max(1, Math.round(ms / 1000))} s` : label;
 }
 
 // The line under a turn while a model call runs: what it is doing and, from its first second, for
@@ -268,5 +278,5 @@ function editOutcome(run) {
 
 module.exports = { threadRows, shortDate, pathStem, groupCitations, sha256Hex, slashQuery, matchSkills, mentionQuery, mentionMatches,
         inputsText, editorSelection, MAX_SELECTION_CHARS, MAX_EDIT_CHARS, looksLikeMath, normalizeMath,
-        LIVE_RENDER_MS, quickOrDeep, metaText, stageLine, SUGGESTED_PROMPTS, titleFromQuestion, threadId,
+        LIVE_RENDER_MS, EFFORTS, effortOf, effortLabel, turnEffort, metaText, stageLine, SUGGESTED_PROMPTS, titleFromQuestion, threadId,
         cancelledError, runCounts, historyText, STOPPED_BECAUSE, editOutcome };

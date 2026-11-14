@@ -16,15 +16,15 @@ def test_parse_reads_frontmatter_and_body():
         "---\ndescription: Digest the folder\ninput: folder\nfilter: {type: meeting}\n"
         "section: Notes\noutput: new-note\nmode: deep\n---\nConsolidate these. {{args}}\n"), "vault")
     assert (skill.name, skill.description, skill.input, skill.filter, skill.section,
-            skill.output, skill.mode, skill.origin, skill.error) == (
+            skill.output, skill.effort, skill.origin, skill.error) == (
         "digest", "Digest the folder", "folder", {"type": ["meeting"]}, "Notes",
-        "new-note", "deep", "vault", "")
+        "new-note", "high", "vault", "")
     assert skill.prompt == "Consolidate these. {{args}}"
 
 
 def test_parse_defaults_and_errors():
     plain = skills.parse_skill("tldr", "Summarize this note in three lines.", "vault")
-    assert (plain.input, plain.output, plain.mode, plain.error) == ("note", "chat", "", "")
+    assert (plain.input, plain.output, plain.effort, plain.error) == ("note", "chat", "", "")
     bad = skills.parse_skill("x", "---\ninput: everything\n---\nbody", "vault")
     assert bad.error == "input must be one of note, selection, folder"
     empty = skills.parse_skill("y", "---\ndescription: nothing\n---\n", "vault")
@@ -41,7 +41,7 @@ def test_builtins_parse_cleanly_and_include_the_consolidation(tmp_path):
     assert (consolidate.input, consolidate.section, consolidate.output) == ("folder", "Notes", "new-note")
     assert consolidate.filter == {"type": ["meeting-note", "meeting"]}      # what the vault spells
     brief = loaded["brief"]
-    assert (brief.input, brief.output, brief.mode) == ("note", "new-note", "deep")
+    assert (brief.input, brief.output, brief.effort) == ("note", "new-note", "high")
     assert "{{args}}" in brief.prompt and "new note in this folder" in brief.prompt
 
 
@@ -87,3 +87,13 @@ def test_render_prompt_fills_args_or_appends_them():
     assert skills.render_prompt(with_slot, "entropy") == "Explain entropy simply."
     assert skills.render_prompt(with_slot, "") == "Explain simply."
     assert skills.render_prompt(without, "only chapter 3") == "Make flashcards.\n\nonly chapter 3"
+
+
+def test_effort_is_a_level_and_the_old_mode_words_are_read_as_levels():
+    parse = lambda meta: skills.parse_skill("s", f"---\n{meta}\n---\nbody", "vault")
+    assert [parse(f"effort: {level}").effort for level in skills.EFFORTS] == list(skills.EFFORTS)
+    assert (parse("mode: quick").effort, parse("mode: deep").effort) == ("medium", "high")
+    assert parse("effort: low\nmode: deep").effort == "low"            # effort wins
+    assert parse("effort: max").error == "effort must be one of off, low, medium, high"
+    assert parse("mode: slow").error.startswith("mode must be quick or deep")
+    assert parse("effort: High").listing()["effort"] == "high"

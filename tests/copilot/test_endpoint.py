@@ -71,17 +71,17 @@ def test_copilot_thread_endpoints_require_and_return_source_metadata(server_url)
         listed = json.load(response)["threads"]
     assert listed[0]["source_id"] == "source-1"
     assert listed[0]["source_path"] == "Notes/school/lesson.md"
-    assert listed[0]["reasoning_mode"] == "deep"
+    assert "reasoning_mode" not in listed[0]        # an older plugin's word is taken and kept nowhere
 
     status, _headers, body = post(server_url, "/api/copilot/thread/save", {
         "id": "missing", "title": "Missing", "turns": [], "source_id": "not-indexed",
-        "source_path": "Notes/missing.md", "reasoning_mode": "quick"})
+        "source_path": "Notes/missing.md"})
     assert status == 200 and json.loads(body)["source_path"] == "Notes/missing.md"
 
 
 def test_thread_save_without_source_id(server_url):
     status, _headers, body = post(server_url, "/api/copilot/thread/save", {
-        "id": "loose", "title": "Loose", "turns": [], "reasoning_mode": "quick",
+        "id": "loose", "title": "Loose", "turns": [],
         "pins": [{"kind": "folder", "path": "Capture"}]})
     assert status == 200
     assert json.loads(body)["source_path"] is None
@@ -90,14 +90,14 @@ def test_thread_save_without_source_id(server_url):
 def test_threads_query_param(server_url):
     for tid, title in (("a1", "Rent"), ("b2", "Gym")):
         post(server_url, "/api/copilot/thread/save", {
-            "id": tid, "title": title, "turns": [], "reasoning_mode": "quick"})
+            "id": tid, "title": title, "turns": []})
     with urllib.request.urlopen(server_url + "/api/copilot/threads?q=rent") as response:
         assert [t["id"] for t in json.load(response)["threads"]] == ["a1"]
 
 
 def test_get_thread_without_source(server_url):
     post(server_url, "/api/copilot/thread/save", {
-        "id": "loose", "title": "Loose", "turns": [], "reasoning_mode": "quick",
+        "id": "loose", "title": "Loose", "turns": [],
         "pins": [{"kind": "note", "path": "Notes/a.md"}]})
     with urllib.request.urlopen(server_url + "/api/copilot/thread?id=loose") as response:
         data = json.load(response)
@@ -105,20 +105,48 @@ def test_get_thread_without_source(server_url):
 
 
 def test_stream_endpoint_emits_stage_delta_and_turn(server_url, monkeypatch):
-    def fake_run(con, open_path, question, history, mode, **kwargs):
+    def fake_run(con, open_path, question, history, effort, **kwargs):
         kwargs["on_stage"]("Thinking deeply")
         kwargs["on_delta"]("Grounded")
-        return {"answer": "Grounded", "mode": "deep", "citations": []}
+        return {"answer": "Grounded", "effort": "high", "citations": []}
 
     monkeypatch.setattr(copilot_turn, "run_turn", fake_run)
     status, headers, body = post(server_url, "/api/copilot/stream", {
         "thread_id": "chat-1", "path": "Notes/school/lesson.md", "question": "Compare",
-        "history": [], "reasoning_mode": "deep"})
+        "history": [], "effort": "high"})
     assert status == 200
     assert headers.get_content_type() == "text/event-stream"
     assert "event: stage\ndata: {\"stage\": \"Thinking deeply\"}" in body
     assert "event: delta\ndata: {\"text\": \"Grounded\"}" in body
     assert "event: turn\ndata:" in body
+
+
+@pytest.mark.parametrize("sent, effort", [
+    ({"effort": "off"}, "off"), ({"effort": "low"}, "low"), ({"effort": "high"}, "high"),
+    ({}, "medium"),                                                     # the default
+    ({"reasoning_mode": "quick"}, "medium"), ({"reasoning_mode": "deep"}, "high"),   # a plugin from before
+    ({"effort": "low", "reasoning_mode": "deep"}, "low"),
+])
+def test_stream_endpoint_takes_an_effort_and_reads_quick_and_deep_as_levels(server_url, monkeypatch, sent, effort):
+    seen = []
+
+    def fake_run(con, open_path, question, history, effort, **kwargs):
+        seen.append(effort)
+        return {"answer": "ok", "effort": effort, "citations": []}
+
+    monkeypatch.setattr(copilot_turn, "run_turn", fake_run)
+    status, _headers, _body = post(server_url, "/api/copilot/stream", {
+        "thread_id": "chat-1", "question": "q", "history": [], **sent})
+    assert status == 200 and seen == [effort]
+
+
+@pytest.mark.parametrize("sent", [{"effort": "max"}, {"effort": "quick"},
+                                  {"effort": 2}, {"reasoning_mode": "auto"}])
+def test_stream_endpoint_refuses_any_other_effort(server_url, monkeypatch, sent):
+    monkeypatch.setattr(copilot_turn, "run_turn", lambda *a, **k: pytest.fail("ran"))
+    status, _headers, body = post(server_url, "/api/copilot/stream", {
+        "thread_id": "chat-1", "question": "q", "history": [], **sent})
+    assert status == 400 and json.loads(body)["error"] == "effort must be one of off, low, medium, high"
 
 
 def test_stream_endpoint_persists_images_and_passes_current_and_history_bytes(server_url, monkeypatch):
@@ -129,17 +157,17 @@ def test_stream_endpoint_persists_images_and_passes_current_and_history_bytes(se
         {"name": "old.png", "mime": "image/png", "data": encoded}])
     seen = {}
 
-    def fake_run(_con, _open_path, _question, history, _mode, **kwargs):
+    def fake_run(_con, _open_path, _question, history, _effort, **kwargs):
         seen["history"] = history
         seen["images"] = kwargs["images"]
-        return {"answer": "Equation", "mode": "quick", "citations": []}
+        return {"answer": "Equation", "effort": "medium", "citations": []}
 
     monkeypatch.setattr(copilot_turn, "run_turn", fake_run)
     status, _headers, body = post(server_url, "/api/copilot/stream", {
         "thread_id": "chat-1", "path": "Notes/school/lesson.md", "question": "Explain",
         "history": [{"role": "you", "text": "Earlier", "attachments": old_refs}],
         "images": [{"name": "new.png", "mime": "image/png", "data": encoded}],
-        "reasoning_mode": "quick"})
+        "effort": "medium"})
     assert status == 200
     assert base64.b64decode(seen["images"][0]) == png
     assert base64.b64decode(seen["history"][0]["images"][0]) == png
@@ -173,7 +201,7 @@ def test_stream_endpoint_emits_error_event_not_a_dead_socket(server_url, monkeyp
         lambda *args, **kwargs: (_ for _ in ()).throw(copilot_turn.CopilotError("local-only")))
     status, _headers, body = post(server_url, "/api/copilot/stream", {
         "thread_id": "chat-1", "path": "Notes/school/lesson.md", "question": "Question",
-        "history": [], "reasoning_mode": "quick"})
+        "history": [], "effort": "medium"})
     assert status == 200
     assert "event: error\ndata: {\"error\": \"local-only\"}" in body
 
@@ -199,7 +227,7 @@ def test_context_endpoint_can_skip_the_nearby_notes_search(server_url, monkeypat
 def _save(url, thread_id):
     status, _headers, body = post(url, "/api/copilot/thread/save", {
         "id": thread_id, "title": thread_id, "turns": [], "source_id": "source-1",
-        "source_path": "Notes/school/lesson.md", "reasoning_mode": "quick"})
+        "source_path": "Notes/school/lesson.md", "effort": "medium"})
     assert status == 200, body
 
 
@@ -263,7 +291,7 @@ def test_thread_listing_and_load_report_the_source_current_path(server_url):
     seed_source()
     status, _headers, _body = post(server_url, "/api/copilot/thread/save", {
         "id": "chat-1", "title": "Lesson", "turns": [], "source_id": "source-1",
-        "source_path": "Notes/school/lesson.md", "reasoning_mode": "quick"})
+        "source_path": "Notes/school/lesson.md", "effort": "medium"})
     assert status == 200
     con = db.connect()
     con.execute("UPDATE sources SET path='Notes/school/cs-201/lesson.md' WHERE id='source-1'")
@@ -279,9 +307,9 @@ def test_thread_listing_and_load_report_the_source_current_path(server_url):
 def test_stream_endpoint_passes_a_bounded_selection(server_url, monkeypatch):
     seen = {}
 
-    def fake_run(con, open_path, question, history, mode, **kwargs):
+    def fake_run(con, open_path, question, history, effort, **kwargs):
         seen.update(selection=kwargs["selection"], selection_from=kwargs["selection_from"], edit="edit" in kwargs)
-        return {"answer": "ok", "mode": "quick", "citations": [], "edit_run": None}
+        return {"answer": "ok", "effort": "medium", "citations": [], "edit_run": None}
 
     monkeypatch.setattr(copilot_turn, "run_turn", fake_run)
     post(server_url, "/api/copilot/stream", {
@@ -367,7 +395,7 @@ def a_note(tmp_path, monkeypatch):
 def stream(url, source, question, **extra):
     return post(url, "/api/copilot/stream", {
         "thread_id": "chat-1", "path": source["path"], "question": question, "history": [],
-        "reasoning_mode": "quick", "doc": NOTE, "doc_hash": edits.digest(NOTE), **extra})
+        "effort": "medium", "doc": NOTE, "doc_hash": edits.digest(NOTE), **extra})
 
 
 def test_the_stream_emits_the_edit_events_in_order(server_url, a_note):
@@ -484,7 +512,7 @@ def test_a_client_that_hangs_up_stops_the_run_after_the_current_call(server_url,
     png = base64.b64encode(base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")).decode()
     body = json.dumps({"thread_id": "chat-1", "path": source["path"], "question": "go", "history": [],
-                       "reasoning_mode": "quick", "doc": NOTE, "doc_hash": edits.digest(NOTE),
+                       "effort": "medium", "doc": NOTE, "doc_hash": edits.digest(NOTE),
                        "images": [{"name": "eq.png", "mime": "image/png", "data": png}]}).encode()
     host, port = urlparse(server_url).hostname, urlparse(server_url).port
     client = socket.create_connection((host, port))
@@ -521,7 +549,7 @@ def test_a_delta_to_a_closed_client_never_raises_into_the_models_stream(server_u
 
     closed, said = threading.Event(), {}
 
-    def fake_run(con, open_path, question, history, mode, **kwargs):
+    def fake_run(con, open_path, question, history, effort, **kwargs):
         kwargs["on_stage"]("Writing")
         assert closed.wait(5)
         try:
@@ -532,11 +560,11 @@ def test_a_delta_to_a_closed_client_never_raises_into_the_models_stream(server_u
         except Exception as exc:                # noqa: BLE001
             said["raised"] = type(exc).__name__
         said["stop"] = kwargs["should_stop"]()
-        return {"answer": "x", "mode": "quick", "citations": []}
+        return {"answer": "x", "effort": "medium", "citations": []}
 
     monkeypatch.setattr(copilot_turn, "run_turn", fake_run)
     body = json.dumps({"thread_id": "chat-1", "path": "Notes/a.md", "question": "q", "history": [],
-                       "reasoning_mode": "quick"}).encode()
+                       "effort": "medium"}).encode()
     host, port = urlparse(server_url).hostname, urlparse(server_url).port
     client = socket.create_connection((host, port))
     client.sendall(b"POST /api/copilot/stream HTTP/1.1\r\nHost: 127.0.0.1\r\n"
@@ -560,7 +588,7 @@ def test_a_run_keeps_its_images_from_its_start_and_its_start_names_them(server_u
     sees the `turn` that would. A request that fails before a run starts leaves nothing behind."""
     source, _script = a_note
 
-    def run_turn(_con, _open_path, question, _history, _mode, **kwargs):
+    def run_turn(_con, _open_path, question, _history, _effort, **kwargs):
         if question == "go":
             kwargs["on_edit"]("start", {"before_text": NOTE})
         raise copilot_turn.CopilotError("the model failed")
@@ -645,9 +673,9 @@ def test_an_inserts_text_reaches_the_stream_as_a_draft_before_its_change(server_
 def test_the_stream_passes_the_open_path_and_the_pins(server_url, monkeypatch):
     seen = []
 
-    def fake_run(con, open_path, question, history, mode, **kwargs):
+    def fake_run(con, open_path, question, history, effort, **kwargs):
         seen.append((open_path, kwargs["pins"]))
-        return {"answer": "ok", "mode": "quick", "citations": [], "edit_run": None}
+        return {"answer": "ok", "effort": "medium", "citations": [], "edit_run": None}
     monkeypatch.setattr(copilot_turn, "run_turn", fake_run)
     pins = [{"kind": "note", "path": "Notes/a.md"}, {"kind": "folder", "path": "Notes/school/"}]
     post(server_url, "/api/copilot/stream", {"thread_id": "chat-1", "path": "Notes/x.md", "pins": pins,

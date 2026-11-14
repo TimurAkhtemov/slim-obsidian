@@ -48,7 +48,6 @@ class ThreadSummary:
     turns: int
     source_id: str | None = None
     source_path: str | None = None
-    reasoning_mode: str | None = None
     pins: tuple = ()
 
 
@@ -111,7 +110,6 @@ def _write(payload: dict) -> ThreadSummary:
         id=tid, title=payload["title"], updated_at=payload["updated_at"],
         turns=len(payload["turns"]), source_id=payload.get("source_id"),
         source_path=payload.get("source_path"),
-        reasoning_mode=payload.get("reasoning_mode"),
         pins=tuple(payload.get("pins") or ()))
 
 
@@ -135,10 +133,12 @@ def _clean_pins(raw) -> list[dict]:
     return pins
 
 
-def save_copilot(thread_id: str, title: str, turns, *, reasoning_mode: str,
+def save_copilot(thread_id: str, title: str, turns, *,
                  source_id: str | None = None, source_path: str | None = None,
                  pins: list[dict] | None = None) -> ThreadSummary:
-    """Upsert one copilot chat. `source_*` is the note it was started on, and optional."""
+    """Upsert one copilot chat. `source_*` is the note it was started on, and optional. Each
+    answer's turn names the effort it ran at; a chat has none of its own (its old
+    `reasoning_mode`, on disk, is read by nothing)."""
     tid = validate_id(thread_id)
     sid = (source_id or "").strip() if isinstance(source_id, str) else ""
     if sid and not _ID_RE.fullmatch(sid):
@@ -149,8 +149,6 @@ def save_copilot(thread_id: str, title: str, turns, *, reasoning_mode: str,
         if path.is_absolute() or ".." in path.parts or path.suffix.casefold() != ".md":
             raise ThreadError("source path must be a vault-relative Markdown path")
         spath = path.as_posix()
-    if reasoning_mode not in {"quick", "deep"}:
-        raise ThreadError("reasoning mode must be quick or deep")
     cleaned = _clean_turns(turns)
     payload = {
         "id": tid,
@@ -158,7 +156,6 @@ def save_copilot(thread_id: str, title: str, turns, *, reasoning_mode: str,
         "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "source_id": sid or None,
         "source_path": spath,
-        "reasoning_mode": reasoning_mode,
         "pins": _clean_pins(pins),
         "turns": cleaned,
     }
@@ -202,7 +199,6 @@ def list_copilot_threads(query: str = "") -> list[ThreadSummary]:
                 turns=len(turns),
                 source_id=data.get("source_id") or None,
                 source_path=data.get("source_path") or None,
-                reasoning_mode=data.get("reasoning_mode"),
                 pins=tuple(data.get("pins") or ())))
         except (OSError, json.JSONDecodeError, ValueError, AttributeError, TypeError):
             continue                          # an unreadable thread hides, never bricks

@@ -4,7 +4,7 @@ input: folder
 filter: {type: [meeting-note, meeting]}
 section: Notes
 output: new-note
-mode: deep
+effort: high
 ---
 Below are the notes I typed during each meeting in this folder, oldest first. Merge them into
 ONE new note in this folder that I can read instead of all of them.

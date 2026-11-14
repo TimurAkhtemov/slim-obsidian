@@ -2,7 +2,7 @@
 "use strict";
 
 const { Notice } = require("obsidian");
-const { sha256Hex, metaText, runCounts, editOutcome } = require("./text");
+const { sha256Hex, effortLabel, metaText, runCounts, editOutcome } = require("./text");
 const { clear, create, atBottom } = require("./dom");
 
 module.exports = {
@@ -114,7 +114,7 @@ module.exports = {
   async partialTurn(run, stopped) {
     const edit_run = await this.settleRun(run, { stopped });
     const text = run.plan?.intro || "";
-    return { role: "slim", text, turn: { answer: text, mode: this.mode, citations: [], tools: [...(this.liveTools || [])],
+    return { role: "slim", text, turn: { answer: text, effort: this.effort, citations: [], tools: [...(this.liveTools || [])],
                                          timing: { total_ms: Date.now() - run.started }, edit_run } };
   },
 
@@ -155,7 +155,7 @@ module.exports = {
     if (this.liveTools?.length) this.fillTools(create(parent, "ul", "slim-steps slim-tools"), this.liveTools);
     this.renderEditRun(parent, { plan: run.plan, step_states: run.steps, changes: run.changes }, null);
     const meta = create(parent, "div", "slim-edit-meta");
-    create(meta, "span", "", `${this.mode === "deep" ? "Deep" : "Quick"} · ${Math.max(0, Math.round((Date.now() - run.started) / 1000))} s`);
+    create(meta, "span", "", `${effortLabel(this.effort)} · ${Math.max(0, Math.round((Date.now() - run.started) / 1000))} s`);
   },
 
   renderEditRun(message, run, pending) {
@@ -200,7 +200,7 @@ module.exports = {
     }
   },
 
-  // N changes · Undo all · Redo · See before · Hide marks · Quick · T s, while the note's editor
+  // N changes · Undo all · Redo · See before · Hide marks · Medium · T s, while the note's editor
   // holds the run; once it has closed, or after a reload: N changes · See before · Restore.
   renderEditMeta(message, run, turn) {
     const meta = create(message, "div", "slim-edit-meta");

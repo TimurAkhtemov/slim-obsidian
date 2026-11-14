@@ -1,7 +1,7 @@
 ---
 description: A self-contained brief for another AI assistant that has not heard the recording
 output: new-note
-mode: deep
+effort: high
 ---
 Write a brief for another AI assistant that will do the work from here. It has the data and
 the systems but has NOT heard this recording or read these notes: the brief is all it gets.
