@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .. import llm
-from . import blocks, edits as edits_mod, skills as skills_mod
+from . import blocks, edits as edits_mod, lookup as lookup_mod, skills as skills_mod
 from .context import CopilotError
 
 # THE EDITING RUN (`_turn`). Measured on the prototype (2026-10-12, 13 cases, 5 runs each):
@@ -24,6 +24,10 @@ STEP_TOOLS = ("replace", "edit_text", "insert", "move")
 NUDGE = "Use the tools to make the change."
 FIRST_TEMPERATURE = llm.REPLY_TEMPERATURE
 ONE_REPLY = "(done in one reply)"      # the one step of a run whose first reply made its change
+# Lookups (`lookup.py`) before a turn's first answer, plan or edit. Past this they are refused, and
+# a model that goes on asking is stopped after MAX_REFUSALS such replies.
+MAX_LOOKUPS = 6
+LOOKED_ENOUGH = "refused: answer or act now with what you have"
 
 
 class _Stopped(Exception):
@@ -264,6 +268,8 @@ class _Drafts:
             self.failed += 1
 
     def _part(self, kind: str, index: int, name, value) -> None:
+        if kind == "reply":                 # text outside any call: the chat's, never a draft
+            return
         if kind == "drop":                  # it turned into text: its draft goes, and the next call has its index
             dead = self.calls.pop(index, None)
             if dead and dead["id"] in self.open:
@@ -342,7 +348,8 @@ class _Drafts:
 def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tuple[str, ...],
           note: blocks.Note | None, before_text: str, only: set[str] | None = None, create=None,
           temperature: float = FIRST_TEMPERATURE, first_predict: int, nudge: bool = False, on_edit,
-          should_stop, on_stage=lambda _name: None) -> dict:
+          should_stop, on_stage=lambda _name: None, lookups: lookup_mod.Reader | None = None,
+          on_reply=None) -> dict:
     """One editing turn. Every call offers the same `tools`, in the same order: they sit at the
     top of the prompt, and a different list re-reads the whole note. `step_tools` are those that
     change something. The first call answers in text, makes a small change at once, or plans a
@@ -351,14 +358,20 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
     measured against the note, for the trace. Code holds the plan, applies every call to the draft
     `note` (or makes a new note through `create`), enforces every limit, and hands each part to
     `on_edit` as it lands: "start", "plan", "step" and "change". `should_stop()` is asked before
-    every call, and `on_stage` hears each call start, so the chat can count its seconds."""
+    every call, and `on_stage` hears each call start, so the chat can count its seconds.
+
+    With `lookups`, a reply whose calls look things up (and neither plan nor change anything) is
+    answered with what they found, and the same call is made again: MAX_LOOKUPS of them before
+    the first answer, plan or edit. Inside a run a lookup is answered too, and costs a call, never
+    a refusal or a step. `on_reply` hears each reply's text as it decodes."""
     out = {"kind": "answer", "answer": "", "plan": None, "changes": [], "steps_done": 0, "calls": 0,
            "refusals": [], "malformed": [], "empty_steps": 0, "stopped": None, "summary": "",
            "finished_early": False, "replanned": False, "outline": None, "outline_met": None,
            "retries": 0, "first_call_edits": 0, "timing": [], "nudged": False,
            "outline_details": None, "corrections": 0, "steps_missed": 0,
-           "first_temperature": temperature}
+           "first_temperature": temperature, "looked_up": []}
     spent, failed = 0, []
+    looks = lookup_mod.NAMES if lookups is not None else ()
     # Deep's thinking has its own allowance: it would otherwise eat the steps' budget.
     budget = RUN_OUTPUT_TOKENS + (THINK_BUDGET if think else 0)
     # The step(s) being worked; `target` the blocks the step names (None: not judged), `hit` whether
@@ -369,6 +382,32 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
     plain = note.plain if note is not None else (lambda words: words)
     drafts = _Drafts(note, only, on_edit) if note is not None else None
 
+    def heard(kind, index, name, value):
+        if kind == "reply":
+            on_reply(value)
+        elif drafts:
+            drafts.part(kind, index, name, value)
+
+    def look(call: dict) -> str:
+        """One lookup, run; what it found goes back to the model, and what it was to the trace."""
+        args = call.get("arguments")
+        said = lookups.call(call["name"], args)
+        if note is not None and note.shown is not None:
+            note.shown |= lookups.shown         # a section it read is a section it may change
+        record = {"name": call["name"]}
+        where = args.get("folder" if call["name"] == "search" else "path") if isinstance(args, dict) else None
+        if isinstance(where, str) and where:
+            record["path"] = where
+        record["refused"] = said.startswith("refused:")
+        if record["refused"]:
+            record["said"] = said.splitlines()[0][:200]
+        out["looked_up"].append(record)
+        return said
+
+    def looking(reply: _Reply) -> bool:
+        names = [c["name"] for c in reply.calls]
+        return any(n in looks for n in names) and not any(n == "plan" or n in step_tools for n in names)
+
     def attempt(offered, think, temperature, num_predict):
         if not out["stopped"] and should_stop():
             out["stopped"] = "stopped"
@@ -378,7 +417,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
         if drafts:
             drafts.next_reply()
         reply = _call(messages, offered, think=think, temperature=temperature, num_predict=num_predict,
-                      on_part=drafts.part if drafts else None, should_stop=should_stop)
+                      on_part=heard if on_reply else drafts.part if drafts else None, should_stop=should_stop)
         for index, call in enumerate(reply.calls):
             if drafts and drafts.of(index):
                 call["draft"] = drafts.of(index)
@@ -451,10 +490,33 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
         """A first reply's plan, and its other calls if any of them changes something."""
         plans = [c for c in reply.calls if c["name"] == "plan"]
         others = [c for c in reply.calls if c["name"] != "plan"]
-        return plans, others if any(c["name"] in step_tools for c in others) else []
+        acts = any(c["name"] in step_tools for c in others) or (plans and any(c["name"] in looks for c in others))
+        return plans, others if acts else []
 
     try:
         first = ask(tools, think, temperature, first_predict)
+        looked, over = 0, 0
+        while looking(first) and not out["stopped"]:
+            results = []
+            for call in first.calls:
+                out["calls"] += 1
+                if call["name"] not in looks:
+                    results.append(f"refused: {call['name']} is not available now")
+                elif looked >= MAX_LOOKUPS:
+                    results.append(LOOKED_ENOUGH)
+                    out["looked_up"].append({"name": call["name"], "refused": True, "said": LOOKED_ENOUGH})
+                else:
+                    looked += 1
+                    results.append(look(call))
+            over += looked >= MAX_LOOKUPS and all(r.startswith("refused:") for r in results)
+            if out["calls"] > MAX_CALLS:
+                out["stopped"] = "call limit"
+            elif over >= MAX_REFUSALS:
+                out["stopped"] = "lookups"
+            if out["stopped"]:
+                break
+            messages.extend({"role": "tool", "content": result} for result in results)
+            first = ask(tools, think, temperature, first_predict)
         plans, edits = split(first)
         unread = first.malformed and not first.calls
         if not plans and not edits and not out["stopped"]:
@@ -543,6 +605,9 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
                     out["stopped"] = out["stopped"] or "call limit"
                     refused = True
                     break
+                if name in looks:           # answered; neither a refusal nor a change
+                    results.append(look(call))
+                    continue
                 # Where the call points, read before it lands and moves the note's blocks.
                 aimed = current["target"] and note is not None and bool(
                     _places(note, call.get("arguments")) & current["target"])
@@ -582,10 +647,11 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
                         "this step is. Make this step's change there now.")
             return f"Step {k + 1} of {len(steps)}: {steps[k]}\nMake this step's changes now."
 
-        k, retried, pending = 0, False, first if edits else None
+        k, retried, pending, again = 0, False, first if edits else None, False
         while k < len(steps) and not out["stopped"]:
-            if not retried:
+            if not retried and not again:
                 open_step(k, covered if pending else 1)
+            again = False
             from_first = pending is not None
             if pending:                 # the first reply already holds the first steps' calls
                 reply, pending = pending, None
@@ -603,6 +669,9 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
                 k = out["steps_done"] = k + current["count"]
                 break
             acted = [c for c in reply.calls if c["name"] != "plan"]
+            if acted and not landed and all(c["name"] in looks for c in acted):
+                again = True                # it read first: the same step again, with what it found
+                continue
             if reply.malformed and not acted:
                 results = [_unreadable(reply.malformed)]
             elif not acted:

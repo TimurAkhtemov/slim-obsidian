@@ -1148,3 +1148,65 @@ def test_a_first_reply_edit_off_its_step_is_judged_but_not_sent_back(turn, monke
     assert [p for e, p in events if e == "step"] == [
         {"index": 1, "state": "doing"}, {"index": 1, "state": "skipped"},
         {"index": 2, "state": "doing"}, {"index": 2, "state": "done"}]
+
+
+# --- the lookup phase: read-only tools before, and inside, the run (2026-11-13) ---------------
+
+def _looking(vault, monkeypatch, *replies, note=NOTE):
+    from slim.copilot import lookup
+    seen = scripted(monkeypatch, *replies)
+    draft = blocks.Note(note)
+    reader = lookup.Reader(None, vault, open_note=("Notes/school/n.md", draft))
+    write(vault, "Notes/school/b.md", "Bee text.")
+    events, said = [], []
+    tools = ["search", "read_note", "list_folder", "plan", *STEP_TOOLS]
+    out = edit_run._turn([{"role": "user", "content": "q"}], think=False, tools=tools,
+                         step_tools=edit_run.STEP_TOOLS, note=draft, before_text=note, first_predict=100,
+                         on_edit=lambda e, p: events.append((e, p)), should_stop=lambda: False,
+                         lookups=reader, on_reply=said.append)
+    return out, seen, events, said
+
+
+def test_lookups_run_before_the_first_answer_and_the_reply_streams(vault, monkeypatch):
+    out, seen, events, said = _looking(vault, monkeypatch,
+                                       ("Let me look.", [("read_note", {"path": "Notes/school/b.md"})]),
+                                       ("Bee says hi.", []))
+    assert out["kind"] == "answer" and out["answer"] == "Bee says hi." and events == []
+    assert said == ["Let me look.", "Bee says hi."]
+    assert seen[1]["messages"][-1]["role"] == "tool" and "Bee text." in seen[1]["messages"][-1]["content"]
+    assert out["looked_up"] == [{"name": "read_note", "path": "Notes/school/b.md", "refused": False}]
+    assert out["calls"] == 1
+
+
+def test_a_reply_mixing_a_lookup_and_a_tool_not_offered_runs_the_lookup(vault, monkeypatch):
+    out, seen, _events, _said = _looking(vault, monkeypatch,
+                                         ("", [("list_folder", {"path": "Notes"}), ("done", {"summary": "x"})]),
+                                         ("ok", []))
+    results = [m["content"] for m in seen[1]["messages"] if m["role"] == "tool"]
+    assert results[0].startswith("school/") and results[1] == "refused: done is not available now"
+    assert out["answer"] == "ok"
+
+
+def test_a_model_that_keeps_looking_past_the_cap_is_stopped(vault, monkeypatch):
+    replies = [("", [("list_folder", {"path": "Notes"})])] * (edit_run.MAX_LOOKUPS + edit_run.MAX_REFUSALS + 2)
+    out, seen, _events, _said = _looking(vault, monkeypatch, *replies)
+    assert len(seen) == edit_run.MAX_LOOKUPS + edit_run.MAX_REFUSALS
+    assert out["stopped"] == "lookups" and out["answer"] == ""
+
+
+def test_a_plan_beside_a_lookup_reads_first_then_does_its_step(vault, monkeypatch):
+    out, seen, events, _said = _looking(
+        vault, monkeypatch,
+        ("", [("plan", {"intro": "Add bee.", "steps": ["Add it"]}), ("read_note", {"path": "Notes/school/b.md"})]),
+        ("", [("insert", {"after": "b2", "markdown": "Bee text."})]))
+    assert out["kind"] == "edit" and len(out["changes"]) == 1 and len(seen) == 2
+    told = [m["content"] for m in seen[1]["messages"] if m["role"] == "tool"]
+    assert told[0] == "ok: plan accepted" and "Bee text." in told[1]
+    assert seen[1]["opts"]["temperature"] == edit_run.STEP_TEMPERATURE
+
+
+def test_drafts_ignore_reply_text():
+    events = []
+    drafts = edit_run._Drafts(blocks.Note(NOTE), None, lambda e, p: events.append(e))
+    drafts.part("reply", -1, None, "hello")
+    assert drafts.calls == {} and drafts.failed == 0 and events == []
