@@ -30,6 +30,19 @@ module.exports = {
     this.renderEdit();
   },
 
+  // The note a saved run edited, or null. A run saved before runs named their note has no
+  // `path`: it was the note its chat was opened on.
+  runPath(run) {
+    return "path" in run ? run.path : this.activeThread?.source_path ?? null;
+  },
+
+  // The note a run edited, or the sentence that says there is none to look at or restore.
+  runNote(run) {
+    const path = this.runPath(run);
+    if (!path) throw new Error("This change edited no open note, so there is nothing to show or restore.");
+    return path;
+  },
+
   // The run's editor is still open and still shows its note.
   inView(run) {
     const live = this.plugin.live;
@@ -89,6 +102,8 @@ module.exports = {
       stopped: server.stopped ?? null,
       outline_met: server.outline_met ?? null,
       summary: server.summary || "",
+      // The note the run edited; null when it only made new notes. An older run has none.
+      path: "path" in server ? server.path : run.path,
       before_ref: run.ref,
       hash_before: run.hash_before,
       hash_after: doc === undefined ? server.hash_after || null : sha256Hex(doc),
@@ -110,7 +125,7 @@ module.exports = {
     if (this.editRun === run) this.editRun = null;
     if (run.view) this.plugin.live?.endRun(run.view, run.ref);
     this.runTurns.set(run.ref, { thread: run.thread, turns: run.turns });
-    if (run.changes.some((change) => change.state === "applied")) {
+    if (run.path && run.changes.some((change) => change.state === "applied")) {
       this.saveOpenCopies(run.path)
         .then(() => this.plugin.postJSON("/api/copilot/context", { path: run.path, related: false }))
         .catch((e) => console.warn("[slim] index after edit", run.path, e.message));
@@ -174,7 +189,7 @@ module.exports = {
                      failed: `Not created (${change.reason || "it failed"}):` }[change.state] || "";
       create(row, "span", "", `${what} `);
       const name = create(row, "button", "slim-link", change.path);
-      name.onclick = () => this.openNote(change.path);
+      name.onclick = () => this.openFile(change.path);
       if (change.state === "created" && pending) {
         create(row, "span", "", " · ");
         const undo = create(row, "button", "slim-link", "Undo");
@@ -210,7 +225,7 @@ module.exports = {
       if (this.restoredFrom.has(ref)) link("Undo", () => this.unrestore(turn));
     } else {
       if (landed.length) text(`${landed.length} change${landed.length === 1 ? "" : "s"}${undone ? `, ${undone} undone` : ""}`);
-      const shownIn = view || this.plugin.liveViewFor?.(this.context?.source?.path);
+      const shownIn = view || this.plugin.liveViewFor?.(this.runPath(run));
       const showing = Boolean(ref && shownIn && this.plugin.live?.showing(shownIn) === ref);
       if (live) {
         link("Undo all", () => this.undoAllRun(ref), !live.changes.some((change) => change.state === "applied"));
@@ -310,7 +325,8 @@ module.exports = {
   // The note as it was before the run, over the note, read-only; the file is not touched.
   async toggleBefore(turn, on) {
     const run = turn.turn.edit_run;
-    const view = this.plugin.liveRunView?.(run.before_ref) || await this.plugin.noteView?.(this.context.source.path);
+    const path = this.runNote(run);
+    const view = this.plugin.liveRunView?.(run.before_ref) || await this.plugin.noteView?.(path);
     if (!view) throw new Error("Open the note in an editor to see it as it was.");
     this.plugin.live.showBefore(view, run.before_ref, on ? await this.beforeText(run.before_ref) : "", on);
   },
@@ -322,7 +338,8 @@ module.exports = {
   async restore(turn, force = false) {
     const run = turn.turn.edit_run;
     const ref = run.before_ref;
-    const view = await this.plugin.noteView?.(this.context.source.path);
+    const path = this.runNote(run);
+    const view = await this.plugin.noteView?.(path);
     if (!view || !this.plugin.live) throw new Error("Open the note in an editor to restore it.");
     const doc = view.state.doc.toString();
     this.restoreRefused = null;
@@ -342,7 +359,7 @@ module.exports = {
     this.plugin.live.restore(view, answer.text);
     Object.assign(run, { restored: true, typed: false, hash_after: sha256Hex(view.state.doc.toString()) });
     this.saveRun(this.activeThread, this.turns);
-    this.reindex(this.context.source.path);
+    this.reindex(path);
     this.render();
   },
 
@@ -350,7 +367,8 @@ module.exports = {
   async unrestore(turn) {
     const run = turn.turn.edit_run;
     const was = this.restoredFrom.get(run.before_ref);
-    const view = this.plugin.liveViewFor?.(this.context.source.path);
+    const path = this.runPath(run);
+    const view = path && this.plugin.liveViewFor?.(path);
     if (was === undefined || !view) return;
     if (sha256Hex(view.state.doc.toString()) !== run.hash_after) {
       throw new Error("The note has changed since it was restored; use Cmd-Z in the note.");
@@ -359,6 +377,6 @@ module.exports = {
     this.restoredFrom.delete(run.before_ref);
     Object.assign(run, { restored: false, hash_after: sha256Hex(view.state.doc.toString()) });
     this.saveRun(this.activeThread, this.turns);
-    this.reindex(this.context.source.path);
+    this.reindex(path);
   },
 };

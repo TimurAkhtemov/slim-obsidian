@@ -123,23 +123,6 @@ test("the composer keeps focus across a full render", () => {
   assert.equal(find(root, (node) => node.tag === "textarea").focused, true);
 });
 
-test("a note group they expanded by hand stays expanded across renders", () => {
-  const { view, root } = renderedView();
-  view.showThreads = true;
-  view.threads = [
-    { id: "a", title: "A", source_id: "s1", source_path: "Notes/one.md", updated_at: "2026-02-01" },
-    { id: "b", title: "B", source_id: "s2", source_path: "Notes/two.md", updated_at: "2026-01-01" },
-  ];
-  view.render();
-  const other = () => find(root, (node) => node.tag === "details"
-    && node.children.some((child) => child.tag === "summary" && child.attrs.title === "Notes/two.md"));
-  assert.equal(other().children.find((child) => child.tag === "summary").textContent, "two");
-  assert.equal(other().open, false);
-  other().children.find((child) => child.tag === "summary").onclick();
-  view.render();
-  assert.equal(other().open, true);
-});
-
 test("a turn shows when its answer was cut off; a bracket in prose is plain text", () => {
   // Sources come from the server's follow-up call, never from markers, so [9] in prose is
   // text and nothing flags it. Truncation is still their to know about.
@@ -157,6 +140,7 @@ test("a turn shows when its answer was cut off; a bracket in prose is plain text
 
 test("the header shows the note title and keeps the path as a tooltip", () => {
   const { view, root } = renderedView();
+  view.openNote = { path: "Notes/nlp/Introduction to NLP.md", id: "s1" };
   view.context.source = { id: "s1", path: "Notes/nlp/Introduction to NLP.md", title: "Introduction to NLP" };
   view.render();
   const note = find(root, (node) => node.cls === "slim-copilot-note");
@@ -237,7 +221,7 @@ test("their turn is a bubble on the right and the composer starts as one line", 
   assert.equal(input.placeholder, "Ask SLIM, or / for skills");
 });
 
-test("nearby notes and chat groups read as titles, with the path on hover", () => {
+test("nearby notes and history rows read as titles, with the path on hover", () => {
   const { view, root } = renderedView();
   view.context.related = [
     { source_id: "s2", path: "Notes/nlp/Word embeddings.md", title: "Word embeddings", scope: "course" },
@@ -251,8 +235,9 @@ test("nearby notes and chat groups read as titles, with the path on hover", () =
   assert.deepEqual(nearby.children.map((child) => child.textContent), ["Word embeddings", "course"]);
   view.showThreads = true;
   view.render();
-  const summary = find(root, (node) => node.tag === "summary" && node.attrs.title === "Notes/nlp/Word embeddings.md");
-  assert.equal(summary.textContent, "Word embeddings");
+  const faint = find(root, (node) => node.cls === "slim-chat-note");
+  assert.equal(faint.attrs.title, "Notes/nlp/Word embeddings.md");
+  assert.equal(faint.textContent.trim(), "Word embeddings");
 });
 
 test("an answer is rendered as Markdown while a question stays plain text", () => {
@@ -278,7 +263,7 @@ const citedTurn = () => {
 test("sources are one chip per note under the answer, and open that note", () => {
   const { view, root } = renderedView();
   const opened = [];
-  view.openNote = async (path) => { opened.push(path); };
+  view.openFile = async (path) => { opened.push(path); };
   view.turns = [citedTurn()];
   view.render();
   const rows = [];
@@ -334,7 +319,7 @@ function linkView(existing) {
       workspace: { openLinkText(...args) { opened.push(args); } },
     },
   });
-  view.context = { source: { path: "Notes/open.md" } };
+  view.openNote = { path: "Notes/open.md", id: null };
   view.render = () => {};
   return { view, opened };
 }

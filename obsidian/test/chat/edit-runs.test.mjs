@@ -532,3 +532,82 @@ test("a change's text is a draft in the note while it is written, and the change
     ["draft", run, "d2.0", 5, 8, "x"], ["drop", "d2.0"]]);
   assert.equal("draft" in view.turns.at(-1).turn.edit_run.changes[0], false);
 });
+
+// ---- a run belongs to the note it edited, not to the note open now -----------------------------
+
+const savedRun = (extra = {}) => ({ plan: PLAN, step_states: [], steps_done: 1, stopped: null, before_ref: "7".repeat(32),
+  hash_after: sha256Hex("# A\n\nnew\n"), changes: [{ id: "c1", label: "x", state: "applied" }], ...extra });
+
+test("restore and see before use the run's path, whatever note is open now", async () => {
+  const { live, editor } = fakeLive("# A\n\nnew\n");
+  const asked = [], indexed = [];
+  const view = editView({ live, editor, indexed });
+  view.plugin.noteView = async (path) => { asked.push(path); return editor; };
+  view.openNote = { path: "B.md", id: "s2" };
+  view.context = { source: { id: "s2", path: "B.md" }, related: [] };
+  const run = savedRun({ path: "A.md" });
+  view.turns = [{ role: "you", text: "q" }, { role: "slim", text: "a", turn: { edit_run: run } }];
+  await view.toggleBefore(view.turns[1], true);
+  await view.restore(view.turns[1]);
+  assert.deepEqual(asked, ["A.md", "A.md"]);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(indexed, ["A.md"]);                                 // the re-index names A, not B
+});
+
+test("a run saved before runs named their note falls back to its chat's note", async () => {
+  const { live, editor } = fakeLive("# A\n\nnew\n");
+  const asked = [];
+  const view = editView({ live, editor });
+  view.plugin.noteView = async (path) => { asked.push(path); return editor; };
+  view.openNote = { path: "B.md", id: "s2" };
+  view.activeThread = { id: "chat-1", source_id: "s1", source_path: "A.md" };
+  view.turns = [{ role: "you", text: "q" }, { role: "slim", text: "a", turn: { edit_run: savedRun() } }];
+  await view.restore(view.turns[1]);
+  assert.deepEqual(asked, ["A.md"]);
+});
+
+test("a run that edited no note has nothing to restore or show: both refuse with a sentence", async () => {
+  const { live, editor } = fakeLive();
+  const view = editView({ live, editor });
+  let asked = 0;
+  view.plugin.noteView = async () => { asked += 1; return editor; };
+  const run = savedRun({ path: null, changes: [{ id: "c1", op: "create", path: "New.md", state: "created" }] });
+  view.turns = [{ role: "you", text: "q" }, { role: "slim", text: "a", turn: { edit_run: run } }];
+  await assert.rejects(view.restore(view.turns[1]), /edited no open note/);
+  await assert.rejects(view.toggleBefore(view.turns[1], true), /edited no open note/);
+  assert.equal(asked, 0);
+  assert.deepEqual(live.calls, []);
+});
+
+test("the turn keeps the path the server names for the run; no note open means null", async () => {
+  const { live, editor } = fakeLive();
+  const view = editView({ live, editor, events: async (_body, handlers) => {
+    handlers.edit({ before_ref: "8".repeat(32), hash_before: "h0" });
+    handlers.change({ id: "c1", step: 1, op: "create", label: "Created New.md", needs: [], path: "New.md", text: "x" });
+    handlers.turn({ answer: "Made it", mode: "quick", citations: [], edit_run: {
+      plan: PLAN, steps_done: 1, changes: [], stopped: null, summary: "", before_ref: "8".repeat(32), path: null } });
+  } });
+  view.app.vault = { getAbstractFileByPath: () => null, create: async (p) => ({ path: p }) };
+  view.openNote = null;
+  await view.send("Make a note");
+  assert.equal(view.turns.at(-1).turn.edit_run.path, null);
+});
+
+test("switching notes mid-run stops the run, and the next change is skipped", async () => {
+  const { live, editor } = fakeLive();
+  const view = editView({ live, editor, events: (_body, handlers, signal) => new Promise((_resolve, reject) => {
+    signal.addEventListener("abort", () => { const error = new Error("Cancelled"); error.name = "AbortError"; reject(error); });
+    handlers.edit({ before_ref: "6".repeat(32), hash_before: "h0" });
+    handlers.plan(PLAN);
+    handlers.change(change("c1", 1));
+    editor.path = "B.md";                                             // they opened B in the run's pane
+    view.setActiveFile({ path: "B.md", extension: "md" });
+    handlers.change(change("c2", 2));
+  }) });
+  view.plugin.liveViews = new Set([editor]);
+  await view.send("Ok make the revisions");
+  const run = view.turns.at(-1).turn.edit_run;
+  assert.deepEqual(run.changes.map(({ id, state }) => [id, state]), [["c1", "applied"], ["c2", "skipped"]]);
+  assert.equal(run.stopped, "stopped");
+  assert.equal(run.path, "Notes/one.md");
+});

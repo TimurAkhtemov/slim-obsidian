@@ -32,6 +32,7 @@ function renderedView(plugin = {}) {
     postJSON: async () => ({}), getJSON: async () => ({ threads: [] }), streamCopilot: async () => {},
     ...plugin,
   });
+  view.openNote = { path: "Notes/one.md", id: "s1" };
   view.context = { source: { id: "s1", path: "Notes/one.md", title: "One" }, related: [] };
   return { view, root, rebuilds: () => rebuilds };
 }
@@ -104,6 +105,7 @@ function editView({ events, live, editor, saved = [], indexed = [], before = "# 
   view.app = { vault: vault || {}, workspace: { openLinkText() {}, getLeavesOfType: () => [] } };
   view.render = () => {};
   view.saveOpenCopies = async () => {};
+  view.openNote = { path: "Notes/one.md", id: "s1" };
   view.context = { source: { id: "s1", path: "Notes/one.md" }, related: [] };
   view.activeThread = { id: "chat-1", title: "t", source_id: "s1", source_path: "Notes/one.md" };
   return view;

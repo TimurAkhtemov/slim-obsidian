@@ -95,32 +95,12 @@ var require_images = __commonJS({
 var require_text = __commonJS({
   "src/chat/text.js"(exports2, module2) {
     "use strict";
-    function groupThreads(threads, activeSourceId) {
-      const grouped = /* @__PURE__ */ new Map();
-      for (const thread of threads || []) {
-        if (!thread.source_id || !thread.source_path) continue;
-        if (!grouped.has(thread.source_id)) grouped.set(thread.source_id, {
-          sourceId: thread.source_id,
-          path: thread.source_path,
-          threads: [],
-          expanded: false
-        });
-        const group = grouped.get(thread.source_id);
-        group.threads.push(thread);
-        if (thread.source_path) group.path = thread.source_path;
-      }
-      const groups = [...grouped.values()];
-      for (const group of groups) {
-        group.threads.sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
-        group.updatedAt = group.threads[0]?.updated_at || "";
-        group.expanded = group.sourceId === activeSourceId;
-      }
-      groups.sort((a, b) => {
-        if (a.sourceId === activeSourceId) return -1;
-        if (b.sourceId === activeSourceId) return 1;
-        return b.updatedAt.localeCompare(a.updatedAt);
-      });
-      return groups;
+    function threadRows(threads) {
+      return [...threads || []].sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
+    }
+    function shortDate(value) {
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
     }
     function pathStem(path) {
       const name = String(path || "").split("/").pop() || "";
@@ -272,7 +252,8 @@ var require_text = __commonJS({
       return `Stopped after ${done} of ${steps.length} step${steps.length === 1 ? "" : "s"}${why ? `: ${why}` : ""}.${left.length ? ` Not done: ${list}.` : ""}`;
     }
     module2.exports = {
-      groupThreads,
+      threadRows,
+      shortDate,
       pathStem,
       noteTitle,
       groupCitations,
@@ -347,9 +328,9 @@ var require_render = __commonJS({
     "use strict";
     var { MarkdownRenderer, MarkdownRenderChild } = require("obsidian");
     var {
-      groupThreads,
+      threadRows,
+      shortDate,
       pathStem,
-      noteTitle,
       groupCitations,
       slashQuery,
       matchSkills,
@@ -475,7 +456,7 @@ var require_render = __commonJS({
             this.app,
             text,
             el,
-            this.context?.source?.path || "",
+            this.openNote?.path || "",
             host
           ).catch((e) => {
             console.error("[slim] render answer", e);
@@ -512,24 +493,14 @@ var require_render = __commonJS({
         history.onclick = () => {
           this.showThreads = !this.showThreads;
           this.render();
+          if (this.showThreads) this.loadThreads();
         };
         const add = iconButton(tools, "plus", "New chat");
         add.onclick = () => this.newThread();
-        if (this.loading) {
-          create(root, "p", "slim-copilot-status", "Indexing this note...");
-          return;
-        }
-        if (this.error && !this.context) {
-          create(root, "p", "slim-copilot-error", this.error);
-          return;
-        }
-        if (!this.context) {
-          create(root, "p", "slim-copilot-status", "Open a Markdown note.");
-          return;
-        }
-        const sourcePath = this.context.source.path;
-        const sourceTitle = this.context.source.title || pathStem(sourcePath);
-        const related = this.context.related || [];
+        const sourcePath = this.openNote?.path || "";
+        const nearby = this.context?.source?.path === sourcePath ? this.context : null;
+        const sourceTitle = nearby?.source?.title || (sourcePath ? pathStem(sourcePath) : "No note open");
+        const related = nearby?.related || [];
         if (related.length) {
           const context = create(header, "details", "slim-copilot-context");
           context.open = this.nearbyOpen;
@@ -545,13 +516,13 @@ var require_render = __commonJS({
             button.setAttribute("title", item.path);
             create(button, "span", "", item.title || pathStem(item.path));
             create(button, "small", "", item.scope || "");
-            button.onclick = () => this.openNote(item.path);
+            button.onclick = () => this.openFile(item.path);
           }
         } else {
           const note = create(header, "div", "slim-copilot-note", sourceTitle);
           note.setAttribute("title", sourcePath);
         }
-        if (this.showThreads) this.renderThreadList(root, sourceTitle);
+        if (this.showThreads) this.renderThreadList(root);
         else this.renderTranscript(root);
         const composer = create(root, "footer", "slim-copilot-composer");
         if (this.pendingImages.length) {
@@ -692,36 +663,48 @@ var require_render = __commonJS({
           input.selectionStart = input.selectionEnd = input.value.length;
         }
       },
-      renderThreadList(root, sourceTitle) {
+      // The search box and the rows under it. Only the rows are redrawn when results land, so
+      // typing never loses the box.
+      renderThreadList(root) {
         const list = create(root, "nav", "slim-copilot-threads");
+        const search = create(list, "input", "slim-thread-search");
+        search.type = "search";
+        search.placeholder = "Search chats";
+        search.value = this.threadQuery;
+        search.oninput = () => this.searchThreads(search.value);
+        this.el.threadRows = create(list, "div", "slim-thread-rows");
+        this.drawThreadRows(this.el.threadRows);
+      },
+      renderThreadRows() {
+        if (!this.showThreads || !this.el?.threadRows) return;
+        clear(this.el.threadRows);
+        this.drawThreadRows(this.el.threadRows);
+      },
+      drawThreadRows(list) {
         if (!this.threads.length) {
-          create(list, "p", "slim-copilot-status", "No chats yet.");
+          create(list, "p", "slim-copilot-status", this.threadQuery.trim() ? "No chats match." : "No chats yet.");
           return;
         }
-        for (const group of groupThreads(this.threads, this.context.source.id)) {
-          const details = create(list, "details", "slim-note-group");
-          details.open = this.groupOpen.has(group.sourceId) ? this.groupOpen.get(group.sourceId) : group.expanded;
-          const label = group.sourceId === this.context.source.id ? sourceTitle : noteTitle(this.app, group.path);
-          const summary = create(details, "summary", "", label);
-          summary.setAttribute("title", group.path);
-          summary.onclick = () => {
-            this.groupOpen.set(group.sourceId, !details.open);
-          };
-          for (const thread of group.threads) {
-            const row = create(details, "div", `slim-chat-row${thread.id === this.activeThread?.id ? " is-active" : ""}`);
-            const open = create(row, "button", "slim-chat-open", thread.title || "Conversation");
-            open.onclick = () => this.openThread(thread.id);
-            const rename = iconButton(row, "pencil", `Rename ${thread.title}`);
-            rename.onclick = () => this.renameThread(thread.id);
-            const armed = this.deleteArmed === thread.id;
-            const remove = iconButton(
-              row,
-              armed ? "check" : "trash-2",
-              armed ? `Confirm delete ${thread.title}` : `Delete ${thread.title}`,
-              armed ? "clickable-icon is-armed" : "clickable-icon"
-            );
-            remove.onclick = () => this.deleteThread(thread.id);
+        for (const thread of threadRows(this.threads)) {
+          const row = create(list, "div", `slim-chat-row${thread.id === this.activeThread?.id ? " is-active" : ""}`);
+          const open = create(row, "button", "slim-chat-open", thread.title || "Conversation");
+          open.onclick = () => this.openThread(thread.id);
+          const date = shortDate(thread.updated_at);
+          if (date) create(open, "small", "slim-chat-date", ` ${date}`);
+          if (thread.source_path) {
+            const label = create(open, "small", "slim-chat-note", ` ${pathStem(thread.source_path)}`);
+            label.setAttribute("title", thread.source_path);
           }
+          const rename = iconButton(row, "pencil", `Rename ${thread.title}`);
+          rename.onclick = () => this.renameThread(thread.id);
+          const armed = this.deleteArmed === thread.id;
+          const remove = iconButton(
+            row,
+            armed ? "check" : "trash-2",
+            armed ? `Confirm delete ${thread.title}` : `Delete ${thread.title}`,
+            armed ? "clickable-icon is-armed" : "clickable-icon"
+          );
+          remove.onclick = () => this.deleteThread(thread.id);
         }
       },
       renderTranscript(root) {
@@ -747,7 +730,7 @@ var require_render = __commonJS({
             for (const source of sources) {
               const chip = create(list, "button", "slim-source", source.title);
               chip.setAttribute("title", source.path);
-              chip.onclick = () => this.openNote(source.path);
+              chip.onclick = () => this.openFile(source.path);
             }
           }
           const read = inputsText(turn.turn?.inputs);
@@ -878,6 +861,17 @@ var require_edit_run = __commonJS({
         }
         this.renderEdit();
       },
+      // The note a saved run edited, or null. A run saved before runs named their note has no
+      // `path`: it was the note its chat was opened on.
+      runPath(run) {
+        return "path" in run ? run.path : this.activeThread?.source_path ?? null;
+      },
+      // The note a run edited, or the sentence that says there is none to look at or restore.
+      runNote(run) {
+        const path = this.runPath(run);
+        if (!path) throw new Error("This change edited no open note, so there is nothing to show or restore.");
+        return path;
+      },
       // The run's editor is still open and still shows its note.
       inView(run) {
         const live = this.plugin.live;
@@ -938,6 +932,8 @@ var require_edit_run = __commonJS({
           stopped: server.stopped ?? null,
           outline_met: server.outline_met ?? null,
           summary: server.summary || "",
+          // The note the run edited; null when it only made new notes. An older run has none.
+          path: "path" in server ? server.path : run.path,
           before_ref: run.ref,
           hash_before: run.hash_before,
           hash_after: doc === void 0 ? server.hash_after || null : sha256Hex(doc),
@@ -962,7 +958,7 @@ var require_edit_run = __commonJS({
         if (this.editRun === run) this.editRun = null;
         if (run.view) this.plugin.live?.endRun(run.view, run.ref);
         this.runTurns.set(run.ref, { thread: run.thread, turns: run.turns });
-        if (run.changes.some((change) => change.state === "applied")) {
+        if (run.path && run.changes.some((change) => change.state === "applied")) {
           this.saveOpenCopies(run.path).then(() => this.plugin.postJSON("/api/copilot/context", { path: run.path, related: false })).catch((e) => console.warn("[slim] index after edit", run.path, e.message));
         }
       },
@@ -1026,7 +1022,7 @@ var require_edit_run = __commonJS({
           }[change.state] || "";
           create(row, "span", "", `${what} `);
           const name = create(row, "button", "slim-link", change.path);
-          name.onclick = () => this.openNote(change.path);
+          name.onclick = () => this.openFile(change.path);
           if (change.state === "created" && pending) {
             create(row, "span", "", " \xB7 ");
             const undo = create(row, "button", "slim-link", "Undo");
@@ -1068,7 +1064,7 @@ var require_edit_run = __commonJS({
           if (this.restoredFrom.has(ref)) link("Undo", () => this.unrestore(turn));
         } else {
           if (landed.length) text(`${landed.length} change${landed.length === 1 ? "" : "s"}${undone ? `, ${undone} undone` : ""}`);
-          const shownIn = view || this.plugin.liveViewFor?.(this.context?.source?.path);
+          const shownIn = view || this.plugin.liveViewFor?.(this.runPath(run));
           const showing = Boolean(ref && shownIn && this.plugin.live?.showing(shownIn) === ref);
           if (live) {
             link("Undo all", () => this.undoAllRun(ref), !live.changes.some((change) => change.state === "applied"));
@@ -1163,7 +1159,8 @@ var require_edit_run = __commonJS({
       // The note as it was before the run, over the note, read-only; the file is not touched.
       async toggleBefore(turn, on) {
         const run = turn.turn.edit_run;
-        const view = this.plugin.liveRunView?.(run.before_ref) || await this.plugin.noteView?.(this.context.source.path);
+        const path = this.runNote(run);
+        const view = this.plugin.liveRunView?.(run.before_ref) || await this.plugin.noteView?.(path);
         if (!view) throw new Error("Open the note in an editor to see it as it was.");
         this.plugin.live.showBefore(view, run.before_ref, on ? await this.beforeText(run.before_ref) : "", on);
       },
@@ -1174,7 +1171,8 @@ var require_edit_run = __commonJS({
       async restore(turn, force = false) {
         const run = turn.turn.edit_run;
         const ref = run.before_ref;
-        const view = await this.plugin.noteView?.(this.context.source.path);
+        const path = this.runNote(run);
+        const view = await this.plugin.noteView?.(path);
         if (!view || !this.plugin.live) throw new Error("Open the note in an editor to restore it.");
         const doc = view.state.doc.toString();
         this.restoreRefused = null;
@@ -1194,14 +1192,15 @@ var require_edit_run = __commonJS({
         this.plugin.live.restore(view, answer.text);
         Object.assign(run, { restored: true, typed: false, hash_after: sha256Hex(view.state.doc.toString()) });
         this.saveRun(this.activeThread, this.turns);
-        this.reindex(this.context.source.path);
+        this.reindex(path);
         this.render();
       },
       // Undo of a Restore, while the note is still exactly the restored copy.
       async unrestore(turn) {
         const run = turn.turn.edit_run;
         const was = this.restoredFrom.get(run.before_ref);
-        const view = this.plugin.liveViewFor?.(this.context.source.path);
+        const path = this.runPath(run);
+        const view = path && this.plugin.liveViewFor?.(path);
         if (was === void 0 || !view) return;
         if (sha256Hex(view.state.doc.toString()) !== run.hash_after) {
           throw new Error("The note has changed since it was restored; use Cmd-Z in the note.");
@@ -1210,7 +1209,7 @@ var require_edit_run = __commonJS({
         this.restoredFrom.delete(run.before_ref);
         Object.assign(run, { restored: false, hash_after: sha256Hex(view.state.doc.toString()) });
         this.saveRun(this.activeThread, this.turns);
-        this.reindex(this.context.source.path);
+        this.reindex(path);
       }
     };
   }
@@ -1283,20 +1282,22 @@ var require_view = __commonJS({
         super(leaf);
         this.plugin = plugin;
         this.app = plugin.app;
+        this.openNote = null;
         this.context = null;
         this.threads = [];
+        this.threadQuery = "";
+        this.threadSearch = null;
+        this.threadVersion = 0;
+        this.noteVersion = 0;
         this.activeThread = null;
         this.turns = [];
         this.mode = "quick";
         this.stage = "";
         this.draft = "";
         this.error = "";
-        this.loading = false;
         this.sending = false;
         this.streamingText = "";
         this.abort = null;
-        this.requestVersion = 0;
-        this.pendingThreadId = null;
         this.deleteArmed = null;
         this.retryQuestion = "";
         this.pendingImages = [];
@@ -1306,7 +1307,6 @@ var require_view = __commonJS({
         this.streamingTurns = null;
         this.el = null;
         this.composerFocused = false;
-        this.groupOpen = /* @__PURE__ */ new Map();
         this.showThreads = false;
         this.nearbyOpen = false;
         this.liveRenderTimer = null;
@@ -1357,6 +1357,7 @@ var require_view = __commonJS({
         }
         const file = this.app.workspace.getActiveFile ? this.app.workspace.getActiveFile() : null;
         this.loadSkills();
+        this.loadThreads();
         await this.setActiveFile(file);
       }
       async onClose() {
@@ -1364,14 +1365,14 @@ var require_view = __commonJS({
       }
       // MarkdownRenderer turns an answer's [[wikilink]] into <a class="internal-link">, but Obsidian
       // wires clicks on those only inside its own note views; in this sidebar they were dead.
-      // ⚠ Resolve BEFORE opening: openLinkText creates a missing target (see openNote), and the
+      // ⚠ Resolve BEFORE opening: openLinkText creates a missing target (see openFile), and the
       // model can name a note that does not exist.
       onLinkClick(event) {
         const link = event?.target?.closest?.("a.internal-link");
         if (!link) return;
         event.preventDefault();
         const target = link.getAttribute("data-href") || link.getAttribute("href") || "";
-        const source = this.context?.source?.path || "";
+        const source = this.openNote?.path || "";
         const linkpath = target.split("#")[0].split("|")[0].trim();
         const file = this.app.metadataCache?.getFirstLinkpathDest?.(linkpath, source);
         if (!file) {
@@ -1381,77 +1382,84 @@ var require_view = __commonJS({
         }
         this.app.workspace.openLinkText(target, source, Boolean(event.metaKey || event.ctrlKey));
       }
+      // The note open now. It only moves the chip and loads nearby notes: the chat, its answer
+      // streaming and its error belong to the sidebar, not to a note.
       async setActiveFile(file) {
         const path = file && String(file.extension || "").toLowerCase() === "md" ? file.path : null;
-        if (path && (this.context?.source.path === path || this.loadingPath === path)) return;
-        const version = ++this.requestVersion;
-        this.cancel();
-        this.error = "";
+        if (path && (this.openNote?.path === path || this.loadingPath === path)) return;
+        const version = ++this.noteVersion;
         this.context = null;
-        this.activeThread = null;
-        this.turns = [];
-        this.retryQuestion = "";
-        this.pendingImages = [];
-        this.retryImages = [];
-        if (!file || String(file.extension || "").toLowerCase() !== "md") {
-          this.error = "Open a saved Markdown note to use SLIM Copilot.";
+        if (!path) {
+          this.openNote = null;
+          this.loadingPath = null;
           this.render();
           return;
         }
-        this.loading = true;
+        this.openNote = { path, id: null };
         this.loadingPath = path;
         this.render();
         try {
           if (typeof this.plugin.saveActiveNote === "function") {
             await this.plugin.saveActiveNote(file);
           }
-          if (version !== this.requestVersion) return;
-          const [context, listing] = await Promise.all([
-            this.plugin.postJSON("/api/copilot/context", { path: file.path }),
-            this.plugin.getJSON("/api/copilot/threads")
-          ]);
-          if (version !== this.requestVersion) return;
+          if (version !== this.noteVersion) return;
+          const context = await this.plugin.postJSON("/api/copilot/context", { path });
+          if (version !== this.noteVersion) return;
           this.context = context;
-          this.threads = listing.threads || [];
-          const wanted = (this.pendingThreadId ? this.threads.find((item) => item.id === this.pendingThreadId && item.source_id === context.source.id) : null) || this.threads.find((item) => item.source_id === context.source.id);
-          if (wanted) {
-            this.pendingThreadId = null;
-            await this.openThread(wanted.id, version, true);
-          }
+          this.openNote = { path, id: context.source?.id ?? null };
         } catch (error) {
-          if (version === this.requestVersion) {
-            this.error = error.status === 400 && error.detail || error.message || String(error);
-          }
+          if (version === this.noteVersion) console.warn("[slim] nearby notes", path, error.message || error);
         } finally {
-          if (version === this.requestVersion) {
-            this.loading = false;
+          if (version === this.noteVersion) {
             this.loadingPath = null;
             this.render();
           }
         }
       }
+      // The chat history: every thread, newest first, or those that match the search box.
+      async loadThreads() {
+        const version = ++this.threadVersion;
+        const q = this.threadQuery.trim();
+        try {
+          const listing = await this.plugin.getJSON(
+            `/api/copilot/threads${q ? `?q=${encodeURIComponent(q)}` : ""}`
+          );
+          if (version !== this.threadVersion) return;
+          this.threads = listing.threads || [];
+        } catch (error) {
+          console.error("[slim] threads", error);
+          return;
+        }
+        this.renderThreadRows();
+      }
+      searchThreads(value) {
+        this.threadQuery = String(value || "");
+        clearTimeout(this.threadSearch);
+        this.threadSearch = setTimeout(() => this.loadThreads(), 200);
+        this.threadSearch.unref?.();
+      }
       // The note as it is NOW: save the editor, re-sync the row (ingest_note is hash-keyed, so an
       // unchanged note costs one stat), skip the nearby-notes search. Called by send(), so every
       // question is answered from what they have typed, not from the version indexed at open.
       async refreshNote() {
-        if (!this.context) return;
-        const path = this.context.source.path;
+        if (!this.openNote) return;
+        const path = this.openNote.path;
         const file = this.app.workspace.getActiveFile ? this.app.workspace.getActiveFile() : null;
         if (file && file.path === path && typeof this.plugin.saveActiveNote === "function") {
           await this.plugin.saveActiveNote(file);
         }
         await this.saveOpenCopies(path);
         const fresh = await this.plugin.postJSON("/api/copilot/context", { path, related: false });
-        this.context = { ...this.context, source: fresh.source };
+        if (this.openNote?.path === path) this.openNote = { path, id: fresh.source?.id ?? this.openNote.id };
+        if (this.context?.source?.path === path) this.context = { ...this.context, source: fresh.source };
       }
       newThread() {
-        if (!this.context) return;
         this.activeThread = {
           id: threadId(),
           title: "New chat",
-          source_id: this.context.source.id,
-          source_path: this.context.source.path,
-          reasoning_mode: this.mode
+          reasoning_mode: this.mode,
+          pins: [],
+          ...this.openNote ? { source_id: this.openNote.id, source_path: this.openNote.path } : {}
         };
         this.turns = [];
         this.stage = "";
@@ -1462,16 +1470,11 @@ var require_view = __commonJS({
         this.showThreads = false;
         this.render();
       }
-      async openThread(id, version = this.requestVersion, afterNavigation = false) {
+      // Any chat opens as it is: it never moves the note the owner has open.
+      async openThread(id) {
+        const version = ++this.threadVersion;
         const data = await this.plugin.getJSON(`/api/copilot/thread?id=${encodeURIComponent(id)}`);
-        if (version !== this.requestVersion) return;
-        if (!afterNavigation && this.context && data.source_id !== this.context.source.id) {
-          this.pendingThreadId = id;
-          this.activeThread = null;
-          this.turns = [];
-          this.openNote(data.source_path);
-          return;
-        }
+        if (version !== this.threadVersion) return;
         this.activeThread = data;
         this.turns = data.turns || [];
         this.pendingImages = [];
@@ -1490,8 +1493,9 @@ var require_view = __commonJS({
             const refs = (attachments || []).filter((image) => image.id).map(({ id, name, mime, bytes }) => ({ id, name, mime, bytes }));
             return refs.length ? { ...turn, attachments: refs } : turn;
           }),
-          source_id: thread.source_id,
-          source_path: thread.source_path,
+          ...thread.source_id ? { source_id: thread.source_id } : {},
+          ...thread.source_path ? { source_path: thread.source_path } : {},
+          ...thread.pins ? { pins: thread.pins } : {},
           // ⚠ Normalized HERE, not at the point a thread is opened: `renameThread` fetches a
           // thread it never opened and hands it straight to this method, so a pre-2026-09-03
           // conversation would post "auto" and be refused with nothing catching it.
@@ -1524,7 +1528,7 @@ var require_view = __commonJS({
       async send(text = this.draft) {
         const outgoingImages = this.pendingImages;
         const question = String(text || "").trim() || (outgoingImages.length ? "Explain this image." : "");
-        if (!question || !this.context || this.sending) return;
+        if (!question || this.sending) return;
         this.clearBefore();
         if (!this.activeThread) this.newThread();
         const failed = this.turns.at(-1);
@@ -1533,11 +1537,12 @@ var require_view = __commonJS({
         this.retryImages = [];
         const thread = this.activeThread;
         const turns = this.turns;
-        const path = this.context.source.path;
+        const path = this.openNote?.path ?? null;
         if (!turns.length) thread.title = titleFromQuestion(question);
         const asked = {
           role: "you",
           text: question,
+          ...path ? { note: path } : {},
           ...outgoingImages.length ? { attachments: outgoingImages } : {}
         };
         turns.push(asked);
@@ -1571,7 +1576,7 @@ var require_view = __commonJS({
         try {
           await this.refreshNote();
           if (abort.signal.aborted) throw cancelledError();
-          const shown = this.plugin.liveViewFor?.(path) || null;
+          const shown = path ? this.plugin.liveViewFor?.(path) || null : null;
           const text2 = shown ? shown.state.doc.toString() : null;
           const doc = text2 !== null && text2.length <= MAX_EDIT_CHARS ? text2 : null;
           const view = doc === null ? null : shown;
@@ -1580,10 +1585,11 @@ var require_view = __commonJS({
             tracked = view;
             this.plugin.live.startRun(view, { id: local, base: doc, pending: true });
           }
-          const picked = question.startsWith("/") ? editorSelection(this.app, path) : { text: "" };
+          const picked = question.startsWith("/") && path ? editorSelection(this.app, path) : { text: "" };
           await this.plugin.streamCopilot({
             thread_id: thread.id,
-            source_id: this.context.source.id,
+            path,
+            pins: thread.pins ?? [],
             question,
             // Role, text and small image refs only, every turn whole: the server fits the
             // conversation to the model's window (copilot.turn.fit_window). Slim turns also carry
@@ -1641,7 +1647,7 @@ var require_view = __commonJS({
                 turns
               };
               this.editRun = run;
-              Promise.resolve(this.plugin.showEditing?.(path)).catch((e) => console.warn("[slim] editing view", e));
+              if (path) Promise.resolve(this.plugin.showEditing?.(path)).catch((e) => console.warn("[slim] editing view", e));
               this.startEditClock();
               this.renderEdit();
             }),
@@ -1802,7 +1808,7 @@ var require_view = __commonJS({
       promptTitle(current) {
         return new Promise((resolve) => new RenameModal(this.app, current, resolve).open());
       }
-      async openNote(path) {
+      async openFile(path) {
         const file = this.app.vault && typeof this.app.vault.getAbstractFileByPath === "function" ? this.app.vault.getAbstractFileByPath(path) : null;
         if (!file) {
           this.error = `Note not found: ${path} \u2014 it may have moved since the last index.`;

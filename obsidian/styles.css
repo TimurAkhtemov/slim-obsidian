@@ -547,10 +547,9 @@
   flex: 1 1 auto; min-height: 120px; overflow-y: auto;
   display: flex; flex-direction: column; gap: 1px;
 }
-.slim-note-group > summary {
-  padding: 3px 6px; cursor: pointer; color: var(--text-muted); font-size: var(--font-ui-small);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
+.slim-thread-rows { display: flex; flex-direction: column; gap: 1px; }
+.slim-thread-search { width: 100%; margin-bottom: 6px; }
+.slim-chat-date, .slim-chat-note { color: var(--text-faint); }
 .slim-chat-row {
   min-height: 28px; display: grid; grid-template-columns: minmax(0, 1fr) 26px 26px;
   align-items: center; border-radius: var(--radius-s, 4px);

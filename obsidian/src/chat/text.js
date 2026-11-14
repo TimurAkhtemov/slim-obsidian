@@ -1,29 +1,15 @@
 // The copilot's pure helpers: threads, titles, citations, skills, math, and what a run did.
 "use strict";
 
-function groupThreads(threads, activeSourceId) {
-  const grouped = new Map();
-  for (const thread of threads || []) {
-    if (!thread.source_id || !thread.source_path) continue;
-    if (!grouped.has(thread.source_id)) grouped.set(thread.source_id, {
-      sourceId: thread.source_id, path: thread.source_path, threads: [], expanded: false,
-    });
-    const group = grouped.get(thread.source_id);
-    group.threads.push(thread);
-    if (thread.source_path) group.path = thread.source_path;
-  }
-  const groups = [...grouped.values()];
-  for (const group of groups) {
-    group.threads.sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
-    group.updatedAt = group.threads[0]?.updated_at || "";
-    group.expanded = group.sourceId === activeSourceId;
-  }
-  groups.sort((a, b) => {
-    if (a.sourceId === activeSourceId) return -1;
-    if (b.sourceId === activeSourceId) return 1;
-    return b.updatedAt.localeCompare(a.updatedAt);
-  });
-  return groups;
+// The history is one flat list, newest first.
+function threadRows(threads) {
+  return [...(threads || [])].sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
+}
+
+// "Nov 13", or "" for a date that is not one.
+function shortDate(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
 // --- what the sidebar shows instead of paths ------------------------------------------------
@@ -247,7 +233,7 @@ function editOutcome(run) {
     + `${left.length ? ` Not done: ${list}.` : ""}`;
 }
 
-module.exports = { groupThreads, pathStem, noteTitle, groupCitations, sha256Hex, slashQuery, matchSkills,
+module.exports = { threadRows, shortDate, pathStem, noteTitle, groupCitations, sha256Hex, slashQuery, matchSkills,
         inputsText, editorSelection, MAX_SELECTION_CHARS, MAX_EDIT_CHARS, looksLikeMath, normalizeMath,
         LIVE_RENDER_MS, quickOrDeep, metaText, stageLine, SUGGESTED_PROMPTS, titleFromQuestion, threadId,
         cancelledError, runCounts, historyText, STOPPED_BECAUSE, editOutcome };

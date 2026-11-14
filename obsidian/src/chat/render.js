@@ -2,7 +2,7 @@
 "use strict";
 
 const { MarkdownRenderer, MarkdownRenderChild } = require("obsidian");
-const { groupThreads, pathStem, noteTitle, groupCitations, slashQuery, matchSkills, inputsText,
+const { threadRows, shortDate, pathStem, groupCitations, slashQuery, matchSkills, inputsText,
         normalizeMath, LIVE_RENDER_MS, metaText, stageLine, SUGGESTED_PROMPTS } = require("./text");
 const { clear, create, iconButton, autoGrow, atBottom } = require("./dom");
 
@@ -106,7 +106,7 @@ module.exports = {
   renderMarkdown(el, markdown, host = this.mdHost || this) {
     const text = normalizeMath(markdown);
     if (MarkdownRenderer && typeof MarkdownRenderer.render === "function") {
-      return MarkdownRenderer.render(this.app, text, el, this.context?.source?.path || "",
+      return MarkdownRenderer.render(this.app, text, el, this.openNote?.path || "",
                                      host).catch((e) => {
         console.error("[slim] render answer", e);
         el.setText?.(text);
@@ -135,17 +135,19 @@ module.exports = {
     const tools = create(headRow, "div", "slim-copilot-tools");
     const history = iconButton(tools, "history", this.showThreads ? "Back to the chat" : "Chats",
       this.showThreads ? "clickable-icon slim-history is-active" : "clickable-icon slim-history");
-    history.onclick = () => { this.showThreads = !this.showThreads; this.render(); };
+    history.onclick = () => {
+      this.showThreads = !this.showThreads;
+      this.render();
+      if (this.showThreads) this.loadThreads();
+    };
     const add = iconButton(tools, "plus", "New chat");
     add.onclick = () => this.newThread();
 
-    if (this.loading) { create(root, "p", "slim-copilot-status", "Indexing this note..."); return; }
-    if (this.error && !this.context) { create(root, "p", "slim-copilot-error", this.error); return; }
-    if (!this.context) { create(root, "p", "slim-copilot-status", "Open a Markdown note."); return; }
-
-    const sourcePath = this.context.source.path;
-    const sourceTitle = this.context.source.title || pathStem(sourcePath);
-    const related = this.context.related || [];
+    // The open note is a chip, not a gate: the chat works with none.
+    const sourcePath = this.openNote?.path || "";
+    const nearby = this.context?.source?.path === sourcePath ? this.context : null;
+    const sourceTitle = nearby?.source?.title || (sourcePath ? pathStem(sourcePath) : "No note open");
+    const related = nearby?.related || [];
     if (related.length) {
       // The title is the chip; Nearby folds under it. Closed by default: it is context for
       // them to reach for, not the reason the pane is open.
@@ -161,14 +163,14 @@ module.exports = {
         button.setAttribute("title", item.path);
         create(button, "span", "", item.title || pathStem(item.path));
         create(button, "small", "", item.scope || "");
-        button.onclick = () => this.openNote(item.path);
+        button.onclick = () => this.openFile(item.path);
       }
     } else {
       const note = create(header, "div", "slim-copilot-note", sourceTitle);
       note.setAttribute("title", sourcePath);
     }
 
-    if (this.showThreads) this.renderThreadList(root, sourceTitle);
+    if (this.showThreads) this.renderThreadList(root);
     else this.renderTranscript(root);
 
     const composer = create(root, "footer", "slim-copilot-composer");
@@ -305,35 +307,48 @@ module.exports = {
     }
   },
 
-  renderThreadList(root, sourceTitle) {
+  // The search box and the rows under it. Only the rows are redrawn when results land, so
+  // typing never loses the box.
+  renderThreadList(root) {
     const list = create(root, "nav", "slim-copilot-threads");
+    const search = create(list, "input", "slim-thread-search");
+    search.type = "search";
+    search.placeholder = "Search chats";
+    search.value = this.threadQuery;
+    search.oninput = () => this.searchThreads(search.value);
+    this.el.threadRows = create(list, "div", "slim-thread-rows");
+    this.drawThreadRows(this.el.threadRows);
+  },
+
+  renderThreadRows() {
+    if (!this.showThreads || !this.el?.threadRows) return;
+    clear(this.el.threadRows);
+    this.drawThreadRows(this.el.threadRows);
+  },
+
+  drawThreadRows(list) {
     if (!this.threads.length) {
-      create(list, "p", "slim-copilot-status", "No chats yet.");
+      create(list, "p", "slim-copilot-status", this.threadQuery.trim() ? "No chats match." : "No chats yet.");
       return;
     }
-    for (const group of groupThreads(this.threads, this.context.source.id)) {
-      const details = create(list, "details", "slim-note-group");
-      details.open = this.groupOpen.has(group.sourceId)
-        ? this.groupOpen.get(group.sourceId) : group.expanded;
-      const label = group.sourceId === this.context.source.id
-        ? sourceTitle : noteTitle(this.app, group.path);
-      const summary = create(details, "summary", "", label);
-      summary.setAttribute("title", group.path);
-      // At click time `open` is still the pre-toggle state; the browser flips it afterwards.
-      summary.onclick = () => { this.groupOpen.set(group.sourceId, !details.open); };
-      for (const thread of group.threads) {
-        const row = create(details, "div", `slim-chat-row${thread.id === this.activeThread?.id ? " is-active" : ""}`);
-        const open = create(row, "button", "slim-chat-open", thread.title || "Conversation");
-        open.onclick = () => this.openThread(thread.id);
-        const rename = iconButton(row, "pencil", `Rename ${thread.title}`);
-        rename.onclick = () => this.renameThread(thread.id);
-        const armed = this.deleteArmed === thread.id;
-        const remove = iconButton(
-          row, armed ? "check" : "trash-2",
-          armed ? `Confirm delete ${thread.title}` : `Delete ${thread.title}`,
-          armed ? "clickable-icon is-armed" : "clickable-icon");
-        remove.onclick = () => this.deleteThread(thread.id);
+    for (const thread of threadRows(this.threads)) {
+      const row = create(list, "div", `slim-chat-row${thread.id === this.activeThread?.id ? " is-active" : ""}`);
+      const open = create(row, "button", "slim-chat-open", thread.title || "Conversation");
+      open.onclick = () => this.openThread(thread.id);
+      const date = shortDate(thread.updated_at);
+      if (date) create(open, "small", "slim-chat-date", ` ${date}`);
+      if (thread.source_path) {
+        const label = create(open, "small", "slim-chat-note", ` ${pathStem(thread.source_path)}`);
+        label.setAttribute("title", thread.source_path);
       }
+      const rename = iconButton(row, "pencil", `Rename ${thread.title}`);
+      rename.onclick = () => this.renameThread(thread.id);
+      const armed = this.deleteArmed === thread.id;
+      const remove = iconButton(
+        row, armed ? "check" : "trash-2",
+        armed ? `Confirm delete ${thread.title}` : `Delete ${thread.title}`,
+        armed ? "clickable-icon is-armed" : "clickable-icon");
+      remove.onclick = () => this.deleteThread(thread.id);
     }
   },
 
@@ -362,7 +377,7 @@ module.exports = {
         for (const source of sources) {
           const chip = create(list, "button", "slim-source", source.title);
           chip.setAttribute("title", source.path);
-          chip.onclick = () => this.openNote(source.path);
+          chip.onclick = () => this.openFile(source.path);
         }
       }
       const read = inputsText(turn.turn?.inputs);

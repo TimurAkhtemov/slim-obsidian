@@ -5,19 +5,18 @@ import { createRequire } from "node:module";
 import "../copilot-harness.mjs";
 
 const require = createRequire(import.meta.url);
-const { editorSelection, groupCitations, groupThreads, inputsText, matchSkills, normalizeMath,
+const { editorSelection, groupCitations, threadRows, inputsText, matchSkills, normalizeMath,
         noteTitle, slashQuery } = require("../../src/chat/text.js");
 
-test("thread hierarchy puts the active note first and sorts chats by recency", () => {
-  const groups = groupThreads([
-    { id: "old", source_id: "s1", source_path: "Notes/one.md", updated_at: "2026-01-01" },
-    { id: "new", source_id: "s1", source_path: "Notes/one.md", updated_at: "2026-02-01" },
-    { id: "other", source_id: "s2", source_path: "Notes/two.md", updated_at: "2026-03-01" },
-  ], "s1");
-  assert.equal(groups[0].sourceId, "s1");
-  assert.deepEqual(groups[0].threads.map((item) => item.id), ["new", "old"]);
-  assert.equal(groups[0].expanded, true);
-  assert.equal(groups[1].expanded, false);
+test("thread rows are one flat list, newest first", () => {
+  const threads = [
+    { id: "old", source_path: "Notes/one.md", updated_at: "2026-01-01" },
+    { id: "new", source_path: "Notes/one.md", updated_at: "2026-02-01" },
+    { id: "other", source_path: "Notes/two.md", updated_at: "2026-03-01" },
+    { id: "none", source_path: null, updated_at: "2026-02-15" },
+  ];
+  assert.deepEqual(threadRows(threads).map((item) => item.id), ["other", "none", "new", "old"]);
+  assert.deepEqual(threads.map((item) => item.id), ["old", "new", "other", "none"]);   // not sorted in place
 });
 
 // --- the redesign: rendered Markdown, titles not paths, one source per note ------------------

@@ -1,4 +1,4 @@
-// The open-note copilot sidebar. Its rendering and editing-run methods are in render.js and
+// The vault assistant's sidebar: one chat, whatever note is open. Its rendering and editing-run methods are in render.js and
 // edit-run.js, attached to its prototype at the bottom of this file.
 "use strict";
 
@@ -60,20 +60,22 @@ class CopilotView extends ItemView {
     super(leaf);
     this.plugin = plugin;
     this.app = plugin.app;
-    this.context = null;
+    this.openNote = null;           // {path, id|null}: the Markdown note open now, sent with each question
+    this.context = null;            // the open note's nearby-notes payload, until it moves to the server
     this.threads = [];
+    this.threadQuery = "";
+    this.threadSearch = null;       // the debounce timer of the history search
+    this.threadVersion = 0;
+    this.noteVersion = 0;
     this.activeThread = null;
     this.turns = [];
     this.mode = "quick";
     this.stage = "";
     this.draft = "";
     this.error = "";
-    this.loading = false;
     this.sending = false;
     this.streamingText = "";
     this.abort = null;
-    this.requestVersion = 0;
-    this.pendingThreadId = null;
     this.deleteArmed = null;
     this.retryQuestion = "";
     this.pendingImages = [];
@@ -83,7 +85,6 @@ class CopilotView extends ItemView {
     this.streamingTurns = null;
     this.el = null;                 // live handles from the last full render()
     this.composerFocused = false;
-    this.groupOpen = new Map();     // sourceId -> open, where they toggled a group by hand
     this.showThreads = false;       // the history button: the chat list in the conversation's slot
     this.nearbyOpen = false;        // the context chip under the title
     this.liveRenderTimer = null;    // the throttled Markdown render of the streaming answer
@@ -133,6 +134,7 @@ class CopilotView extends ItemView {
     }
     const file = this.app.workspace.getActiveFile ? this.app.workspace.getActiveFile() : null;
     this.loadSkills();
+    this.loadThreads();
     await this.setActiveFile(file);
   }
 
@@ -140,14 +142,14 @@ class CopilotView extends ItemView {
 
   // MarkdownRenderer turns an answer's [[wikilink]] into <a class="internal-link">, but Obsidian
   // wires clicks on those only inside its own note views; in this sidebar they were dead.
-  // ⚠ Resolve BEFORE opening: openLinkText creates a missing target (see openNote), and the
+  // ⚠ Resolve BEFORE opening: openLinkText creates a missing target (see openFile), and the
   // model can name a note that does not exist.
   onLinkClick(event) {
     const link = event?.target?.closest?.("a.internal-link");
     if (!link) return;
     event.preventDefault();
     const target = link.getAttribute("data-href") || link.getAttribute("href") || "";
-    const source = this.context?.source?.path || "";
+    const source = this.openNote?.path || "";
     const linkpath = target.split("#")[0].split("|")[0].trim();
     const file = this.app.metadataCache?.getFirstLinkpathDest?.(linkpath, source);
     if (!file) {
@@ -158,86 +160,90 @@ class CopilotView extends ItemView {
     this.app.workspace.openLinkText(target, source, Boolean(event.metaKey || event.ctrlKey));
   }
 
+  // The note open now. It only moves the chip and loads nearby notes: the chat, its answer
+  // streaming and its error belong to the sidebar, not to a note.
   async setActiveFile(file) {
     const path = file && String(file.extension || "").toLowerCase() === "md" ? file.path : null;
     // Same note, loaded or loading: nothing to do. Focus moving between the editor and this
-    // sidebar fires active-leaf-change with the SAME file; re-syncing here cancelled the
-    // answer, erased the question, and — with onOpen, the event and activateCopilot all
-    // racing — ran ingest_note twice into an IntegrityError. Edits since the open are picked
-    // up by send() (refreshNote), not by focus changes.
-    if (path && (this.context?.source.path === path || this.loadingPath === path)) return;
-    const version = ++this.requestVersion;
-    this.cancel();
-    this.error = "";
+    // sidebar fires active-leaf-change with the SAME file; with onOpen, the event and
+    // activateCopilot all racing, re-syncing ran ingest_note twice into an IntegrityError.
+    // Edits since the open are picked up by send() (refreshNote), not by focus changes.
+    if (path && (this.openNote?.path === path || this.loadingPath === path)) return;
+    const version = ++this.noteVersion;
     this.context = null;
-    this.activeThread = null;
-    this.turns = [];
-    this.retryQuestion = "";
-    this.pendingImages = [];
-    this.retryImages = [];
-    if (!file || String(file.extension || "").toLowerCase() !== "md") {
-      this.error = "Open a saved Markdown note to use SLIM Copilot.";
+    if (!path) {
+      this.openNote = null;
+      this.loadingPath = null;
       this.render();
       return;
     }
-    this.loading = true;
+    this.openNote = { path, id: null };
     this.loadingPath = path;
     this.render();
     try {
       if (typeof this.plugin.saveActiveNote === "function") {
         await this.plugin.saveActiveNote(file);
       }
-      if (version !== this.requestVersion) return;
-      const [context, listing] = await Promise.all([
-        this.plugin.postJSON("/api/copilot/context", { path: file.path }),
-        this.plugin.getJSON("/api/copilot/threads"),
-      ]);
-      if (version !== this.requestVersion) return;
+      if (version !== this.noteVersion) return;
+      const context = await this.plugin.postJSON("/api/copilot/context", { path });
+      if (version !== this.noteVersion) return;
       this.context = context;
-      this.threads = listing.threads || [];
-      const wanted = (this.pendingThreadId
-        ? this.threads.find((item) => item.id === this.pendingThreadId
-          && item.source_id === context.source.id)
-        : null) || this.threads.find((item) => item.source_id === context.source.id);
-      if (wanted) {
-        this.pendingThreadId = null;
-        await this.openThread(wanted.id, version, true);
-      }
+      this.openNote = { path, id: context.source?.id ?? null };
     } catch (error) {
-      // A 400 is the server refusing THIS note in a sentence meant for them; the route and
-      // status in front of it are for a debugger.
-      if (version === this.requestVersion) {
-        this.error = (error.status === 400 && error.detail) || error.message || String(error);
-      }
+      // Nearby notes are a convenience: a note the server will not index still opens, and the
+      // question is sent with its path.
+      if (version === this.noteVersion) console.warn("[slim] nearby notes", path, error.message || error);
     } finally {
-      if (version === this.requestVersion) {
-        this.loading = false;
+      if (version === this.noteVersion) {
         this.loadingPath = null;
         this.render();
       }
     }
   }
 
+  // The chat history: every thread, newest first, or those that match the search box.
+  async loadThreads() {
+    const version = ++this.threadVersion;
+    const q = this.threadQuery.trim();
+    try {
+      const listing = await this.plugin.getJSON(
+        `/api/copilot/threads${q ? `?q=${encodeURIComponent(q)}` : ""}`);
+      if (version !== this.threadVersion) return;
+      this.threads = listing.threads || [];
+    } catch (error) {
+      console.error("[slim] threads", error);
+      return;
+    }
+    this.renderThreadRows();
+  }
+
+  searchThreads(value) {
+    this.threadQuery = String(value || "");
+    clearTimeout(this.threadSearch);
+    this.threadSearch = setTimeout(() => this.loadThreads(), 200);
+    this.threadSearch.unref?.();
+  }
+
   // The note as it is NOW: save the editor, re-sync the row (ingest_note is hash-keyed, so an
   // unchanged note costs one stat), skip the nearby-notes search. Called by send(), so every
   // question is answered from what they have typed, not from the version indexed at open.
   async refreshNote() {
-    if (!this.context) return;
-    const path = this.context.source.path;
+    if (!this.openNote) return;
+    const path = this.openNote.path;
     const file = this.app.workspace.getActiveFile ? this.app.workspace.getActiveFile() : null;
     if (file && file.path === path && typeof this.plugin.saveActiveNote === "function") {
       await this.plugin.saveActiveNote(file);
     }
     await this.saveOpenCopies(path);
     const fresh = await this.plugin.postJSON("/api/copilot/context", { path, related: false });
-    this.context = { ...this.context, source: fresh.source };
+    if (this.openNote?.path === path) this.openNote = { path, id: fresh.source?.id ?? this.openNote.id };
+    if (this.context?.source?.path === path) this.context = { ...this.context, source: fresh.source };
   }
 
   newThread() {
-    if (!this.context) return;
     this.activeThread = {
-      id: threadId(), title: "New chat", source_id: this.context.source.id,
-      source_path: this.context.source.path, reasoning_mode: this.mode,
+      id: threadId(), title: "New chat", reasoning_mode: this.mode, pins: [],
+      ...(this.openNote ? { source_id: this.openNote.id, source_path: this.openNote.path } : {}),
     };
     this.turns = [];
     this.stage = "";
@@ -249,16 +255,11 @@ class CopilotView extends ItemView {
     this.render();
   }
 
-  async openThread(id, version = this.requestVersion, afterNavigation = false) {
+  // Any chat opens as it is: it never moves the note the owner has open.
+  async openThread(id) {
+    const version = ++this.threadVersion;
     const data = await this.plugin.getJSON(`/api/copilot/thread?id=${encodeURIComponent(id)}`);
-    if (version !== this.requestVersion) return;
-    if (!afterNavigation && this.context && data.source_id !== this.context.source.id) {
-      this.pendingThreadId = id;
-      this.activeThread = null;
-      this.turns = [];
-      this.openNote(data.source_path);
-      return;
-    }
+    if (version !== this.threadVersion) return;
     this.activeThread = data;
     this.turns = data.turns || [];
     this.pendingImages = [];
@@ -280,7 +281,9 @@ class CopilotView extends ItemView {
           .map(({ id, name, mime, bytes }) => ({ id, name, mime, bytes }));
         return refs.length ? { ...turn, attachments: refs } : turn;
       }),
-      source_id: thread.source_id, source_path: thread.source_path,
+      ...(thread.source_id ? { source_id: thread.source_id } : {}),
+      ...(thread.source_path ? { source_path: thread.source_path } : {}),
+      ...(thread.pins ? { pins: thread.pins } : {}),
       // ⚠ Normalized HERE, not at the point a thread is opened: `renameThread` fetches a
       // thread it never opened and hands it straight to this method, so a pre-2026-09-03
       // conversation would post "auto" and be refused with nothing catching it.
@@ -315,7 +318,7 @@ class CopilotView extends ItemView {
   async send(text = this.draft) {
     const outgoingImages = this.pendingImages;
     const question = String(text || "").trim() || (outgoingImages.length ? "Explain this image." : "");
-    if (!question || !this.context || this.sending) return;
+    if (!question || this.sending) return;
     this.clearBefore();
     if (!this.activeThread) this.newThread();
     // A failed question waits under its error for Try again. Asking something else instead
@@ -330,9 +333,9 @@ class CopilotView extends ItemView {
     // lands — otherwise B was saved with A's answer and A's question was never saved.
     const thread = this.activeThread;
     const turns = this.turns;
-    const path = this.context.source.path;
+    const path = this.openNote?.path ?? null;   // the note this question is asked on
     if (!turns.length) thread.title = titleFromQuestion(question);
-    const asked = { role: "you", text: question,
+    const asked = { role: "you", text: question, ...(path ? { note: path } : {}),
       ...(outgoingImages.length ? { attachments: outgoingImages } : {}) };
     turns.push(asked);
     this.draft = "";
@@ -368,7 +371,7 @@ class CopilotView extends ItemView {
       // The editor's text, not the file: Obsidian saves a moment after typing, and an editing
       // run works on exactly what the owner sees. The editor tracks the owner's typing from
       // here, under a name of the chat's own until the server names the run.
-      const shown = this.plugin.liveViewFor?.(path) || null;
+      const shown = path ? this.plugin.liveViewFor?.(path) || null : null;
       const text = shown ? shown.state.doc.toString() : null;
       const doc = text !== null && text.length <= MAX_EDIT_CHARS ? text : null;
       const view = doc === null ? null : shown;
@@ -379,9 +382,9 @@ class CopilotView extends ItemView {
       }
       // Only where it is visibly the input: a /command. A selection left in the note rode
       // along with every question, unseen (review, 2026-09-23).
-      const picked = question.startsWith("/") ? editorSelection(this.app, path) : { text: "" };
+      const picked = question.startsWith("/") && path ? editorSelection(this.app, path) : { text: "" };
       await this.plugin.streamCopilot({
-        thread_id: thread.id, source_id: this.context.source.id, question,
+        thread_id: thread.id, path, pins: thread.pins ?? [], question,
         // Role, text and small image refs only, every turn whole: the server fits the
         // conversation to the model's window (copilot.turn.fit_window). Slim turns also carry
         // evidence and stats; re-uploading those on every question grew with the square of the
@@ -428,7 +431,7 @@ class CopilotView extends ItemView {
           run = { ref, hash_before: data.hash_before, plan: null, steps: [], changes: [], pending: [],
                   view: claimed ? tracked : null, path, started, thread, turns };
           this.editRun = run;
-          Promise.resolve(this.plugin.showEditing?.(path)).catch((e) => console.warn("[slim] editing view", e));
+          if (path) Promise.resolve(this.plugin.showEditing?.(path)).catch((e) => console.warn("[slim] editing view", e));
           this.startEditClock();
           this.renderEdit();
         }),
@@ -598,7 +601,7 @@ class CopilotView extends ItemView {
     return new Promise((resolve) => new RenameModal(this.app, current, resolve).open());
   }
 
-  async openNote(path) {
+  async openFile(path) {
     const file = this.app.vault && typeof this.app.vault.getAbstractFileByPath === "function"
       ? this.app.vault.getAbstractFileByPath(path) : null;
     if (!file) {

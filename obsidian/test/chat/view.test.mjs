@@ -30,20 +30,21 @@ test("a late context response cannot replace the newly active note", async () =>
   await two;
   first.resolve({ source: { id: "s1", path: "Notes/one.md" }, related: [] });
   await one;
+  assert.equal(view.openNote.id, "s2");
   assert.equal(view.context.source.id, "s2");
 });
 
-test("unsupported active files produce an unavailable state without an HTTP call", async () => {
+test("a canvas or other non-Markdown file clears the open note without an HTTP call", async () => {
   let called = false;
   const view = makeView({ postJSON: async () => { called = true; } });
   view.render = () => {};
   await view.setActiveFile({ path: "Board.canvas", extension: "canvas" });
   assert.equal(called, false);
-  assert.match(view.error, /Markdown note/);
+  assert.equal(view.openNote, null);
+  assert.equal(view.error, "");
 });
 
-test("a note the server refuses shows the server's sentence, not the route and status", async () => {
-  // 2026-09-29: "/api/copilot/context returned 400: note is not indexable", in red.
+test("a note the server will not index still opens, and no error is put on the chat", async () => {
   const view = makeView({
     postJSON: async () => {
       const err = new Error("/api/copilot/context returned 400: SLIM leaves this note out");
@@ -55,7 +56,8 @@ test("a note the server refuses shows the server's sentence, not the route and s
   });
   view.render = () => {};
   await view.setActiveFile({ path: "Skills/brief.md", extension: "md" });
-  assert.equal(view.error, "SLIM leaves this note out");
+  assert.equal(view.openNote.path, "Skills/brief.md");
+  assert.equal(view.error, "");
 });
 
 test("the active Markdown view is saved before its note is synchronized", async () => {
@@ -90,13 +92,14 @@ test("sending streams deltas and stores the turn with the depth they picked", as
     },
   });
   view.render = () => {};
-  view.context = { source: { id: "source-1", path: "Notes/one.md" }, related: [] };
+  view.openNote = { path: "Notes/one.md", id: "source-1" };
   view.mode = "deep";
   await view.send("Compare these");
   assert.equal(view.turns.at(-1).text, "Grounded answer");
   assert.equal(view.turns.at(-1).turn.mode, "deep");
   assert.equal(saved.length, 1);
   assert.equal(saved[0].source_id, "source-1");
+  assert.equal(saved[0].turns[0].note, "Notes/one.md");
 });
 
 test("cancel aborts the in-flight stream and returns the composer to idle", () => {
@@ -155,24 +158,25 @@ test("a failed question leaves the chat when something else is asked, and is nev
   assert.deepEqual(bodies[2].history.map((turn) => turn.text), ["Any places to expand?", "Answer 2"]);
 });
 
-test("opening a chat owned by another note navigates before loading it", async () => {
+test("opening an old thread does not navigate", async () => {
   const opened = [];
   const view = makeView({
     app: {
-      workspace: { getLeaf: () => ({ async openFile(file) { opened.push(file.path); } }) },
+      workspace: { openLinkText(...args) { opened.push(args); }, getLeaf: () => ({ async openFile(file) { opened.push(file.path); } }) },
       vault: { getAbstractFileByPath: (path) => ({ path }) },
     },
     getJSON: async () => ({
-      id: "other", source_id: "source-2", source_path: "Notes/two.md", turns: [],
-      reasoning_mode: "quick",
+      id: "other", source_id: "s1", source_path: "A.md", reasoning_mode: "quick", pins: [{ kind: "note", path: "C.md" }],
+      turns: [{ role: "you", text: "Q" }, { role: "slim", text: "A" }],
     }),
   });
   view.render = () => {};
-  view.context = { source: { id: "source-1", path: "Notes/one.md" }, related: [] };
+  view.openNote = { path: "B.md", id: "s2" };
   await view.openThread("other");
-  assert.deepEqual(opened, ["Notes/two.md"]);
-  assert.equal(view.pendingThreadId, "other");
-  assert.equal(view.activeThread, null);
+  assert.deepEqual(opened, []);
+  assert.equal(view.activeThread.id, "other");
+  assert.deepEqual(view.turns.map((turn) => turn.text), ["Q", "A"]);
+  assert.deepEqual(view.openNote, { path: "B.md", id: "s2" });
 });
 
 test("a thread saved as Auto still opens, with Quick selected", async () => {
@@ -223,6 +227,7 @@ test("re-selecting the note that is already active neither cancels the answer no
   });
   view.render = () => {};
   const file = { path: "Notes/one.md", extension: "md" };
+  view.openNote = { path: file.path, id: "s1" };
   view.context = { source: { id: "s1", path: file.path }, related: [] };
   view.activeThread = { id: "t1", source_id: "s1" };
   view.turns = [{ role: "you", text: "Why?" }];
@@ -274,12 +279,13 @@ test("send re-syncs the open note first, without the nearby-notes search", async
     },
     streamCopilot: async (body, handlers) => {
       calls.push("stream");
-      assert.equal(body.source_id, "s1");
+      assert.equal(body.path, "Notes/one.md");
       handlers.turn({ answer: "ok", mode: "quick", citations: [] });
     },
   });
   view.render = () => {};
   view.app.workspace.getActiveFile = () => ({ path: "Notes/one.md", extension: "md" });
+  view.openNote = { path: "Notes/one.md", id: "s1" };
   view.context = { source: { id: "s1", path: "Notes/one.md", title: "Stale" }, related: [{ path: "Notes/two.md" }] };
   await view.send("What changed?");
   assert.deepEqual(calls, ["save", "context", "stream", "save"]);
@@ -616,11 +622,11 @@ test("a cited path that no longer exists is reported, never created as an empty 
     },
   });
   view.render = () => {};
-  await view.openNote("Notes/gone.md");
+  await view.openFile("Notes/gone.md");
   assert.equal(linkText, 0);
   assert.deepEqual(opened, []);
   assert.match(view.error, /Notes\/gone\.md/);
-  await view.openNote("Notes/there.md");
+  await view.openFile("Notes/there.md");
   assert.deepEqual(opened, ["Notes/there.md"]);
 });
 
@@ -711,4 +717,129 @@ test("Enter sends a skill named in full, or picks the one the arrows chose", () 
   key("Enter");
   assert.equal(view.draft, "/quiz-hard ");
   assert.deepEqual(sent, ["/quiz"]);
+});
+
+// ---- the sidebar belongs to the owner, not to a note ------------------------------------------
+
+function chatView(extra = {}) {
+  const bodies = [];
+  const saved = [];
+  const view = makeView({
+    postJSON: async (route, body) => {
+      if (route.endsWith("save")) { saved.push(structuredClone(body)); return {}; }
+      if (route.endsWith("context")) return { source: { id: `id-${body.path}`, path: body.path }, related: [] };
+      return { threads: [] };
+    },
+    streamCopilot: async (body, handlers) => {
+      bodies.push(body);
+      handlers.turn({ answer: "ok", mode: "quick", citations: [] });
+    },
+    ...extra,
+  });
+  view.render = () => {};
+  return { view, bodies, saved };
+}
+
+const noteFile = (path) => ({ path, extension: "md" });
+
+test("switching notes keeps the chat", async () => {
+  const { view, bodies } = chatView();
+  await view.setActiveFile(noteFile("A.md"));
+  await view.send("About A");
+  const thread = view.activeThread;
+  const turns = view.turns;
+  await view.setActiveFile(noteFile("B.md"));
+  assert.equal(view.activeThread, thread);
+  assert.equal(view.turns, turns);
+  assert.equal(view.turns.length, 2);
+  await view.send("About B");
+  assert.equal(bodies[0].path, "A.md");
+  assert.equal(bodies[1].path, "B.md");
+  assert.equal(bodies[1].thread_id, thread.id);
+  assert.deepEqual(bodies[1].pins, []);
+  assert.equal(view.turns[0].note, "A.md");
+  assert.equal(view.turns[2].note, "B.md");
+});
+
+test("a note switch leaves an error and a streaming answer alone", async () => {
+  const gate = deferred();
+  const { view } = chatView({
+    streamCopilot: async (_body, handlers) => { handlers.delta({ text: "part" }); await gate.promise; handlers.turn({ answer: "part", mode: "quick", citations: [] }); },
+  });
+  await view.setActiveFile(noteFile("A.md"));
+  const sending = view.send("Q");
+  await new Promise((resolve) => setImmediate(resolve));
+  view.error = "kept";
+  await view.setActiveFile(noteFile("B.md"));
+  assert.equal(view.sending, true);
+  assert.equal(view.streamingText, "part");
+  assert.equal(view.error, "kept");
+  gate.resolve();
+  await sending;
+});
+
+test("switching notes mid-answer keeps the answer, saved to the thread that asked", async () => {
+  const gate = deferred();
+  const { view, saved } = chatView({
+    streamCopilot: async (_body, handlers) => { handlers.delta({ text: "Half" }); await gate.promise; handlers.turn({ answer: "Whole", mode: "quick", citations: [] }); },
+  });
+  await view.setActiveFile(noteFile("A.md"));
+  const sending = view.send("Q");
+  await new Promise((resolve) => setImmediate(resolve));
+  const asked = view.activeThread;
+  await view.setActiveFile(noteFile("B.md"));
+  gate.resolve();
+  await sending;
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].id, asked.id);
+  assert.deepEqual(saved[0].turns.map((turn) => turn.text), ["Q", "Whole"]);
+  assert.equal(view.turns.at(-1).text, "Whole");
+});
+
+test("no note open still sends, with path null", async () => {
+  const { view, bodies, saved } = chatView();
+  await view.setActiveFile(null);
+  await view.send("Anything");
+  assert.equal(bodies[0].path, null);
+  assert.equal("note" in view.turns[0], false);
+  assert.equal(saved.length, 1);
+  assert.equal("source_id" in saved[0], false);
+  assert.equal(view.error, "");
+});
+
+test("a new chat takes the open note's id and path when there is one", async () => {
+  const { view } = chatView();
+  view.newThread();
+  assert.equal(view.activeThread.source_path, undefined);
+  await view.setActiveFile(noteFile("A.md"));
+  view.newThread();
+  assert.deepEqual([view.activeThread.source_id, view.activeThread.source_path], ["id-A.md", "A.md"]);
+});
+
+test("history is flat and searchable", async () => {
+  const urls = [];
+  const all = [
+    { id: "t1", title: "One", source_path: "Notes/a.md", updated_at: "2026-01-01T00:00:00Z" },
+    { id: "t3", title: "Three", source_path: null, updated_at: "2026-03-01T00:00:00Z" },
+    { id: "t2", title: "Two", source_path: "Notes/b.md", updated_at: "2026-02-01T00:00:00Z" },
+  ];
+  const { view } = renderedView({
+    getJSON: async (url) => { urls.push(url); return { threads: url.includes("q=") ? [all[0]] : all }; },
+  });
+  await view.loadThreads();
+  view.showThreads = true;
+  view.render();
+  const root = view.contentEl;
+  const rows = () => { const out = []; find(root, (n) => { if (n.cls.startsWith("slim-chat-row")) out.push(n); return false; }); return out; };
+  assert.deepEqual(rows().map((row) => row.children[0].textContent.split(" ")[0]), ["Three", "Two", "One"]);
+  const faint = find(root, (n) => n.cls === "slim-chat-note");
+  assert.equal(faint.textContent.trim(), "b");
+  const search = find(root, (n) => n.tag === "input" && n.cls === "slim-thread-search");
+  search.value = "ab"; search.oninput();
+  search.value = "abc"; search.oninput();
+  assert.deepEqual(urls, ["/api/copilot/threads"]);              // debounced: nothing yet
+  await new Promise((resolve) => setTimeout(resolve, 260));
+  assert.deepEqual(urls, ["/api/copilot/threads", "/api/copilot/threads?q=abc"]);
+  assert.equal(rows().length, 1);
+  assert.equal(find(root, (n) => n.cls === "slim-thread-search"), search);   // the box survives the redraw
 });
