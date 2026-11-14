@@ -111,6 +111,7 @@ test("the transcript follows the streaming answer when they were reading the bot
   assert.equal(transcript.scrollTop, 500);
   transcript.scrollTop = 100;                             // they scrolled up to read something
   transcript.scrollHeight = 900;
+  transcript.onscroll();                                  // as their scrolling fires it
   view.streamingText = "Grounded, at even more length";
   view.renderDelta();
   assert.equal(transcript.scrollTop, 100);                // and is not yanked back down
@@ -216,9 +217,9 @@ test("a new chat shows SLIM, one line and three starters; a starter fills the co
   const sent = [];
   view.send = async (text) => { sent.push(text); };
   view.render();
-  const empty = find(root, (node) => node.cls === "slim-empty");
-  assert.equal(find(empty, (node) => node.cls === "slim-empty-name").textContent, "SLIM");
-  assert.equal(find(empty, (node) => node.cls === "slim-empty-line").textContent,
+  const empty = find(root, (node) => node.cls === "slim-chat-empty");
+  assert.equal(find(empty, (node) => node.cls === "slim-chat-empty-name").textContent, "SLIM");
+  assert.equal(find(empty, (node) => node.cls === "slim-chat-empty-line").textContent,
                "Ask about your notes, or have SLIM edit the open one.");
   const chips = () => { const out = []; find(root, (node) => { if (node.cls === "slim-suggest") out.push(node); return false; }); return out; };
   assert.deepEqual(chips().map((chip) => chip.textContent),
@@ -239,7 +240,7 @@ test("a new chat shows SLIM, one line and three starters; a starter fills the co
   view.turns = [{ role: "you", text: "Q" }];
   view.render();
   assert.equal(find(root, (node) => node.cls === "slim-suggest"), null);
-  assert.equal(find(root, (node) => node.cls === "slim-empty"), null);
+  assert.equal(find(root, (node) => node.cls === "slim-chat-empty"), null);
 });
 
 test("their turn is a bubble on the right and the composer starts as one line", () => {
@@ -568,15 +569,75 @@ test("scrolled up while an answer streams, a ↓ button appears and brings them 
   const jump = find(root, (node) => node.cls?.includes("slim-jump"));
   assert.equal(jump.hidden, true);
   transcript.scrollHeight = 900;
-  transcript.scrollTop = 100;                                       // reading further up
+  view.renderDelta();                                               // at the bottom: followed
+  assert.equal(transcript.scrollTop, 900);
+  transcript.scrollTop = 100;                                       // they scroll up to read
+  transcript.onscroll();
+  assert.equal(jump.hidden, false);
+  transcript.scrollHeight = 1200;
   view.streamingText = "Grounded";
   view.renderDelta();
-  assert.equal(transcript.scrollTop, 100);
+  assert.equal(transcript.scrollTop, 100);                          // not yanked down
   assert.equal(jump.hidden, false);
   jump.onclick();
-  assert.equal(transcript.scrollTop, 900);
+  assert.equal(transcript.scrollTop, 1200);
   assert.equal(jump.hidden, true);
+  transcript.scrollHeight = 1500;
+  view.renderDelta();
+  assert.equal(transcript.scrollTop, 1500);                         // following again
   transcript.scrollTop = 0;
   transcript.onscroll();
   assert.equal(jump.hidden, false);
+});
+
+test("sending scrolls to the bottom and keeps it there as lookups, text and edits grow it", async () => {
+  const seen = [];
+  const { view, root } = renderedView({
+    streamCopilot: async (_body, handlers) => {
+      const transcript = transcriptOf(root);
+      seen.push(view.stuck);
+      transcript.scrollHeight = 1200;                               // a lookup row grows the pane
+      handlers.tool({ name: "search", label: "Searched the vault", refused: false });
+      seen.push(transcript.scrollTop);
+      transcript.scrollHeight = 1500;
+      handlers.delta({ text: "Year-one comp" });
+      seen.push(transcript.scrollTop);
+      seen.push(find(root, (node) => node.cls?.includes("slim-jump")).hidden);
+      handlers.turn({ answer: "Year-one comp.", citations: [] });
+    },
+  });
+  view.turns = [{ role: "you", text: "Q" }, { role: "slim", text: "A", turn: { citations: [] } }];
+  view.render();
+  const before = transcriptOf(root);
+  before.scrollHeight = 1000;
+  view.follow();
+  before.scrollTop = 200;                                           // they scrolled up to reread
+  before.onscroll();
+  assert.equal(view.stuck, false);
+  view.render();                                                    // a redraw keeps their place
+  assert.equal(transcriptOf(root).scrollTop, 200);
+  assert.equal(find(root, (node) => node.cls?.includes("slim-jump")).hidden, false);
+  await view.send("And next?");
+  assert.deepEqual(seen, [true, 1200, 1500, true]);
+});
+
+test("opening a chat lands at its newest turn once its answers have rendered", async () => {
+  const { view, root } = renderedView({
+    getJSON: async () => ({ id: "b", title: "B", turns: [
+      { role: "you", text: "Q" }, { role: "slim", text: "A long answer", turn: { citations: [] } }] }),
+  });
+  view.turns = [{ role: "you", text: "old" }];
+  view.render();
+  const old = transcriptOf(root);
+  old.scrollHeight = 900;
+  view.follow();                                                    // at its bottom
+  old.scrollTop = 0;                                                // then they scroll to the top
+  old.onscroll();
+  assert.equal(view.stuck, false);
+  await view.openThread("b");
+  const transcript = transcriptOf(root);
+  transcript.scrollHeight = 800;                                    // the Markdown lands after the render
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(transcript.scrollTop, 800);
+  assert.equal(find(root, (node) => node.cls?.includes("slim-jump")).hidden, true);
 });

@@ -511,6 +511,7 @@
   height: 100%; min-height: 0; padding: 6px 10px 10px;
   display: flex; flex-direction: column; gap: 8px; overflow: hidden;
   background: var(--background-primary);
+  container-type: inline-size;     /* the narrow-pane rules below ask the pane, not the window */
 }
 /* `hidden` must win over the display a rule below gives the same element. */
 .slim-copilot [hidden] { display: none !important; }
@@ -654,11 +655,14 @@
   border-radius: var(--radius-s); color: var(--text-muted); font-size: var(--font-ui-smaller); text-align: left;
 }
 .slim-copilot .slim-source:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
+/* The title has priority: flex shrinks in proportion to shrink factor times size, so the path's
+   1000 gives way almost entirely before the title loses a letter. Below ~300px the path goes. */
 .slim-source-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .slim-source-path {
-  flex: 0 1 auto; max-width: 50%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex: 0 1000 auto; max-width: 45%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   color: var(--text-faint);
 }
+@container (max-width: 300px) { .slim-source-path { display: none; } }
 /* While waiting: one shimmering status line. */
 .slim-copilot-stage {
   align-self: flex-start; max-width: 100%; font-size: var(--font-ui-small); font-variant-numeric: tabular-nums;
@@ -671,17 +675,18 @@
 .slim-copilot-error { color: var(--text-error); font-size: var(--font-ui-small); overflow-wrap: anywhere; }
 .slim-verification { display: block; margin-top: 4px; color: var(--text-warning); font-size: var(--font-ui-smaller); }
 .slim-inputs { display: block; margin-top: 6px; color: var(--text-faint); font-size: var(--font-ui-smaller); }
-/* A new chat: a small centred block, and starters that fill the composer. */
-.slim-empty {
+/* A new chat: a small centred block, and starters that fill the composer. Upright: the
+   recorder's `.slim-empty` is faint italic, which is why this one has its own name. */
+.slim-chat-empty {
   margin: auto 0; padding: 16px 4px; display: flex; flex-direction: column; align-items: center;
-  gap: 6px; text-align: center; min-width: 0;
+  gap: 6px; text-align: center; min-width: 0; font-style: normal;
 }
-.slim-empty-icon {
+.slim-chat-empty-icon {
   display: inline-flex; --icon-size: 20px; padding: 8px; border-radius: 50%;
   color: var(--text-muted); background: var(--background-secondary);
 }
-.slim-empty-name { font-size: var(--font-ui-medium); font-weight: var(--font-semibold); }
-.slim-empty-line { margin: 0 0 8px; max-width: 280px; color: var(--text-muted); font-size: var(--font-ui-small); }
+.slim-chat-empty-name { color: var(--text-muted); font-size: var(--font-ui-medium); font-weight: 600; }
+.slim-chat-empty-line { margin: 0 0 8px; max-width: 280px; color: var(--text-muted); font-size: var(--font-ui-small); }
 .slim-suggestions { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; max-width: 100%; }
 .slim-copilot .slim-suggest {
   display: block; max-width: 100%; padding: 4px 10px; border: 1px solid var(--background-modifier-border); border-radius: 999px;
@@ -689,14 +694,15 @@
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .slim-copilot .slim-suggest:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
-/* ↓ back to the newest, while they read further up. */
-.slim-copilot .slim-jump {
-  position: absolute; left: 50%; bottom: 8px; z-index: 5; transform: translateX(-50%);
-  width: 28px; height: 28px; padding: 0; border-radius: 50%; --icon-size: var(--icon-s);
-  color: var(--text-muted); background: var(--background-primary);
+/* ↓ back to the newest, while they read further up: small, at the right, just above the
+   composer, opaque so the text under it does not show through. */
+.slim-copilot .slim-transcript-wrap .slim-jump {
+  position: absolute; right: 2px; bottom: 4px; z-index: 5;
+  width: 24px; height: 24px; padding: 0; border-radius: 50%; --icon-size: var(--icon-xs);
+  color: var(--text-muted); background-color: var(--background-primary); opacity: 1;
   border: 1px solid var(--background-modifier-border); box-shadow: var(--shadow-s);
 }
-.slim-copilot .slim-jump:hover { color: var(--text-normal); background: var(--background-primary); }
+.slim-copilot .slim-transcript-wrap .slim-jump:hover { color: var(--text-normal); background-color: var(--background-secondary); }
 .slim-rename-input { width: 100%; margin: 8px 0 12px; }
 
 /* ---- the composer: chips, the textarea, the toolbar, in one rounded box ---- */
@@ -813,6 +819,7 @@
   padding: 6px 8px; text-align: left; border-radius: var(--radius-s);
 }
 .slim-copilot .slim-effort-item:hover, .slim-copilot .slim-effort-item.is-selected { background: var(--background-modifier-hover); }
+.slim-copilot .slim-effort-item:focus-visible { outline: 2px solid var(--background-modifier-border-focus); outline-offset: -2px; }
 .slim-effort-name { color: var(--text-normal); font-size: var(--font-ui-small); }
 .slim-effort-item.is-selected .slim-effort-name { color: var(--text-accent); }
 .slim-effort-hint { color: var(--text-faint); font-size: var(--font-ui-smaller); }
@@ -821,7 +828,8 @@
 @keyframes slim-rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 .slim-copilot [data-new] { animation: slim-rise 120ms ease-out; }
 @media (prefers-reduced-motion: reduce) {
-  .slim-copilot [data-new], .slim-message.is-streaming .slim-message-text::after { animation: none; }
+  /* The same selector as the blink's: a media query adds no specificity, so a shorter one loses. */
+  .slim-copilot [data-new], .slim-message.is-streaming .slim-message-text:not(:empty)::after { animation: none; }
   .slim-message-actions, .slim-chevron, .slim-copilot-composer { transition: none; }
   .slim-copilot-stage { animation: none; background: none; color: var(--text-muted); }
 }

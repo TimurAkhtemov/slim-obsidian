@@ -494,11 +494,18 @@ var require_render = __commonJS({
         const port = this.plugin.settings?.port || 7546;
         return `http://127.0.0.1:${port}/api/copilot/image?thread=${encodeURIComponent(threadId)}&id=${encodeURIComponent(imageId)}`;
       },
-      // The transcript follows new text while they read its bottom; scrolled up, it stays where they
-      // are and the ↓ button offers the way back.
-      stick(transcript, follow) {
-        if (follow) transcript.scrollTop = transcript.scrollHeight;
-        if (this.el?.jump) this.el.jump.hidden = follow;
+      // The transcript sticks to its bottom while anything grows it (tokens, lookups, steps, Markdown
+      // landing late), unless the owner scrolled up: only their scrolling unsticks it (`onscroll`),
+      // and sending or opening a chat sticks it again. Scrolled up, the ↓ button offers the way back.
+      // Deciding by "was it at the bottom before this growth" failed: one growth that skipped the
+      // check (lookup rows) left it 166px up, and from then on nothing followed (2026-11-14).
+      follow(transcript = this.el?.transcript) {
+        if (!transcript) return;
+        if (this.stuck) {
+          transcript.scrollTop = transcript.scrollHeight;
+          this.el.lastTop = transcript.scrollTop;
+        }
+        if (this.el?.jump) this.el.jump.hidden = this.stuck;
       },
       // Per-token updates touch two live nodes. A full render() per delta tore the whole view
       // down ~40 times a second: the transcript's scroll position reset to the top on every
@@ -509,10 +516,8 @@ var require_render = __commonJS({
           return;
         }
         if (!this.el.liveText) return;
-        const transcript = this.el.transcript;
-        const follow = atBottom(transcript);
         this.el.liveText.textContent = this.streamingText;
-        this.stick(transcript, follow);
+        this.follow();
         this.scheduleLiveRender();
       },
       // Markdown while it streams: plain text shows until the first rendered swap, then a detached
@@ -562,13 +567,12 @@ var require_render = __commonJS({
             this.dropLive(buffer, host);
             return;
           }
-          const follow = atBottom(el.transcript);
           this.dropLive(el.liveRendered, el.liveHost);
           el.liveRendered = buffer;
           el.liveHost = host;
           buffer.hidden = false;
           el.liveText.hidden = true;
-          this.stick(el.transcript, follow);
+          this.follow(el.transcript);
         }).catch((e) => console.error("[slim] live render", e));
       },
       // The turn's lookups, a compact row each (an icon for what it did, its label, one line): drawn
@@ -603,7 +607,8 @@ var require_render = __commonJS({
       renderToolGroup(message, turn, tools) {
         const group = create(message, "div", "slim-tool-group");
         const toggle = create(group, "button", "slim-tool-summary");
-        icon(create(toggle, "span", "slim-step-icon"), toolIcon(tools.find((tool) => !tool.refused) || tools[0]));
+        const kinds = new Set(tools.map((tool) => toolIcon(tool)));
+        icon(create(toggle, "span", "slim-step-icon"), kinds.size === 1 ? [...kinds][0] : "list");
         create(toggle, "span", "slim-tool-summary-text", toolSummary(tools));
         icon(create(toggle, "span", "slim-chevron"), "chevron-right");
         const list = this.fillTools(create(group, "ul", "slim-steps slim-tools"), tools);
@@ -632,8 +637,10 @@ var require_render = __commonJS({
       },
       renderTools() {
         if (this.el?.liveEdit) this.renderEdit();
-        else if (this.el?.liveTools) this.fillTools(this.el.liveTools, this.liveTools);
-        else this.renderSoon();
+        else if (this.el?.liveTools) {
+          this.fillTools(this.el.liveTools, this.liveTools);
+          this.follow();
+        } else this.renderSoon();
       },
       renderStage() {
         if (!this.el) {
@@ -664,6 +671,7 @@ var require_render = __commonJS({
         const root = this.contentEl;
         if (!root || !root.createEl) return;
         const focused = this.composerFocused;
+        const kept = !this.stuck && this.el?.transcript ? this.el.transcript.scrollTop : null;
         clear(root);
         this.el = {};
         if (this.mdHost) {
@@ -676,7 +684,7 @@ var require_render = __commonJS({
         root.addClass?.("slim-copilot");
         this.renderHeader(root);
         if (this.showThreads) this.renderThreadList(root);
-        else this.renderTranscript(root);
+        else this.renderTranscript(root, kept);
         this.renderComposer(root, focused);
       },
       // One slim row: the chat's title, then history and new chat.
@@ -719,35 +727,68 @@ var require_render = __commonJS({
         }
       },
       // How hard the model thinks, as Pi's levels; the last one chosen is kept in the settings.
+      // A menu as the <select> it replaced was: opening it puts focus on the level in use; the arrows
+      // move, Enter or Space picks, Escape closes back to the button, Tab closes and moves on from it.
       renderEffortMenu(composer) {
         const menu = create(composer, "div", "slim-effort-menu");
         menu.setAttribute("role", "menu");
         menu.hidden = !this.effortOpen;
         this.el.effortMenu = menu;
-        for (const value of EFFORTS) {
+        this.el.effortItems = EFFORTS.map((value, i) => {
           const item = create(menu, "button", `slim-effort-item${value === this.effort ? " is-selected" : ""}`);
           item.setAttribute("role", "menuitemradio");
           item.setAttribute("aria-checked", String(value === this.effort));
+          item.setAttribute("tabindex", "-1");
           create(item, "span", "slim-effort-name", effortLabel(value));
           create(item, "small", "slim-effort-hint", EFFORT_HINTS[value]);
-          item.onclick = () => {
-            this.effortOpen = false;
-            this.setEffort(value);
-            this.render();
-          };
-        }
-        menu.onkeydown = (event) => {
-          if (event.key !== "Escape") return;
-          event.preventDefault?.();
-          this.showEffortMenu(false);
-          this.el.effortButton?.focus?.();
+          item.onclick = () => this.pickEffort(value);
+          item.onkeydown = (event) => this.effortKey(event, i);
+          return item;
+        });
+      },
+      effortKey(event, index) {
+        const items = this.el?.effortItems || [];
+        const move = (to) => {
+          event.preventDefault();
+          items[(to + items.length) % items.length]?.focus?.();
         };
+        switch (event.key) {
+          case "ArrowDown":
+            return move(index + 1);
+          case "ArrowUp":
+            return move(index - 1);
+          case "Home":
+            return move(0);
+          case "End":
+            return move(items.length - 1);
+          case "Enter":
+          case " ":
+            event.preventDefault();
+            return this.pickEffort(EFFORTS[index]);
+          case "Escape":
+            event.preventDefault();
+            event.stopPropagation?.();
+            this.showEffortMenu(false);
+            return this.el.effortButton?.focus?.();
+          case "Tab":
+            this.showEffortMenu(false);
+            return this.el.effortButton?.focus?.();
+          default:
+            return void 0;
+        }
+      },
+      pickEffort(value) {
+        this.effortOpen = false;
+        this.setEffort(value);
+        this.render();
+        this.el?.effortButton?.focus?.();
       },
       showEffortMenu(open) {
         this.effortOpen = open;
         if (this.el?.effortMenu) this.el.effortMenu.hidden = !open;
         this.el?.effortButton?.setAttribute("aria-expanded", String(open));
         if (open && this.nearbyOpen) this.showNearby(false);
+        if (open) this.el?.effortItems?.[Math.max(0, EFFORTS.indexOf(this.effort))]?.focus?.();
       },
       showNearby(open) {
         this.nearbyOpen = open;
@@ -961,6 +1002,11 @@ var require_render = __commonJS({
         icon(create(effort, "span", "slim-effort-icon"), "brain");
         create(effort, "span", "slim-effort-label", effortLabel(this.effort));
         effort.onclick = () => this.showEffortMenu(!this.effortOpen);
+        effort.onkeydown = (event) => {
+          if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+          event.preventDefault();
+          this.showEffortMenu(true);
+        };
         this.el.effortButton = effort;
         const empty = !this.sending && !String(this.draft || "").trim() && !this.pendingImages.length;
         const send = iconButton(
@@ -1042,10 +1088,10 @@ var require_render = __commonJS({
       },
       // A new chat: SLIM's name, one line, and three starters that fill the composer.
       renderEmpty(transcript) {
-        const empty = create(transcript, "div", "slim-empty");
-        icon(create(empty, "div", "slim-empty-icon"), "message-square-text");
-        create(empty, "div", "slim-empty-name", "SLIM");
-        create(empty, "p", "slim-empty-line", "Ask about your notes, or have SLIM edit the open one.");
+        const empty = create(transcript, "div", "slim-chat-empty");
+        icon(create(empty, "div", "slim-chat-empty-icon"), "message-square-text");
+        create(empty, "div", "slim-chat-empty-name", "SLIM");
+        create(empty, "p", "slim-chat-empty-line", "Ask about your notes, or have SLIM edit the open one.");
         const list = create(empty, "div", "slim-suggestions");
         const noteOpen = Boolean(this.openNote?.path) && !this.activeThread?.openNoteOff;
         for (const starter of starters(noteOpen)) {
@@ -1053,7 +1099,7 @@ var require_render = __commonJS({
           button.onclick = () => this.useStarter(starter.text);
         }
       },
-      renderTranscript(root) {
+      renderTranscript(root, kept = null) {
         const wrap = create(root, "div", "slim-transcript-wrap");
         const transcript = create(wrap, "section", "slim-copilot-transcript");
         this.el.transcript = transcript;
@@ -1124,22 +1170,27 @@ var require_render = __commonJS({
         }
         if (!this.turns.length && !streamingHere && !this.error) this.renderEmpty(transcript);
         const jump = iconButton(wrap, "arrow-down", "Jump to the latest", "clickable-icon slim-jump");
-        jump.hidden = true;
         jump.onclick = () => {
-          transcript.scrollTop = transcript.scrollHeight;
-          jump.hidden = true;
-        };
-        transcript.onscroll = () => {
-          jump.hidden = atBottom(transcript);
+          this.stuck = true;
+          this.follow(transcript);
         };
         this.el.jump = jump;
-        transcript.scrollTop = transcript.scrollHeight;
+        transcript.onscroll = () => {
+          const top = transcript.scrollTop;
+          if (atBottom(transcript)) this.stuck = true;
+          else if (top < (this.el.lastTop ?? 0)) this.stuck = false;
+          this.el.lastTop = top;
+          jump.hidden = this.stuck;
+        };
+        if (kept === null) this.stuck = true;
+        else transcript.scrollTop = this.el.lastTop = kept;
+        this.follow(transcript);
         if (pending.length) {
           const anchor = transcript.scrollTop;
           Promise.all(pending).then(() => {
-            if (this.el.transcript === transcript && transcript.scrollTop === anchor) {
-              transcript.scrollTop = transcript.scrollHeight;
-            }
+            if (this.el.transcript !== transcript) return;
+            if (this.stuck) this.follow(transcript);
+            else if (transcript.scrollTop === anchor) transcript.scrollTop = this.el.lastTop = kept;
           }).catch((e) => console.error("[slim] render turns", e));
         }
       },
@@ -1158,6 +1209,7 @@ var require_render = __commonJS({
           const image = create(gallery, "img", "slim-message-image");
           image.src = src;
           image.alt = name;
+          image.onload = () => this.follow();
           image.onerror = () => {
             image.remove?.();
             create(gallery, "span", "slim-image-chip", name);
@@ -1195,7 +1247,7 @@ var require_edit_run = __commonJS({
     "use strict";
     var { Notice } = require("obsidian");
     var { sha256Hex, effortLabel, metaText, runCounts, editOutcome } = require_text();
-    var { clear, create, glyphIcon, atBottom } = require_dom();
+    var { clear, create, glyphIcon } = require_dom();
     var STEP_ICONS = { done: ["check", "\u2713"], partial: ["circle-dashed", "\u25D0"], skipped: ["minus", "\u2013"] };
     module2.exports = {
       // ---- an editing run, as it lands ------------------------------------------------------------
@@ -1344,10 +1396,9 @@ var require_edit_run = __commonJS({
           this.renderSoon();
           return;
         }
-        const follow = atBottom(this.el.transcript);
         clear(this.el.liveEdit);
         this.drawLiveEdit(this.el.liveEdit);
-        this.stick(this.el.transcript, follow);
+        this.follow();
       },
       drawLiveEdit(parent) {
         const run = this.editRun;
@@ -1684,6 +1735,7 @@ var require_view = __commonJS({
         this.el = null;
         this.composerFocused = false;
         this.showThreads = false;
+        this.stuck = true;
         this.nearbyOpen = false;
         this.effortOpen = false;
         this.caretAt = null;
@@ -1950,6 +2002,7 @@ var require_view = __commonJS({
         this.pendingImages = [];
         this.retryImages = [];
         this.showThreads = false;
+        this.stuck = true;
         this.render();
       }
       // The effort every question runs at from now on (a skill may name its own), kept in the
@@ -1972,6 +2025,7 @@ var require_view = __commonJS({
         this.pendingImages = [];
         this.retryImages = [];
         this.showThreads = false;
+        this.stuck = true;
         this.render();
       }
       async saveRecord(thread, turns) {
@@ -2046,6 +2100,7 @@ var require_view = __commonJS({
         this.streamingThread = thread;
         this.streamingTurns = turns;
         this.liveFresh = true;
+        this.stuck = true;
         let completed = null;
         let run = null;
         let local = null, tracked = null;

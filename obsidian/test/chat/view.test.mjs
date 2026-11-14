@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { find, obsidianStub } from "../fakes.mjs";
+import { find, focusState, obsidianStub } from "../fakes.mjs";
 import { makeView, renderedView, text } from "../copilot-harness.mjs";
 
 const require = createRequire(import.meta.url);
@@ -1190,7 +1190,7 @@ test("the composer's chips are the open note and the @ pins, inside the composer
   assert.equal(find(root, (node) => node.cls === "slim-composer-chips"), null);   // nothing to show: no row
 });
 
-test("the effort menu closes on Escape and on a click elsewhere", () => {
+test("the effort menu closes on a click elsewhere, not on one inside it", () => {
   const { view, root } = renderedView();
   view.render();
   const menu = () => find(root, (node) => node.cls === "slim-effort-menu");
@@ -1201,10 +1201,57 @@ test("the effort menu closes on Escape and on a click elsewhere", () => {
   assert.equal(menu().hidden, false);                               // a click inside keeps it
   view.onRootClick({ target: { closest: () => null } });
   assert.equal(menu().hidden, true);
-  button.onclick();
-  menu().onkeydown({ key: "Escape", preventDefault() {} });
-  assert.equal(menu().hidden, true);
   assert.equal(view.effortOpen, false);
+});
+
+test("the effort menu works from the keyboard: focus moves in, the arrows move, Enter and Space pick, Escape and Tab close to the button", () => {
+  const settings = { effort: "medium" };
+  const { view, root } = renderedView({ settings, saveSettings: async () => {} });
+  view.render();
+  const button = () => find(root, (node) => node.cls === "slim-effort");
+  const menu = () => find(root, (node) => node.cls === "slim-effort-menu");
+  const focused = () => focusState.active;
+  const name = () => focused().children[0]?.textContent;
+  // Each key goes to whatever has focus, as the browser sends it.
+  const press = (key, extra = {}) => {
+    const event = { key, shiftKey: false, prevented: false, preventDefault() { this.prevented = true; },
+                    stopPropagation() {}, ...extra };
+    focused().onkeydown?.(event);
+    return event;
+  };
+  button().focus();
+  press("ArrowDown");                                               // opens it, like a select
+  assert.equal(menu().hidden, false);
+  assert.equal(name(), "Medium");                                   // focus on the level in use
+  press("ArrowDown");
+  assert.equal(name(), "High");
+  press("ArrowDown");
+  assert.equal(name(), "Off");                                      // wraps
+  press("ArrowUp");
+  assert.equal(name(), "High");
+  assert.ok(press("Escape").prevented);
+  assert.equal(menu().hidden, true);
+  assert.equal(focused(), button());                                // back on the trigger
+  assert.equal(view.effort, "medium");                              // nothing picked
+  button().onclick();                                               // Enter on a focused button clicks it
+  assert.equal(name(), "Medium");
+  press("ArrowUp");
+  press("Enter");
+  assert.equal(view.effort, "low");
+  assert.equal(settings.effort, "low");
+  assert.equal(menu().hidden, true);
+  assert.equal(focused(), button());
+  assert.equal(find(button(), (node) => node.cls === "slim-effort-label").textContent, "Low");
+  button().onclick();
+  press("End");
+  press(" ");
+  assert.equal(view.effort, "high");
+  button().onclick();
+  const tab = press("Tab");
+  assert.equal(tab.prevented, false);                               // the Tab goes on from the button
+  assert.equal(menu().hidden, true);
+  assert.equal(focused(), button());
+  assert.equal(view.effort, "high");
 });
 
 test("history rows show a faint relative date and the note the chat was on", () => {

@@ -60,6 +60,10 @@ export function findClass(root, name) {
 
 // --- the copilot's DOM ----------------------------------------------------------------------
 
+// Which fake element has focus, as `document.activeElement` would say: focusing one takes it
+// from the last.
+export const focusState = { active: null };
+
 // A DOM just large enough for render(): Obsidian's createEl/empty plus the handful of
 // properties the copilot reads and writes. Tests walk `children`; nothing is queried by CSS.
 export function fakeEl(tag = "div", options = {}) {
@@ -77,7 +81,11 @@ export function fakeEl(tag = "div", options = {}) {
     addClass() {}, removeClass() {},
     setAttribute(name, value) { el.attrs[name] = value; },
     addEventListener(type, fn) { (el.listeners[type] ||= []).push(fn); },
-    focus() { el.focused = true; },
+    focus() {
+      if (focusState.active && focusState.active !== el) focusState.active.focused = false;
+      focusState.active = el;
+      el.focused = true;
+    },
     scrollIntoView(options) { (el.scrolledIntoView ||= []).push(options); },
     select() {},
     remove() { if (el.parent) el.parent.children = el.parent.children.filter((child) => child !== el); },

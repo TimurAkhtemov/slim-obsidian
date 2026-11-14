@@ -67,11 +67,18 @@ module.exports = {
       + `&id=${encodeURIComponent(imageId)}`;
   },
 
-  // The transcript follows new text while they read its bottom; scrolled up, it stays where they
-  // are and the ↓ button offers the way back.
-  stick(transcript, follow) {
-    if (follow) transcript.scrollTop = transcript.scrollHeight;
-    if (this.el?.jump) this.el.jump.hidden = follow;
+  // The transcript sticks to its bottom while anything grows it (tokens, lookups, steps, Markdown
+  // landing late), unless the owner scrolled up: only their scrolling unsticks it (`onscroll`),
+  // and sending or opening a chat sticks it again. Scrolled up, the ↓ button offers the way back.
+  // Deciding by "was it at the bottom before this growth" failed: one growth that skipped the
+  // check (lookup rows) left it 166px up, and from then on nothing followed (2026-11-14).
+  follow(transcript = this.el?.transcript) {
+    if (!transcript) return;
+    if (this.stuck) {
+      transcript.scrollTop = transcript.scrollHeight;
+      this.el.lastTop = transcript.scrollTop;
+    }
+    if (this.el?.jump) this.el.jump.hidden = this.stuck;
   },
 
   // Per-token updates touch two live nodes. A full render() per delta tore the whole view
@@ -80,10 +87,8 @@ module.exports = {
   renderDelta() {
     if (!this.el) { this.render(); return; }
     if (!this.el.liveText) return;          // the chat list is showing; the next render catches up
-    const transcript = this.el.transcript;
-    const follow = atBottom(transcript);      // decided BEFORE the text grows the pane
     this.el.liveText.textContent = this.streamingText;
-    this.stick(transcript, follow);
+    this.follow();
     this.scheduleLiveRender();
   },
 
@@ -129,13 +134,12 @@ module.exports = {
     const host = this.liveHost(buffer);
     return this.renderMarkdown(buffer, this.streamingText, host).then(() => {
       if (version !== this.liveRenderVersion || this.el !== el || !this.sending) { this.dropLive(buffer, host); return; }
-      const follow = atBottom(el.transcript);
       this.dropLive(el.liveRendered, el.liveHost);
       el.liveRendered = buffer;
       el.liveHost = host;
       buffer.hidden = false;
       el.liveText.hidden = true;
-      this.stick(el.transcript, follow);
+      this.follow(el.transcript);
     }).catch((e) => console.error("[slim] live render", e));
   },
 
@@ -173,7 +177,9 @@ module.exports = {
   renderToolGroup(message, turn, tools) {
     const group = create(message, "div", "slim-tool-group");
     const toggle = create(group, "button", "slim-tool-summary");
-    icon(create(toggle, "span", "slim-step-icon"), toolIcon(tools.find((tool) => !tool.refused) || tools[0]));
+    // One kind of lookup shows its icon; a mix shows a list.
+    const kinds = new Set(tools.map((tool) => toolIcon(tool)));
+    icon(create(toggle, "span", "slim-step-icon"), kinds.size === 1 ? [...kinds][0] : "list");
     create(toggle, "span", "slim-tool-summary-text", toolSummary(tools));
     icon(create(toggle, "span", "slim-chevron"), "chevron-right");
     const list = this.fillTools(create(group, "ul", "slim-steps slim-tools"), tools);
@@ -204,7 +210,7 @@ module.exports = {
 
   renderTools() {
     if (this.el?.liveEdit) this.renderEdit();
-    else if (this.el?.liveTools) this.fillTools(this.el.liveTools, this.liveTools);
+    else if (this.el?.liveTools) { this.fillTools(this.el.liveTools, this.liveTools); this.follow(); }
     else this.renderSoon();
   },
 
@@ -231,6 +237,8 @@ module.exports = {
     const root = this.contentEl;
     if (!root || !root.createEl) return;
     const focused = this.composerFocused;
+    // Scrolled up, a redraw (an effort picked, a pin) keeps their place; at the bottom it stays there.
+    const kept = !this.stuck && this.el?.transcript ? this.el.transcript.scrollTop : null;
     clear(root);
     this.el = {};
     // Rendered Markdown attaches child components (embeds, callouts) to the component it is
@@ -242,7 +250,7 @@ module.exports = {
     root.addClass?.("slim-copilot");
     this.renderHeader(root);
     if (this.showThreads) this.renderThreadList(root);
-    else this.renderTranscript(root);
+    else this.renderTranscript(root, kept);
     this.renderComposer(root, focused);
   },
 
@@ -284,29 +292,60 @@ module.exports = {
   },
 
   // How hard the model thinks, as Pi's levels; the last one chosen is kept in the settings.
+  // A menu as the <select> it replaced was: opening it puts focus on the level in use; the arrows
+  // move, Enter or Space picks, Escape closes back to the button, Tab closes and moves on from it.
   renderEffortMenu(composer) {
     const menu = create(composer, "div", "slim-effort-menu");
     menu.setAttribute("role", "menu");
     menu.hidden = !this.effortOpen;
     this.el.effortMenu = menu;
-    for (const value of EFFORTS) {
+    this.el.effortItems = EFFORTS.map((value, i) => {
       const item = create(menu, "button", `slim-effort-item${value === this.effort ? " is-selected" : ""}`);
       item.setAttribute("role", "menuitemradio");
       item.setAttribute("aria-checked", String(value === this.effort));
+      item.setAttribute("tabindex", "-1");              // out of the Tab order: the arrows move within
       create(item, "span", "slim-effort-name", effortLabel(value));
       create(item, "small", "slim-effort-hint", EFFORT_HINTS[value]);
-      item.onclick = () => {
-        this.effortOpen = false;
-        this.setEffort(value);
-        this.render();
-      };
-    }
-    menu.onkeydown = (event) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault?.();
-      this.showEffortMenu(false);
-      this.el.effortButton?.focus?.();
+      item.onclick = () => this.pickEffort(value);
+      item.onkeydown = (event) => this.effortKey(event, i);
+      return item;
+    });
+  },
+
+  effortKey(event, index) {
+    const items = this.el?.effortItems || [];
+    const move = (to) => {
+      event.preventDefault();
+      items[(to + items.length) % items.length]?.focus?.();
     };
+    switch (event.key) {
+      case "ArrowDown": return move(index + 1);
+      case "ArrowUp": return move(index - 1);
+      case "Home": return move(0);
+      case "End": return move(items.length - 1);
+      case "Enter":
+      case " ":
+        event.preventDefault();
+        return this.pickEffort(EFFORTS[index]);
+      case "Escape":
+        event.preventDefault();
+        event.stopPropagation?.();
+        this.showEffortMenu(false);
+        return this.el.effortButton?.focus?.();
+      case "Tab":
+        // Not prevented: with focus back on the button, the Tab moves on from there.
+        this.showEffortMenu(false);
+        return this.el.effortButton?.focus?.();
+      default:
+        return undefined;
+    }
+  },
+
+  pickEffort(value) {
+    this.effortOpen = false;
+    this.setEffort(value);
+    this.render();
+    this.el?.effortButton?.focus?.();
   },
 
   showEffortMenu(open) {
@@ -314,6 +353,7 @@ module.exports = {
     if (this.el?.effortMenu) this.el.effortMenu.hidden = !open;
     this.el?.effortButton?.setAttribute("aria-expanded", String(open));
     if (open && this.nearbyOpen) this.showNearby(false);
+    if (open) this.el?.effortItems?.[Math.max(0, EFFORTS.indexOf(this.effort))]?.focus?.();
   },
 
   showNearby(open) {
@@ -526,6 +566,11 @@ module.exports = {
     icon(create(effort, "span", "slim-effort-icon"), "brain");
     create(effort, "span", "slim-effort-label", effortLabel(this.effort));
     effort.onclick = () => this.showEffortMenu(!this.effortOpen);
+    effort.onkeydown = (event) => {
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+      event.preventDefault();
+      this.showEffortMenu(true);
+    };
     this.el.effortButton = effort;
     const empty = !this.sending && !String(this.draft || "").trim() && !this.pendingImages.length;
     const send = iconButton(right, this.sending ? "square" : "arrow-up", this.sending ? "Stop response" : "Send",
@@ -607,10 +652,10 @@ module.exports = {
 
   // A new chat: SLIM's name, one line, and three starters that fill the composer.
   renderEmpty(transcript) {
-    const empty = create(transcript, "div", "slim-empty");
-    icon(create(empty, "div", "slim-empty-icon"), "message-square-text");
-    create(empty, "div", "slim-empty-name", "SLIM");
-    create(empty, "p", "slim-empty-line", "Ask about your notes, or have SLIM edit the open one.");
+    const empty = create(transcript, "div", "slim-chat-empty");
+    icon(create(empty, "div", "slim-chat-empty-icon"), "message-square-text");
+    create(empty, "div", "slim-chat-empty-name", "SLIM");
+    create(empty, "p", "slim-chat-empty-line", "Ask about your notes, or have SLIM edit the open one.");
     const list = create(empty, "div", "slim-suggestions");
     const noteOpen = Boolean(this.openNote?.path) && !this.activeThread?.openNoteOff;
     for (const starter of starters(noteOpen)) {
@@ -619,7 +664,7 @@ module.exports = {
     }
   },
 
-  renderTranscript(root) {
+  renderTranscript(root, kept = null) {
     // The wrap holds the ↓ button over the scrolling transcript.
     const wrap = create(root, "div", "slim-transcript-wrap");
     const transcript = create(wrap, "section", "slim-copilot-transcript");
@@ -693,20 +738,30 @@ module.exports = {
     }
     if (!this.turns.length && !streamingHere && !this.error) this.renderEmpty(transcript);
     const jump = iconButton(wrap, "arrow-down", "Jump to the latest", "clickable-icon slim-jump");
-    jump.hidden = true;
-    jump.onclick = () => { transcript.scrollTop = transcript.scrollHeight; jump.hidden = true; };
-    transcript.onscroll = () => { jump.hidden = atBottom(transcript); };
+    jump.onclick = () => { this.stuck = true; this.follow(transcript); };
     this.el.jump = jump;
+    // Only scrolling UP unsticks: growth never moves scrollTop, so the event a programmatic
+    // scroll queues cannot unstick it however much lands before it fires.
+    transcript.onscroll = () => {
+      const top = transcript.scrollTop;
+      if (atBottom(transcript)) this.stuck = true;
+      else if (top < (this.el.lastTop ?? 0)) this.stuck = false;
+      this.el.lastTop = top;
+      jump.hidden = this.stuck;
+    };
     // A full render is a new transcript element at scrollTop 0: the newest turn — the
-    // reason for the render — would sit below the fold.
-    transcript.scrollTop = transcript.scrollHeight;
+    // reason for the render — would sit below the fold. Scrolled up, they keep their place.
+    if (kept === null) this.stuck = true;
+    else transcript.scrollTop = this.el.lastTop = kept;
+    this.follow(transcript);
     if (pending.length) {
-      // The Markdown lands after that scroll. Re-apply it once — unless they scrolled meanwhile.
+      // The Markdown lands after that scroll: follow it down, or put their place back once —
+      // unless they scrolled meanwhile.
       const anchor = transcript.scrollTop;
       Promise.all(pending).then(() => {
-        if (this.el.transcript === transcript && transcript.scrollTop === anchor) {
-          transcript.scrollTop = transcript.scrollHeight;
-        }
+        if (this.el.transcript !== transcript) return;
+        if (this.stuck) this.follow(transcript);
+        else if (transcript.scrollTop === anchor) transcript.scrollTop = this.el.lastTop = kept;
       }).catch((e) => console.error("[slim] render turns", e));
     }
   },
@@ -723,6 +778,7 @@ module.exports = {
       const image = create(gallery, "img", "slim-message-image");
       image.src = src;
       image.alt = name;
+      image.onload = () => this.follow();
       image.onerror = () => { image.remove?.(); create(gallery, "span", "slim-image-chip", name); };
     }
   },

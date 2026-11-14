@@ -3,7 +3,7 @@
 
 const { Notice } = require("obsidian");
 const { sha256Hex, effortLabel, metaText, runCounts, editOutcome } = require("./text");
-const { clear, create, glyphIcon, atBottom } = require("./dom");
+const { clear, create, glyphIcon } = require("./dom");
 
 // A step's state as the chat draws it: a lucide icon, with a glyph where Obsidian draws none.
 const STEP_ICONS = { done: ["check", "\u2713"], partial: ["circle-dashed", "\u25D0"], skipped: ["minus", "\u2013"] };
@@ -146,10 +146,9 @@ module.exports = {
   // The run streaming now, redrawn in place on each event: the transcript is not rebuilt.
   renderEdit() {
     if (!this.el?.liveEdit) { this.renderSoon(); return; }
-    const follow = atBottom(this.el.transcript);
     clear(this.el.liveEdit);
     this.drawLiveEdit(this.el.liveEdit);
-    this.stick(this.el.transcript, follow);
+    this.follow();
   },
 
   drawLiveEdit(parent) {

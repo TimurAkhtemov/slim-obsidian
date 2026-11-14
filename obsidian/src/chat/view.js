@@ -88,6 +88,7 @@ class CopilotView extends ItemView {
     this.el = null;                 // live handles from the last full render()
     this.composerFocused = false;
     this.showThreads = false;       // the history button: the chat list in the conversation's slot
+    this.stuck = true;              // the transcript follows its bottom until they scroll up
     this.nearbyOpen = false;        // the nearby-notes popover over the composer
     this.effortOpen = false;        // the effort menu over the composer's toolbar
     this.caretAt = null;            // where the next render puts the composer's caret, once
@@ -368,6 +369,7 @@ class CopilotView extends ItemView {
     this.pendingImages = [];
     this.retryImages = [];
     this.showThreads = false;
+    this.stuck = true;
     this.render();
   }
 
@@ -390,6 +392,7 @@ class CopilotView extends ItemView {
     this.pendingImages = [];
     this.retryImages = [];
     this.showThreads = false;
+    this.stuck = true;                    // a chat opens at its newest turn
     this.render();
   }
 
@@ -470,6 +473,7 @@ class CopilotView extends ItemView {
     this.streamingThread = thread;
     this.streamingTurns = turns;
     this.liveFresh = true;
+    this.stuck = true;                    // sending always brings the conversation to its bottom
     let completed = null;
     let run = null;                       // an editing run, from its `edit` event on
     let local = null, tracked = null;     // the editor tracking it from Send, and its name there
