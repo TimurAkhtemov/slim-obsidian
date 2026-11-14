@@ -1,5 +1,5 @@
 """Where the vault IS. Discovery replaced a hardcoded path, so every consumer of that path —
-the CLI, the server's health report, the privacy guard, the backup — has to agree on it.
+the CLI, the server's health report, the backup — has to agree on it.
 """
 
 import json

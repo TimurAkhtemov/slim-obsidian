@@ -33,7 +33,7 @@ def test_derived_and_excluded_folders_never_appear_as_destinations(tmp_path):
 
 def test_the_journal_floor_is_offered_but_never_with_children(tmp_path):
     """Journal/ is a legitimate destination for a journal recording and is FLAT — one stream.
-    A subfolder under it would be a taxonomy slot inside a privacy floor."""
+    A subfolder under it would be a taxonomy slot inside one flat stream."""
     _note(tmp_path, "Journal/j.md")
     _note(tmp_path, "Journal/nested/k.md")
     paths = [f.path for f in suggest.folder_tree(tmp_path)]

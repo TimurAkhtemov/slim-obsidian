@@ -1,5 +1,5 @@
 """REFLECT — deterministic journal selection, the quiet-night guardrail, wikilink safety, the
-note writer, ingestion exclusion, and the privacy contract.
+note writer, ingestion exclusion, and the trace's machine-facts-only contract.
 
 The dense model is MOCKED throughout, so no Ollama is needed and the module's OWN logic (window
 math, skips, link sanitizing, frontmatter, resume-from-disk) is pinned deterministically. Journal
@@ -252,7 +252,7 @@ def test_reflections_folder_is_excluded_from_ingestion(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# privacy — no journal (or reflection) prose in the operational trace
+# the trace — machine facts only, no journal (or reflection) prose
 # --------------------------------------------------------------------------
 
 def test_trace_never_contains_body_or_reflection_prose(con, tmp_path, monkeypatch):

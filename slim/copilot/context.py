@@ -1,6 +1,6 @@
-"""What the copilot reads: the open note synced into the index, the notes around it by scope, the
-passages a question retrieves, the open note's images, and the whole notes a skill reads
-(`gather`). `copilot/turn.py` runs the turn."""
+"""What the copilot reads: the open note synced into the index, the notes around it by scope (the
+sidebar's Nearby notes), the `@` pins, the open note's images, and the whole notes a skill reads
+(`gather`). `copilot/turn.py` runs the turn; the loop's lookups are `copilot/lookup.py`'s."""
 from __future__ import annotations
 
 import re
@@ -21,9 +21,9 @@ from ..vault.frontmatter import body_after_frontmatter, parse_frontmatter
 INPUT_BUDGET_CHARS = llm.RESIDENT_CTX * 4 // 2
 MAX_SELECTION_CHARS = 20_000
 _LINK = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]")
-# The open note's images, those beside the passages the pack carries first. Each costs ~450
-# prompt tokens and ~1.3 s before the first word (measured 2026-09-22 on the resident), and a
-# lecture note embeds up to 60, so a turn sends at most this; the median note embeds 4.
+# The open note's images, in note order. Each costs ~450 prompt tokens and ~1.3 s before the
+# first word (measured 2026-09-22 on the resident), and a lecture note embeds up to 60, so a turn
+# sends at most this; the median note embeds 4.
 MAX_NOTE_IMAGES = 6
 # The open note rides with each question whole up to this (~13k tokens): above it, its sections
 # map and the blocks that fit, and `read_note` for the rest, so a long transcript is not prefilled
@@ -117,51 +117,9 @@ def related_notes(con, vault: Path, source: dict, *, limit: int = 5) -> list[dic
 
 def context_payload(con, vault: Path, path: str, *, related: bool = True) -> dict:
     # Always embed: `related=False` is the plugin's pre-question refresh, and a fragment
-    # without a vector is invisible to the question's retrieval. Unchanged note = no rows.
+    # without a vector is invisible to the loop's search. Unchanged note = no rows.
     source = sync_note(con, vault, path, embed=True)
     return {"source": source, "related": related_notes(con, vault, source) if related else []}
-
-
-def collect_evidence(con, source: dict, question: str, *, limit: int) -> tuple[list[dict], list[str]]:
-    """Fill a bounded pack from the active note outward, one path level at a time."""
-    hits = []
-    seen = set()
-    levels_used = ["note"]
-
-    def add(candidates):
-        for hit in candidates:
-            if hit.fragment_id in seen:
-                continue
-            seen.add(hit.fragment_id)
-            hits.append(hit)
-            if len(hits) >= limit:
-                break
-
-    # cap=limit: PER_SOURCE_CAP stops one note flooding a vault-wide pack, but the open note
-    # IS the subject here — capped at 3, a 12-slot pack was 9 fragments of sibling notes.
-    # A note path is its own prefix, so the first pass scopes to the open note alone.
-    add(search_mod.hybrid(con, question, k=limit, cap=limit, prefixes=(source["path"],)))
-    if not hits:
-        rows = con.execute(
-            "SELECT f.id AS fragment_id, s.id AS source_id, s.path, s.title, "
-            "f.heading_path, f.text FROM fragments f "
-            "JOIN sources s ON s.id=f.source_id WHERE s.id=? ORDER BY f.seq LIMIT ?",
-            (source["id"], limit),).fetchall()
-        add(search_mod._rows_to_hits(rows))
-    for label, prefixes in scope_levels(source["path"]):
-        if len(hits) >= limit:
-            break
-        before = len(hits)
-        add(search_mod.hybrid(con, question, k=limit, prefixes=prefixes))
-        if len(hits) > before:
-            levels_used.append(label)
-
-    evidence = [{
-        "n": index + 1, "source_id": hit.source_id, "path": hit.path,
-        "title": hit.title or PurePosixPath(hit.path).stem,
-        "heading": hit.heading_path, "text": hit.text,
-    } for index, hit in enumerate(hits)]
-    return evidence, levels_used
 
 
 @dataclass
@@ -356,20 +314,15 @@ def pack_inputs(pack: Pack) -> dict:
             "cut": pack.cut}
 
 
-def open_note_images(vault: Path, source: dict, evidence: list[dict]) -> tuple[list[tuple[str, str]], list[dict]]:
-    """The open note's images: those in its passages in the pack, then the rest in note order.
-
-    ⚠ The pack ORDERS the images, never excludes them: an equation that exists only as a
-    screenshot matches no question, so its passage is the one retrieval skips (measured
-    2026-09-22). A sibling note's images stay out: they are context, and every image costs
-    seconds of prefill."""
-    packed = [item["text"] for item in evidence if item.get("source_id") == source["id"]]
+def open_note_images(vault: Path, source: dict) -> tuple[list[tuple[str, str]], list[dict]]:
+    """The open note's images, in note order, at most MAX_NOTE_IMAGES. They ride with every turn:
+    an equation that exists only as a screenshot matches no search (measured 2026-09-22). A
+    sibling note's images stay out: every image costs seconds of prefill."""
     try:
-        packed.append((vault / source["path"]).read_text(encoding="utf-8"))
+        text = (vault / source["path"]).read_text(encoding="utf-8")
     except OSError:
-        pass
-    return note_images.load("\n".join(packed), vault, note_rel=source["path"],
-                            limit=MAX_NOTE_IMAGES)
+        text = ""
+    return note_images.load(text, vault, note_rel=source["path"], limit=MAX_NOTE_IMAGES)
 
 
 def pinned_message(con, vault: Path, pins: list[dict]) -> tuple[str, list[str], list[str]]:

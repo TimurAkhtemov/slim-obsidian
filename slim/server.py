@@ -485,14 +485,10 @@ class _Handler(BaseHTTPRequestHandler):
             quietly(lambda: emit(event, payload))
 
         def on_delta(text):
-            # In THE LOOP a write into a closed socket must not raise inside the model's stream:
+            # A write into a closed socket must not raise inside the model's stream:
             # `llm._generate` reads it as a failed call and retries it. should_stop() notices the
-            # client gone within a second instead. The gate's Ask path has no should_stop: there
-            # the raise is what ends the answer.
-            if copilot_turn.LOOP:
-                quietly(lambda: emit("delta", {"text": text}))
-            else:
-                emit("delta", {"text": text})
+            # client gone within a second instead.
+            quietly(lambda: emit("delta", {"text": text}))
 
         def should_stop():
             quietly(lambda: (self.wfile.write(b": alive\n\n"), self.wfile.flush()))

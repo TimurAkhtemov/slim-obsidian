@@ -106,14 +106,6 @@ var require_text = __commonJS({
       const name = String(path || "").split("/").pop() || "";
       return name.replace(/\.md$/i, "");
     }
-    function noteTitle(app, path) {
-      const file = app?.vault?.getAbstractFileByPath?.(path);
-      if (file && file.extension) {
-        const title = app.metadataCache?.getFileCache?.(file)?.frontmatter?.title;
-        return typeof title === "string" && title.trim() || file.basename || pathStem(path);
-      }
-      return pathStem(path);
-    }
     function groupCitations(citations) {
       const groups = /* @__PURE__ */ new Map();
       for (const citation of citations || []) {
@@ -288,7 +280,6 @@ ${line}` : said;
       threadRows,
       shortDate,
       pathStem,
-      noteTitle,
       groupCitations,
       sha256Hex,
       slashQuery,

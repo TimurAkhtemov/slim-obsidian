@@ -312,7 +312,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
         title = f"Recording {when.strftime('%Y-%m-%d %H%M')}"
 
     # No empty-transcript branch: it was unreachable once an empty transcript became an error,
-    # and its job — keeping a failed journal inside the privacy floor — belongs to `build_card`,
+    # and its job — filing a failed journal flat under `Journal/` — belongs to `build_card`,
     # which returns `JOURNAL_FOLDER` for a declared journal before it consults the model at all.
     state.check_cancel(job_id)
     progress("filing", "Choosing filing details", "Comparing the recording with the vault's existing structure")

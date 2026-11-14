@@ -239,7 +239,7 @@ def chat_tools(messages: list[dict], tools: list[dict] | None = None, *, think: 
 
     With tools the call streams, raw (`_tools_raw`): `on_part` hears each tool call's parameters
     as they decode, and `should_stop()`, asked about once a second, abandons it (Stopped).
-    Without them (the intent gate) it is one chat call.
+    Without them it is one chat call.
 
     `top_p`, `top_k` and `presence_penalty` (llama.cpp's names) go to the server only when given:
     THE LOOP samples as Qwen recommends for thinking, as the Pi coding agent does."""

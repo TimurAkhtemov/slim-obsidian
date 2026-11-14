@@ -62,7 +62,7 @@ class CopilotView extends ItemView {
     this.plugin = plugin;
     this.app = plugin.app;
     this.openNote = null;           // {path, id|null}: the Markdown note open now, sent with each question
-    this.context = null;            // the open note's nearby-notes payload, until it moves to the server
+    this.context = null;            // the open note's nearby-notes payload ({source, related})
     this.threads = [];
     this.threadQuery = "";
     this.threadSearch = null;       // the debounce timer of the history search

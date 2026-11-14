@@ -1,5 +1,4 @@
-"""What the copilot reads: targeted indexing, deterministic scope, nearby notes and the evidence
-a question retrieves."""
+"""What the copilot reads: targeted indexing, deterministic scope, nearby notes and the `@` pins."""
 
 from pathlib import Path
 
@@ -115,39 +114,10 @@ def test_scope_levels_survive_a_case_only_folder_rename(monkeypatch):
     ]
 
 
-def test_collect_evidence_takes_the_open_note_before_any_sibling(con, monkeypatch):
-    # PER_SOURCE_CAP (3) exists so no single note floods a VAULT-WIDE pack. The open note is
-    # the subject of every copilot question, so it must never be capped below the pack size.
-    class Hit:
-        def __init__(self, fragment_id, source_id, path):
-            self.fragment_id, self.source_id, self.path = fragment_id, source_id, path
-            self.title, self.heading_path, self.text = path, None, f"text {fragment_id}"
-
-    own = [Hit(f"own-{i}", "s1", "Notes/school/a.md") for i in range(12)]
-    sibling = [Hit(f"sib-{i}", "s2", "Notes/school/b.md") for i in range(12)]
-
-    def fake_hybrid(_con, _query, *, k, cap=context.search_mod.PER_SOURCE_CAP, prefixes):
-        per_source, out = {}, []
-        for hit in own + sibling:
-            if not any(context._matches(hit.path, prefix) for prefix in prefixes):
-                continue
-            per_source[hit.source_id] = per_source.get(hit.source_id, 0) + 1
-            if per_source[hit.source_id] <= cap:
-                out.append(hit)
-        return out[:k]
-
-    monkeypatch.setattr(context.search_mod, "hybrid", fake_hybrid)
-    monkeypatch.setattr(context, "scope_levels", lambda _path: [("folder", ("Notes/school",))])
-    evidence, levels = context.collect_evidence(
-        con, {"id": "s1", "path": "Notes/school/a.md"}, "summarize this note", limit=12)
-    assert [item["source_id"] for item in evidence] == ["s1"] * 12
-    assert levels == ["note"]
-
-
 def test_context_refresh_without_nearby_notes_still_embeds(con, vault, monkeypatch):
-    # The plugin re-syncs the open note before each question with related=False. The
-    # question's vector search then needs the edited fragments EMBEDDED — a fragment
-    # without a vector is invisible to retrieval (CLAUDE.md: `embed` is part of the order).
+    # The plugin re-syncs the open note before each question with related=False. The loop's
+    # search then needs the edited fragments EMBEDDED — a fragment without a vector is
+    # invisible to it (CLAUDE.md: `embed` is part of the order).
     embedded = []
     monkeypatch.setattr(context.embed_mod, "embed_source", lambda _con, sid: embedded.append(sid))
     write(vault, "Notes/school/lesson.md", "gradient descent")

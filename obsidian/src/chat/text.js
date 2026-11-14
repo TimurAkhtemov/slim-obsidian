@@ -19,18 +19,6 @@ function pathStem(path) {
   return name.replace(/\.md$/i, "");
 }
 
-// Frontmatter title, then the file name, then the path's last segment. The server already
-// sends titles with the source, the citations and the nearby notes; only a thread group
-// carries a bare path, frozen when the thread was created, so it may be stale.
-function noteTitle(app, path) {
-  const file = app?.vault?.getAbstractFileByPath?.(path);
-  if (file && file.extension) {
-    const title = app.metadataCache?.getFileCache?.(file)?.frontmatter?.title;
-    return (typeof title === "string" && title.trim()) || file.basename || pathStem(path);
-  }
-  return pathStem(path);
-}
-
 // One row per NOTE, in order of first appearance: [1]–[7] were one note, seven fragments.
 function groupCitations(citations) {
   const groups = new Map();
@@ -278,7 +266,7 @@ function editOutcome(run) {
     + `${left.length ? ` Not done: ${list}.` : ""}`;
 }
 
-module.exports = { threadRows, shortDate, pathStem, noteTitle, groupCitations, sha256Hex, slashQuery, matchSkills, mentionQuery, mentionMatches,
+module.exports = { threadRows, shortDate, pathStem, groupCitations, sha256Hex, slashQuery, matchSkills, mentionQuery, mentionMatches,
         inputsText, editorSelection, MAX_SELECTION_CHARS, MAX_EDIT_CHARS, looksLikeMath, normalizeMath,
         LIVE_RENDER_MS, quickOrDeep, metaText, stageLine, SUGGESTED_PROMPTS, titleFromQuestion, threadId,
         cancelledError, runCounts, historyText, STOPPED_BECAUSE, editOutcome };

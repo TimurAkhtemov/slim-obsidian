@@ -1,4 +1,4 @@
-"""Tool calls on the wire without streaming: the intent gate's request and the reply's parse. The
+"""Tool calls on the wire without streaming: the request and the reply's parse. The
 transport is faked: the properties under test are the request body and the parse, not the decode."""
 
 import io
@@ -28,7 +28,7 @@ def _capture(monkeypatch, reply: dict = REPLY):
 
 
 def test_chat_tools_without_tools_sends_the_format_and_every_bound(monkeypatch):
-    # The intent gate. A call WITH tools streams raw instead (tests/test_llm_wire.py).
+    # A call WITH tools streams raw instead (tests/test_llm_wire.py).
     sent = _capture(monkeypatch)
     schema = {"type": "object"}
     llm.chat_tools([{"role": "user", "content": "q"}], think=True, temperature=0.0,

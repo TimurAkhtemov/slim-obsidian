@@ -1,5 +1,6 @@
 """The editing run, ported from the measured prototype's loop tests: each runs a whole turn through
-run_turn against a note sent as the editor's text, with a scripted model."""
+run_turn against a note sent as the editor's text, with a scripted model. A plain turn is the loop's
+(its first call thinks and samples as Pi does; a step as measured); an edit skill runs on its own."""
 
 from pathlib import Path
 
@@ -10,12 +11,6 @@ from slim.copilot import blocks, context, edits, run as edit_run, turn as copilo
 from slim.index import chunk
 
 from .conftest import scripted
-
-
-@pytest.fixture(autouse=True)
-def gate_path(monkeypatch):
-    """These tests script the intent gate: they run the turn as it was before THE LOOP."""
-    monkeypatch.setattr(copilot_turn, "LOOP", False)
 
 
 @pytest.fixture
@@ -44,6 +39,7 @@ def write(root: Path, path: str, body: str) -> Path:
 NOTE = "# Title\n\nIntro para.\n\n## A\n\nText a.\n- one\n- two\n\n## B\n\nText b.\n"
 NOTE3 = "# Title\n\n## A\n\na\n\n## B\n\nb\n\n## C\n\nc\n"
 STEP_TOOLS = ["replace", "edit_text", "insert", "move"]
+LOOP_TOOLS = ["search", "read_note", "list_folder", "plan", *STEP_TOOLS, "create_note"]
 
 
 def flaky(monkeypatch, seen, *failing):
@@ -51,8 +47,6 @@ def flaky(monkeypatch, seen, *failing):
     real, count = copilot_turn.llm.chat_tools, [0]
 
     def chat_tools(messages, tools=None, **opts):
-        if opts.get("fmt") is not None:          # the gate is not counted
-            return real(messages, tools, **opts)
         count[0] += 1
         if count[0] in failing:
             raise llm.LLMError("ollama rejected the call: HTTP 500 — XML syntax error on line 10")
@@ -65,9 +59,6 @@ def flaky(monkeypatch, seen, *failing):
 def turn(con, vault, monkeypatch):
     """run_turn on a note holding `text`, sent as the editor's text and its hash. Returns the
     turn, and every on_edit event as (event, payload)."""
-    monkeypatch.setattr(context.search_mod, "hybrid", lambda *a, **k: [])
-    monkeypatch.setattr(copilot_turn.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
-
     def go(question, *, text=NOTE, path="Notes/school/n.md", mode="quick", history=(),
            should_stop=lambda: False, selection="", doc=True):
         target = vault / path
@@ -92,45 +83,19 @@ def _final(text, result):
     return text
 
 
-def test_a_text_reply_is_an_answer_with_sources_and_nothing_changes(turn, monkeypatch):
-    seen = scripted(monkeypatch, ("Lexical ambiguity is…", []), intent=False)
-    asked = []
-    monkeypatch.setattr(copilot_turn.llm, "chat_json",
-                        lambda messages, schema, **k: asked.append(messages) or ({"notes": [1]}, {}))
-    got, events = turn("What is lexical ambiguity?")
-    assert got["answer"] == "Lexical ambiguity is…" and got["edit_run"] is None and events == []
-    assert seen[0]["stream"] and seen[0]["tools"] == [] and len(seen) == 1
-    assert [c["path"] for c in got["citations"]] == ["Notes/school/n.md"]
-    (sources,) = asked                                     # the Ask path's sources call, on the same prefix
-    assert sources[-2] == {"role": "assistant", "content": "Lexical ambiguity is…"}
-    assert sources[:-2] == seen[0]["messages"]
-
-
-def test_an_answer_reaches_the_chat_through_on_delta(con, vault, monkeypatch):
-    write(vault, "Notes/school/lesson.md", "gradient descent")
-    source = context.sync_note(con, vault, "Notes/school/lesson.md", embed=False)
-    monkeypatch.setattr(context.search_mod, "hybrid", lambda *a, **k: [])
-    monkeypatch.setattr(copilot_turn.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
-    scripted(monkeypatch, ("It descends.", []), intent=False)
-    deltas, stages = [], []
-    copilot_turn.run_turn(con, source["path"], "What is it?", [], "quick", vault=vault,
-                          on_delta=deltas.append, on_stage=stages.append)
-    assert deltas == ["It descends."] and stages[0] == "Writing"
-
-
-def test_a_change_turn_carries_the_rider_and_the_note_with_handles(turn, monkeypatch):
-    seen = scripted(monkeypatch, ("", [("replace", {"target": "b3", "markdown": "## A2"})]))
-    turn("q", history=[{"role": "you", "text": "hi"}, {"role": "slim", "text": "hello"}])
+def test_an_edit_skill_carries_the_rider_and_the_note_with_handles(turn, monkeypatch):
+    seen = scripted(monkeypatch, ("", [("replace", {"target": "b5", "markdown": "- **one**"})]))
+    turn("/tidy", selection="- one", history=[{"role": "you", "text": "hi"}, {"role": "slim", "text": "hello"}])
     system, *rest = seen[0]["messages"]
     assert system["content"] == copilot_turn.PERSONA + "\n\n" + copilot_turn.EDIT_RIDER + "\n\n" + (
         "Notes in view:\n\n=== Notes/school/n.md · the open note ===\nSections:\n"
         "s1  b1–b8  # Title\n  s3  b3–b6  ## A\n  s7  b7–b8  ## B\n\n[b1] # Title\n\n[b2] Intro para.\n\n"
         "[b3] ## A\n\n[b4] Text a.\n[b5] - one\n[b6] - two\n\n[b7] ## B\n\n[b8] Text b.\n")
-    assert [m["role"] for m in rest] == ["user", "assistant", "user"] and rest[-1]["content"] == "q"
+    assert [m["role"] for m in rest] == ["user", "assistant", "user"]
+    assert rest[-1]["content"].endswith("Selected text:\n- one")
     opts = seen[0]["opts"]
     assert opts["think"] is False and opts["temperature"] == edit_run.STEP_TEMPERATURE == 0.0
     assert opts["num_predict"] == copilot_turn.QUICK_NUM_PREDICT >= edit_run.STEP_NUM_PREDICT
-    assert copilot_turn.INTENT_GATE is True
 
 
 def test_the_rider_is_the_measured_one():
@@ -141,9 +106,9 @@ def test_the_rider_is_the_measured_one():
     assert "the note's headings in their final order (each with its # marks)" in copilot_turn.EDIT_RIDER
 
 
-def test_deep_gives_the_first_edit_call_room_to_think(turn, monkeypatch):
-    seen = scripted(monkeypatch, ("", [("replace", {"target": "b3", "markdown": "## A2"})]))
-    turn("q", mode="deep")
+def test_deep_gives_an_edit_skills_first_call_room_to_think(turn, monkeypatch):
+    seen = scripted(monkeypatch, ("", [("replace", {"target": "b5", "markdown": "- **one**"})]))
+    turn("/tidy", selection="- one", mode="deep")
     assert seen[0]["opts"]["think"] is True
     assert seen[0]["opts"]["num_predict"] == copilot_turn.QUICK_NUM_PREDICT + edit_run.THINK_BUDGET
     assert edit_run.THINK_BUDGET == 8192
@@ -175,19 +140,20 @@ def test_a_plan_streams_its_events_in_order_and_returns_the_run(turn, monkeypatc
     assert run["summary"] == "Rename A and move B up." and got["answer"] == run["summary"]
     assert got["final"].index("## B") < got["final"].index("## A renamed")
     assert run["hash_before"] == edits.digest(NOTE) and run["hash_after"] == edits.digest(got["final"])
-    assert [c["tools"] for c in seen] == [["plan", *STEP_TOOLS]] * 3     # one list; no summary call
+    assert [c["tools"] for c in seen] == [LOOP_TOOLS] * 3     # one list; no summary call
     assert "Step 2 of 2: Move B above A" in seen[2]["messages"][-1]["content"]
     assert seen[0]["opts"]["think"] is True and seen[1]["opts"]["think"] is False
-    assert seen[0]["opts"]["temperature"] == seen[1]["opts"]["temperature"] == edit_run.STEP_TEMPERATURE == 0.0
+    assert seen[0]["opts"]["temperature"] == copilot_turn.LOOP_TEMPERATURE
+    assert seen[1]["opts"]["temperature"] == edit_run.STEP_TEMPERATURE == 0.0
     assert seen[1]["opts"]["num_predict"] == edit_run.STEP_NUM_PREDICT == 2048
-    assert got["citations"] == []                          # an edit makes no sources call
+    assert got["citations"] == []                          # nothing looked up, nothing to cite
 
 
 def test_the_run_holds_the_model_lock_across_its_calls(turn, monkeypatch):
     seen = scripted(monkeypatch, ("", [("plan", {"intro": "x", "steps": ["Rename A"]})]),
                     ("", [("replace", {"target": "b3", "markdown": "## A renamed"})]))
     turn("rename A")
-    assert [call["held"] for call in seen.gate + seen] == [True, True, True]
+    assert [call["held"] for call in seen] == [True, True]
     assert not llm._CALL_LOCK.locked()
 
 
@@ -281,7 +247,7 @@ def test_a_first_reply_with_only_done_is_asked_for_a_plan_once_then_answers(turn
     got, events = turn("what is A?")
     assert seen[1]["messages"][-1] == {"role": "tool", "content": "refused: start with a plan\n\nMake the plan first: "
                                                                   "one sentence for the owner, and the steps in order."}
-    assert seen[0]["opts"]["temperature"] == seen[1]["opts"]["temperature"] == 0.0     # the re-ask's too
+    assert seen[0]["opts"]["temperature"] == seen[1]["opts"]["temperature"] == copilot_turn.LOOP_TEMPERATURE
     assert got["edit_run"] is None and got["answer"] == "A is the first section." and events == []
 
 
@@ -401,10 +367,11 @@ def test_a_heading_at_another_level_is_not_missing(turn, monkeypatch):
 
 
 def test_the_token_budget_stops_the_run_after_the_reply_that_crosses_it(turn, monkeypatch):
+    # The first call thinks, so the run's budget is RUN_OUTPUT_TOKENS and its allowance.
     seen = scripted(monkeypatch,
                     ("", [("plan", {"intro": "x", "steps": ["Rename A", "Move B", "Rename B"]})], 100),
                     ("", [("replace", {"target": "b3", "markdown": "## A renamed"})], 5000),
-                    ("", [("move", {"target": "s7", "before": "s3"})], 8000))
+                    ("", [("move", {"target": "s7", "before": "s3"})], 8000 + edit_run.THINK_BUDGET))
     got, _ = turn("go")
     run = got["edit_run"]
     assert run["stopped"] == "token budget" and len(seen) == 3 and run["summary"] == ""
@@ -414,7 +381,7 @@ def test_the_token_budget_stops_the_run_after_the_reply_that_crosses_it(turn, mo
 
 def test_a_runaway_reply_with_no_calls_stops_the_run_at_once(turn, monkeypatch):
     seen = scripted(monkeypatch, ("", [("plan", {"intro": "x", "steps": ["Simplify"]})], 300),
-                    ("A very long explanation with no tool calls …", [], 12500))
+                    ("A very long explanation with no tool calls …", [], 12500 + edit_run.THINK_BUDGET))
     got, _ = turn("simplify")
     assert got["edit_run"]["stopped"] == "token budget" and len(seen) == 2 and got["final"] == NOTE
 
@@ -462,18 +429,9 @@ def test_a_recordings_own_parts_are_refused(turn, monkeypatch):
                     ("", [("replace", {"target": "b4", "markdown": "## Transcript\n\nMe: bye"})]),
                     ("", [("replace", {"target": "b3", "markdown": "One line."})]))
     got, _ = turn("shorten", text=memo, path="Capture/call.md")
-    assert "[locked] ## Transcript" in seen[0]["messages"][0]["content"]
+    assert "[locked] ## Transcript" in seen[0]["messages"][-1]["content"]
     assert "b4 is part of the recording; SLIM never edits it" in seen[2]["messages"][-1]["content"]
     assert got["final"] == memo.replace("one\n", "One line.\n")
-
-
-def test_an_overflowing_first_call_is_refused_before_anything_lands(turn, monkeypatch):
-    def saturated(messages, tools=None, **opts):
-        return ({"content": "", "tool_calls": [{"name": "replace", "arguments": {"target": "b3", "markdown": "x"}}],
-                 "raw_tool_calls": []}, {"ctx_saturated": True})
-    monkeypatch.setattr(copilot_turn.llm, "chat_tools", saturated)
-    with pytest.raises(copilot_turn.CopilotError, match="too long for one request"):
-        turn("fix it")
 
 
 def test_an_edit_turn_writes_machine_facts_to_the_trace(turn, monkeypatch):
@@ -491,100 +449,23 @@ def test_an_edit_turn_writes_machine_facts_to_the_trace(turn, monkeypatch):
     assert facts["calls"] == 4 and facts["model_calls"] == 4 and facts["refusals"] == ["handle", "handle"]
     assert facts["stopped"] is None and facts["outline_met"] is None
     assert [t["output_tokens"] for t in facts["timing"]] == [10, 10, 10, 10]
-    assert payload["intent"] is True and payload["timing"]["gate"] == {"output_tokens": 5}
     assert "Text b" not in str(payload) and "A2" not in str(payload)       # facts, never the note's words
 
 
-# --- the intent gate: one small structured call decides whether this turn may edit -----------
-
-ANSWER = "## Proposed Structure\n\n1. Rename A\n2. Move B up"
-
-
-def test_the_gate_sees_only_its_own_question_slims_last_answer_and_the_message(turn, monkeypatch):
-    seen = scripted(monkeypatch, ("A is the first section.", []), intent=False)
-    history = [{"role": "you", "text": "How could this note be organised?"}, {"role": "slim", "text": ANSWER},
-               {"role": "you", "text": "a question that failed"}]
-    turn("Ok make the revisions", history=history)
-    (gate,) = seen.gate
-    assert gate["messages"] == [
-        {"role": "system", "content": "You decide whether the owner's last message asks to change the note "
-                                      "they have open. Reply with JSON only."},
-        {"role": "assistant", "content": ANSWER},
-        {"role": "user", "content": "Ok make the revisions"}]
-    assert gate["tools"] is None and gate["held"] is True              # no note, no evidence, no tools
-    assert gate["opts"] == {"think": False, "temperature": 0.0, "num_predict": 20, "fmt": copilot_turn.GATE_SCHEMA}
-    seen = scripted(monkeypatch, ("Answer.", []), intent=False)
-    turn("What is A?")
-    assert seen.gate[0]["messages"][1:] == [{"role": "user", "content": "What is A?"}]   # no history: no answer
-
-
-def test_no_change_wanted_is_todays_ask_path(turn, monkeypatch):
-    seen = scripted(monkeypatch, ("Lexical ambiguity is…", []), intent=False)
-    asked = []
-    monkeypatch.setattr(copilot_turn.llm, "chat_json",
-                        lambda messages, schema, **k: asked.append(messages) or ({"notes": [1]}, {}))
-    records = []
-    monkeypatch.setattr(copilot_turn.trace, "record", lambda kind, payload: records.append(payload))
-    got, events = turn("What is lexical ambiguity?")
-    (first,) = seen
-    system = first["messages"][0]["content"]
-    assert first["stream"] and system.startswith(copilot_turn.PERSONA + "\n\n" + copilot_turn.ASK_RIDER)
-    assert "[b" not in system and "Sections:" not in system and copilot_turn.EDIT_RIDER not in system
-    assert "Intro para." in system                                    # the passages retrieval found
-    assert first["opts"]["temperature"] == llm.REPLY_TEMPERATURE and first["opts"]["num_predict"] == \
-        copilot_turn.QUICK_NUM_PREDICT
-    assert got["deltas"] == ["Lexical ambiguity is…"] and got["edit_run"] is None and events == []
-    assert asked and asked[0][:-2] == first["messages"]               # the sources call, on its prefix
-    assert [c["path"] for c in got["citations"]] == ["Notes/school/n.md"]
-    assert records[-1]["intent"] is False and records[-1]["status"] == "answered"
-    assert records[-1]["timing"]["gate"] == {"output_tokens": 5} and "prompt_tokens" in records[-1]["gate"]
-
-
-def test_a_wanted_change_is_offered_the_tools_at_temperature_zero_and_a_text_reply_is_nudged_once(turn, monkeypatch):
-    seen = scripted(monkeypatch, ("I would rename it.", []), ("Still only text.", []))
-    got, events = turn("rename A")
-    assert [c["tools"] for c in seen] == [["plan", *STEP_TOOLS]] * 2
-    assert [c["opts"]["temperature"] for c in seen] == [0.0, 0.0] and "on_delta" not in seen[0]["opts"]
-    assert seen[1]["messages"][-1] == {"role": "user", "content": "Use the tools to make the change."}
-    assert got["answer"] == "Still only text." and got["edit_run"] is None and events == []
-    assert got["deltas"] == ["Still only text."]               # said once, whole
-    seen = scripted(monkeypatch, ("I would rename it.", []),
-                    ("", [("replace", {"target": "b3", "markdown": "## A renamed"})]))
-    got, _ = turn("rename A")
-    assert "## A renamed" in got["final"] and len(seen) == 2
-
-
-@pytest.mark.parametrize("intent", ["error", "yes, please", '{"change_note": "yes"}'])
-def test_a_gate_that_fails_or_cannot_tell_counts_as_a_change(turn, monkeypatch, intent):
-    records = []
-    monkeypatch.setattr(copilot_turn.trace, "record", lambda kind, payload: records.append(payload))
-    seen = scripted(monkeypatch, ("", [("replace", {"target": "b3", "markdown": "## A renamed"})]), intent=intent)
-    got, _ = turn("rename A")
-    assert seen[0]["tools"] == ["plan", *STEP_TOOLS] and seen[0]["opts"]["temperature"] == 0.0
-    assert "## A renamed" in got["final"] and records[-1]["intent"] is None
-
+# --- an edit skill, and a turn stopped before it began --------------------------------------------
 
 def test_an_edit_skill_is_a_wanted_change_without_asking(turn, monkeypatch):
     seen = scripted(monkeypatch, ("", [("replace", {"target": "b5", "markdown": "- **one**"})]))
     turn("/tidy", selection="- one")
-    assert seen.gate == [] and seen[0]["tools"] == ["plan", "replace", "edit_text"]
+    assert len(seen) == 1 and seen[0]["tools"] == ["plan", "replace", "edit_text"]
     assert seen[0]["opts"]["temperature"] == 0.0
 
 
-def test_with_the_gate_off_every_turn_may_edit_at_the_reply_temperature(turn, monkeypatch):
-    monkeypatch.setattr(copilot_turn, "INTENT_GATE", False)
-    seen = scripted(monkeypatch, ("A is the first section.", []))
-    got, _ = turn("what is A?")
-    assert seen.gate == [] and len(seen) == 1 and seen[0]["tools"] == ["plan", *STEP_TOOLS]
-    assert seen[0]["opts"]["temperature"] == edit_run.FIRST_TEMPERATURE and not seen[0]["stream"]
-    assert got["answer"] == "A is the first section." and got["deltas"] == ["A is the first section."]
-
-
-def test_a_turn_stopped_before_the_gate_makes_no_call(turn, monkeypatch):
+def test_a_turn_stopped_before_its_first_call_makes_none(turn, monkeypatch):
     seen = scripted(monkeypatch, ("never", []))
     with pytest.raises(copilot_turn.CopilotError, match="stopped"):
         turn("What is A?", should_stop=lambda: True)
-    assert seen == [] and seen.gate == []
+    assert seen == []
 
 
 # --- a plan written as prose, with the first change made at once --------------------------------
@@ -630,14 +511,13 @@ def test_list_items_in_any_marker_make_the_steps_and_the_first_sentence_the_intr
 
 def test_every_call_in_a_run_is_offered_the_same_tools_in_the_same_order(turn, monkeypatch):
     plan = {"intro": "x", "outline": ["# Title", "## A", "## B", "## C"], "steps": ["Rename A", "Add C"]}
-    seen = scripted(monkeypatch, ("Text first.", []),                                   # nudged
-                    ("", [("plan", plan)]),
+    seen = scripted(monkeypatch, ("", [("plan", plan)]),
                     ("", [("replace", {"target": "b99", "markdown": "x"})]),               # refused: retried
                     ("", [("plan", plan), ("replace", {"target": "b3", "markdown": "## A"})]),  # plan restated
                     ("", [("insert", {"after": "s7", "markdown": "## C"})]))               # step 2
     got, _ = turn("reorder")
-    assert len(seen) == 5 and [c["tools"] for c in seen] == [["plan", *STEP_TOOLS]] * 5
-    assert any(m.get("content", "").startswith("ok: the plan is already set") for m in seen[4]["messages"])
+    assert len(seen) == 4 and [c["tools"] for c in seen] == [LOOP_TOOLS] * 4
+    assert any(m.get("content", "").startswith("ok: the plan is already set") for m in seen[3]["messages"])
     assert got["edit_run"]["outline_met"] is True
 
 
@@ -757,30 +637,15 @@ def test_two_edits_beside_a_four_item_plan_count_as_its_first_two_steps(turn, mo
     assert got["edit_run"]["steps_done"] == 4
 
 
-# --- M1: only a gate that said "change" nudges a text reply ------------------------------------
+# --- M2: thinking has its own allowance, beside the run's budget ---------------------------------
 
-@pytest.mark.parametrize("intent", ["error", "not json"])
-def test_a_gate_that_could_not_tell_lets_a_text_reply_stand_as_the_answer(turn, monkeypatch, intent):
-    seen = scripted(monkeypatch, ("A is the first section.", []), intent=intent)
-    got, events = turn("what is A?")
-    assert len(seen) == 1 and seen[0]["tools"] == ["plan", *STEP_TOOLS]
-    assert got["answer"] == "A is the first section." and got["deltas"] == ["A is the first section."]
-    assert got["edit_run"] is None and events == []
-
-
-# --- M2: Deep's thinking has its own allowance, beside the run's budget ---------------------------
-
-def test_deeps_thinking_does_not_eat_the_steps_budget(turn, monkeypatch):
-    def run(mode):
-        seen = scripted(monkeypatch, ("", [("plan", {"intro": "x", "steps": ["Rename A", "Rename B"]})], 9000),
-                        ("", [("replace", {"target": "b3", "markdown": "## A2"})], 4000),
-                        ("", [("replace", {"target": "b7", "markdown": "## B2"})], 500))
-        got, _ = turn("rename both", mode=mode)
-        return got["edit_run"], len(seen)
-    quick, calls = run("quick")
-    assert quick["stopped"] == "token budget" and calls == 2
-    deep, calls = run("deep")
-    assert deep["stopped"] is None and calls == 3 and len(deep["changes"]) == 2
+@pytest.mark.parametrize("mode", ["quick", "deep"])
+def test_the_first_calls_thinking_does_not_eat_the_steps_budget(turn, monkeypatch, mode):
+    seen = scripted(monkeypatch, ("", [("plan", {"intro": "x", "steps": ["Rename A", "Rename B"]})], 9000),
+                    ("", [("replace", {"target": "b3", "markdown": "## A2"})], 4000),
+                    ("", [("replace", {"target": "b7", "markdown": "## B2"})], 500))
+    got, _ = turn("rename both", mode=mode)
+    assert got["edit_run"]["stopped"] is None and len(seen) == 3 and len(got["edit_run"]["changes"]) == 2
     assert edit_run.RUN_OUTPUT_TOKENS + edit_run.THINK_BUDGET == 20192
 
 
@@ -798,7 +663,7 @@ def test_a_step_whose_prompt_overflowed_stops_the_run_before_its_calls_land(turn
     monkeypatch.setattr(copilot_turn.llm, "chat_tools", chat_tools)
     got, _ = turn("rename all")
     run = got["edit_run"]
-    assert run["stopped"] == "error: the note no longer fits the model's window" and len(seen) == 3
+    assert run["stopped"] == "error: the conversation no longer fits the model's window" and len(seen) == 3
     assert [c["label"] for c in run["changes"]] == ["Renamed “A” to “A2”"]    # step 2's call never landed
 
 
@@ -808,16 +673,14 @@ def test_a_note_too_long_for_the_window_is_refused_before_its_edit_call(turn, mo
     with pytest.raises(copilot_turn.CopilotError, match="too long for one request"):
         turn("rename A")
     assert seen == []
-# --- M5: a note too big to edit here can still be asked about -----------------------------------
+# --- M5: a note too big to edit here can still be asked about (test_loop.py); a skill refuses it -----
 
-def test_a_question_about_a_note_too_big_to_edit_is_answered(turn, monkeypatch):
+def test_an_edit_skill_refuses_a_note_too_big_to_edit(turn, monkeypatch):
     monkeypatch.setattr(edits, "MAX_EDIT_CHARS", 40)
-    scripted(monkeypatch, ("A is the first section.", []), intent=False)
-    got, _ = turn("what is A?")
-    assert got["answer"] == "A is the first section."
-    scripted(monkeypatch, ("never", []))
+    seen = scripted(monkeypatch, ("never", []))
     with pytest.raises(copilot_turn.CopilotError, match=r"this note is too long to edit here \(over 40 characters\)"):
-        turn("rename A")
+        turn("/tidy", selection="- one")
+    assert seen == []
 
 
 # --- what the owner reads never names a handle; no calls after the steps; steps keep their work ---
@@ -916,22 +779,15 @@ def streamed(monkeypatch, *replies, order=None):
 def wired(monkeypatch, *replies, size=3):
     """The model as the raw call hears it: each reply's text read by the real llm.chat_tools (its
     reply read by llm_render._Reader; the server's prompt faked), a few characters at a time."""
-    real = llm.chat_tools
-    seen = scripted(monkeypatch)
-    gate, pending = copilot_turn.llm.chat_tools, list(replies)
+    pending = list(replies)
 
     def generate(body, on_chunk, should_stop, timeout):
         text = pending.pop(0)
         for i in range(0, len(text), size):
             on_chunk(text[i:i + size])
         return {"stop": True, "stop_type": "eos", "timings": {"predicted_n": 10}}
-
-    def chat_tools(messages, tools=None, **opts):
-        return gate(messages, tools, **opts) if opts.get("fmt") is not None else real(messages, tools, **opts)
     monkeypatch.setattr(copilot_turn.llm, "_post", lambda url, body, model, timeout: {"prompt": ""})
     monkeypatch.setattr(copilot_turn.llm, "_generate", generate)
-    monkeypatch.setattr(copilot_turn.llm, "chat_tools", chat_tools)
-    return seen
 
 
 def test_a_call_that_turns_into_text_ends_its_draft_and_the_next_call_drafts_afresh(turn, monkeypatch):

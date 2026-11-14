@@ -6,7 +6,7 @@ import "../copilot-harness.mjs";
 
 const require = createRequire(import.meta.url);
 const { editorSelection, groupCitations, threadRows, inputsText, matchSkills, normalizeMath,
-        noteTitle, slashQuery } = require("../../src/chat/text.js");
+        slashQuery } = require("../../src/chat/text.js");
 
 test("thread rows are one flat list, newest first", () => {
   const threads = [
@@ -43,20 +43,6 @@ test("citations group by note in order of first appearance", () => {
   ]);
   assert.deepEqual(groups.map((group) => [group.title, group.ns]),
     [["Introduction to NLP", [1, 2, 4]], ["Word embeddings", [3]]]);
-});
-
-test("a note title comes from the frontmatter, then the file name, then the path", () => {
-  const file = { path: "Notes/nlp/Word embeddings.md", basename: "Word embeddings", extension: "md" };
-  const folder = { path: "Notes/nlp", name: "nlp" };
-  const app = {
-    vault: { getAbstractFileByPath: (p) => (p === file.path ? file : p === folder.path ? folder : null) },
-    metadataCache: { getFileCache: () => ({ frontmatter: { title: "Embeddings, week 3" } }) },
-  };
-  assert.equal(noteTitle(app, file.path), "Embeddings, week 3");
-  app.metadataCache.getFileCache = () => null;
-  assert.equal(noteTitle(app, file.path), "Word embeddings");
-  assert.equal(noteTitle(app, folder.path), "nlp");                // a folder has no cache
-  assert.equal(noteTitle({ workspace: {} }, "Notes/gone/Old note.md"), "Old note");
 });
 
 // ---- skills ----------------------------------------------------------------------------------

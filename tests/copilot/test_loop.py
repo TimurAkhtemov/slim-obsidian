@@ -67,17 +67,13 @@ def ask(con, vault):
     return go
 
 
-def test_loop_is_on():
-    assert copilot_turn.LOOP is True
-
-
 def test_question_about_open_note_needs_no_tools(ask, monkeypatch):
     seen = scripted(monkeypatch, ("It introduces A.", []))
     got = ask("what is this note about?")
     assert got["answer"] == "It introduces A." and got["edit_run"] is None
     assert got["deltas"] == ["It introduces A."]                # streamed as it decoded, said once
     assert got["looked_up"] == [] and got["citations"] == [] and len(seen) == 1
-    assert seen[0]["opts"]["temperature"] == copilot_turn.LOOP_TEMPERATURE == 1.0 and not seen.gate
+    assert seen[0]["opts"]["temperature"] == copilot_turn.LOOP_TEMPERATURE == 1.0
 
 
 def test_lookup_then_answer(ask, con, vault, monkeypatch):
@@ -261,18 +257,6 @@ def test_the_trace_names_what_was_looked_up_and_the_open_path(ask, monkeypatch):
     assert looked["said"].startswith("refused: there is no note")
 
 
-def test_gate_path_when_loop_off(con, vault, monkeypatch):
-    monkeypatch.setattr(copilot_turn, "LOOP", False)
-    monkeypatch.setattr(context.search_mod, "hybrid", lambda *a, **k: [])
-    monkeypatch.setattr(copilot_turn.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
-    put(con, vault, OPEN, NOTE)
-    seen = scripted(monkeypatch, ("An answer.", []), intent=False)
-    got = copilot_turn.run_turn(con, OPEN, "what?", [], "quick", vault=vault)
-    assert len(seen.gate) == 1 and seen[0]["stream"] and got["answer"] == "An answer."
-    with pytest.raises(copilot_turn.CopilotError):
-        copilot_turn.run_turn(con, None, "what?", [], "quick", vault=vault)
-
-
 def test_a_lookup_inside_a_step_runs_and_the_step_goes_on(ask, con, vault, monkeypatch):
     put(con, vault, "Notes/school/b.md", "# B\n\nBee facts.\n")
     seen = scripted(monkeypatch,
@@ -382,15 +366,20 @@ def test_one_system_message_and_tool_list_whatever_is_open(ask, monkeypatch):
     assert len({c["messages"][0]["content"] for c in seen[:4]}) == 1
     assert all(c["tools"] == ALL_TOOLS for c in seen[:4])
     assert seen[4]["tools"] == LOOKUPS
-    assert "[b2]" not in seen[3]["messages"][-1]["content"]       # shown without handles
+    # Over the edit limit, the model is shown the note's text whole, with no handles to point at.
+    assert seen[3]["messages"][-1]["content"] == f"=== {OPEN} · the open note ===\n{NOTE.rstrip()}\n\n---\n\nq"
 
 
-@pytest.mark.parametrize("open_path, text, doc, said", [
-    (None, None, True, "refused: no note is open to change"),
-    (OPEN, CRLF, False, "refused: this note can't be changed here; give the text to paste"),
+@pytest.mark.parametrize("open_path, text, doc, said, limit", [
+    (None, None, True, "refused: no note is open to change", None),
+    (OPEN, CRLF, False, "refused: this note can't be changed here; give the text to paste", None),
+    # over the plugin's edit limit, sent without the editor's text
+    (OPEN, NOTE, False, "refused: this note can't be changed here; give the text to paste", 20),
 ])
 def test_an_edit_call_with_no_editable_note_is_refused_and_the_turn_answers(
-        ask, monkeypatch, open_path, text, doc, said):
+        ask, monkeypatch, open_path, text, doc, said, limit):
+    if limit:
+        monkeypatch.setattr(edits, "MAX_EDIT_CHARS", limit)
     records = []
     monkeypatch.setattr(copilot_turn.trace, "record", lambda kind, payload: records.append(payload))
     seen = scripted(monkeypatch, ("", [("replace", {"target": "b2", "markdown": "New."})]),

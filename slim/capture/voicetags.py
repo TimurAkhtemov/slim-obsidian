@@ -23,8 +23,8 @@ ROUTING_TYPES = (JOURNAL, MEETING, LECTURE, IDEA, NOTE)
 # (measured 2026-08-03). Type, year and course live in frontmatter, where they are queryable.
 NAMESPACE = "Capture"
 
-# The floor is its own top-level, a SIBLING of Capture/ rather than a hole punched inside it,
-# so the protection is structural rather than a rule that has to out-rank another rule.
+# The floor is its own top-level, a SIBLING of Capture/ rather than a hole punched inside it:
+# a journal is filed there flat, and no route carries a note out of it (test-enforced).
 JOURNAL_FOLDER = "Journal"
 
 # An unknown subject gets the sentinel, never a bare `Capture/note.md`. This is what makes the

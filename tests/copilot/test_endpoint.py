@@ -346,31 +346,21 @@ def a_note(tmp_path, monkeypatch):
     (vault / "Notes").mkdir(parents=True)
     (vault / "Notes/n.md").write_text(NOTE, encoding="utf-8")
     monkeypatch.setattr(config, "VAULT", vault)
-    monkeypatch.setattr(context.search_mod, "hybrid", lambda *a, **k: [])
-    monkeypatch.setattr(copilot_turn.llm, "chat_json", lambda *a, **k: ({"notes": []}, {}))
     monkeypatch.setattr(context.embed_mod, "embed_source", lambda *a, **k: {"embedded": 0})
     con = db.connect()
     source = context.sync_note(con, vault, "Notes/n.md", embed=False)
     con.close()
 
-    def script(*replies, intent=True):
+    def script(*replies):
         def chat_tools(messages, tools=None, **opts):
-            if opts.get("fmt") is not None:    # the intent gate
-                return {"content": json.dumps({"change_note": intent}), "tool_calls": [], "raw_tool_calls": []}, {}
             content, calls = replies[script.calls]
             script.calls += 1
             if opts.get("on_part") and content:
                 opts["on_part"]("reply", -1, None, content)
             return ({"content": content, "tool_calls": [{"name": n, "arguments": a} for n, a in calls],
                      "raw_tool_calls": []}, {"duration_s": 1, "output_tokens": 5})
-        def chat_stream(messages, **opts):     # today's Ask path
-            content, _calls = replies[script.calls]
-            script.calls += 1
-            opts["on_delta"](content)
-            return content, {"duration_s": 1}
         script.calls = 0
         monkeypatch.setattr(copilot_turn.llm, "chat_tools", chat_tools)
-        monkeypatch.setattr(copilot_turn.llm, "chat_stream", chat_stream)
     return source, script
 
 
@@ -433,16 +423,6 @@ def test_a_new_call_in_a_turn_resets_the_streamed_text(server_url, a_note):
     assert events[-1][1]["tools"] == [tool]                      # the saved turn shows it again
 
 
-def test_the_gate_path_answers_as_before_when_the_loop_is_off(server_url, a_note, monkeypatch):
-    monkeypatch.setattr(copilot_turn, "LOOP", False)
-    source, script = a_note
-    script(("It is a note.", []), intent=False)
-    _status, _headers, body = stream(server_url, source, "what is this?")
-    events = events_of(body)
-    assert [e for e, _ in events] == ["stage", "delta", "stage", "turn"]
-    assert events[1][1] == {"text": "It is a note."} and events[2][1] == {"stage": "Noting sources"}
-
-
 def test_a_doc_hash_that_does_not_match_reaches_the_plugin_as_an_error(server_url, a_note):
     source, script = a_note
     script(("never", []))
@@ -452,14 +432,13 @@ def test_a_doc_hash_that_does_not_match_reaches_the_plugin_as_an_error(server_ur
 
 
 def test_a_doc_too_large_to_edit_is_still_asked_about_and_one_not_text_is_refused(server_url, a_note, monkeypatch):
-    monkeypatch.setattr(copilot_turn, "LOOP", False)          # the gate path's refusal; the loop reads by section
     source, script = a_note
     monkeypatch.setattr(edits, "MAX_EDIT_CHARS", 10)
-    script(("It is a note.", []), intent=False)
-    status, _headers, body = stream(server_url, source, "q")
-    assert status == 200 and events_of(body)[-1][0] == "turn"
+    script(("It is a note.", []))
+    status, _headers, body = stream(server_url, source, "q", doc=None, doc_hash=None)   # the plugin sends none
+    assert status == 200 and events_of(body)[-1][1]["answer"] == "It is a note."
     script(("never", []))
-    _status, _headers, body = stream(server_url, source, "rename A")
+    _status, _headers, body = stream(server_url, source, "/tidy", selection="Intro para.", doc=None, doc_hash=None)
     assert events_of(body) == [("error", {"error": "this note is too long to edit here (over 10 characters)"})]
     status, _headers, body = stream(server_url, source, "q", doc=5)
     assert status == 400 and "doc" in json.loads(body)["error"]
@@ -493,8 +472,6 @@ def test_a_client_that_hangs_up_stops_the_run_after_the_current_call(server_url,
     scripted = copilot_turn.llm.chat_tools
 
     def chat_tools(messages, tools=None, **opts):
-        if opts.get("fmt") is not None:        # the intent gate
-            return scripted(messages, tools, **opts)
         if len(real) == 2:                     # the third call waits until the client has gone
             inside.set()
             hung_up.wait(5)
@@ -538,7 +515,7 @@ def test_a_client_that_hangs_up_stops_the_run_after_the_current_call(server_url,
 
 def test_a_delta_to_a_closed_client_never_raises_into_the_models_stream(server_url, monkeypatch):
     """A write into a closed socket raised BrokenPipe inside the model's stream, which read as a
-    failed call and was retried. In THE LOOP the delta is quiet and should_stop() says stop."""
+    failed call and was retried. The delta is quiet and should_stop() says stop."""
     import socket
     from urllib.parse import urlparse
 

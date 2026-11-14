@@ -30,9 +30,10 @@ DEEP_THINK_BUDGET = 16_384
 # (MAX_CALLS and MAX_REFUSALS usually end it far sooner.)
 MAX_THINKING_CALLS = 8
 RUN_OUTPUT_TOKENS = 12_000       # the reply that crosses it is used, then the run stops (one ran to 25k)
-STEP_TEMPERATURE = 0.0           # a step, and any call that makes a wanted change, writes at 0.0
+# A step, and an edit skill's first call, writes at 0.0: retyping at 0.7 drifted (a plural
+# dropped, quotes straightened).
+STEP_TEMPERATURE = 0.0
 STEP_TOOLS = ("replace", "edit_text", "insert", "move")
-NUDGE = "Use the tools to make the change."
 FIRST_TEMPERATURE = llm.REPLY_TEMPERATURE
 ONE_REPLY = "(done in one reply)"      # the one step of a run whose first reply made its change
 # Lookups (`lookup.py`) before a turn's first answer, plan or edit. Past this they are refused, and
@@ -400,7 +401,7 @@ def _tool_label(name: str, args, lookups: lookup_mod.Reader, plain) -> str:
 
 def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tuple[str, ...],
           note: blocks.Note | None, before_text: str, only: set[str] | None = None, create=None,
-          temperature: float = FIRST_TEMPERATURE, first_predict: int, nudge: bool = False, on_edit,
+          temperature: float = FIRST_TEMPERATURE, first_predict: int, on_edit,
           should_stop, on_stage=lambda _name: None, lookups: lookup_mod.Reader | None = None,
           on_reply=None, no_edit: str | None = None, looked_up: list | None = None,
           on_reset=None, fits=None, too_long: str = NOTE_TOO_LONG, think_budget: int = THINK_BUDGET,
@@ -408,9 +409,8 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
     """One editing turn. Every call offers the same `tools`, in the same order: they sit at the
     top of the prompt, and a different list re-reads the whole note. `step_tools` are those that
     change something. The first call answers in text, makes a small change at once, or plans a
-    larger one, at `temperature` and within `first_predict` tokens; with `nudge` (the gate wanted a
-    change) a text-only reply is asked once to use the tools. A plan is carried out one call per step; its outline is only
-    measured against the note, for the trace. Code holds the plan, applies every call to the draft
+    larger one, at `temperature` and within `first_predict` tokens. A plan is carried out one call
+    per step; its outline is only measured against the note, for the trace. Code holds the plan, applies every call to the draft
     `note` (or makes a new note through `create`), enforces every limit, and hands each part to
     `on_edit` as it lands: "start", "plan", "step" and "change". `should_stop()` is asked before
     every call, and `on_stage` hears each call start, so the chat can count its seconds.
@@ -435,7 +435,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
     out = {"kind": "answer", "answer": "", "plan": None, "changes": [], "steps_done": 0, "calls": 0,
            "refusals": [], "malformed": [], "empty_steps": 0, "stopped": None, "summary": "",
            "finished_early": False, "replanned": False, "outline": None, "outline_met": None,
-           "retries": 0, "first_call_edits": 0, "timing": [], "nudged": False,
+           "retries": 0, "first_call_edits": 0, "timing": [],
            "outline_details": None, "corrections": 0, "steps_missed": 0,
            "first_temperature": temperature, "looked_up": looked_up if looked_up is not None else [],
            "tools": []}
@@ -545,11 +545,11 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
             out["stopped"] = "token budget"
         out["timing"].append(reply.stats)
         if reply.stats.get("ctx_saturated"):
-            # The prompt lost its start — the note and the rider — so this reply's calls are
-            # guesses: none of them lands.
+            # The prompt lost its start — the rules, the note, what was looked up — so this reply's
+            # calls are guesses: none of them lands.
             if out["kind"] == "answer":
                 raise CopilotError(too_long)
-            out["stopped"] = "error: the note no longer fits the model's window"
+            out["stopped"] = "error: the conversation no longer fits the model's window"
             raise _Stopped
         out["malformed"] += reply.malformed
         messages.append(reply.message)
@@ -636,10 +636,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
                 messages.extend(_results([said], "Make the plan first: one sentence for the owner, and the "
                                                  "steps in order." if planning else
                                                  "Make the new note with the create_note tool."))
-            elif nudge and not first.calls:     # the gate said change, and the reply is only text
-                out["nudged"] = True
-                messages.extend(_results([], NUDGE))
-            if out["replanned"] or out["nudged"]:
+            if out["replanned"]:
                 first = ask(tools, think, temperature, first_predict)
                 plans, edits = split(first)
         if not plans and not edits:
@@ -874,5 +871,5 @@ def _facts(out: dict, run: dict) -> dict:
             "retries": out["retries"], "stopped": out["stopped"], "finished_early": out["finished_early"],
             "outline_met": out["outline_met"], "outline_details": out["outline_details"],
             "corrections": out["corrections"], "steps_missed": out["steps_missed"],
-            "nudged": out["nudged"], "draft_failures": out.get("draft_failures", 0),
+            "draft_failures": out.get("draft_failures", 0),
             "first_temperature": out["first_temperature"], "timing": out["timing"]}

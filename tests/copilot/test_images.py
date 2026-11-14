@@ -3,7 +3,7 @@ import base64
 
 import pytest
 
-from slim.copilot import images as chat_images, threads, turn as copilot_turn
+from slim.copilot import images as chat_images, threads
 
 
 PNG = base64.b64decode(
@@ -84,21 +84,3 @@ def test_thread_delete_removes_its_images_too():
     assert (threads.THREADS_DIR / "chat-1.images").is_dir()
     assert threads.delete_thread("chat-1") is True
     assert not (threads.THREADS_DIR / "chat-1.images").exists()
-
-
-def test_generate_answer_puts_images_on_user_messages_only(monkeypatch):
-    seen = {}
-
-    def fake_stream(messages, **_kwargs):
-        seen["messages"] = messages
-        return "Answer", {"duration_s": 1}
-
-    monkeypatch.setattr(copilot_turn.llm, "chat_stream", fake_stream)
-    copilot_turn.generate_answer(
-        "Explain", [{"role": "you", "text": "Earlier", "images": ["old"]},
-                    {"role": "slim", "text": "Earlier answer", "images": ["never"]}],
-        [], "quick", images=["current"])
-    messages = seen["messages"]
-    assert messages[1]["images"] == ["old"]
-    assert "images" not in messages[2]
-    assert messages[-1]["images"] == ["current"]

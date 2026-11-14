@@ -50,7 +50,7 @@ test("a new stage or a new step starts the count again; the same stage sent agai
     const view = editView({ live, editor, events: async (_body, handlers) => {
       const line = () => stageLine(view.stage, view.stageSince, Date.now());
       now += 2000;
-      seen.push(line());                                   // the gate: still Starting
+      seen.push(line());                                   // before the first stage: still Starting
       handlers.stage({ stage: "Thinking deeply" });
       now += 5000;
       handlers.stage({ stage: "Thinking deeply" });        // a heartbeat: the same call
