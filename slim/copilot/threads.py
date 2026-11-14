@@ -1,6 +1,7 @@
-"""Local per-note copilot threads: save, load, list, delete. Called by `server.py`.
+"""Local copilot threads: save, load, list and search, delete. Called by `server.py`.
 
-Threads persist so reopening a note resumes its conversation, and **persistence is not
+A thread stands on its own: `source_*` only records the note it was started on, and `pins` the
+notes and folders the owner attached. Threads persist so a conversation resumes, and **persistence is not
 evidence** — chat transcripts never enter ingestion or retrieval. The store lives under
 `config.DATA_DIR/threads/`, outside the vault, so ingestion is structurally out of reach of it
 (a regression test pins that).
@@ -28,6 +29,8 @@ from ..config import DATA_DIR
 
 THREADS_DIR = DATA_DIR / "threads"
 MAX_TURNS = 500
+MAX_PINS = 12
+MAX_NOTE_PATH = 512              # the open note's path, kept on each question turn
 MAX_THREAD_BYTES = 4_000_000     # a resumable conversation, not an archive
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,63}$")
 _REF_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -46,6 +49,7 @@ class ThreadSummary:
     source_id: str | None = None
     source_path: str | None = None
     reasoning_mode: str | None = None
+    pins: tuple = ()
 
 
 def validate_id(thread_id) -> str:
@@ -77,6 +81,9 @@ def _clean_turns(raw) -> list[dict]:
                 turn["attachments"] = clean_refs(item.get("attachments"))
             except ImageError as exc:
                 raise ThreadError(str(exc)) from exc
+        if (role == "you" and isinstance(item.get("note"), str)
+                and len(item["note"]) <= MAX_NOTE_PATH):
+            turn["note"] = item["note"]          # the open note's path when this was sent
         if isinstance(item.get("turn"), dict):
             turn["turn"] = item["turn"]      # the SlimTurn payload, for rich rehydration
         turns.append(turn)
@@ -104,19 +111,44 @@ def _write(payload: dict) -> ThreadSummary:
         id=tid, title=payload["title"], updated_at=payload["updated_at"],
         turns=len(payload["turns"]), source_id=payload.get("source_id"),
         source_path=payload.get("source_path"),
-        reasoning_mode=payload.get("reasoning_mode"))
+        reasoning_mode=payload.get("reasoning_mode"),
+        pins=tuple(payload.get("pins") or ()))
 
 
-def save_copilot(thread_id: str, title: str, turns, *, source_id: str,
-                 source_path: str, reasoning_mode: str) -> ThreadSummary:
-    """Upsert one source-anchored copilot chat."""
+def _clean_pins(raw) -> list[dict]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ThreadError("pins must be a list")
+    if len(raw) > MAX_PINS:
+        raise ThreadError(f"a thread holds at most {MAX_PINS} pins")
+    pins = []
+    for item in raw:
+        kind = item.get("kind") if isinstance(item, dict) else None
+        text = item.get("path") if isinstance(item, dict) else None
+        if kind not in ("note", "folder") or not isinstance(text, str) or not text.strip():
+            raise ThreadError("a pin is {kind: note or folder, path}")
+        path = PurePosixPath(text)
+        if path.is_absolute() or ".." in path.parts or len(text) > MAX_NOTE_PATH:
+            raise ThreadError("a pin's path must be vault-relative, with no ..")
+        pins.append({"kind": kind, "path": path.as_posix()})
+    return pins
+
+
+def save_copilot(thread_id: str, title: str, turns, *, reasoning_mode: str,
+                 source_id: str | None = None, source_path: str | None = None,
+                 pins: list[dict] | None = None) -> ThreadSummary:
+    """Upsert one copilot chat. `source_*` is the note it was started on, and optional."""
     tid = validate_id(thread_id)
     sid = (source_id or "").strip() if isinstance(source_id, str) else ""
-    if not _ID_RE.fullmatch(sid):
+    if sid and not _ID_RE.fullmatch(sid):
         raise ThreadError("source id must be 1-64 letters, digits, or hyphens")
-    path = PurePosixPath(source_path or "")
-    if path.is_absolute() or ".." in path.parts or path.suffix.casefold() != ".md":
-        raise ThreadError("source path must be a vault-relative Markdown path")
+    spath = None
+    if isinstance(source_path, str) and source_path:
+        path = PurePosixPath(source_path)
+        if path.is_absolute() or ".." in path.parts or path.suffix.casefold() != ".md":
+            raise ThreadError("source path must be a vault-relative Markdown path")
+        spath = path.as_posix()
     if reasoning_mode not in {"quick", "deep"}:
         raise ThreadError("reasoning mode must be quick or deep")
     cleaned = _clean_turns(turns)
@@ -124,9 +156,10 @@ def save_copilot(thread_id: str, title: str, turns, *, source_id: str,
         "id": tid,
         "title": (title or "").strip()[:120] or "Conversation",
         "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "source_id": sid,
-        "source_path": path.as_posix(),
+        "source_id": sid or None,
+        "source_path": spath,
         "reasoning_mode": reasoning_mode,
+        "pins": _clean_pins(pins),
         "turns": cleaned,
     }
     return _write(payload)
@@ -144,10 +177,12 @@ def load(thread_id: str) -> dict | None:
             f"thread {tid} exists but could not be read ({type(exc).__name__})") from None
 
 
-def list_copilot_threads() -> list[ThreadSummary]:
-    """Only valid source-anchored chats, newest first."""
+def list_copilot_threads(query: str = "") -> list[ThreadSummary]:
+    """Every readable thread, newest first. With `query`, only those whose title or any turn's
+    text contains it, case-insensitively."""
     if not THREADS_DIR.exists():
         return []
+    needle = (query or "").casefold()
     summaries = []
     for path in THREADS_DIR.glob("*.json"):
         # ⚠ The construction is INSIDE the try, not just the parse: a thread file whose JSON
@@ -155,15 +190,20 @@ def list_copilot_threads() -> list[ThreadSummary]:
         # bad file on disk would then brick the whole sidebar listing.
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            if not data.get("source_id") or not data.get("source_path"):
+            title = str(data.get("title") or "Conversation")
+            turns = data.get("turns") or []
+            if needle and needle not in title.casefold() and not any(
+                    needle in t["text"].casefold() for t in turns
+                    if isinstance(t, dict) and isinstance(t.get("text"), str)):
                 continue
             summaries.append(ThreadSummary(
-                id=str(data.get("id") or path.stem),
-                title=str(data.get("title") or "Conversation"),
+                id=str(data.get("id") or path.stem), title=title,
                 updated_at=str(data.get("updated_at") or ""),
-                turns=len(data.get("turns") or []),
-                source_id=data.get("source_id"), source_path=data.get("source_path"),
-                reasoning_mode=data.get("reasoning_mode")))
+                turns=len(turns),
+                source_id=data.get("source_id") or None,
+                source_path=data.get("source_path") or None,
+                reasoning_mode=data.get("reasoning_mode"),
+                pins=tuple(data.get("pins") or ())))
         except (OSError, json.JSONDecodeError, ValueError, AttributeError, TypeError):
             continue                          # an unreadable thread hides, never bricks
     summaries.sort(key=lambda s: s.updated_at, reverse=True)

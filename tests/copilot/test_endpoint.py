@@ -68,13 +68,34 @@ def test_copilot_thread_endpoints_require_and_return_source_metadata(server_url)
     assert listed[0]["reasoning_mode"] == "deep"
 
     status, _headers, body = post(server_url, "/api/copilot/thread/save", {
-        "id": "bad", "title": "No anchor", "turns": []})
-    assert status == 400 and "source id" in json.loads(body)["error"]
-
-    status, _headers, body = post(server_url, "/api/copilot/thread/save", {
         "id": "missing", "title": "Missing", "turns": [], "source_id": "not-indexed",
         "source_path": "Notes/missing.md", "reasoning_mode": "quick"})
-    assert status == 400 and "no indexed source" in json.loads(body)["error"]
+    assert status == 200 and json.loads(body)["source_path"] == "Notes/missing.md"
+
+
+def test_thread_save_without_source_id(server_url):
+    status, _headers, body = post(server_url, "/api/copilot/thread/save", {
+        "id": "loose", "title": "Loose", "turns": [], "reasoning_mode": "quick",
+        "pins": [{"kind": "folder", "path": "Capture"}]})
+    assert status == 200
+    assert json.loads(body)["source_path"] is None
+
+
+def test_threads_query_param(server_url):
+    for tid, title in (("a1", "Rent"), ("b2", "Gym")):
+        post(server_url, "/api/copilot/thread/save", {
+            "id": tid, "title": title, "turns": [], "reasoning_mode": "quick"})
+    with urllib.request.urlopen(server_url + "/api/copilot/threads?q=rent") as response:
+        assert [t["id"] for t in json.load(response)["threads"]] == ["a1"]
+
+
+def test_get_thread_without_source(server_url):
+    post(server_url, "/api/copilot/thread/save", {
+        "id": "loose", "title": "Loose", "turns": [], "reasoning_mode": "quick",
+        "pins": [{"kind": "note", "path": "Notes/a.md"}]})
+    with urllib.request.urlopen(server_url + "/api/copilot/thread?id=loose") as response:
+        data = json.load(response)
+    assert data["source_id"] is None and data["pins"] == [{"kind": "note", "path": "Notes/a.md"}]
 
 
 def test_stream_endpoint_emits_stage_delta_and_turn(server_url, monkeypatch):

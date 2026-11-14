@@ -201,13 +201,14 @@ class _Handler(BaseHTTPRequestHandler):
             routes.GET[url.path](self, parse_qs(url.query))
             return
         if url.path == "/api/copilot/threads":
-            listed = threads_mod.list_copilot_threads()
+            query = (parse_qs(url.query).get("q") or [""])[0]
+            listed = threads_mod.list_copilot_threads(query)
             live = _live_source_paths([item.source_id for item in listed])
             self._send_json(200, {"threads": [
                 {"id": item.id, "title": item.title, "updated_at": item.updated_at,
                  "turns": item.turns, "source_id": item.source_id,
                  "source_path": live.get(item.source_id, item.source_path),
-                 "reasoning_mode": item.reasoning_mode}
+                 "reasoning_mode": item.reasoning_mode, "pins": list(item.pins)}
                 for item in listed]})
             return
         if url.path == "/api/copilot/skills":
@@ -239,11 +240,13 @@ class _Handler(BaseHTTPRequestHandler):
             except threads_mod.ThreadError as exc:
                 self._send_json(400, {"error": str(exc)})
                 return
-            if data is None or not data.get("source_id"):
+            if data is None:
                 self._send_json(404, {"error": "no such copilot thread"})
             else:
-                live = _live_source_paths([data["source_id"]])
-                data["source_path"] = live.get(data["source_id"], data.get("source_path"))
+                if data.get("source_id"):
+                    live = _live_source_paths([data["source_id"]])
+                    data["source_path"] = live.get(data["source_id"], data.get("source_path"))
+                data.setdefault("pins", [])
                 self._send_json(200, data)
             return
         self._send_json(404, {"error": f"no such path {url.path!r}"})
@@ -332,28 +335,30 @@ class _Handler(BaseHTTPRequestHandler):
         if data is None:
             return
         source_id = str(data.get("source_id") or "").strip()
-        con = db.connect()
-        try:
-            source = con.execute(
-                "SELECT path FROM sources WHERE id=? AND deleted=0", (source_id,)
-            ).fetchone()
-        finally:
-            con.close()
-        if source is None:
-            self._send_json(400, {"error": "no indexed source for that source id"})
-            return
+        source_path = data.get("source_path")
+        if source_id:
+            con = db.connect()
+            try:
+                source = con.execute(
+                    "SELECT path FROM sources WHERE id=? AND deleted=0", (source_id,)
+                ).fetchone()
+            finally:
+                con.close()
+            if source is not None:
+                source_path = source["path"]
         try:
             summary = threads_mod.save_copilot(
                 data.get("id"), str(data.get("title") or ""), data.get("turns"),
-                source_id=source_id, source_path=source["path"],
-                reasoning_mode=data.get("reasoning_mode"))
+                source_id=source_id or None, source_path=source_path,
+                reasoning_mode=data.get("reasoning_mode"), pins=data.get("pins"))
         except threads_mod.ThreadError as exc:
             self._send_json(400, {"error": str(exc)})
             return
         self._send_json(200, {
             "status": "saved", "id": summary.id, "updated_at": summary.updated_at,
             "turns": summary.turns, "source_id": summary.source_id,
-            "source_path": summary.source_path, "reasoning_mode": summary.reasoning_mode})
+            "source_path": summary.source_path, "reasoning_mode": summary.reasoning_mode,
+            "pins": list(summary.pins)})
 
     def _handle_copilot_restore(self):
         """The note as it was before an editing run, to put back — unless the recording's own parts
