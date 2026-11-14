@@ -602,7 +602,10 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
         system_turn = {"role": "system", "content": f"{PERSONA}\n\n{SKILL_RIDER}" if skill else loop_system()}
         pinned_turns = ([{"role": "user", "content": pinned}, {"role": "assistant", "content": "Noted."}]
                         if pinned else [])
-        room = QUICK_NUM_PREDICT + (edit_run.THINK_BUDGET if mode == "deep" else 0)
+        # Pi's setup: every call but a step's thinks, a skill's as before (Deep only).
+        think = mode == "deep" or not skill
+        think_budget = edit_run.DEEP_THINK_BUDGET if mode == "deep" and not skill else edit_run.THINK_BUDGET
+        room = QUICK_NUM_PREDICT + (think_budget if think else 0)
         fixed = [system_turn, *pinned_turns, *embedded, current]
         if sum(map(_tokens, fixed)) + room > llm.RESIDENT_CTX:
             raise CopilotError("the open note and the pins are too long for one request; unpin something")
@@ -615,8 +618,9 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
             used = sum(map(_tokens, sent)) + sum(map(len, results)) / CHARS_PER_TOKEN
             return used + room <= llm.RESIDENT_CTX
 
-        out = edit_run._turn(list(messages), think=mode == "deep", tools=tools, step_tools=step_tools,
-                             note=note, before_text=text or "", create=create,
+        out = edit_run._turn(list(messages), think=think, tools=tools, step_tools=step_tools,
+                             note=note, before_text=text or "", create=create, think_budget=think_budget,
+                             think_stage="Thinking deeply" if mode == "deep" else "Thinking",
                              temperature=edit_run.FIRST_TEMPERATURE, first_predict=room,
                              on_edit=on_edit or (lambda _event, _payload: None), should_stop=should_stop,
                              on_stage=stage, lookups=reader, on_reply=on_delta, no_edit=no_edit,
@@ -632,8 +636,8 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
     if out["kind"] == "answer":     # it streamed as it decoded (on_delta)
         answer = out["answer"]
         if not answer and last.get("thinking_ate_the_budget"):
-            raise CopilotError("the model spent its whole output budget thinking and wrote no "
-                               "answer — ask again in Quick mode, or ask a narrower question")
+            raise CopilotError("the model spent its whole output budget thinking and wrote no answer — "
+                               + ("ask again in Quick mode, or " if mode == "deep" else "") + "ask a narrower question")
         if not answer and out["stopped"]:
             raise CopilotError(f"the turn ended before an answer ({out['stopped']})")
         if not answer:

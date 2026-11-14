@@ -398,7 +398,7 @@ def test_the_stream_emits_the_edit_events_in_order(server_url, a_note):
     assert events[2][1] == {"intro": "Rename A and add a line.", "steps": ["Rename A", "Add a line"],
                             "outline": None}
     assert events[6][1]["id"] == "c1" and events[11][1]["id"] == "c2"
-    assert [p["stage"] for e, p in events if e == "stage"] == ["Writing"] * 3
+    assert [p["stage"] for e, p in events if e == "stage"] == ["Thinking", "Writing", "Writing"]   # steps never think
     run = events[-1][1]["edit_run"]
     assert run["before_ref"] == edit["before_ref"] and run["hash_before"] == edit["hash_before"]
     text = NOTE

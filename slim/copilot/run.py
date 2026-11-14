@@ -18,6 +18,9 @@ MAX_CALLS = 30                   # tool calls in one run
 MAX_REFUSALS = 3                 # refused calls in a row end the run
 STEP_NUM_PREDICT = 2048          # a step's reply: room for one section's new text
 THINK_BUDGET = 8192              # on top of the first call's cap in Deep; thinking counts against it
+# THE LOOP thinks on every call but a step's, as the Pi coding agent does on the same model:
+# Quick at Pi's default "medium" (THINK_BUDGET), Deep at its "high".
+DEEP_THINK_BUDGET = 16_384
 RUN_OUTPUT_TOKENS = 12_000       # the reply that crosses it is used, then the run stops (one ran to 25k)
 STEP_TEMPERATURE = 0.0           # a step, and any call that makes a wanted change, writes at 0.0
 STEP_TOOLS = ("replace", "edit_text", "insert", "move")
@@ -362,7 +365,8 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
           temperature: float = FIRST_TEMPERATURE, first_predict: int, nudge: bool = False, on_edit,
           should_stop, on_stage=lambda _name: None, lookups: lookup_mod.Reader | None = None,
           on_reply=None, no_edit: str | None = None, looked_up: list | None = None,
-          on_reset=None, fits=None, too_long: str = NOTE_TOO_LONG) -> dict:
+          on_reset=None, fits=None, too_long: str = NOTE_TOO_LONG, think_budget: int = THINK_BUDGET,
+          think_stage: str = "Thinking deeply") -> dict:
     """One editing turn. Every call offers the same `tools`, in the same order: they sit at the
     top of the prompt, and a different list re-reads the whole note. `step_tools` are those that
     change something. The first call answers in text, makes a small change at once, or plans a
@@ -383,6 +387,8 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
     says whether the conversation with these tool results still fits the window: a lookup whose
     result would not is answered NO_ROOM instead, and what it read is neither a source nor editable.
     `too_long` is the refusal when the first answer's prompt lost its start (`ctx_saturated`).
+    Every call that thinks adds `think_budget` to the run's output budget, and names its stage
+    `think_stage`.
 
     With `no_edit` (THE LOOP with no note it may change) the plan and edit tools are still offered,
     so the prompt stays the same, but every call to them is refused with that reason, counted as
@@ -398,8 +404,9 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
     barred = {"plan", *STEP_TOOLS} if no_edit else set()
     acting = tuple(name for name in step_tools if name not in barred)
     planning = "plan" in tools and "plan" not in barred
-    # Deep's thinking has its own allowance: it would otherwise eat the steps' budget.
-    budget = RUN_OUTPUT_TOKENS + (THINK_BUDGET if think else 0)
+    # Thinking has its own allowance, one per call that thinks: it would otherwise eat the steps'
+    # budget, and in THE LOOP, where every lookup's call thinks, the answer's.
+    budget = RUN_OUTPUT_TOKENS
     # The step(s) being worked; `target` the blocks the step names (None: not judged), `hit` whether
     # a change landed there.
     current = {"k": None, "count": 1, "landed": 0, "refused": False, "target": None, "hit": False}
@@ -455,7 +462,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
         if started[0] and on_reset:
             on_reset()
         started[0] += 1
-        on_stage("Thinking deeply" if think else "Writing")
+        on_stage(think_stage if think else "Writing")
         if drafts:
             drafts.next_reply()
         reply = _call(messages, offered, think=think, temperature=temperature, num_predict=num_predict,
@@ -466,7 +473,8 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
         return reply
 
     def ask(offered, think, temperature, num_predict) -> _Reply:
-        nonlocal spent
+        nonlocal spent, budget
+        budget += think_budget if think else 0
         try:
             try:
                 reply = attempt(offered, think, temperature, num_predict)

@@ -444,8 +444,8 @@ def test_the_stage_line_names_each_lookup(ask, con, vault, monkeypatch):
              ("", [("read_note", {"path": "Notes/school/cs-201/zebra.md"})]),
              ("", [("list_folder", {"path": "Notes/school"}), ("list_folder", {"path": ""})]), ("Done.", []))
     got = ask("zebras?")
-    assert got["stages"] == ["Writing", "Searching", "Writing", "Reading zebra", "Writing",
-                             "Listing Notes/school", "Listing the vault", "Writing"]
+    assert got["stages"] == ["Thinking", "Searching", "Thinking", "Reading zebra", "Thinking",
+                             "Listing Notes/school", "Listing the vault", "Thinking"]
 
 
 def test_a_lookup_that_would_overflow_the_window_is_refused(ask, con, vault, monkeypatch):
@@ -455,7 +455,7 @@ def test_a_lookup_that_would_overflow_the_window_is_refused(ask, con, vault, mon
     ask("q")
     prompt = sum(map(copilot_turn._tokens, seen[0]["messages"]))
     # Room for the prompt, the reply, and a little more: the small note fits, the big one not.
-    monkeypatch.setattr(llm, "RESIDENT_CTX", int(prompt + copilot_turn.QUICK_NUM_PREDICT + 200))
+    monkeypatch.setattr(llm, "RESIDENT_CTX", int(prompt + copilot_turn.QUICK_NUM_PREDICT + edit_run.THINK_BUDGET + 200))
     seen = scripted(monkeypatch, ("", [("read_note", {"path": "Notes/small.md"})]),
                     ("", [("read_note", {"path": "Notes/big.md"})]), ("With what I have.", []))
     got = ask("q")
@@ -478,3 +478,47 @@ def test_a_saturated_window_names_the_conversation_not_the_note(ask, monkeypatch
     with pytest.raises(copilot_turn.CopilotError,
                        match="this conversation no longer fits the model's window; start a new chat or unpin something"):
         ask("q")
+
+
+# --- Pi's setup: thinking on every loop call, a step as measured --------------------------------
+
+@pytest.mark.parametrize("mode, budget, stage", [("quick", 8192, "Thinking"), ("deep", 16384, "Thinking deeply")])
+def test_every_loop_call_thinks_within_its_own_budget(ask, con, vault, monkeypatch, mode, budget, stage):
+    """Like Pi's default "medium" (Quick) and "high" (Deep). Thinking tokens count against the
+    cap, so a call's cap is the answer's and the budget."""
+    put(con, vault, "Notes/school/cs-201/zebra.md", "# Zebras\n\nZebras have stripes.\n")
+    seen = scripted(monkeypatch, ("", [("search", {"query": "zebras"})]), ("Stripes.", []))
+    got = ask("zebras?", mode=mode)
+    assert {edit_run.THINK_BUDGET, edit_run.DEEP_THINK_BUDGET} == {8192, 16384}
+    for call in seen:
+        assert call["opts"]["think"] is True
+        assert call["opts"]["num_predict"] == copilot_turn.QUICK_NUM_PREDICT + budget
+    assert got["stages"][0] == stage
+
+
+def test_a_plan_step_stays_as_measured(ask, monkeypatch):
+    seen = scripted(monkeypatch,
+                    ("", [("plan", {"intro": "Add a line.", "steps": ["Add a line after b2"]})]),
+                    ("", [("insert", {"after": "b2", "markdown": "A line."})]))
+    got = ask("add a line")
+    assert len(got["edit_run"]["changes"]) == 1
+    first, step = seen[0]["opts"], seen[1]["opts"]
+    assert first["think"] is True
+    assert step["think"] is False and step["temperature"] == edit_run.STEP_TEMPERATURE == 0.0
+    assert step["num_predict"] == edit_run.STEP_NUM_PREDICT
+
+
+def test_a_chat_skill_thinks_as_before(ask, monkeypatch):
+    seen = scripted(monkeypatch, ("Question 1?", []))
+    ask("/quiz")
+    assert seen[0]["opts"]["think"] is False
+    assert seen[0]["opts"]["num_predict"] == copilot_turn.QUICK_NUM_PREDICT
+
+
+def test_each_thinking_call_has_its_own_allowance(ask, monkeypatch):
+    """Thinking is output: lookups that each think long must not spend the turn's run budget and
+    leave it with no answer."""
+    many = edit_run.RUN_OUTPUT_TOKENS // 2
+    seen = scripted(monkeypatch, *[("", [("list_folder", {"path": "Notes"})], many)] * 4, ("Found it.", []))
+    got = ask("look around")
+    assert got["answer"] == "Found it." and len(seen) == 5
