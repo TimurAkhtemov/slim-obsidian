@@ -211,3 +211,43 @@ def test_headings_are_compared_by_level_and_words_without_a_trailing_note():
     assert blocks.headings("# T\n\ntext # not\n## A  \n```\n") == ["# T", "## A"]
     assert blocks.heading_key("##  Toolkit (New Section)") == blocks.heading_key("## toolkit") == (2, "toolkit")
     assert blocks.heading_key("## Bag of Words (BoW)") == (2, "bag of words (bow)")
+
+
+# --- a long note's unread part (`Note.shown`) ------------------------------------------------
+
+def test_a_block_outside_shown_is_refused_after_the_selection_check():
+    note = Note(NOTE)
+    note.shown = {"b1", "b2", "b3"}
+    assert note.pick("b2")[:2] == (1, 2)
+    with pytest.raises(ToolError) as caught:
+        note.pick("b7")
+    assert caught.value.code == "unread"
+    assert str(caught.value) == "b7 is in a part of the note you have not read; read_note it first"
+    with pytest.raises(ToolError) as caught:                 # `only` is checked first
+        note.pick("b7", only={"b2"})
+    assert caught.value.code == "selection"
+
+
+def test_blocks_a_run_writes_are_its_own_to_change_again():
+    note = Note(NOTE)
+    note.shown = {"b2"}
+    i, j = note.pick("b2")[:2]
+    new = note.replace(i, j, "One.\n\nTwo.", "c1")
+    added = note.insert(len(note.blocks), "Three.", "c2")
+    for block in new + added:
+        assert note.pick(block.handle)
+
+
+def test_head_renders_whole_blocks_within_the_limit():
+    note = Note("# T\n\n" + "".join(f"Para {n} " + "x" * 50 + "\n\n" for n in range(10)))
+    text, kept = note.head(note.blocks, 200)
+    assert len(text) <= 200 and text == note.render(kept) and kept == note.blocks[:len(kept)]
+    assert 1 < len(kept) < len(note.blocks)
+
+
+def test_head_names_a_locked_block_too_long_to_show_and_goes_on():
+    long = "---\ntitle: x\n---\n\n```slim-meeting\n## Transcript\n\n" + "Me: words\n" * 200 + "```\n\nMy notes.\n"
+    note = Note(long)
+    text, kept = note.head(note.blocks, 300)
+    assert "My notes." in text and "Me: words" not in text and "not shown" in text
+    assert [b.text for b in kept if not b.locked] == ["My notes.\n"]

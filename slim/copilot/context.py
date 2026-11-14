@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 
 from .. import config as config_mod, llm
-from . import edits as edits_mod, skills as skills_mod
+from . import edits as edits_mod, lookup, skills as skills_mod
 from ..index import embed as embed_mod, ingest as ingest_mod, search as search_mod
 from ..vault import note_images
 from ..index.chunk import HEADING, source_text
@@ -25,6 +25,10 @@ _LINK = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]")
 # prompt tokens and ~1.3 s before the first word (measured 2026-09-22 on the resident), and a
 # lecture note embeds up to 60, so a turn sends at most this; the median note embeds 4.
 MAX_NOTE_IMAGES = 6
+# The open note rides with each question whole up to this (~13k tokens): above it, its sections
+# map and the blocks that fit, and `read_note` for the rest, so a long transcript is not prefilled
+# on every turn.
+ATTACH_MAX_CHARS = 40_000
 
 
 class CopilotError(RuntimeError):
@@ -366,3 +370,51 @@ def open_note_images(vault: Path, source: dict, evidence: list[dict]) -> tuple[l
         pass
     return note_images.load("\n".join(packed), vault, note_rel=source["path"],
                             limit=MAX_NOTE_IMAGES)
+
+
+def pinned_message(con, vault: Path, pins: list[dict]) -> tuple[str, list[str], list[str]]:
+    """What a chat has `@`-pinned, as one message: (its text, the paths it holds, the paths left
+    out). A note is its whole text and a folder its listing, both read from disk whatever their
+    folder: any note the owner points at is fair game, though search never sees an excluded one.
+    Searches default to the first folder pinned. Pins share INPUT_BUDGET_CHARS, in order; one
+    that does not fit, or is not there, is named instead."""
+    vault = Path(vault)
+    parts, read, too_long, missing = [], [], [], []
+    budget, scoped = INPUT_BUDGET_CHARS, None
+    for pin in pins:
+        kind, raw = pin.get("kind"), str(pin.get("path") or "")
+        try:
+            path = edits_mod._clean_path(raw).rstrip("/")
+            # A pin, like the open note, may be in an excluded folder; never outside the vault.
+            lookup._check(path, open_path=path)
+            target = vault / path
+            if not path or not edits_mod._exact(vault, path):
+                raise FileNotFoundError(raw)
+            if kind == "folder":
+                if not target.is_dir():
+                    raise FileNotFoundError(raw)
+                body = f"=== {path}/ · a folder I pinned ===\n{lookup.listing(target, root=False)}"
+                if scoped is None:
+                    body += f"\nSearches default to {path}/."
+            else:
+                if not target.is_file():
+                    raise FileNotFoundError(raw)
+                body = f"=== {path} · a note I pinned ===\n{edits_mod._read(target).strip()}"
+        except (lookup._Refused, OSError, UnicodeDecodeError):
+            missing.append(raw)
+            continue
+        if len(body) > budget:
+            too_long.append(path)
+            continue
+        if kind == "folder" and scoped is None:
+            scoped = path
+        budget -= len(body)
+        parts.append(body)
+        read.append(path)
+    if too_long:
+        parts.append(f"Left out (too long): {', '.join(too_long)}")
+    if missing:
+        parts.append(f"Not found: {', '.join(missing)}")
+    if not parts:
+        return "", [], []
+    return "Context I've pinned:\n\n" + "\n\n".join(parts), read, too_long + missing

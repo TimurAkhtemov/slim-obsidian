@@ -197,15 +197,11 @@ class Reader:
             chosen = list(note.blocks)
         text = note.render(chosen)
         if len(text) > READ_MAX_CHARS:
-            kept, size = [], 0
-            for b in chosen:
-                piece = len(note.render([b]))
-                if size + piece > READ_MAX_CHARS:
-                    break
-                kept.append(b)
-                size += piece
-            chosen = kept
-            text = self._cap(text, [] if section else blocks.headings(note.text()))
+            # Whole blocks only, so what it shows and what it may then change (`.shown`) agree.
+            text, chosen = note.head(chosen, READ_MAX_CHARS)
+            sections = "" if section else note.sections()
+            text = (f"Sections:\n{sections}\n\n" if sections else "") + text + \
+                "[… the rest: read_note(path, section) for one section]"
         self.shown |= {b.handle for b in chosen if b.kind != "blank" and not b.locked}
         return text
 
@@ -217,20 +213,26 @@ class Reader:
         path = "" if pure.as_posix() == "." else pure.as_posix()
         if path and not (edits._exact(self.vault, path) and (self.vault / path).is_dir()):
             raise _Refused(f"there is no folder '{raw}'")
-        folders, notes = [], []
-        for entry in os.scandir(self.vault / path):
-            low = entry.name.casefold()
-            if entry.name.startswith(".") or low in _DIRS_CF or (not path and low in _TOP_CF):
-                continue
-            if entry.is_dir():
-                folders.append(entry.name + "/")
-            elif entry.name.lower().endswith(".md"):
-                notes.append(entry.name)
-        lines = sorted(folders) + sorted(notes)
-        if not lines:
-            return "(empty)"
-        more = len(lines) - LIST_MAX
-        out = lines[:LIST_MAX]
-        if more > 0:
-            out.append(f"[… {more} more]")
-        return "\n".join(out)
+        return listing(self.vault / path, root=not path)
+
+
+def listing(folder: Path, *, root: bool) -> str:
+    """A folder one level deep: its folders, then its notes, without hidden ones, and at the
+    vault's `root` without the excluded ones. A pinned folder is listed here too, whatever it is."""
+    folders, notes = [], []
+    for entry in os.scandir(folder):
+        low = entry.name.casefold()
+        if entry.name.startswith(".") or low in _DIRS_CF or (root and low in _TOP_CF):
+            continue
+        if entry.is_dir():
+            folders.append(entry.name + "/")
+        elif entry.name.lower().endswith(".md"):
+            notes.append(entry.name)
+    lines = sorted(folders) + sorted(notes)
+    if not lines:
+        return "(empty)"
+    more = len(lines) - LIST_MAX
+    out = lines[:LIST_MAX]
+    if more > 0:
+        out.append(f"[… {more} more]")
+    return "\n".join(out)

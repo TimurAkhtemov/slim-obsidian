@@ -264,6 +264,9 @@ class Note:
         self.blocks = self._fresh(text, owner=None)
         self.made: dict[str, int] = {}      # each change of the run: the step that made it
         self.roots: dict[str, str] = {}     # each change: the change it is part of, or itself
+        # A note too long to send whole: the blocks the model has been shown (`head`, and the
+        # sections it read). None is all of them. A tool may change only these, and what it writes.
+        self.shown: set[str] | None = None
         ranges = protected_ranges(text)
         pos = 0
         for block in self.blocks:
@@ -407,6 +410,8 @@ class Note:
         if only is not None and any(b.handle not in only for b in self.blocks[i:j] if b.kind != "blank"):
             allowed = ", ".join(sorted(only, key=lambda h: int(h[1:])))
             raise ToolError(f"{handle} is outside the selected text; change only {allowed}", "selection")
+        if self.shown is not None and any(b.handle not in self.shown for b in self.blocks[i:j] if b.kind != "blank"):
+            raise ToolError(f"{handle} is in a part of the note you have not read; read_note it first", "unread")
 
     def offset(self, index: int) -> int:
         return sum(len(b.text) for b in self.blocks[:index])
@@ -522,6 +527,7 @@ class Note:
             b.owner, b.fresh = (kept[n].owner, kept[n].fresh) if n in kept else (owner, all(g.fresh for g in gone))
         if keep and len(new) == 1:
             new[0].handle = keep
+        self._seen(new)
         self.blocks[i:j] = new
         if not new and 0 < i < len(self.blocks) and not self.blocks[i - 1].kind == self.blocks[i].kind == "list":
             self._separate(i)           # (an item gone from the middle of a list leaves it tight)
@@ -542,8 +548,14 @@ class Note:
         else:
             self._separate(pos)
         new[-1].text = new[-1].text.rstrip("\n") + ending
+        self._seen(new)
         self.blocks[pos:pos] = new
         return new
+
+    def _seen(self, new: list[Block]) -> None:
+        """What a run writes, it has read."""
+        if self.shown is not None:
+            self.shown.update(b.handle for b in new)
 
     def move(self, i: int, j: int, pos: int) -> list[Block]:
         moved = self.blocks[i:j]
@@ -580,3 +592,22 @@ class Note:
 
     def render(self, blocks: list[Block] | None = None) -> str:
         return "".join(self._label(b) + b.text for b in (self.blocks if blocks is None else blocks))
+
+    def head(self, chosen: list[Block], limit: int) -> tuple[str, list[Block]]:
+        """The leading blocks of `chosen` rendered whole within `limit` characters, and those
+        blocks: never a block cut. A locked block too long for the room left is named in one line
+        instead (no tool may change it), so the owner's own text after a long transcript is still
+        shown; the first other block that does not fit ends the head."""
+        out, kept, size = [], [], 0
+        for block in chosen:
+            piece = self.render([block])
+            shown = size + len(piece) <= limit
+            if not shown and block.locked:
+                piece = f"[locked] (part of the recording, {len(block.text):,} characters; not shown)\n\n"
+            if size + len(piece) > limit:
+                break
+            if shown:
+                kept.append(block)
+            out.append(piece)
+            size += len(piece)
+        return "".join(out), kept

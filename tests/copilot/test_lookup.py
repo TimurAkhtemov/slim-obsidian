@@ -127,3 +127,17 @@ def test_search_failure_is_refused_not_raised(con, vault, monkeypatch):
     monkeypatch.setattr(search, "hybrid", boom)
     out = lookup.Reader(con, vault).call("search", {"query": "x"})
     assert out.startswith("refused:") and "RuntimeError" in out
+
+
+def test_a_long_open_note_shows_whole_blocks_and_shown_is_what_it_showed(vault):
+    text = "# Big\n\n" + "".join(f"## Part {n}\n\n" + "word " * 2000 + "\n\n" for n in range(8))
+    path = write(vault, "Notes/o.md", "x")
+    note = blocks.Note(text)
+    r = lookup.Reader(None, vault, open_note=(path, note))
+    out = r.call("read_note", {"path": path})
+    labels = set(__import__("re").findall(r"^\[(b\d+)\] ", out, __import__("re").M))
+    assert labels and labels == r.shown and len(labels) < len(note.blocks)
+    for handle in labels:                                    # every block it shows, it shows whole
+        block = next(b for b in note.blocks if b.handle == handle)
+        assert f"[{handle}] {block.text}" in out
+    assert "Sections:\n" in out and out.endswith("[… the rest: read_note(path, section) for one section]")

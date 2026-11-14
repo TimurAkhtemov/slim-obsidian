@@ -153,3 +153,46 @@ def test_context_refresh_without_nearby_notes_still_embeds(con, vault, monkeypat
     write(vault, "Notes/school/lesson.md", "gradient descent")
     context.context_payload(con, vault, "Notes/school/lesson.md", related=False)
     assert len(embedded) == 1
+
+
+# --- `@` pins: the context a chat pinned ------------------------------------------------------
+
+def test_pinned_notes_and_folders(con, vault):
+    write(vault, "Notes/school/b.md", "Buzzing.")
+    write(vault, "Profile/me.md", "I like graphs.")
+    write(vault, "Notes/school/cs-202/sorting.md", "Quicksort.")
+    text, read, left = context.pinned_message(con, vault, [
+        {"kind": "note", "path": "Notes/school/b.md"}, {"kind": "note", "path": "Profile/me.md"},
+        {"kind": "folder", "path": "Notes/school/cs-202"}])
+    assert text.startswith("Context I've pinned:\n")
+    assert "Buzzing." in text and "I like graphs." in text            # a pin is read whatever its folder
+    assert "sorting.md" in text and "Searches default to Notes/school/cs-202/." in text
+    assert read == ["Notes/school/b.md", "Profile/me.md", "Notes/school/cs-202"] and left == []
+
+
+def test_a_pinned_excluded_folder_still_lists(con, vault):
+    write(vault, "Profile/me.md", "x")
+    text, read, _left = context.pinned_message(con, vault, [{"kind": "folder", "path": "Profile"}])
+    assert "me.md" in text and read == ["Profile"]
+
+
+def test_pins_share_the_budget_and_one_that_does_not_fit_is_named(con, vault, monkeypatch):
+    monkeypatch.setattr(context, "INPUT_BUDGET_CHARS", 200)
+    write(vault, "Notes/a.md", "short")
+    write(vault, "Notes/big.md", "y" * 500)
+    text, read, left = context.pinned_message(con, vault, [
+        {"kind": "note", "path": "Notes/big.md"}, {"kind": "note", "path": "Notes/a.md"}])
+    assert read == ["Notes/a.md"] and left == ["Notes/big.md"]
+    assert "Left out (too long): Notes/big.md" in text and "y" * 100 not in text
+
+
+def test_a_pin_that_is_gone_or_outside_the_vault_is_left_out(con, vault):
+    text, read, left = context.pinned_message(con, vault, [
+        {"kind": "note", "path": "Notes/gone.md"}, {"kind": "note", "path": "../secret.md"},
+        {"kind": "folder", "path": "Nope"}])
+    assert read == [] and left == ["Notes/gone.md", "../secret.md", "Nope"]
+    assert "Not found: Notes/gone.md, ../secret.md, Nope" in text
+
+
+def test_no_pins_no_message(con, vault):
+    assert context.pinned_message(con, vault, []) == ("", [], [])
