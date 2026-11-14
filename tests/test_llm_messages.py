@@ -61,7 +61,6 @@ def test_tool_calls_go_out_as_json_text_and_come_back_as_the_same_objects():
     assert all(isinstance(text, str) for text in sent)
     assert [json.loads(text) for text in sent] == [call["function"]["arguments"] for call in EDIT[5]["tool_calls"]]
     assert "<details> two" in sent[0]                  # written as it is, not escaped for HTML
-    assert llm._calls(wired["tool_calls"]) == EDIT[5]["tool_calls"]
 
 
 def test_thinking_is_reasoning_content_and_tool_results_stay_tool_messages():

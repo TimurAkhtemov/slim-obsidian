@@ -3,9 +3,8 @@ note writer, ingestion exclusion, and the trace's machine-facts-only contract.
 
 The dense model is MOCKED throughout, so no Ollama is needed and the module's OWN logic (window
 math, skips, link sanitizing, frontmatter, resume-from-disk) is pinned deterministically. Journal
-BODIES here are entirely SYNTHETIC — the real rule that the agent never reads journal content
-applies to the code and to these tests alike. Reflection quality on real journals is the owner's read,
-not a unit test.
+BODIES here are entirely SYNTHETIC; reflect reads `type = 'journal'` notes under `Journal/` only.
+Reflection quality on real journals is the owner's read, not a unit test.
 """
 import json
 from datetime import datetime

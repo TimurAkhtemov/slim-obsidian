@@ -168,16 +168,6 @@ def _wire(messages: list[dict]) -> list[dict]:
     return out
 
 
-def _calls(raw: list[dict]) -> list[dict]:
-    """The server's tool calls as the conversation carries them: arguments an object again."""
-    out = []
-    for call in raw:
-        arguments = call["function"].get("arguments") or {}
-        out.append({"function": {"name": call["function"]["name"],
-                                 "arguments": json.loads(arguments) if isinstance(arguments, str) else arguments}})
-    return out
-
-
 def _body(messages: list[dict], *, model: str | None, think: bool, temperature: float,
           num_predict: int, schema: dict | None, stream: bool) -> dict:
     """A chat call's body, the same bounds on every path."""
@@ -227,39 +217,24 @@ def chat(messages: list[dict], schema: dict | None = None, model: str | None = N
                            num_ctx, content, len(msg.get("reasoning_content") or ""))
 
 
-def chat_tools(messages: list[dict], tools: list[dict] | None = None, *, think: bool,
-               temperature: float, num_predict: int, fmt: dict | None = None,
-               timeout: int = 600, on_part=None, should_stop=None, top_p: float | None = None,
-               top_k: int | None = None, presence_penalty: float | None = None) -> tuple[dict, dict]:
-    """One bounded turn that may call tools. Returns ({content, tool_calls, raw_tool_calls},
+def chat_tools(messages: list[dict], tools: list[dict], *, think: bool, temperature: float,
+               num_predict: int, timeout: int = 600, on_part=None, should_stop=None,
+               top_p: float | None = None, top_k: int | None = None,
+               presence_penalty: float | None = None) -> tuple[dict, dict]:
+    """One bounded turn that may call `tools`. Returns ({content, tool_calls, raw_tool_calls},
     stats): tool_calls as [{name, arguments}], raw_tool_calls as the assistant message that goes
     back into the conversation carries them. The resident's one window, an explicit `think` and a
-    capped `num_predict`, as every call here. `fmt` is a JSON schema for the reply, as chat()'s
-    `schema`.
+    capped `num_predict`, as every call here.
 
-    With tools the call streams, raw (`_tools_raw`): `on_part` hears each tool call's parameters
-    as they decode, and `should_stop()`, asked about once a second, abandons it (Stopped).
-    Without them it is one chat call.
+    The call streams, raw (`_tools_raw`): `on_part` hears each tool call's parameters as they
+    decode, and `should_stop()`, asked about once a second, abandons it (Stopped).
 
     `top_p`, `top_k` and `presence_penalty` (llama.cpp's names) go to the server only when given:
-    THE LOOP samples as Qwen recommends for thinking, as the Pi coding agent does."""
+    THE LOOP samples as Qwen recommends, as the Pi coding agent does."""
     sampling = {name: value for name, value in
                 (("top_p", top_p), ("top_k", top_k), ("presence_penalty", presence_penalty)) if value is not None}
-    if tools:
-        return _tools_raw(messages, tools, think=think, temperature=temperature, num_predict=num_predict,
-                          fmt=fmt, timeout=timeout, on_part=on_part, should_stop=should_stop, sampling=sampling)
-    body = {**_body(messages, model=None, think=think, temperature=temperature,
-                    num_predict=num_predict, schema=fmt, stream=False), **sampling}
-    resp = _post(CHAT_URL, body, MODEL, timeout)
-    choice = (resp.get("choices") or [{}])[0]
-    msg = choice.get("message") or {}
-    content, raw = msg.get("content") or "", _calls(msg.get("tool_calls") or [])
-    thinking_chars = len(msg.get("reasoning_content") or "")
-    calls = [{"name": c["function"]["name"], "arguments": c["function"]["arguments"]} for c in raw]
-    # A reply that is only tool calls is not one whose thinking ate the budget.
-    stats = _stats(resp.get("timings") or {}, choice.get("finish_reason"), MODEL, RESIDENT_CTX,
-                   content or bool(raw), thinking_chars)
-    return {"content": content, "tool_calls": calls, "raw_tool_calls": raw}, stats
+    return _tools_raw(messages, tools, think=think, temperature=temperature, num_predict=num_predict,
+                      timeout=timeout, on_part=on_part, should_stop=should_stop, sampling=sampling)
 
 
 # --- a call with tools: the template's prompt, the reply read as it decodes ----------------------
@@ -271,7 +246,7 @@ def chat_tools(messages: list[dict], tools: list[dict] | None = None, *, think: 
 # call over the same history share their cached prefix.
 
 def _tools_raw(messages: list[dict], tools: list[dict], *, think: bool, temperature: float, num_predict: int,
-               fmt: dict | None, timeout: int, on_part, should_stop, sampling: dict | None = None) -> tuple[dict, dict]:
+               timeout: int, on_part, should_stop, sampling: dict | None = None) -> tuple[dict, dict]:
     rendered = _post(TEMPLATE_URL, {"messages": _wire(messages), "tools": tools,
                                     "chat_template_kwargs": {"enable_thinking": think}}, MODEL, timeout)
     images = [image for m in messages for image in m.get("images") or ()]
@@ -279,8 +254,6 @@ def _tools_raw(messages: list[dict], tools: list[dict], *, think: bool, temperat
     prompt = {"prompt_string": rendered["prompt"], "multimodal_data": images} if images else rendered["prompt"]
     body = {"prompt": prompt, "stream": True, "n_predict": num_predict, "temperature": temperature,
             "cache_prompt": True, **(sampling or {})}
-    if fmt is not None:
-        body["json_schema"] = fmt
     reader = llm_render._Reader(think, tools, on_part)
     final = _generate(body, reader.feed, should_stop, timeout)
     content, thinking_chars, calls, raw = reader.close()

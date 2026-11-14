@@ -108,7 +108,7 @@ def test_a_call_with_tools_is_the_servers_prompt_raw_and_streamed(monkeypatch):
     assert template == {"messages": llm._wire(EDIT), "tools": TOOLS, "chat_template_kwargs": {"enable_thinking": False}}
     assert url == llm.COMPLETION_URL and body["stream"] is True and body["cache_prompt"] is True
     assert body["prompt"] == {"prompt_string": PROMPT, "multimodal_data": [PNG, PNG, PNG]}
-    assert body["n_predict"] == 2048 and body["temperature"] == 0.0 and "json_schema" not in body
+    assert body["n_predict"] == 2048 and body["temperature"] == 0.0
     assert not {"top_p", "top_k", "presence_penalty"} & set(body)        # only when given
     assert msg["content"] == "I'll add it." and msg["tool_calls"][0]["arguments"]["markdown"] == "# T2\n\nA line."
     assert msg["raw_tool_calls"] == [{"function": msg["tool_calls"][0]}]

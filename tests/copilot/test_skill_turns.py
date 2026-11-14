@@ -94,7 +94,7 @@ def tooled(monkeypatch, *replies):
     return seen
 
 
-def test_a_question_names_no_mode_on_either_path(con, vault, monkeypatch):
+def test_a_question_names_no_mode_in_the_loop_or_an_edit_skill(con, vault, monkeypatch):
     source = open_source(con, vault, note(vault, "Notes/work/a.md", "text\n"))
     seen = tooled(monkeypatch, ("ok", []))
     turn = copilot_turn.run_turn(con, source["path"], "what is /usr/bin for?", [], "medium", vault=vault)

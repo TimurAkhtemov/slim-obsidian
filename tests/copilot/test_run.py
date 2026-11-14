@@ -766,7 +766,7 @@ def streamed(monkeypatch, *replies, order=None):
     script = copilot_turn.llm.chat_tools
 
     def chat_tools(messages, tools=None, **opts):
-        if opts.get("fmt") is None and opts.get("on_part"):
+        if opts.get("on_part"):
             content, calls, *_ = replies[len(seen)]
             for k, (name, args) in enumerate(calls):
                 opts["on_part"]("call", k, name, None)
@@ -855,7 +855,7 @@ def test_stop_while_a_call_streams_ends_the_run_where_it_is(turn, monkeypatch):
     script = copilot_turn.llm.chat_tools
 
     def chat_tools(messages, tools=None, **opts):
-        if opts.get("fmt") is None and len(seen) == 2:            # the second step's call
+        if len(seen) == 2:            # the second step's call
             raise copilot_turn.llm.Stopped
         return script(messages, tools, **opts)
     monkeypatch.setattr(copilot_turn.llm, "chat_tools", chat_tools)

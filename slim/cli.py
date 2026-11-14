@@ -143,8 +143,8 @@ def cmd_status(args):
 def cmd_reflect(args):
     """REFLECT: read a window of journal entries with the resident model and write ONE
     reflection note into `_Reflections/`. Nightly. `--dry-run` previews the selection — window,
-    entry counts, target path — with no model call and no write. The agent never reads journal
-    content here; the LOCAL model does."""
+    entry counts, target path — with no model call and no write. It reads journals under
+    `Journal/` only, with the LOCAL model."""
     from . import reflect as reflect_mod
 
     identity.require_vault_dir()

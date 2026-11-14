@@ -10,14 +10,30 @@ These tests drive `llm` through a fake transport rather than a real model — th
 under test is the lock, not the decode.
 """
 
+import io
 import json
 import threading
 import time
+import urllib.error
 
 import pytest
 
 from slim import llm
-from tests.test_llm_tools import _capture
+
+REPLY = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+         "timings": {"prompt_n": 40, "predicted_n": 12, "prompt_ms": 500.0, "predicted_ms": 1500.0}}
+
+
+def _capture(monkeypatch, reply: dict = REPLY):
+    """A fake transport for chat(): each request's body recorded, `reply` answered."""
+    sent = []
+
+    def fake_urlopen(req, timeout=None):
+        sent.append(json.loads(req.data))
+        return io.BytesIO(json.dumps(reply).encode())
+
+    monkeypatch.setattr(llm.urllib.request, "urlopen", fake_urlopen)
+    return sent
 
 
 class _Overlap:
@@ -162,8 +178,8 @@ def test_calls_inside_hold_do_not_take_the_lock_again(monkeypatch):
 
     def run():
         with llm.hold():
-            llm.chat_tools([], think=False, temperature=0.0, num_predict=10)
-            llm.chat_tools([], think=False, temperature=0.0, num_predict=10)
+            llm.chat([], num_predict=10)
+            llm.chat([], num_predict=10)
             llm.chat([], num_predict=10)
         done.append(True)
 
@@ -181,7 +197,7 @@ def test_another_threads_call_waits_until_hold_exits(monkeypatch):
 
     def other():
         inside.wait(2)
-        llm.chat_tools([], think=False, temperature=0.0, num_predict=10)
+        llm.chat([], num_predict=10)
         order.append("other")
 
     worker = threading.Thread(target=other, daemon=True)
@@ -192,3 +208,14 @@ def test_another_threads_call_waits_until_hold_exits(monkeypatch):
         order.append("run")
     worker.join(2)
     assert order == ["run", "other"]
+
+
+def test_an_http_error_is_an_llm_error_and_frees_the_lock(monkeypatch):
+    def refuse(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, 500, "boom", {},
+                                     io.BytesIO(b"XML syntax error on line 10"))
+
+    monkeypatch.setattr(llm.urllib.request, "urlopen", refuse)
+    with pytest.raises(llm.LLMError, match="HTTP 500 — XML syntax error on line 10"):
+        llm.chat([], num_predict=10)
+    assert not llm._CALL_LOCK.locked()
