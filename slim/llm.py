@@ -221,9 +221,10 @@ def chat_tools(messages: list[dict], tools: list[dict], *, think: bool, temperat
                num_predict: int, timeout: int = 600, on_part=None, should_stop=None,
                top_p: float | None = None, top_k: int | None = None,
                presence_penalty: float | None = None) -> tuple[dict, dict]:
-    """One bounded turn that may call `tools`. Returns ({content, tool_calls, raw_tool_calls},
-    stats): tool_calls as [{name, arguments}], raw_tool_calls as the assistant message that goes
-    back into the conversation carries them. The resident's one window, an explicit `think` and a
+    """One bounded turn that may call `tools`. Returns ({content, tool_calls, raw_tool_calls,
+    thinking}, stats): tool_calls as [{name, arguments}], raw_tool_calls as the assistant message that
+    goes back into the conversation carries them, thinking as the reasoning's text, which goes back
+    too (`_wire`'s `reasoning_content`, as the Pi coding agent sends it). The resident's one window, an explicit `think` and a
     capped `num_predict`, as every call here.
 
     The call streams, raw (`_tools_raw`): `on_part` hears each tool call's parameters as they
@@ -260,7 +261,8 @@ def _tools_raw(messages: list[dict], tools: list[dict], *, think: bool, temperat
     # A reply that is only tool calls is not one whose thinking ate the budget.
     stats = _stats(final.get("timings") or {}, _STOPS.get(final.get("stop_type")), MODEL, RESIDENT_CTX,
                    content or bool(calls), thinking_chars)
-    return {"content": content, "tool_calls": calls, "raw_tool_calls": raw}, stats
+    return {"content": content, "tool_calls": calls, "raw_tool_calls": raw,
+            "thinking": "".join(reader.thought).strip()}, stats
 
 
 def _generate(body: dict, on_chunk, should_stop, timeout: int) -> dict:

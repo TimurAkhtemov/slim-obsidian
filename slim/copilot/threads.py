@@ -31,7 +31,7 @@ THREADS_DIR = DATA_DIR / "threads"
 MAX_TURNS = 500
 MAX_PINS = 12
 MAX_NOTE_PATH = 512              # the open note's path, kept on each question turn
-MAX_THREAD_BYTES = 4_000_000     # a resumable conversation, not an archive
+MAX_THREAD_BYTES = 16_000_000    # a resumable conversation, each turn's transcript in it
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,63}$")
 _REF_RE = re.compile(r"^[0-9a-f]{32}$")
 

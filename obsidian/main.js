@@ -2239,14 +2239,14 @@ var require_view = __commonJS({
             path,
             pins: thread.pins ?? [],
             question,
-            // Role, text and small image refs only, every turn whole: the server fits the
-            // conversation to the model's window (copilot.turn.fit_window). Slim turns also carry
-            // evidence and stats; re-uploading those on every question grew with the square of the
-            // thread. Image bytes stay server-side. A question with no answer after it (a chat
+            // Role, text, small image refs and each answer's transcript, every turn whole: the server
+            // fits the conversation to the model's window (copilot.turn.fit_window). Evidence and
+            // stats stay out. Image bytes stay server-side. A question with no answer after it (a chat
             // saved before a failed one came off) is not history.
-            history: turns.slice(0, -1).filter((turn, i, all) => turn.role !== "you" || all[i + 1]?.role === "slim").map((turn) => ({ ...turn, text: historyText(turn) })).map(({ role, text: text3, attachments }) => ({
+            history: turns.slice(0, -1).filter((turn, i, all) => turn.role !== "you" || all[i + 1]?.role === "slim").map((turn) => ({ ...turn, text: historyText(turn), transcript: turn.turn?.transcript })).map(({ role, text: text3, attachments, transcript }) => ({
               role,
               text: text3,
+              ...role === "slim" && Array.isArray(transcript) && transcript.length ? { transcript } : {},
               ...attachments?.length ? { attachments: attachments.map(
                 ({ id, name, mime, bytes }) => ({ id, name, mime, bytes })
               ) } : {}

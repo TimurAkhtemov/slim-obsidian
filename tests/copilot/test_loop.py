@@ -1044,3 +1044,71 @@ def test_a_step_that_would_not_fit_the_window_is_not_called(ask, monkeypatch):
     run = got["edit_run"]
     assert len(seen) == 2 and len(run["changes"]) == 1
     assert run["stopped"] == "error: the conversation no longer fits the model's window"
+
+
+# --- the conversation is the transcript, as Pi keeps it ------------------------------------------
+
+def test_a_turn_returns_its_transcript_with_thinking_calls_and_results(ask, con, vault, monkeypatch):
+    put(con, vault, "Notes/school/cs-201/zebra.md", "# Zebras\n\nZebras have stripes.\n")
+    seen = scripted(monkeypatch,
+                    ("", [("read_note", {"path": "Notes/school/cs-201/zebra.md"})], "Read the zebra note."),
+                    ("They have stripes.", [], "It says stripes."))
+    got = ask("what did I write about zebras?")
+    sent = seen[1]["messages"]
+    assert sent[-2]["thinking"] == "Read the zebra note."          # the thinking goes back with the call
+    script = got["transcript"]
+    assert [m["role"] for m in script] == ["user", "assistant", "tool", "assistant"]
+    assert script[0]["content"].startswith(f"=== {OPEN} · the open note ===")   # the question as sent
+    assert script[0]["content"].endswith("what did I write about zebras?")
+    assert script[1]["tool_calls"] == [{"function": {"name": "read_note",
+                                                     "arguments": {"path": "Notes/school/cs-201/zebra.md"}}}]
+    assert "Zebras have stripes." in script[2]["content"]
+    assert script[3] == {"role": "assistant", "content": "They have stripes.", "thinking": "It says stripes."}
+
+
+def test_a_follow_up_sees_what_the_last_turn_read(ask, con, vault, monkeypatch):
+    """The live failure (2026-11-14): history kept only the answer, so a follow-up took the answer
+    for all it knew. Replayed, the turn's results are in the follow-up's prompt."""
+    put(con, vault, "Notes/school/cs-201/zebra.md", "# Zebras\n\nZebras have stripes. The vet said no.\n")
+    scripted(monkeypatch, ("", [("read_note", {"path": "Notes/school/cs-201/zebra.md"})]),
+             ("They have stripes.", []))
+    first = ask("what did I write about zebras?")
+    seen = scripted(monkeypatch, ("The vet said no.", []))
+    ask("and what did the vet say?", history=[
+        {"role": "you", "text": f"(on {OPEN}) what did I write about zebras?"},
+        {"role": "slim", "text": "They have stripes.", "transcript": first["transcript"]}])
+    sent = seen[0]["messages"]
+    roles = [m["role"] for m in sent]
+    assert roles[1:5] == ["user", "assistant", "tool", "assistant"]      # the turn, whole
+    assert "The vet said no." in sent[3]["content"]                       # what it read then
+    assert sum(m["content"].endswith("what did I write about zebras?") for m in sent) == 1   # asked once
+
+
+def test_a_malformed_transcript_falls_back_to_the_answer_text(ask, monkeypatch):
+    seen = scripted(monkeypatch, ("Fine.", []))
+    ask("and now?", history=[{"role": "you", "text": "q1"},
+                             {"role": "slim", "text": "A1", "transcript": [{"role": "tool", "content": 3}]}])
+    assert [m["content"] for m in seen[0]["messages"][1:3]] == ["q1", "A1"]
+
+
+def test_a_replayed_question_keeps_the_images_attached_to_it():
+    script = [{"role": "user", "content": "note + q1"}, {"role": "assistant", "content": "A1"}]
+    transcript, _embedded, _current = copilot_turn._conversation(
+        [{"role": "you", "text": "q1", "images": ["aW1n"]}, {"role": "slim", "text": "A1", "transcript": script}],
+        "q2")
+    assert transcript == [{"role": "user", "content": "note + q1", "images": ["aW1n"]},
+                          {"role": "assistant", "content": "A1"}]
+
+
+def test_the_window_keeps_whole_turns_from_a_question_on():
+    call = {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "search", "arguments": {}}}]}
+    transcript = [{"role": "user", "content": "q1"}, call, {"role": "tool", "content": "x" * 4000},
+                  {"role": "assistant", "content": "A1"},
+                  {"role": "user", "content": "q2"}, {"role": "assistant", "content": "A2"}]
+    assert copilot_turn.fit_window(transcript, [], 10) == transcript
+    # Room for the tool result and everything after it, not for the call that asked for it.
+    room_chars = 4000 + 6 + 10
+    system = {"role": "system",
+              "content": "s" * int((llm.RESIDENT_CTX - 10) * copilot_turn.CHARS_PER_TOKEN - room_chars)}
+    kept = copilot_turn.fit_window(transcript, [system], 10)
+    assert kept == transcript[4:]                     # from q2: never a result without its call

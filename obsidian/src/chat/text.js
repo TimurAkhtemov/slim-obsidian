@@ -248,7 +248,8 @@ function runCounts(run) {
 // What the model sees of an earlier turn: a question after the note it was asked on; an answer's
 // prose; an edit turn as its plan and what became of its changes, never the text it wrote (that
 // is in the note, which the model reads). After an answer, one line names what it looked at and
-// changed: tool results are not replayed, so the model reads again if it needs to.
+// changed. An answer with a transcript goes back as that instead (`copilot.turn._conversation`);
+// this text is what an older answer, or an edit skill's, stands on.
 function historyText(turn) {
   if (turn?.role === "you") return turn.note ? `(on ${turn.note}) ${turn.text}` : turn.text;
   const run = turn?.turn?.edit_run;

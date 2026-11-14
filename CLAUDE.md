@@ -113,9 +113,16 @@ moves can hit this.
    - **Chats stand on their own** (`copilot/threads.py`, outside the vault with their pasted
      images, never evidence): one history list, newest first, with a search box. Switching notes
      never ends or swaps a chat, and the sidebar reopens the latest: chats bound to a note were
-     hard to find again (the owner, 2026-11-13). A question keeps the note it was asked on, and
-     an earlier answer one line naming what it looked at and changed; tool results are not
-     replayed, so history stays small and the model looks again if it needs to.
+     hard to find again (the owner, 2026-11-13).
+   - **The conversation is the transcript, as Pi keeps a session** (2026-11-14): each loop turn
+     returns its messages (`transcript`: the question as sent with the open note, each reply with
+     its thinking and tool calls, each tool result) and the plugin saves them with the answer and
+     sends them back; later turns replay them whole, and every reply's thinking goes back as
+     `reasoning_content`, which Qwen's template shows. History that kept only the answer text, with
+     a line naming the notes searches had found, made a follow-up take that answer for all it knew:
+     it skipped the lookup and invented a fact (live, 2026-11-14). An answer saved without a
+     transcript (older chats, edit and new-note skills) is its text and that line. The window drops
+     the oldest whole turns.
    - **One loop, no gate** (`turn._loop` over `run._turn`): every call is offered the lookups, the
      edit tools and `create_note`, and the model decides whether to answer, look or edit. The
      one loop tried on 2026-10-13 was replaced that day by an intent gate, on Ollama: every

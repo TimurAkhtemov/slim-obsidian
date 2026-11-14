@@ -55,6 +55,7 @@ class _Reader:
         self.on_part = on_part or (lambda *_part: None)
         self.state, self.lead = ("think", True) if think else ("text", False)
         self.buf, self.text, self.thinking, self.calls = "", [], 0, []
+        self.thought: list[str] = []          # the thinking's text: it goes back with the reply, as Pi sends it
         self.skip = False                     # the whitespace after </think>, however it arrives
         self.call = None                      # {"name", "arguments", "written", "closed"}: the call being read
         self.param = None                     # [name, text so far, its leading newline to come]
@@ -83,10 +84,12 @@ class _Reader:
             at = self.buf.find(tag)
             if at >= 0:
                 self.thinking += at
+                self.thought.append(self.buf[:at])
                 self.buf = self.buf[at:] if kept else self.buf[at + len(tag):]
                 self.skip, self.state = not kept, "text"
                 return True
         n = len(self.buf) - _held(self.buf, "</think>", _CALL_OPEN)
+        self.thought.append(self.buf[:n])
         self.thinking, self.buf = self.thinking + n, self.buf[n:]
         return False
 
@@ -207,6 +210,7 @@ class _Reader:
         A call never closed is text, as Ollama leaves it: the caller reads it as malformed."""
         if self.state == "think":
             self.thinking += len(self.buf)
+            self.thought.append(self.buf)
         elif self.state == "text":
             self._reply(self.buf, spent=False)
         else:

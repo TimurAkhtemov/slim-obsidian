@@ -125,6 +125,10 @@ def _call(messages: list[dict], offered: list[str], *, think: bool, temperature:
     message = {"role": "assistant", "content": msg["content"]}
     if msg.get("raw_tool_calls"):
         message["tool_calls"] = msg["raw_tool_calls"]
+    # Its thinking goes back with it, as Pi sends it: the template shows the model why it called
+    # what it called, in this turn and in the turns after it (they replay the turn's messages).
+    if msg.get("thinking"):
+        message["thinking"] = msg["thinking"]
     return _Reply(msg["content"], calls, malformed, message, stats or {})
 
 

@@ -67,6 +67,22 @@ def test_a_long_answer_reaches_the_model_whole_through_the_server(con, vault, mo
     assert got["history_dropped"] == 0
 
 
+def test_the_server_keeps_an_answers_transcript_and_drops_a_malformed_one(con, vault, monkeypatch):
+    script = [{"role": "user", "content": "q1 as sent"},
+              {"role": "assistant", "content": "", "thinking": "look it up",
+               "tool_calls": [{"function": {"name": "search", "arguments": {"query": "q"}}}], "extra": 1},
+              {"role": "tool", "content": "found"}, {"role": "assistant", "content": "A1"}]
+    raw = [{"role": "you", "text": "q1"}, {"role": "slim", "text": "A1", "transcript": script},
+           {"role": "you", "text": "q2"}, {"role": "slim", "text": "A2", "transcript": [{"role": "system", "content": "x"}]}]
+    history = server.clean_history(raw)
+    assert history[1]["transcript"][1] == {"role": "assistant", "content": "", "thinking": "look it up",
+                                           "tool_calls": [{"function": {"name": "search", "arguments": {"query": "q"}}}]}
+    assert "transcript" not in history[3]
+    seen = scripted(monkeypatch, ("Done.", []))
+    copilot_turn.run_turn(con, None, "q3", history, "medium", vault=vault)
+    assert [m["content"] for m in seen[0]["messages"][1:-1]] == ["q1 as sent", "", "found", "A1", "q2", "A2"]
+
+
 def test_every_turn_is_sent_when_the_conversation_fits(con, vault, monkeypatch):
     history = [{"role": "slim" if i % 2 else "you", "text": f"turn {i}"} for i in range(30)]
     seen = scripted(monkeypatch, ("Done.", []))

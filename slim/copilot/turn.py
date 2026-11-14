@@ -216,11 +216,48 @@ def plain_note_message(path: str, text: str) -> str:
 
 
 def _tokens(message: dict) -> float:
-    """A message's tokens as THE WINDOW RULE estimates them: its text, and the arguments of the
-    tool calls it made (a step's replace can carry a whole section), which the template renders."""
+    """A message's tokens as THE WINDOW RULE estimates them: its text, its thinking and the
+    arguments of the tool calls it made (a step's replace can carry a whole section), all of which
+    the template renders."""
     calls = message.get("tool_calls")
     called = len(json.dumps(calls, ensure_ascii=False)) if calls else 0
-    return (len(message["content"]) + called) / CHARS_PER_TOKEN + IMAGE_TOKENS * len(message.get("images") or ())
+    thought = len(message.get("thinking") or "")
+    return ((len(message["content"]) + called + thought) / CHARS_PER_TOKEN
+            + IMAGE_TOKENS * len(message.get("images") or ()))
+
+
+# A turn's transcript as the plugin keeps it and sends it back: at most this many messages (a
+# run's steps and lookups included), each in the shape `llm._wire` reads.
+MAX_TRANSCRIPT_MESSAGES = 400
+
+
+def clean_transcript(raw) -> list[dict] | None:
+    """A turn's messages, as `run_turn` returned them in "transcript", checked: the question first,
+    then replies, tool results and code's instructions. None when any of it is malformed (that turn
+    is then its text, as before transcripts were kept)."""
+    if not isinstance(raw, list) or not raw or len(raw) > MAX_TRANSCRIPT_MESSAGES:
+        return None
+    out = []
+    for message in raw:
+        if (not isinstance(message, dict) or message.get("role") not in ("user", "assistant", "tool")
+                or not isinstance(message.get("content"), str)):
+            return None
+        clean = {"role": message["role"], "content": message["content"]}
+        if message["role"] == "assistant":
+            if isinstance(message.get("thinking"), str) and message["thinking"]:
+                clean["thinking"] = message["thinking"]
+            calls = message.get("tool_calls")
+            if calls is not None:
+                if not isinstance(calls, list) or not all(
+                        isinstance(call, dict) and isinstance(call.get("function"), dict)
+                        and isinstance(call["function"].get("name"), str)
+                        and isinstance(call["function"].get("arguments") or {}, dict) for call in calls):
+                    return None
+                clean["tool_calls"] = [{"function": {"name": call["function"]["name"],
+                                                     "arguments": call["function"].get("arguments") or {}}}
+                                       for call in calls]
+        out.append(clean)
+    return out if out[0]["role"] == "user" else None
 
 
 def fit_window(transcript: list[dict], others: list[dict], num_predict: int) -> list[dict]:
@@ -228,7 +265,8 @@ def fit_window(transcript: list[dict], others: list[dict], num_predict: int) -> 
     `others` (the system message, the open note's images, the question) and the reply's
     `num_predict`, which holds the thinking too. When the conversation does not
     fit, its OLDEST messages go, whole: a cut inside one (1,000 characters, never measured)
-    kept the start of an answer and dropped its end, where the plan or the offer sits."""
+    kept the start of an answer and dropped its end, where the plan or the offer sits. What is
+    kept starts at a question, so no turn's tool calls are cut from their results."""
     room = llm.RESIDENT_CTX - num_predict - sum(map(_tokens, others))
     kept = []
     for message in reversed(transcript):
@@ -236,7 +274,12 @@ def fit_window(transcript: list[dict], others: list[dict], num_predict: int) -> 
         if room < 0:
             break
         kept.append(message)
-    return kept[::-1]
+    kept = kept[::-1]
+    # It starts at a question: a tool result without its call, or a reply without its question,
+    # is a turn cut in two.
+    while kept and kept[0]["role"] != "user":
+        kept.pop(0)
+    return kept
 
 
 def _conversation(history: list[dict], question: str, images=None,
@@ -246,6 +289,17 @@ def _conversation(history: list[dict], question: str, images=None,
     transcript = []
     for turn in history:
         if not isinstance(turn, dict) or turn.get("role") not in {"you", "slim"}:
+            continue
+        replay = clean_transcript(turn.get("transcript")) if turn["role"] == "slim" else None
+        if replay:
+            # The turn as the model had it, as Pi keeps a session: the question as it was sent (the
+            # open note with it), each reply with its thinking and tool calls, each result. It
+            # stands in for the question the plugin sent, whose attached images it keeps.
+            if transcript and transcript[-1]["role"] == "user":
+                asked = transcript.pop()
+                if asked.get("images"):
+                    replay[0]["images"] = asked["images"]
+            transcript.extend(replay)
             continue
         message = {
             "role": "user" if turn["role"] == "you" else "assistant",
@@ -349,7 +403,8 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
             used = sum(map(_tokens, sent)) + sum(map(len, results)) / CHARS_PER_TOKEN
             return used + room <= llm.RESIDENT_CTX
 
-        out = edit_run._turn(list(messages), think=think, tools=tools, step_tools=step_tools,
+        convo = list(messages)          # the run appends each reply and result to it
+        out = edit_run._turn(convo, think=think, tools=tools, step_tools=step_tools,
                              note=note, before_text=text or "", create=create, think_budget=think_budget,
                              think_stage="Thinking deeply" if effort == "high" else "Thinking",
                              temperature=(edit_run.FIRST_TEMPERATURE if skill else
@@ -404,6 +459,12 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
         "edit_run": run,
         "looked_up": out["looked_up"],
         "tools": out["tools"],
+        # This turn as the model had it, for the turns after it (`_conversation`): the question as
+        # sent and every message the run added. Image bytes stay out (the question's attachments
+        # carry them).
+        "transcript": [{"role": "user", "content": asked},
+                       *({key: value for key, value in message.items() if key != "images"}
+                         for message in convo[len(messages):])],
     }
     if inputs is not None:
         result["inputs"] = inputs

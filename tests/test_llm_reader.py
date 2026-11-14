@@ -76,6 +76,18 @@ def test_thinking_ends_at_its_close_or_at_a_tool_call():
         assert content in ("OK.I'll add it.", "")
 
 
+def test_the_thinking_text_is_kept_to_go_back_with_the_reply():
+    for size in (1, 3, 200):
+        parts = []
+        reader = llm_render._Reader(True, TOOLS, lambda *part: parts.append(part))
+        text = "<think>\nWhere is it? Search first.\n</think>\n\nOK." + INSERT
+        for i in range(0, len(text), size):
+            reader.feed(text[i:i + size])
+        content, thinking, _calls, _raw = reader.close()
+        assert "".join(reader.thought).strip() == "Where is it? Search first."
+        assert thinking == len("".join(reader.thought)) and "Search first" not in content
+
+
 def test_text_around_calls_is_joined_as_ollama_joins_it_and_an_unclosed_call_is_text():
     call = "<tool_call>\n<function=insert>\n<parameter=markdown>\nx\n</parameter>\n</function>\n</tool_call>"
     (content, _t, calls, _raw), parts = read("Intro\n<tool_call>\n<function=insert>\n<parameter=markdown>\npartial")

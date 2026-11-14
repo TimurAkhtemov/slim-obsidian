@@ -554,14 +554,17 @@ class CopilotView extends ItemView {
       const picked = question.startsWith("/") && path ? editorSelection(this.app, path) : { text: "" };
       await this.plugin.streamCopilot({
         thread_id: thread.id, path, pins: thread.pins ?? [], question,
-        // Role, text and small image refs only, every turn whole: the server fits the
-        // conversation to the model's window (copilot.turn.fit_window). Slim turns also carry
-        // evidence and stats; re-uploading those on every question grew with the square of the
-        // thread. Image bytes stay server-side. A question with no answer after it (a chat
+        // Role, text, small image refs and each answer's transcript, every turn whole: the server
+        // fits the conversation to the model's window (copilot.turn.fit_window). Evidence and
+        // stats stay out. Image bytes stay server-side. A question with no answer after it (a chat
         // saved before a failed one came off) is not history.
         history: turns.slice(0, -1).filter((turn, i, all) => turn.role !== "you" || all[i + 1]?.role === "slim")
-          .map((turn) => ({ ...turn, text: historyText(turn) }))
-          .map(({ role, text, attachments }) => ({ role, text,
+          .map((turn) => ({ ...turn, text: historyText(turn), transcript: turn.turn?.transcript }))
+          // An answer's transcript is the turn as the model had it (the question as sent, its
+          // thinking, tool calls and results), replayed as Pi replays a session; the server falls
+          // back to the text for an answer saved without one.
+          .map(({ role, text, attachments, transcript }) => ({ role, text,
+            ...(role === "slim" && Array.isArray(transcript) && transcript.length ? { transcript } : {}),
             ...(attachments?.length ? { attachments: attachments.map(
               ({ id, name, mime, bytes }) => ({ id, name, mime, bytes })) } : {}) })),
         // A regenerated question re-sends its stored refs; the server has the bytes.

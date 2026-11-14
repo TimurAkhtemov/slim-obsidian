@@ -120,6 +120,24 @@ test("history sent with a question names the note each earlier one was on and wh
                    ["(on Notes/one.md) What is A?", "Answer 1\nlooked at: Notes/two.md"]);
 });
 
+test("an answer's transcript goes back with the history, as Pi replays a session", async () => {
+  const bodies = [];
+  const script = [{ role: "user", content: "note + What is A?" }, { role: "assistant", content: "Answer 1" }];
+  const view = makeView({
+    postJSON: async (route) => route.endsWith("context") ? { source: { id: "source-1", path: "Notes/one.md" } } : {},
+    streamCopilot: async (body, handlers) => {
+      bodies.push(body);
+      handlers.turn({ answer: `Answer ${bodies.length}`, citations: [], ...(bodies.length === 1 ? { transcript: script } : {}) });
+    },
+  });
+  view.render = () => {};
+  view.openNote = { path: "Notes/one.md", id: "source-1" };
+  await view.send("What is A?");
+  await view.send("And B?");
+  await view.send("And C?");
+  assert.deepEqual(bodies[2].history.map((turn) => turn.transcript), [undefined, script, undefined, undefined]);
+});
+
 test("a new model call in the turn clears what streamed before it", async () => {
   const view = makeView({
     postJSON: async (route) => route.endsWith("context") ? { source: { id: "source-1", path: "Notes/one.md" } } : {},

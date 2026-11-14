@@ -116,6 +116,9 @@ def clean_history(raw) -> list[dict]:
         if role not in ("you", "slim") or not isinstance(text, str) or not text.strip():
             continue
         turn = {"role": role, "text": text.strip()}
+        replay = copilot_turn.clean_transcript(item.get("transcript")) if role == "slim" else None
+        if replay:
+            turn["transcript"] = replay
         if role == "you" and item.get("attachments"):
             try:
                 turn["attachments"] = chat_images.clean_refs(item.get("attachments"))
