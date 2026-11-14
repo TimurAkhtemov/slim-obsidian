@@ -99,6 +99,8 @@ class Reader:
             return f"refused: {exc}"
         except (OSError, UnicodeDecodeError) as exc:
             return f"refused: could not read that ({type(exc).__name__})"
+        except Exception as exc:       # the embedder, sqlite: nothing escapes into the agent loop
+            return f"refused: {name} failed ({type(exc).__name__})"
 
     # --- search ---------------------------------------------------------------------------
 

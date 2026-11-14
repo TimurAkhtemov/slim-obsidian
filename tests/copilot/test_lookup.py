@@ -119,3 +119,11 @@ def test_list_folder(vault):
 def test_ollama_tools_includes_lookups():
     tools = edits.ollama_tools(["search", "replace"])
     assert [t["function"]["name"] for t in tools] == ["search", "replace"]
+
+
+def test_search_failure_is_refused_not_raised(con, vault, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("embedder down")
+    monkeypatch.setattr(search, "hybrid", boom)
+    out = lookup.Reader(con, vault).call("search", {"query": "x"})
+    assert out.startswith("refused:") and "RuntimeError" in out
