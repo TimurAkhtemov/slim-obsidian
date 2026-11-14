@@ -54,9 +54,9 @@ Use the replace, edit_text, insert and move tools for a small change and for eac
 
 # THE LOOP (2026-11-13, the owner's call): one loop answers, looks things up and edits; the model
 # decides, with no gate. The open note rides with the question (`open_note_message`), so the
-# system message holds no note and stays a cached prefix. LOOP_RIDER is EDIT_RIDER's measured
-# handle and plan text, the note now with their message, and a paragraph on the lookups. Nothing
-# in it asks for citations: sources are what code saw the turn read. Off, a turn takes the gate
+# system message holds no note and stays a cached prefix (`loop_system`). LOOP_RIDER is EDIT_RIDER's
+# measured handle and plan text, the note now with their message; the lookups are the prompt's rules.
+# Nothing in it asks for citations: sources are what code saw the turn look at. Off, a turn takes the gate
 # and the Ask path, as before, until the owner has compared the two.
 #
 # ONE system message and ONE tool list (LOOP_TOOLS, in this order) for every turn that is not a
@@ -73,8 +73,45 @@ CANNOT_EDIT = ("When no note is shown, or a note is shown without handles, it ca
                "for a change, give them the text to paste.")
 LOOP_RIDER = ("You can edit the open note shown with their message."
               + EDIT_RIDER.removeprefix("You can edit the open note shown below.")
-              + f"\n\n{LOOKING}\n{CREATING}\n{CANNOT_EDIT}")
+              + f"\n\n{CREATING}\n{CANNOT_EDIT}")
 LOOP_TOOLS = [*lookup.NAMES, "plan", *edit_run.STEP_TOOLS, "create_note"]
+
+# THE LOOP'S PROMPT is shaped like the Pi coding agent's (2026-11-14, the owner's call): who it is
+# and where, one line per tool, short rules, and the edit rider. Pi, on the same model and server,
+# looked things up; the tutor persona's "use your general knowledge freely" made a question about
+# the owner's own numbers a guess, with no lookup (live, 2026-11-13). Skills keep the persona.
+LOOP_TOOL_LINES = {
+    "search": "Search the vault's notes for a topic; returns the best passages with their note paths",
+    "read_note": "Read a note, whole or one section of it",
+    "list_folder": "List a folder's folders and notes",
+    "plan": "Start a larger change to the open note: an intro, its headings in order, the steps",
+    "replace": "Replace a block, a section or a range of the open note with new Markdown",
+    "edit_text": "Change a few words inside one block of the open note",
+    "insert": "Add new Markdown after or before a block or section of the open note",
+    "move": "Move a block or section of the open note to another place in it",
+    "create_note": "Make a new note, in a folder that already exists",
+}
+MARKDOWN_RULE = PERSONA[PERSONA.index("Write Markdown."):]       # the persona's measured math line
+
+
+def loop_system() -> str:
+    """The one system message of every loop turn that is not a skill's."""
+    owner = config_mod.OWNER
+    tools = "\n".join(f"- {name}: {LOOP_TOOL_LINES[name]}" for name in LOOP_TOOLS)
+    rules = "\n".join(f"- {rule}" for rule in (
+        f"Questions about {owner}'s own work, people, plans, meetings or numbers are answered from the "
+        "vault: look them up before answering, with search and read_note",
+        "If the vault doesn't have it, say so; only then add general knowledge, labelled as such",
+        f"Never present a guess about {owner}'s situation as fact",
+        "The open note is shown with their message: never look it up, except a part it says is not "
+        "shown. A question only about the open note needs no tool",
+        "Be concise in your responses",
+        "Name notes by title when you use them",
+        " ".join(MARKDOWN_RULE.split()),
+    ))
+    return (f"You are SLIM, an assistant operating inside {owner}'s Obsidian vault. You help {owner} by "
+            "searching and reading their notes, answering questions, and editing the note they have open."
+            f"\n\n<tools>\n{tools}\n</tools>\n\n<rules>\n{rules}\n</rules>\n\n<editing>\n{LOOP_RIDER}\n</editing>")
 NO_NOTE = "no note is open to change; give the text to paste"
 PLAIN_NOTE = "this note can't be changed here; give the text to paste"
 SKILL_RIDER = f"{ASK_RIDER}\n\n{LOOKING}"
@@ -509,7 +546,7 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
     open; with no note it may change (none, the chip's ✕, a note the tools cannot take, or one
     sent without the editor's text for being over MAX_EDIT_CHARS), the edit tools refuse. A chat
     skill offers the lookups alone, its notes (`gather`) in the open note's place. The messages:
-    the persona and the rider, the pins
+    the system message (`loop_system`; a skill's is the persona and SKILL_RIDER), the pins
     and an assistant's "Noted." (roles alternate), the history that fits, the open note's images,
     then the open note and the question. Reply text streams through `on_delta`, and `on_reset()`
     says a new model call started, so the text streamed before it was not the answer."""
@@ -523,12 +560,12 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
     entry.update(pins=len(held), pins_left_out=len(left))
     with llm.hold():
         note, text, cited, inputs, no_edit = None, None, [], None, None
-        rider, tools, step_tools = LOOP_RIDER, LOOP_TOOLS, (*edit_run.STEP_TOOLS, "create_note")
+        tools, step_tools = LOOP_TOOLS, (*edit_run.STEP_TOOLS, "create_note")
         if skill:                               # a chat skill: its notes, chosen by code
             pack = context.gather(con, vault, source, skill=skill, links_from=args, selection=selection)
             cited = [doc_["path"] for doc_ in pack.docs if doc_["role"] not in ("open", "selection")]
             inputs = context.pack_inputs(pack)
-            rider, tools, step_tools = SKILL_RIDER, list(lookup.NAMES), ()
+            tools, step_tools = list(lookup.NAMES), ()
             asked = (f"Notes in view:\n\n{pack_docs(pack) or '(none)'}\n\n---\n\n"
                      f"{skills_mod.render_prompt(skill, args)}")
         elif source is not None:
@@ -562,7 +599,7 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
         shown, skipped = context.open_note_images(vault, source, []) if source else ([], [])
         entry.update(note_images=len(shown), note_images_skipped=len(skipped))
         transcript, embedded, current = _conversation(history, asked, images, shown)
-        system_turn = {"role": "system", "content": f"{PERSONA}\n\n{rider}"}
+        system_turn = {"role": "system", "content": f"{PERSONA}\n\n{SKILL_RIDER}" if skill else loop_system()}
         pinned_turns = ([{"role": "user", "content": pinned}, {"role": "assistant", "content": "Noted."}]
                         if pinned else [])
         room = QUICK_NUM_PREDICT + (edit_run.THINK_BUDGET if mode == "deep" else 0)

@@ -172,11 +172,39 @@ def test_open_note_rides_with_question(ask, monkeypatch):
     ask("what is A?")
     system, current = seen[0]["messages"][0], seen[0]["messages"][-1]
     assert system["role"] == "system" and "Intro para." not in system["content"]
-    assert system["content"].startswith(copilot_turn.PERSONA)
+    assert system["content"] == copilot_turn.loop_system()
     assert current["role"] == "user"
     assert current["content"].startswith(f"=== {OPEN} · the open note ===\nSections:\n")
     assert "[b2] Intro para." in current["content"]
     assert current["content"].endswith("\n\n---\n\nwhat is A?")
+
+
+def test_the_loop_prompt_is_pi_shaped_and_vault_first(ask, monkeypatch):
+    """Like the Pi coding agent's: who it is and where, one line per tool, short rules. Questions
+    about the owner's own life are looked up first; general knowledge only after, and labelled."""
+    monkeypatch.setattr(copilot_turn.config_mod, "OWNER", "Sam")
+    seen = scripted(monkeypatch, ("ok", []))
+    ask("what is A?")
+    system = seen[0]["messages"][0]["content"]
+    assert system.startswith("You are SLIM, an assistant operating inside Sam's Obsidian vault. You help Sam by "
+                             "searching and reading their notes, answering questions, and editing the note they have open.")
+    for name in copilot_turn.LOOP_TOOLS:
+        assert f"\n- {name}: " in system                               # every tool offered, one line each
+    assert "general knowledge freely" not in system and "tutor" not in system
+    assert "Questions about Sam's own work, people, plans, meetings or numbers are answered from the vault" in system
+    assert "look them up before answering" in system
+    assert "If the vault doesn't have it, say so" in system and "labelled as such" in system
+    assert "Never present a guess about Sam's situation as fact" in system
+    assert "Be concise" in system and "by title" in system
+    assert "Write math as $inline$ or $$display$$, never \\( \\) or \\[ \\]." in system
+    # The measured handle and plan sentences, word for word.
+    assert copilot_turn.EDIT_RIDER.removeprefix("You can edit the open note shown below.") in system
+
+
+def test_a_skill_keeps_its_own_prompt(ask, monkeypatch):
+    seen = scripted(monkeypatch, ("Question 1?", []))
+    ask("/quiz")
+    assert seen[0]["messages"][0]["content"] == f"{copilot_turn.PERSONA}\n\n{copilot_turn.SKILL_RIDER}"
 
 
 def test_pins_ride_before_history(ask, con, vault, monkeypatch):
