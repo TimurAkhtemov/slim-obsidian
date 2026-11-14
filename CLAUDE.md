@@ -192,6 +192,12 @@ moves can hit this.
      have (`/api/copilot/restore`). A recording's frontmatter, `slim-meeting` block and
      transcript are [locked] blocks no call may touch, and no change's splices may reach them.
      New text put above a plain note's properties goes right after them.
+   - **A claimed edit is checked by code**: a reply with no tool call that says it changed the
+     note (`run.claims_edit`, a narrow English matcher: "I've replaced…", "Let me … now", "Done")
+     while the note is editable and nothing landed is told so once, in one more call; a reply
+     that claims it again keeps "No change was made to the note." under it (traced as
+     `claimed_edit`). One run in 5 of one edit request wrote the new text in the chat and said
+     "I've replaced…" with nothing changed (2026-11-14), and a prompt rule alone is not a fix.
 
 ## Where things live
 

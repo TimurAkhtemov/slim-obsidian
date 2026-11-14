@@ -339,6 +339,7 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
                                       "start a new chat or unpin something")
     if out["kind"] == "answer" and out["refusals"]:
         entry["refusals"] = [item["code"] for item in out["refusals"]]
+    entry["claimed_edit"] = out["claimed_edit"]
     last = out["timing"][-1] if out["timing"] else {}
     run = None
     if out["kind"] == "answer":     # it streamed as it decoded (on_delta)
@@ -442,6 +443,7 @@ def _skill_run(con, vault: Path, source: dict, mode: str, history: list[dict], *
                              temperature=temperature, first_predict=room,
                              on_edit=on_edit or (lambda _event, _payload: None),
                              should_stop=should_stop, on_stage=stage)
+    entry["claimed_edit"] = out["claimed_edit"]
     last = out["timing"][-1] if out["timing"] else {}
     run = None
     if out["kind"] == "answer":     # a text reply: said once, whole

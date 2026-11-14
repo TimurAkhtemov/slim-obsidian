@@ -43,6 +43,46 @@ LOOKED_ENOUGH = "refused: answer or act now with what you have"
 NO_ROOM = "refused: no room left in this conversation; answer with what you have"
 NOTE_TOO_LONG = "this note is too long for one request; edit it in Obsidian"
 
+# A CLAIMED EDIT (live, 2026-11-14): in 1 run of 5 of one edit request the model called no tool,
+# wrote the new text in the chat and ended "I've replaced … with this condensed version." Nothing
+# had changed. A prompt rule alone is not a fix, so code catches it: a tool-call-free reply that
+# claims a change (`claims_edit`) when the note is editable and none landed gets ONE corrective
+# message (`_turn`); a reply that still claims one keeps FLAGGED under it. The matcher is narrow
+# on purpose: a miss costs what it cost before, a false match one more model call.
+CLAIMED_EDIT = ("No change was made to the note: your reply says you changed it, but you called no edit "
+                "tool. Make the change with the tools now, or say that you did not change the note.")
+FLAGGED = "No change was made to the note."
+_EDITED = ("replaced|updated|changed|added|rewrote|rewritten|edited|renamed|inserted|removed|deleted|"
+           "moved|simplified|condensed|shortened")
+_EDIT = "replace|update|change|add|rewrite|edit|rename|insert|remove|delete|move|simplify|condense|shorten"
+# A sentence that starts with the claim: "I've replaced …", "I have updated …", "I replaced …" (but
+# not "I added nothing"), or "I'll / I will / Let me <verb> … now". A list marker, bold, or "Sure,"
+# before it is still its start; a quote mark, a blockquote or a code block is not.
+_CLAIM = re.compile(
+    r"(?:(?:sure|ok|okay|alright|all right|great|done)\s*[,!:—–-]+\s*)?"
+    rf"(?:I(?:['’]ve|\s+have)?\s+(?:now\s+|just\s+|also\s+|already\s+)?(?:{_EDITED})\b"
+    r"(?!\s+(?:nothing|none|no)\b)"
+    rf"|(?:I['’]ll|I\s+will|Let\s+me)\s+(?:now\s+(?:{_EDIT})\b|(?:{_EDIT})\b[^\n]*?\bnow\b))", re.I)
+_DONE = re.compile(r"Done(?:[.!:]|\s*$|\s+[—–-])", re.I)        # "Done: 2 changes", "Done — …"
+_FENCE = re.compile(r"^(`{3,}|~{3,}).*?^\1[^\n]*$", re.M | re.S)
+_SENTENCE_START = re.compile(r"^[ \t]*(?:[-*+][ \t]+|\d+[.)][ \t]+)?(?:\*\*|__|\*|_)?")
+
+
+def claims_edit(reply: str) -> bool:
+    """Whether a reply says, in the first person, that it changed the note (or is changing it now):
+    `_CLAIM` at the start of one of its sentences, or the reply starting "Done". Code blocks and
+    blockquoted lines are the note's or an example's words, never a claim."""
+    text = _FENCE.sub("", reply or "")
+    lines = [line for line in text.splitlines() if not line.lstrip().startswith(">")]
+    first = _SENTENCE_START.sub("", next((line for line in lines if line.strip()), ""), count=1)
+    if _DONE.match(first):
+        return True
+    for line in lines:
+        for sentence in re.split(r"(?<=[.!?])\s+", line):
+            if _CLAIM.match(_SENTENCE_START.sub("", sentence, count=1)):
+                return True
+    return False
+
 
 class _Stopped(Exception):
     """A model call failed twice, the run is out of budget, or the owner stopped it: it ends
@@ -438,7 +478,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
            "retries": 0, "first_call_edits": 0, "timing": [],
            "outline_details": None, "corrections": 0, "steps_missed": 0,
            "first_temperature": temperature, "looked_up": looked_up if looked_up is not None else [],
-           "tools": []}
+           "tools": [], "claimed_edit": None}
     spent, failed, started, thought = 0, [], [0], 0
     looks = lookup_mod.NAMES if lookups is not None else ()
     barred = {"plan", *STEP_TOOLS} if no_edit else set()
@@ -594,41 +634,57 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
         acts = any(c["name"] in acting for c in others) or (plans and any(c["name"] in looks for c in others))
         return plans, others if acts else []
 
+    # An answer that claims a change to the note when none landed (`claims_edit`): the claim, kept
+    # in case the corrective call never answers.
+    editable, claimed = note is not None and bool(acting), None
+
+    def answered(answer: str) -> dict:
+        if editable and claims_edit(answer) and (claimed is not None or out["stopped"]):
+            out["claimed_edit"] = "flagged"     # corrected once, or no call left to correct it with
+            answer = f"{answer}\n\n{FLAGGED}"
+            if on_reply:
+                on_reply(f"\n\n{FLAGGED}")
+        out["answer"] = note.plain(answer, bare=False) if note is not None else answer
+        if drafts:
+            drafts.end()
+        return out
+
     try:
         first = ask(tools, think, temperature, first_predict)
         looked, over = 0, 0
-        while looking(first) and not out["stopped"]:
-            results = []
-            for call in first.calls:
-                out["calls"] += 1
-                if call["name"] in barred:
-                    results.append(bar(call["name"], 0))
-                elif call["name"] not in looks:
-                    results.append(f"refused: {call['name']} is not available now")
-                elif looked >= MAX_LOOKUPS:
-                    results.append(LOOKED_ENOUGH)
-                    out["looked_up"].append({"name": call["name"], "refused": True, "said": LOOKED_ENOUGH})
-                    tell(call, True)
-                else:
-                    looked += 1
-                    results.append(look(call, results))
-            refused = all(r.startswith("refused:") for r in results)
-            # A reply all refused counts when it asked past the cap, or for a tool it may not use
-            # (barred, or not offered at all): a model stuck on one ends after MAX_REFUSALS.
-            over += refused and (looked >= MAX_LOOKUPS or any(c["name"] in barred or c["name"] not in looks
-                                                              for c in first.calls))
-            if out["calls"] > MAX_CALLS:
-                out["stopped"] = "call limit"
-            elif over >= MAX_REFUSALS:
-                out["stopped"] = "refusals" if out["refusals"] else "lookups"
-            if out["stopped"]:
-                break
-            messages.extend({"role": "tool", "content": result} for result in results)
-            first = ask(tools, think, temperature, first_predict)
-        plans, edits = split(first)
-        unread = first.malformed and not first.calls
-        if not plans and not edits and not out["stopped"]:
-            if unread or first.calls and planning:
+        while True:
+            while looking(first) and not out["stopped"]:
+                results = []
+                for call in first.calls:
+                    out["calls"] += 1
+                    if call["name"] in barred:
+                        results.append(bar(call["name"], 0))
+                    elif call["name"] not in looks:
+                        results.append(f"refused: {call['name']} is not available now")
+                    elif looked >= MAX_LOOKUPS:
+                        results.append(LOOKED_ENOUGH)
+                        out["looked_up"].append({"name": call["name"], "refused": True, "said": LOOKED_ENOUGH})
+                        tell(call, True)
+                    else:
+                        looked += 1
+                        results.append(look(call, results))
+                refused = all(r.startswith("refused:") for r in results)
+                # A reply all refused counts when it asked past the cap, or for a tool it may not use
+                # (barred, or not offered at all): a model stuck on one ends after MAX_REFUSALS.
+                over += refused and (looked >= MAX_LOOKUPS or any(c["name"] in barred or c["name"] not in looks
+                                                                  for c in first.calls))
+                if out["calls"] > MAX_CALLS:
+                    out["stopped"] = "call limit"
+                elif over >= MAX_REFUSALS:
+                    out["stopped"] = "refusals" if out["refusals"] else "lookups"
+                if out["stopped"]:
+                    break
+                messages.extend({"role": "tool", "content": result} for result in results)
+                first = ask(tools, think, temperature, first_predict)
+            plans, edits = split(first)
+            unread = first.malformed and not first.calls
+            if not plans and not edits and not out["stopped"] and not out["replanned"] and (
+                    unread or first.calls and planning):
                 # Calls that change nothing, or a call code could not read: the plan asked for once
                 # more (a new note, where there is no plan, once more).
                 out["replanned"] = True
@@ -636,15 +692,18 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
                 messages.extend(_results([said], "Make the plan first: one sentence for the owner, and the "
                                                  "steps in order." if planning else
                                                  "Make the new note with the create_note tool."))
-            if out["replanned"]:
                 first = ask(tools, think, temperature, first_predict)
                 plans, edits = split(first)
-        if not plans and not edits:
+            if plans or edits:
+                break
             answer = first.content.strip() or next((_summary(c) for c in first.calls if c["name"] == "done"), "")
-            out["answer"] = note.plain(answer, bare=False) if note is not None else answer
-            if drafts:
-                drafts.end()
-            return out
+            if not (editable and claimed is None and not out["stopped"] and claims_edit(answer)):
+                return answered(answer)
+            # It says it changed the note and changed nothing: told so, once, as a refusal is, in
+            # a call of its own (the text streamed so far is reset, as for any new call).
+            claimed, out["claimed_edit"] = answer, "corrected"
+            messages.extend(_results([], CLAIMED_EDIT))
+            first = ask(tools, think, temperature, first_predict)
         args = plans[0]["arguments"] if plans and isinstance(plans[0]["arguments"], dict) else {}
         steps += _steps(args.get("steps"))[:MAX_STEPS]
         intro = str(args.get("intro") or "").strip() if plans else first.content.strip()
@@ -806,6 +865,8 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
             n = len(out["changes"])
             out["summary"] = intro or f"Done: {n} change{'' if n == 1 else 's'}"
     except _Stopped:
+        if out["kind"] == "answer" and claimed is not None:
+            return answered(claimed)    # the corrective call never answered: the claim stands, flagged
         if out["kind"] == "answer":     # no run started, and no answer either
             if failed:
                 raise failed[-1]

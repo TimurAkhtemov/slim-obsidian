@@ -106,6 +106,14 @@ def test_the_rider_is_the_measured_one():
     assert "the note's headings in their final order (each with its # marks)" in copilot_turn.EDIT_RIDER
 
 
+def test_an_edit_skill_that_claims_a_change_it_never_made_is_told_once(turn, monkeypatch):
+    seen = scripted(monkeypatch, ("I've updated the list.", []),
+                    ("", [("replace", {"target": "b5", "markdown": "- **one**"})]))
+    got, _ = turn("/tidy", selection="- one")
+    assert len(seen) == 2 and seen[1]["messages"][-1] == {"role": "user", "content": edit_run.CLAIMED_EDIT}
+    assert "- **one**" in got["final"]
+
+
 def test_deep_gives_an_edit_skills_first_call_room_to_think(turn, monkeypatch):
     seen = scripted(monkeypatch, ("", [("replace", {"target": "b5", "markdown": "- **one**"})]))
     turn("/tidy", selection="- one", mode="deep")

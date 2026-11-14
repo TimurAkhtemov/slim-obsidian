@@ -287,7 +287,7 @@ def test_long_recording_transcript_pages_through_read_note(ask, monkeypatch):
     assert len(TRANSCRIPT_NOTE) > 120_000
     fence = _fence(TRANSCRIPT_NOTE)
     pages = [("", [("read_note", {"path": OPEN, "section": fence if n == 1 else f"{fence}#{n}"})]) for n in (1, 2, 3, 4)]
-    seen = scripted(monkeypatch, *pages, ("Done.", []))
+    seen = scripted(monkeypatch, *pages, ("Read it all.", []))
     got = ask("what did I say at the end?", text=TRANSCRIPT_NOTE)
     asked = seen[0]["messages"][-1]["content"]
     assert f"[locked {fence}]" in asked and f'read_note("{OPEN}", "{fence}")' in asked
@@ -432,7 +432,7 @@ def test_the_stage_line_names_each_lookup(ask, con, vault, monkeypatch):
     put(con, vault, "Notes/school/cs-201/zebra.md", "# Zebras\n\nZebras have stripes.\n")
     scripted(monkeypatch, ("", [("search", {"query": "zebras"})]),
              ("", [("read_note", {"path": "Notes/school/cs-201/zebra.md"})]),
-             ("", [("list_folder", {"path": "Notes/school"}), ("list_folder", {"path": ""})]), ("Done.", []))
+             ("", [("list_folder", {"path": "Notes/school"}), ("list_folder", {"path": ""})]), ("Found them.", []))
     got = ask("zebras?")
     assert got["stages"] == ["Thinking", "Searching", "Thinking", "Reading zebra", "Thinking",
                              "Listing Notes/school", "Listing the vault", "Thinking"]
@@ -556,7 +556,7 @@ def test_a_section_of_the_open_note_is_named_by_its_text_never_a_handle(ask, mon
 
 
 def test_a_lookup_past_the_cap_and_one_with_no_room_are_shown_refused(ask, monkeypatch):
-    scripted(monkeypatch, *[("", [("list_folder", {"path": "Notes"})])] * 7, ("Done.", []))
+    scripted(monkeypatch, *[("", [("list_folder", {"path": "Notes"})])] * 7, ("Found it.", []))
     got = ask("look around")
     assert got["tools"][-1] == {"name": "list_folder", "label": "Listed Notes/ — refused", "refused": True}
     assert [t["refused"] for t in got["tools"]] == [False] * 6 + [True]
@@ -635,3 +635,138 @@ def test_a_turn_thinks_on_at_most_eight_calls(ask, monkeypatch):
     assert got["answer"] == "Answer." and len(seen) == 9
     assert [call["opts"]["think"] for call in seen] == [True] * edit_run.MAX_THINKING_CALLS + [False]
     assert edit_run.MAX_THINKING_CALLS == 8
+
+
+# --- a reply that claims an edit with no edit made ---------------------------------------------
+
+CLAIMS = [
+    # the live case, 2026-11-14: the new text in the chat, then the claim
+    "Here is a simpler version:\n\n**Softmax** turns scores into probabilities.\n\n"
+    "I've replaced “Softmax Function” with this condensed version.",
+    "I have updated the note.",
+    "I replaced the intro with a shorter one.",
+    "I’ve condensed the explanation.",
+    "Sure! I've shortened the section on softmax.",
+    "OK, I rewrote the definition.",
+    "- I've removed the long example.",
+    "**I've simplified the note.**",
+    "I'll simplify it now.",
+    "Let me rewrite the section now:",
+    "I will now update the heading.",
+    "Done: 1 change",
+    "Done — the note is shorter.",
+    "Done.",
+]
+NOT_CLAIMS = [
+    "The note has been updated by your instructor since last week.",
+    "You could replace X with Y.",
+    "I can rewrite it if you want.",
+    "I'll rewrite it if you want.",
+    "I added nothing; the note already covers it.",
+    "I haven't changed the note. Here is a shorter version to paste:",
+    "If I replaced the heading, the links to it would break.",
+    "Let me know if you want me to shorten it.",
+    'Your note says: "I\'ve updated the figures for Q3."',
+    "“I have edited this section” is the note's last line.",
+    "> I've replaced the old intro.\n\nThat line is from your note.",
+    "```\nI've updated the note.\n```\nThat is the example's first line.",
+    "Done right, softmax is stable.",
+    "Softmax turns scores into probabilities.",
+]
+
+
+@pytest.mark.parametrize("reply", CLAIMS)
+def test_a_first_person_edit_is_a_claim(reply):
+    assert edit_run.claims_edit(reply)
+
+
+@pytest.mark.parametrize("reply", NOT_CLAIMS)
+def test_an_ordinary_answer_is_no_claim(reply):
+    assert not edit_run.claims_edit(reply)
+
+
+@pytest.fixture
+def records(monkeypatch):
+    found = []
+    monkeypatch.setattr(copilot_turn.trace, "record", lambda kind, payload: found.append(payload))
+    return found
+
+
+def test_a_claimed_edit_that_made_none_is_corrected_once_and_then_lands(ask, monkeypatch, records):
+    seen = scripted(monkeypatch, ("Simpler: Intro.\n\nI've replaced the intro with this.", []),
+                    ("", [("edit_text", {"target": "b2", "old": "Intro para.", "new": "Intro."})]))
+    got = ask("make the intro simpler")
+    assert len(seen) == 2
+    assert seen[1]["messages"][-1] == {"role": "user", "content": edit_run.CLAIMED_EDIT}
+    assert seen[1]["messages"][-2]["content"].endswith("I've replaced the intro with this.")
+    assert len(got["edit_run"]["changes"]) == 1 and edit_run.FLAGGED not in got["answer"]
+    assert RESET in got["deltas"]                       # the false claim is not left as the answer
+    assert records[0]["claimed_edit"] == "corrected"
+
+
+def test_a_corrected_reply_that_says_it_changed_nothing_is_the_answer(ask, monkeypatch, records):
+    seen = scripted(monkeypatch, ("I've shortened the note.", []),
+                    ("I did not change the note. Paste this: Intro.", []))
+    got = ask("make it shorter")
+    assert len(seen) == 2 and got["answer"] == "I did not change the note. Paste this: Intro."
+    assert got["deltas"] == ["I've shortened the note.", RESET, "I did not change the note. Paste this: Intro."]
+    assert records[0]["claimed_edit"] == "corrected"
+
+
+def test_a_claim_made_again_keeps_the_reply_and_says_no_change_was_made(ask, monkeypatch, records):
+    seen = scripted(monkeypatch, ("I've shortened the note.", []), ("I have updated the note now.", []))
+    got = ask("make it shorter")
+    assert len(seen) == 2 and got["edit_run"] is None
+    assert got["answer"] == "I have updated the note now.\n\nNo change was made to the note."
+    assert got["answer"].count(edit_run.FLAGGED) == 1
+    assert "".join(d for d in got["deltas"][got["deltas"].index(RESET) + 1:]) == got["answer"]
+    assert records[0]["claimed_edit"] == "flagged"
+
+
+def test_a_claim_whose_correction_fails_is_kept_flagged(ask, monkeypatch, records):
+    scripted(monkeypatch, ("I've shortened the note.", []),
+             llm.LLMError("the server failed"), llm.LLMError("the server failed"))
+    got = ask("make it shorter")
+    assert got["answer"] == "I've shortened the note.\n\nNo change was made to the note."
+    assert records[0]["claimed_edit"] == "flagged"
+
+
+def test_an_answer_with_no_claim_is_one_call(ask, monkeypatch, records):
+    seen = scripted(monkeypatch, ("It introduces A.", []))
+    got = ask("what is this note about?")
+    assert len(seen) == 1 and got["answer"] == "It introduces A."
+    assert records[0]["claimed_edit"] is None
+
+
+def test_a_claim_beside_a_change_that_landed_is_not_corrected(ask, monkeypatch, records):
+    seen = scripted(monkeypatch, ("I've replaced the intro.",
+                                  [("edit_text", {"target": "b2", "old": "Intro para.", "new": "Intro."})]))
+    got = ask("make the intro simpler")
+    assert len(seen) == 1 and len(got["edit_run"]["changes"]) == 1
+    assert records[0]["claimed_edit"] is None
+
+
+@pytest.mark.parametrize("open_path, text, doc", [(None, None, True), (OPEN, CRLF, False)])
+def test_a_claim_with_no_note_it_may_change_is_not_corrected(ask, monkeypatch, records, open_path, text, doc):
+    seen = scripted(monkeypatch, ("I've updated the note.", []))
+    got = ask("update it", open_path=open_path, text=text, doc=doc)
+    assert len(seen) == 1 and got["answer"] == "I've updated the note."
+    assert records[0]["claimed_edit"] is None
+
+
+def test_a_first_call_edit_on_an_overflowing_window_lands_nothing_and_says_why(con, vault, monkeypatch):
+    """The prompt lost its start, so the call's edit is a guess: nothing lands, and the turn says
+    the conversation no longer fits."""
+    put(con, vault, OPEN, NOTE)
+    seen = scripted(monkeypatch, ("", [("edit_text", {"target": "b2", "old": "Intro para.", "new": "Intro."})]))
+    real = copilot_turn.llm.chat_tools
+
+    def saturated(messages, tools=None, **opts):
+        msg, stats = real(messages, tools, **opts)
+        return msg, {**stats, "ctx_saturated": True}
+    monkeypatch.setattr(copilot_turn.llm, "chat_tools", saturated)
+    events = []
+    with pytest.raises(copilot_turn.CopilotError, match="this conversation no longer fits the model's window"):
+        copilot_turn.run_turn(con, OPEN, "shorten the intro", [], "quick", vault=vault, doc=NOTE,
+                              doc_hash=edits.digest(NOTE), on_edit=lambda e, p: events.append(e))
+    assert len(seen) == 1 and events == []
