@@ -29,6 +29,12 @@ class SSEParser {
 
 function streamRequest(port, path, body, handlers, signal) {
   return new Promise((resolve, reject) => {
+    // Stopped before the request was made (the server was still starting): an abort event that
+    // has already fired never fires again, so the stream would have run on to its end.
+    if (signal?.aborted) {
+      reject(Object.assign(new Error("Cancelled"), { name: "AbortError" }));
+      return;
+    }
     const encoded = Buffer.from(JSON.stringify(body));
     const request = http.request({
       hostname: "127.0.0.1", port, path, method: "POST",

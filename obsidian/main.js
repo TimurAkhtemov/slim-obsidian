@@ -6825,6 +6825,10 @@ var require_sse = __commonJS({
     };
     function streamRequest(port, path, body, handlers, signal) {
       return new Promise((resolve, reject) => {
+        if (signal?.aborted) {
+          reject(Object.assign(new Error("Cancelled"), { name: "AbortError" }));
+          return;
+        }
         const encoded = Buffer.from(JSON.stringify(body));
         const request = http.request({
           hostname: "127.0.0.1",

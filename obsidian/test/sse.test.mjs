@@ -36,3 +36,18 @@ test("an SSE error handler rejects streamRequest instead of escaping the callbac
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+test("a stream stopped before its request was made rejects at once, with no request", async () => {
+  let requests = 0;
+  const server = http.createServer((_req, res) => { requests += 1; res.end(); });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const controller = new AbortController();
+  controller.abort();
+  try {
+    await assert.rejects(streamRequest(server.address().port, "/api/copilot/stream", {}, {}, controller.signal),
+                         { name: "AbortError" });
+    assert.equal(requests, 0);
+  } finally {
+    server.close();
+  }
+});
