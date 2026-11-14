@@ -532,6 +532,47 @@ def test_a_client_that_hangs_up_stops_the_run_after_the_current_call(server_url,
     client.close()
 
 
+def test_a_delta_to_a_closed_client_never_raises_into_the_models_stream(server_url, monkeypatch):
+    """A write into a closed socket raised BrokenPipe inside the model's stream, which read as a
+    failed call and was retried. In THE LOOP the delta is quiet and should_stop() says stop."""
+    import socket
+    from urllib.parse import urlparse
+
+    closed, said = threading.Event(), {}
+
+    def fake_run(con, open_path, question, history, mode, **kwargs):
+        kwargs["on_stage"]("Writing")
+        assert closed.wait(5)
+        try:
+            for _ in range(200):
+                kwargs["on_delta"]("more text " * 50)
+                threading.Event().wait(0.002)
+            said["raised"] = None
+        except Exception as exc:                # noqa: BLE001
+            said["raised"] = type(exc).__name__
+        said["stop"] = kwargs["should_stop"]()
+        return {"answer": "x", "mode": "quick", "citations": []}
+
+    monkeypatch.setattr(copilot_turn, "run_turn", fake_run)
+    body = json.dumps({"thread_id": "chat-1", "path": "Notes/a.md", "question": "q", "history": [],
+                       "reasoning_mode": "quick"}).encode()
+    host, port = urlparse(server_url).hostname, urlparse(server_url).port
+    client = socket.create_connection((host, port))
+    client.sendall(b"POST /api/copilot/stream HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                   b"Content-Type: application/json\r\nContent-Length: " + str(len(body)).encode()
+                   + b"\r\n\r\n" + body)
+    seen = b""
+    while b"event: stage" not in seen:
+        seen += client.recv(65536)
+    client.close()
+    closed.set()
+    for _ in range(100):
+        if "stop" in said:
+            break
+        threading.Event().wait(0.05)
+    assert said == {"raised": None, "stop": True}
+
+
 def test_a_run_keeps_its_images_from_its_start_and_its_start_names_them(server_url, a_note, monkeypatch):
     """However a run ends, the plugin keeps its turn, so the question's images stay stored from the
     run's start, and the `edit` event that starts it names them: a stopped or failed run never

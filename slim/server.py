@@ -484,6 +484,16 @@ class _Handler(BaseHTTPRequestHandler):
                 event, payload = "edit", {**before, "attachments": attachments}
             quietly(lambda: emit(event, payload))
 
+        def on_delta(text):
+            # In THE LOOP a write into a closed socket must not raise inside the model's stream:
+            # `llm._generate` reads it as a failed call and retries it. should_stop() notices the
+            # client gone within a second instead. The gate's Ask path has no should_stop: there
+            # the raise is what ends the answer.
+            if copilot_turn.LOOP:
+                quietly(lambda: emit("delta", {"text": text}))
+            else:
+                emit("delta", {"text": text})
+
         def should_stop():
             quietly(lambda: (self.wfile.write(b": alive\n\n"), self.wfile.flush()))
             if not gone and _ended(self.connection):
@@ -503,7 +513,7 @@ class _Handler(BaseHTTPRequestHandler):
                 con, open_path, question, history, mode, pins=pins, vault=config.VAULT, images=images,
                 selection=selection, selection_from=selection_from, doc=doc, doc_hash=doc_hash,
                 on_stage=lambda stage: emit("stage", {"stage": stage}),
-                on_delta=lambda text: emit("delta", {"text": text}),
+                on_delta=on_delta,
                 on_reset=lambda: quietly(lambda: emit("delta_reset", {})),
                 on_edit=on_edit, should_stop=should_stop)
             turn["attachments"] = attachments
