@@ -138,14 +138,16 @@ test("a new model call in the turn clears what streamed before it", async () => 
   assert.equal(view.turns.at(-1).text, "Found it.");      // a turn with no answer keeps what streamed last
 });
 
-test("cancel aborts the in-flight stream and returns the composer to idle", () => {
+test("cancel aborts the in-flight stream; the turn ends, and the composer goes idle, when the stream does", () => {
   const view = makeView();
+  view.render = () => {};
   let aborted = false;
   view.abort = { abort() { aborted = true; } };
   view.sending = true;
   view.cancel();
   assert.equal(aborted, true);
-  assert.equal(view.sending, false);
+  assert.equal(view.sending, true);                                 // send()'s finally ends it
+  assert.equal(view.stage, "Stopping");
 });
 
 test("retry resends the failed question without duplicating its user turn", async () => {
@@ -1264,4 +1266,268 @@ test("history rows show a faint relative date and the note the chat was on", () 
   const subs = [];
   find(root, (node) => { if (node.cls === "slim-chat-sub") subs.push(node.children.map((part) => part.textContent)); return false; });
   assert.deepEqual(subs, [["Today", "one"], ["Jan 2"]]);
+});
+
+// ---- one chat streams while the owner moves between chats --------------------------------------
+
+// A view over a thread store: saves land in `disk`, opening a chat reads a copy of it.
+function storeView({ stream, ...extra } = {}) {
+  const disk = new Map();
+  const bodies = [];
+  const view = makeView({
+    postJSON: async (route, body) => {
+      if (route.endsWith("thread/save")) { disk.set(body.id, structuredClone(body)); return {}; }
+      return contextFor(route) || { threads: [] };
+    },
+    getJSON: async (route) => {
+      const id = decodeURIComponent(route.split("id=")[1] || "");
+      return structuredClone(disk.get(id) || { id, title: id, turns: [] });
+    },
+    streamCopilot: async (body, handlers, signal) => { bodies.push(body); return stream(body, handlers, signal, bodies.length); },
+    ...extra,
+  });
+  view.render = () => {};
+  return { view, disk, bodies };
+}
+
+const texts = (turns) => turns.map((turn) => turn.text);
+
+test("reopening the chat that is streaming shows the live answer, and the next question keeps it on disk", async () => {
+  const gate = deferred();
+  const { view, disk } = storeView({ stream: async (_body, handlers, _signal, n) => {
+    if (n === 1) await gate.promise;
+    handlers.turn({ answer: `answer ${n}`, citations: [] });
+  } });
+  disk.set("A", { id: "A", title: "A", turns: [{ role: "you", text: "old" }, { role: "slim", text: "old answer" }] });
+  await view.openThread("A");
+  const sending = view.send("new q");
+  await view.openThread("B");
+  await view.openThread("A");                                       // the history list's way back
+  assert.equal(view.turns, view.streamingTurns);                    // the live chat, not a copy from disk
+  gate.resolve();
+  await sending;
+  assert.deepEqual(texts(view.turns), ["old", "old answer", "new q", "answer 1"]);
+  await view.send("follow-up");
+  assert.deepEqual(texts(disk.get("A").turns), ["old", "old answer", "new q", "answer 1", "follow-up", "answer 2"]);
+});
+
+test("an error and its Retry stay with the chat that failed; Retry there re-asks with its images", async () => {
+  const gate = deferred();
+  const { view, bodies } = storeView({ stream: async (_body, handlers, _signal, n) => {
+    if (n === 1) { await gate.promise; throw new Error("boom"); }
+    handlers.turn({ answer: "ok", citations: [] });
+  } });
+  view.activeThread = { id: "A", title: "A" };
+  view.pendingImages = [{ name: "x.png", mime: "image/png", data: "AAAA", preview: "data:image/png;base64,AAAA" }];
+  const sending = view.send("question for A");
+  await view.openThread("B");                                       // it fails while B is on screen
+  gate.resolve();
+  await sending;
+  assert.equal(view.error, "");
+  await view.retry();                                               // nothing to retry in B
+  assert.equal(bodies.length, 1);
+  await view.openThread("C");
+  assert.equal(view.error, "");
+  await view.openThread("A");
+  assert.equal(view.error, "boom");
+  assert.equal(view.retryQuestion, "question for A");
+  await view.retry();
+  assert.equal(bodies[1].thread_id, "A");
+  assert.equal(bodies[1].question, "question for A");
+  assert.deepEqual(bodies[1].images.map((image) => image.name), ["x.png"]);
+});
+
+test("Retry is drawn only in the chat that failed", async () => {
+  const { view, root } = renderedView({
+    getJSON: async (route) => ({ id: route.split("id=")[1], title: "B", turns: [] }),
+    streamCopilot: async () => { throw new Error("boom"); },
+  });
+  view.activeThread = { id: "A", title: "A" };
+  await view.send("question for A");
+  const retry = () => find(root, (node) => node.attrs?.["aria-label"] === "Retry response");
+  assert.ok(retry());
+  await view.openThread("B");
+  assert.equal(retry(), null);
+  assert.equal(find(root, (node) => node.cls === "slim-copilot-error"), null);
+  view.newThread();
+  assert.equal(retry(), null);
+});
+
+test("a history row clicked as the search fires still opens", async () => {
+  const opening = deferred();
+  const view = makeView({
+    getJSON: async (route) => (route.startsWith("/api/copilot/thread?") ? opening.promise : { threads: [] }),
+  });
+  view.render = () => {};
+  const open = view.openThread("A");
+  await view.loadThreads();                                         // the search's debounce fires meanwhile
+  opening.resolve({ id: "A", title: "A", turns: [{ role: "you", text: "q" }] });
+  await open;
+  assert.equal(view.activeThread?.id, "A");
+});
+
+test("a pin or the open note's ✕ on a sidebar with no chat yet keeps the pasted images", () => {
+  const { view } = pinView();
+  const image = { name: "x.png", mime: "image/png", data: "AAAA" };
+  view.pendingImages = [image];
+  view.draft = "@x";
+  view.pin({ kind: "note", path: "Notes/x.md" });
+  assert.deepEqual(view.pendingImages, [image]);
+  view.activeThread = null;
+  view.toggleOpenNote();
+  assert.deepEqual(view.pendingImages, [image]);
+  assert.equal(view.activeThread.openNoteOff, true);
+});
+
+test("a pin changed in another chat while one streams is saved", async () => {
+  const gate = deferred();
+  const { view, disk } = storeView({ stream: async (_body, handlers) => {
+    await gate.promise;
+    handlers.turn({ answer: "ok", citations: [] });
+  } });
+  disk.set("B", { id: "B", title: "B", pins: [], turns: [{ role: "you", text: "q" }, { role: "slim", text: "a" }] });
+  view.activeThread = { id: "A", title: "A" };
+  const sending = view.send("question for A");
+  await view.openThread("B");
+  await view.pin({ kind: "note", path: "Notes/x.md" });
+  assert.deepEqual(disk.get("B").pins, [{ kind: "note", path: "Notes/x.md" }]);
+  gate.resolve();
+  await sending;
+});
+
+test("renaming the chat that streams, from another chat, survives the answer's save", async () => {
+  const gate = deferred();
+  const { view, disk } = storeView({ stream: async (_body, handlers) => {
+    await gate.promise;
+    handlers.turn({ answer: "answer", citations: [] });
+  } });
+  disk.set("A", { id: "A", title: "A", turns: [{ role: "you", text: "old" }, { role: "slim", text: "old answer" }] });
+  view.promptTitle = async () => "Renamed";
+  await view.openThread("A");
+  const sending = view.send("new q");
+  await view.openThread("B");
+  await view.renameThread("A");
+  gate.resolve();
+  await sending;
+  assert.equal(disk.get("A").title, "Renamed");
+  assert.deepEqual(texts(disk.get("A").turns), ["old", "old answer", "new q", "answer"]);
+});
+
+test("renaming the chat that streams never saves its unanswered question, and a failed answer still keeps the title", async () => {
+  const gate = deferred();
+  const { view, disk } = storeView({ stream: async () => { await gate.promise; throw new Error("boom"); } });
+  disk.set("A", { id: "A", title: "A", turns: [{ role: "you", text: "old" }, { role: "slim", text: "old answer" }] });
+  view.promptTitle = async () => "Renamed";
+  await view.openThread("A");
+  const sending = view.send("new q");
+  await view.renameThread("A");
+  assert.deepEqual(texts(disk.get("A").turns), ["old", "old answer"]);
+  assert.equal(view.activeThread.title, "Renamed");
+  gate.resolve();
+  await sending;
+  await view.savingRuns;
+  assert.equal(disk.get("A").title, "Renamed");
+  assert.deepEqual(texts(disk.get("A").turns), ["old", "old answer"]);
+  assert.equal(view.retryQuestion, "new q");                       // still offered under its error
+});
+
+test("Stop, then a quick second click, neither sends nor breaks the next turn", async () => {
+  const bodies = [];
+  const { view, root } = renderedView({
+    streamCopilot: (body, handlers, signal) => new Promise((resolve, reject) => {
+      bodies.push(body);
+      if (bodies.length > 1) { handlers.turn({ answer: "second", citations: [] }); resolve(); return; }
+      // The stream notices the stop a moment later, as a socket does.
+      signal.addEventListener("abort", () => setTimeout(() => reject(Object.assign(new Error("Cancelled"), { name: "AbortError" })), 5));
+    }),
+  });
+  const send = () => find(root, (node) => node.cls?.split(" ").includes("slim-send"));
+  view.draft = "first";
+  view.render();
+  const first = send().onclick();
+  await new Promise((resolve) => setImmediate(resolve));
+  send().onclick();                                                 // Stop
+  view.draft = "typed meanwhile";
+  send().onclick();                                                 // a second click before the stream ended
+  await first;
+  assert.equal(bodies.length, 1);
+  assert.equal(view.sending, false);
+  assert.equal(view.abort, null);
+  view.draft = "next";
+  await view.send();
+  assert.equal(bodies.length, 2);
+  assert.equal(view.turns.at(-1).text, "second");
+  assert.equal(view.sending, false);
+});
+
+test("Enter while an input method is composing never sends or picks", () => {
+  const { view, sent, type, rows } = pickerView();
+  const input = find(view.contentEl, (node) => node.tag === "textarea");
+  const compose = (extra) => input.onkeydown({ key: "Enter", shiftKey: false, metaKey: false, altKey: false,
+                                                ctrlKey: false, preventDefault() {}, ...extra });
+  type("こんにちは");
+  compose({ isComposing: true });
+  compose({ keyCode: 229 });
+  assert.deepEqual(sent, []);
+  type("about @");
+  compose({ isComposing: true });
+  assert.equal(view.activeThread, null);                            // nothing pinned
+  assert.ok(rows("slim-mention-item").length);
+  let renamed = null;
+  const modal = new RenameModal({}, "Old", (value) => { renamed = value; });
+  modal.open();
+  const field = find(modal.contentEl, (el) => el.tag === "input");
+  field.value = "Half";
+  field.listeners.keydown[0]({ key: "Enter", isComposing: true, preventDefault() {} });
+  assert.equal(renamed, null);
+});
+
+test("\"/\" then Enter with the command menu open never sends a bare slash", () => {
+  const { view, root } = renderedView();
+  view.skills = [{ name: "quiz", description: "Quiz me" }];
+  const sent = [];
+  view.send = () => sent.push(view.draft);
+  view.render();
+  const input = () => find(root, (node) => node.tag === "textarea");
+  input().value = "/";
+  input().oninput();
+  input().onkeydown({ key: "Enter", shiftKey: false, metaKey: false, altKey: false, ctrlKey: false, preventDefault() {} });
+  assert.deepEqual(sent, []);
+  view.skills = [];
+  view.draft = "/";
+  view.render();
+  input().onkeydown({ key: "Enter", shiftKey: false, metaKey: false, altKey: false, ctrlKey: false, preventDefault() {} });
+  assert.deepEqual(sent, []);
+});
+
+test("while one chat streams, another chat's composer waits with a hint instead of a Stop", async () => {
+  let started;
+  const running = new Promise((resolve) => { started = resolve; });
+  const { view, root } = renderedView({
+    getJSON: async () => ({ id: "B", title: "B", turns: [{ role: "you", text: "q" }, { role: "slim", text: "a" }] }),
+    streamCopilot: (_body, _handlers, signal) => new Promise((_resolve, reject) => {
+      started();
+      signal.addEventListener("abort", () => reject(Object.assign(new Error("Cancelled"), { name: "AbortError" })));
+    }),
+  });
+  const send = () => find(root, (node) => node.cls?.split(" ").includes("slim-send"));
+  const hint = () => find(root, (node) => node.cls === "slim-composer-hint");
+  view.activeThread = { id: "A", title: "A" };
+  view.draft = "question for A";
+  view.render();
+  const turn = send().onclick();
+  await running;
+  await view.openThread("B");
+  assert.equal(send().disabled, true);
+  assert.notEqual(send().attrs["aria-label"], "Stop response");
+  assert.equal(hint().textContent, "SLIM is answering in another chat");
+  send().onclick?.();
+  assert.equal(view.sending, true);                                 // A's answer is not stopped from B
+  await view.openThread("A");
+  assert.equal(send().attrs["aria-label"], "Stop response");
+  assert.equal(hint(), null);
+  send().onclick();
+  await turn;
+  await view.openThread("B");
+  assert.equal(send().disabled, false);
 });

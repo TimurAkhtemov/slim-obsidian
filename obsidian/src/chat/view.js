@@ -6,7 +6,7 @@ const { ItemView, Modal } = require("obsidian");
 const { MAX_COPILOT_IMAGES, resizeCopilotImage } = require("./images");
 const { sha256Hex, editorSelection, MAX_EDIT_CHARS, effortOf, titleFromQuestion, threadId,
         cancelledError, historyText, threadRows, mentionQuery, mentionMatches } = require("./text");
-const { clear, create } = require("./dom");
+const { clear, create, composing } = require("./dom");
 const MAX_PINS = 12;     // the server refuses more (copilot.turn)
 
 const VIEW_TYPE_COPILOT = "slim-copilot";
@@ -35,6 +35,7 @@ class RenameModal extends Modal {
     input.type = "text";
     input.value = this.current;
     input.addEventListener("keydown", (event) => {
+      if (composing(event)) return;
       if (event.key === "Enter") { event.preventDefault(); submit(); }
     });
     const row = create(root, "div", "slim-row");
@@ -66,7 +67,8 @@ class CopilotView extends ItemView {
     this.threads = [];
     this.threadQuery = "";
     this.threadSearch = null;       // the debounce timer of the history search
-    this.threadVersion = 0;
+    this.threadVersion = 0;         // the chat being opened: a later open wins
+    this.searchVersion = 0;         // the history listing: a later search wins
     this.noteVersion = 0;
     this.activeThread = null;
     this.turns = [];
@@ -80,13 +82,16 @@ class CopilotView extends ItemView {
     this.abort = null;
     this.deleteArmed = null;
     this.retryQuestion = "";
-    this.pendingImages = [];
     this.retryImages = [];
+    this.retryFor = null;           // the chat a failed question belongs to: only there is it retried
+    this.retryError = "";           // its error, shown again when that chat is opened again
+    this.pendingImages = [];
     this.loadingPath = null;
     this.streamingThread = null;
     this.streamingTurns = null;
     this.el = null;                 // live handles from the last full render()
     this.composerFocused = false;
+    this.searchFocused = false;     // the history search had focus: a redraw gives it back
     this.showThreads = false;       // the history button: the chat list in the conversation's slot
     this.stuck = true;              // the transcript follows its bottom until they scroll up
     this.nearbyOpen = false;        // the nearby-notes popover over the composer
@@ -145,7 +150,8 @@ class CopilotView extends ItemView {
   // Choosing an `@` match: the `@query` leaves the draft and a chip takes its place. Never a
   // duplicate, never a 13th (the server refuses more than MAX_PINS).
   pin(item) {
-    const thread = this.activeThread || (this.newThread(), this.activeThread);
+    // The first pin of a sidebar with no chat yet starts one, and keeps what was pasted for it.
+    const thread = this.activeThread || (this.activeThread = this.freshThread());
     const found = mentionQuery(this.draft, this.caret);
     if (found) {
       const end = found.from + 1 + found.query.length;
@@ -173,9 +179,11 @@ class CopilotView extends ItemView {
     return this.savePins(thread);
   }
 
-  // Only a chat with turns is on disk; an empty one carries its pins until it has an answer.
+  // Only a chat with turns is on disk; an empty one carries its pins until it has an answer. The
+  // chat answering now is saved with its answer (or when it ends without one: `dirty`).
   async savePins(thread) {
-    if (this.sending || thread !== this.activeThread || !this.turns.length) return;
+    if (this.sending && thread === this.streamingThread) { thread.dirty = true; return; }
+    if (thread !== this.activeThread || !this.turns.length) return;
     try { await this.saveRecord(thread, this.turns); } catch (error) { this.error = error.message || String(error); }
     this.render();
   }
@@ -183,7 +191,7 @@ class CopilotView extends ItemView {
   // ✕ on the open-note chip: this chat leaves the open note out, until clicked again. Not saved,
   // and an answer already streaming keeps the note it was asked on.
   toggleOpenNote() {
-    if (!this.activeThread) this.newThread();
+    if (!this.activeThread) this.activeThread = this.freshThread();
     this.activeThread.openNoteOff = !this.activeThread.openNoteOff;
     this.render();
   }
@@ -282,12 +290,12 @@ class CopilotView extends ItemView {
     if (!path) {
       this.openNote = null;
       this.loadingPath = null;
-      this.render();
+      this.renderNoteContext();
       return;
     }
     this.openNote = { path, id: null };
     this.loadingPath = path;
-    this.render();
+    this.renderNoteContext();
     try {
       if (typeof this.plugin.saveActiveNote === "function") {
         await this.plugin.saveActiveNote(file);
@@ -304,19 +312,19 @@ class CopilotView extends ItemView {
     } finally {
       if (version === this.noteVersion) {
         this.loadingPath = null;
-        this.render();
+        this.renderNoteContext();
       }
     }
   }
 
   // The chat history: every thread, newest first, or those that match the search box.
   async loadThreads() {
-    const version = ++this.threadVersion;
+    const version = ++this.searchVersion;
     const q = this.threadQuery.trim();
     try {
       const listing = await this.plugin.getJSON(
         `/api/copilot/threads${q ? `?q=${encodeURIComponent(q)}` : ""}`);
-      if (version !== this.threadVersion) return;
+      if (version !== this.searchVersion) return;
       this.threads = listing.threads || [];
     } catch (error) {
       console.error("[slim] threads", error);
@@ -357,19 +365,32 @@ class CopilotView extends ItemView {
     if (this.context?.source?.path === path) this.context = { ...this.context, source: fresh.source };
   }
 
-  newThread() {
-    this.activeThread = {
+  // A new chat's record, on no disk yet: it is saved with its first answer.
+  freshThread() {
+    return {
       id: threadId(), title: "New chat", pins: [],
       ...(this.openNote ? { source_id: this.openNote.id, source_path: this.openNote.path } : {}),
     };
-    this.turns = [];
-    this.stage = "";
-    this.error = "";
-    this.retryQuestion = "";
+  }
+
+  newThread() {
+    this.enterThread(this.freshThread(), []);
+  }
+
+  // The chat on screen from now on. What belonged to the one before goes with it: its error, an
+  // armed delete or restore, images pasted for it. The chat a question failed in shows its error
+  // and Retry again when it is opened again, and only there.
+  enterThread(thread, turns) {
+    this.activeThread = thread;
+    this.turns = turns;
+    this.error = this.retryFor === thread.id ? this.retryError : "";
+    this.deleteArmed = null;
+    this.restoreArmed = null;
+    this.restoreRefused = null;
+    this.beforeTexts.clear();             // fetched again when asked for: they are whole notes
     this.pendingImages = [];
-    this.retryImages = [];
     this.showThreads = false;
-    this.stuck = true;
+    this.stuck = true;                    // a chat opens at its newest turn
     this.render();
   }
 
@@ -383,20 +404,38 @@ class CopilotView extends ItemView {
   }
 
   // Any chat opens as it is: it never moves the note the owner has open.
+  // The chat answering now is opened as it is in memory: the copy on disk has neither its
+  // question nor its answer, and a question asked in that copy would save over both.
   async openThread(id) {
     const version = ++this.threadVersion;
+    const streaming = () => this.sending && this.streamingThread?.id === id;
+    if (streaming()) {
+      this.enterThread(this.streamingThread, this.streamingTurns);
+      return;
+    }
     const data = await this.plugin.getJSON(`/api/copilot/thread?id=${encodeURIComponent(id)}`);
     if (version !== this.threadVersion) return;
-    this.activeThread = data;
-    this.turns = data.turns || [];
-    this.pendingImages = [];
-    this.retryImages = [];
-    this.showThreads = false;
-    this.stuck = true;                    // a chat opens at its newest turn
-    this.render();
+    if (streaming()) {
+      this.enterThread(this.streamingThread, this.streamingTurns);
+      return;
+    }
+    const turns = data.turns || [];
+    this.keepRuns(data, turns);
+    this.enterThread(data, turns);
   }
 
-  async saveRecord(thread, turns) {
+  // The runs kept for ↺ and Cmd-Z (runTurns) follow their chat's newest copy: one saved from an
+  // older copy would replace the chat on disk and lose every turn after it.
+  keepRuns(thread, turns) {
+    for (const [ref, kept] of this.runTurns) {
+      if (kept.thread.id === thread.id && kept.turns !== turns) this.runTurns.set(ref, { thread, turns });
+    }
+  }
+
+  // `live` is the chat's own array when `turns` is a part of it (saveRun leaves out a question
+  // still waiting for its answer).
+  async saveRecord(thread, turns, live = turns) {
+    delete thread.dirty;                  // this save carries its title and pins as they are now
     const body = {
       id: thread.id, title: thread.title,
       // A question's images by the refs the server stored them under. One pasted for a question
@@ -412,9 +451,12 @@ class CopilotView extends ItemView {
     };
     const saved = await this.plugin.postJSON("/api/copilot/thread/save", body);
     Object.assign(thread, saved);
+    this.keepRuns(thread, live);
+    // The history list's row: what it shows, not the conversation.
+    const { turns: _turns, ...row } = thread;
     const index = this.threads.findIndex((item) => item.id === thread.id);
-    if (index >= 0) this.threads[index] = { ...thread };
-    else this.threads.unshift({ ...thread });
+    if (index >= 0) this.threads[index] = row;
+    else this.threads.unshift(row);
     return saved;
   }
 
@@ -441,14 +483,15 @@ class CopilotView extends ItemView {
     const question = String(text || "").trim() || (outgoingImages.length ? "Explain this image." : "");
     if (!question || this.sending) return;
     this.clearBefore();
-    if (!this.activeThread) this.newThread();
+    if (!this.activeThread) this.activeThread = this.freshThread();
     // A failed question waits under its error for Try again. Asking something else instead
     // takes it off the thread: it would be saved with the next answer and sent as history, and
-    // a refused /command is sent as its whole skill prompt.
-    const failed = this.turns.at(-1);
-    if (this.retryQuestion && failed?.role === "you" && failed.text === this.retryQuestion) this.turns.pop();
-    this.retryQuestion = "";
-    this.retryImages = [];
+    // a refused /command is sent as its whole skill prompt. One failed in another chat waits there.
+    if (this.retryFor === this.activeThread.id) {
+      const failed = this.turns.at(-1);
+      if (this.retryQuestion && failed?.role === "you" && failed.text === this.retryQuestion) this.turns.pop();
+      this.clearRetry();
+    }
     // Snapshot the thread that ASKED. openThread/newThread/deleteThread stay clickable while
     // an answer streams, and the answer belongs to this thread whatever is active when it
     // lands — otherwise B was saved with A's answer and A's question was never saved.
@@ -597,52 +640,76 @@ class CopilotView extends ItemView {
       const answer = { role: "slim", text: completed.answer || streamed, turn: completed };
       this.seenTurns.add(answer);
       turns.push(answer);
-      this.retryQuestion = "";
-      this.retryImages = [];
       await this.saveRecord(thread, turns);
     } catch (error) {
       const stopped = error.name === "AbortError";
+      const message = error.message || String(error);
+      // An error is shown in the chat it happened in, not in whichever chat is on screen now.
+      const here = () => this.activeThread === thread;
       if (run && turns.at(-1) === asked) {
         // What landed is in the note: it stays, and the turn keeps how far the run got and the
         // copy from before, so See before and Restore work after a reload too.
-        const partial = await this.partialTurn(run, stopped ? "stopped" : `error: ${error.message || error}`);
+        const partial = await this.partialTurn(run, stopped ? "stopped" : `error: ${message}`);
         this.seenTurns.add(partial);
         turns.push(partial);
-        if (!stopped) this.error = error.message || String(error);
+        if (!stopped && here()) this.error = message;
         if (!this.deletedThreads.has(thread.id)) {
-          await this.saveRecord(thread, turns).catch((e) => { this.error = e.message || String(e); });
+          await this.saveRecord(thread, turns).catch((e) => { if (here()) this.error = e.message || String(e); });
         }
       } else if (stopped) {
         // Stopped before an answer: the question is theirs — hand it back rather than leave a
         // dangling "you" turn to ride along as history and be persisted with the next answer.
+        // A deleted chat's question is not put over whatever they are typing now.
         if (turns.at(-1) === asked) {
-          turns.pop(); this.draft = question; this.pendingImages = outgoingImages;
+          turns.pop();
+          if (!this.deletedThreads.has(thread.id)) { this.draft = question; this.pendingImages = outgoingImages; }
         }
       } else if (turns.at(-1) === asked) {
-        // The model never answered: show the error under the question and offer a retry.
-        this.error = error.message || String(error);
+        // The model never answered: the error under the question, and a retry, in this chat.
+        this.retryFor = thread.id;
+        this.retryError = message;
         this.retryQuestion = question;
         this.retryImages = outgoingImages;
-      } else {
+        if (here()) this.error = message;
+      } else if (here()) {
         // Answered but not saved (e.g. the thread is over its cap): the answer stays visible
         // with the reason. No retry — it would append a second you/slim pair every click.
-        this.error = error.message || String(error);
+        this.error = message;
       }
     } finally {
       if (local) this.plugin.live?.dropRun(tracked, local);
       if (run) this.finishRun(run);
-      clearInterval(this.stageClock);
-      this.stageClock = null;
-      this.abort = null;
-      this.sending = false;
-      this.stopLiveRender();
-      this.streamingText = "";
-      this.liveTools = [];
-      this.streamingThread = null;
-      this.streamingTurns = null;
-      this.stage = "";
+      // Renamed or re-pinned while it ran, and not saved since (no answer): saved now, without
+      // the question that has none.
+      if (thread.dirty && !this.deletedThreads.has(thread.id)) {
+        const settled = turns.at(-1) === asked ? turns.slice(0, -1) : turns;
+        if (settled.length) {
+          this.savingRuns = (this.savingRuns || Promise.resolve())
+            .then(() => this.saveRecord(thread, settled, turns))
+            .catch((e) => console.error("[slim] save chat", e));
+        }
+      }
+      if (this.abort === abort) {
+        clearInterval(this.stageClock);
+        this.stageClock = null;
+        this.abort = null;
+        this.sending = false;
+        this.stopLiveRender();
+        this.streamingText = "";
+        this.liveTools = [];
+        this.streamingThread = null;
+        this.streamingTurns = null;
+        this.stage = "";
+      }
       this.render();
     }
+  }
+
+  clearRetry() {
+    this.retryFor = null;
+    this.retryError = "";
+    this.retryQuestion = "";
+    this.retryImages = [];
   }
 
   // A call started: its seconds count from now, ticking on the second.
@@ -671,14 +738,16 @@ class CopilotView extends ItemView {
     }
   }
 
+  // Stop: the stream is aborted, and the turn ends in send()'s own `finally`, which alone puts
+  // the composer back to Send. Ending it here let a second click send while the first turn was
+  // still unwinding, and that turn's cleanup then wiped the new one's state.
   cancel() {
     this.clearBefore();
     if (this.abort) this.abort.abort();
-    this.abort = null;
-    this.sending = false;
     this.stopLiveRender();
     this.streamingText = "";
-    this.stage = "";
+    this.stage = this.sending ? "Stopping" : "";
+    if (this.sending) this.renderStage();
   }
 
   // Ask the last question again: the pair comes off the thread and the question goes back
@@ -697,12 +766,11 @@ class CopilotView extends ItemView {
 
   async retry() {
     const question = this.retryQuestion;
-    if (!question || this.sending) return;
+    if (!question || this.sending || this.retryFor !== this.activeThread?.id) return;
     const last = this.turns.at(-1);
     if (last?.role === "you" && last.text === question) this.turns.pop();
-    this.retryQuestion = "";
     this.pendingImages = this.retryImages;
-    this.retryImages = [];
+    this.clearRetry();
     await this.send(question);
   }
 
@@ -713,6 +781,7 @@ class CopilotView extends ItemView {
       return;
     }
     this.deletedThreads.add(id);
+    if (this.retryFor === id) this.clearRetry();
     // A late answer would save into — and so resurrect — the thread being deleted.
     if (this.sending && this.streamingThread?.id === id) this.cancel();
     await this.plugin.postJSON("/api/copilot/thread/delete", { id });
@@ -722,18 +791,32 @@ class CopilotView extends ItemView {
     this.render();
   }
 
+  // The chat answering now takes the title in memory, and its answer's save carries it (or, if
+  // there is no answer, the save when it ends): a copy saved now would have the question with no
+  // answer, and the answer's save would put the old title back.
   async renameThread(id) {
-    let thread = this.activeThread?.id === id ? this.activeThread : null;
-    let turns = this.activeThread?.id === id ? this.turns : null;
-    if (!thread) {
-      thread = await this.plugin.getJSON(`/api/copilot/thread?id=${encodeURIComponent(id)}`);
-      turns = thread.turns || [];
-    }
-    const title = await this.promptTitle(thread.title);
+    const fetch = () => this.plugin.getJSON(`/api/copilot/thread?id=${encodeURIComponent(id)}`);
+    const known = [this.streamingThread, this.activeThread, ...this.threads].find((item) => item?.id === id)
+      || await fetch();
+    const title = await this.promptTitle(known.title);
     if (!title) return;
-    thread.title = title.slice(0, 120);
-    if (this.activeThread?.id === id) this.activeThread.title = thread.title;
-    await this.saveRecord(thread, turns);
+    const name = title.slice(0, 120);
+    const row = this.threads.find((item) => item.id === id);
+    if (row) row.title = name;
+    if (this.sending && this.streamingThread?.id === id) {
+      this.streamingThread.title = name;
+      this.streamingThread.dirty = true;
+    } else {
+      let thread = this.activeThread?.id === id ? this.activeThread : null;
+      let turns = thread ? this.turns : null;
+      if (!thread) {                      // read after the title is typed: a save meanwhile is in it
+        thread = await fetch();
+        turns = thread.turns || [];
+      }
+      thread.title = name;
+      await this.saveRecord(thread, turns);
+    }
+    if (this.activeThread?.id === id) this.activeThread.title = name;
     this.render();
   }
 

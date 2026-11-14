@@ -641,3 +641,107 @@ test("opening a chat lands at its newest turn once its answers have rendered", a
   assert.equal(transcript.scrollTop, 800);
   assert.equal(find(root, (node) => node.cls?.includes("slim-jump")).hidden, true);
 });
+
+// ---- a turn streaming in a chat that is not on screen draws nothing ------------------------------
+
+function offScreenStream() {
+  let handlers = null, finish = null;
+  const started = new Promise((resolve) => {
+    finish = resolve;
+  });
+  let begun;
+  const begin = new Promise((resolve) => { begun = resolve; });
+  const parts = renderedView({
+    getJSON: async () => ({ id: "B", title: "B", turns: [{ role: "you", text: "q" }, { role: "slim", text: "a", turn: { citations: [] } }] }),
+    streamCopilot: async (_body, h) => { handlers = h; begun(); await started; h.turn({ answer: "done", citations: [] }); },
+  });
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+  const events = () => {
+    handlers.tool({ name: "search", label: "Searched the vault", refused: false });
+    handlers.edit({ before_ref: "e".repeat(32), hash_before: "h" });
+    handlers.plan(PLAN);
+    handlers.step({ index: 1, state: "doing" });
+  };
+  return { ...parts, begin, finish, flush, events, handlers: () => handlers };
+}
+
+test("lookups and run events in a chat not on screen redraw nothing; the end keeps the composer's caret", async () => {
+  const { view, root, rebuilds, begin, finish, flush, events } = offScreenStream();
+  view.activeThread = { id: "A", title: "A" };
+  view.draft = "question for A";
+  view.render();
+  const turn = view.send();
+  await begin;
+  await view.openThread("B");
+  const input = find(root, (node) => node.tag === "textarea");
+  input.value = view.draft = "abc def";
+  input.focus();
+  input.onfocus();
+  input.selectionStart = input.selectionEnd = 3;                    // editing mid-draft
+  const before = rebuilds();
+  events();
+  await flush();
+  assert.equal(rebuilds(), before);
+  finish();
+  await turn;
+  const after = find(root, (node) => node.tag === "textarea");
+  assert.equal(after.focused, true);
+  assert.equal(after.selectionStart, 3);                            // not thrown to the end
+});
+
+test("the history search keeps its focus and caret while a turn streams and when it ends", async () => {
+  const { view, root, rebuilds, begin, finish, flush, events } = offScreenStream();
+  view.draft = "question";
+  view.render();
+  const turn = view.send();
+  await begin;
+  find(root, (node) => node.cls?.includes("slim-history")).onclick();
+  const search = find(root, (node) => node.cls === "slim-thread-search");
+  search.focus();
+  search.onfocus();
+  search.value = "bee";
+  search.oninput();
+  clearTimeout(view.threadSearch);                                  // the listing is not what this tests
+  search.selectionStart = search.selectionEnd = 2;
+  const before = rebuilds();
+  events();
+  await flush();
+  assert.equal(rebuilds(), before);
+  assert.equal(find(root, (node) => node.cls === "slim-thread-search"), search);
+  finish();
+  await turn;
+  const now = find(root, (node) => node.cls === "slim-thread-search");
+  assert.equal(now.focused, true);
+  assert.equal(now.value, "bee");
+  assert.equal(now.selectionStart, 2);
+});
+
+test("a run's first event turns the streaming answer into the run in place, with no full redraw", async () => {
+  const { view, root, rebuilds, begin, finish, flush, handlers } = offScreenStream();
+  view.draft = "question";
+  view.render();
+  const turn = view.send();
+  await begin;
+  const before = rebuilds();
+  handlers().edit({ before_ref: "e".repeat(32), hash_before: "h" });
+  handlers().plan(PLAN);
+  await flush();
+  assert.equal(rebuilds(), before);
+  const live = find(root, (node) => node.cls?.includes("is-streaming"));
+  assert.ok(find(live, (node) => node.cls === "slim-edit"));
+  assert.ok(find(live, (node) => node.textContent === PLAN.intro));
+  finish();
+  await turn;
+});
+
+test("switching notes redraws the composer's chips, not the conversation", async () => {
+  const { view, root, rebuilds } = renderedView({
+    postJSON: async (_route, body) => ({ source: { id: "s2", path: body.path, title: "Two" }, related: [] }),
+  });
+  view.turns = [{ role: "you", text: "q" }, { role: "slim", text: "a", turn: { citations: [] } }];
+  view.render();
+  const before = rebuilds();
+  await view.setActiveFile({ path: "Notes/two.md", extension: "md" });
+  assert.equal(rebuilds(), before);
+  assert.equal(find(root, (node) => node.cls === "slim-copilot-note").textContent, "Two");
+});

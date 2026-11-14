@@ -143,9 +143,21 @@ module.exports = {
 
   // ---- an edit turn in the chat: the intro, a line per step, what came of it ---------------
 
-  // The run streaming now, redrawn in place on each event: the transcript is not rebuilt.
+  // The run streaming now, redrawn in place on each event: the transcript is not rebuilt. Its
+  // first event turns the streaming answer into the run, in place; off screen, nothing is drawn.
   renderEdit() {
-    if (!this.el?.liveEdit) { this.renderSoon(); return; }
+    const el = this.el;
+    if (!el) { this.renderSoon(); return; }
+    if (!el.liveEdit) {
+      if (!el.live || !this.editRun) {
+        if (this.streamOnScreen()) this.renderSoon();
+        return;
+      }
+      this.stopLiveRender();
+      clear(el.live);
+      el.liveEdit = el.live;
+      el.liveText = el.liveTools = el.liveRendered = el.liveHost = null;
+    }
     clear(this.el.liveEdit);
     this.drawLiveEdit(this.el.liveEdit);
     this.follow();
@@ -278,7 +290,8 @@ module.exports = {
       if (live.touched) run.typed = true;
       this.saveRun(found.thread, found.turns);
     }
-    this.renderSoon();
+    // Only the chat on screen shows the run's line; another chat is not redrawn under the owner.
+    if (found && found.turns === this.turns && !this.showThreads) this.renderSoon();
   },
 
   // The turn a run belongs to, in the chat on screen or in the one it was asked in.
@@ -294,12 +307,13 @@ module.exports = {
   },
 
   // A question still waiting for its answer is not saved with it: the answer's save brings it.
+  // Decided when the save runs, not when it is queued: the answer may have landed meanwhile.
   saveRun(thread, turns) {
     if (!thread || this.deletedThreads.has(thread.id)) return this.savingRuns;
-    const settled = this.sending && turns === this.streamingTurns && turns.at(-1)?.role === "you"
-      ? turns.slice(0, -1) : turns;
+    const settled = () => (this.sending && turns === this.streamingTurns && turns.at(-1)?.role === "you"
+      ? turns.slice(0, -1) : turns);
     this.savingRuns = (this.savingRuns || Promise.resolve())
-      .then(() => this.saveRecord(thread, settled))
+      .then(() => this.saveRecord(thread, settled(), turns))
       .catch((error) => { this.error = error.message || String(error); this.render(); });
     return this.savingRuns;
   },

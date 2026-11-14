@@ -405,7 +405,10 @@ var require_dom = __commonJS({
     function atBottom(element) {
       return element.scrollHeight - element.scrollTop - element.clientHeight <= 40;
     }
-    module2.exports = { clear, create, icon, glyphIcon, iconButton, autoGrow, atBottom };
+    function composing(event) {
+      return Boolean(event?.isComposing || event?.keyCode === 229);
+    }
+    module2.exports = { clear, create, icon, glyphIcon, iconButton, autoGrow, atBottom, composing };
   }
 });
 
@@ -434,7 +437,7 @@ var require_render = __commonJS({
       toolSummary,
       starters
     } = require_text();
-    var { clear, create, icon, iconButton, autoGrow, atBottom } = require_dom();
+    var { clear, create, icon, iconButton, autoGrow, atBottom, composing } = require_dom();
     var INPUT_MAX_PX = 240;
     module2.exports = {
       renderSlash() {
@@ -556,14 +559,14 @@ var require_render = __commonJS({
       },
       renderLive() {
         const el = this.el;
-        if (!el?.live || !this.sending) return;
+        if (!el?.liveText || !this.sending) return;
         const version = ++this.liveRenderVersion;
         this.liveRenderedAt = Date.now();
         const buffer = create(el.live, "div", "slim-message-text slim-rendered-markdown");
         buffer.hidden = true;
         const host = this.liveHost(buffer);
         return this.renderMarkdown(buffer, this.streamingText, host).then(() => {
-          if (version !== this.liveRenderVersion || this.el !== el || !this.sending) {
+          if (version !== this.liveRenderVersion || this.el !== el || !el.liveText || !this.sending) {
             this.dropLive(buffer, host);
             return;
           }
@@ -640,7 +643,12 @@ var require_render = __commonJS({
         else if (this.el?.liveTools) {
           this.fillTools(this.el.liveTools, this.liveTools);
           this.follow();
-        } else this.renderSoon();
+        } else if (!this.el || this.streamOnScreen()) this.renderSoon();
+      },
+      // The turn streaming now is the one on screen. Off screen, its events redraw nothing: a full
+      // render per lookup took the focus from the history search and moved the composer's caret.
+      streamOnScreen() {
+        return this.sending && !this.showThreads && this.turns === this.streamingTurns;
       },
       renderStage() {
         if (!this.el) {
@@ -671,6 +679,9 @@ var require_render = __commonJS({
         const root = this.contentEl;
         if (!root || !root.createEl) return;
         const focused = this.composerFocused;
+        const caretOf = (input, value) => input && input.value === value && Number.isInteger(input.selectionStart) ? [input.selectionStart, input.selectionEnd ?? input.selectionStart] : null;
+        this.keptCaret = focused ? caretOf(this.el?.input, this.draft) : null;
+        this.keptSearch = this.searchFocused ? caretOf(this.el?.search, this.threadQuery) || [this.threadQuery.length, this.threadQuery.length] : null;
         const kept = !this.stuck && this.el?.transcript ? this.el.transcript.scrollTop : null;
         clear(root);
         this.el = {};
@@ -686,6 +697,24 @@ var require_render = __commonJS({
         if (this.showThreads) this.renderThreadList(root);
         else this.renderTranscript(root, kept);
         this.renderComposer(root, focused);
+        const search = this.keptSearch;
+        if (search && this.el.search && typeof this.el.search.focus === "function") {
+          this.el.search.focus();
+          [this.el.search.selectionStart, this.el.search.selectionEnd] = search;
+        }
+      },
+      // The open note shows in the composer's chips and the nearby notes (and in an empty chat's
+      // starters): a note switch redraws those, not every answer of a long chat.
+      renderNoteContext() {
+        const holder = this.el?.context;
+        if (!holder || !this.turns.length && !this.showThreads) {
+          this.render();
+          return;
+        }
+        clear(holder);
+        this.el.nearby = this.el.nearbyChip = null;
+        this.renderNearby(holder);
+        this.renderChips(holder);
       },
       // One slim row: the chat's title, then history and new chat.
       renderHeader(root) {
@@ -842,9 +871,10 @@ var require_render = __commonJS({
         const composer = create(root, "footer", "slim-copilot-composer");
         this.el.slash = create(composer, "div", "slim-slash-menu");
         this.el.mention = create(composer, "div", "slim-mention-menu");
-        this.renderNearby(composer);
         this.renderEffortMenu(composer);
-        this.renderChips(composer);
+        this.el.context = create(composer, "div", "slim-composer-context");
+        this.renderNearby(this.el.context);
+        this.renderChips(this.el.context);
         if (this.pendingImages.length) {
           const previews = create(composer, "div", "slim-copilot-image-previews");
           this.pendingImages.forEach((attachment, index) => {
@@ -864,10 +894,7 @@ var require_render = __commonJS({
         input.value = this.draft;
         input.rows = 1;
         autoGrow(input, INPUT_MAX_PX);
-        const syncSend = () => this.el.send?.classList?.toggle(
-          "is-empty",
-          !this.sending && !String(input.value || "").trim() && !this.pendingImages.length
-        );
+        const syncSend = () => this.el.send?.classList?.toggle("is-empty", this.sending ? this.turns !== this.streamingTurns : !String(input.value || "").trim() && !this.pendingImages.length);
         input.oninput = () => {
           this.draft = input.value;
           this.caret = input.selectionStart;
@@ -895,6 +922,7 @@ var require_render = __commonJS({
         };
         this.el.input = input;
         input.onkeydown = (event) => {
+          if (composing(event)) return;
           const picks = this.mentionDismissed ? [] : this.mentionHits();
           if (picks.length) {
             if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -940,7 +968,7 @@ var require_render = __commonJS({
           }
           if (event.key === "Enter" && !event.shiftKey) {
             event.preventDefault();
-            this.send();
+            if (String(this.draft || "").trim() !== "/") this.send();
           }
           if ((event.key === "Backspace" || event.key === "Delete") && !event.metaKey && !event.altKey && !event.ctrlKey) {
             let start = Number.isInteger(input.selectionStart) ? input.selectionStart : input.value.length;
@@ -1008,14 +1036,18 @@ var require_render = __commonJS({
           this.showEffortMenu(true);
         };
         this.el.effortButton = effort;
-        const empty = !this.sending && !String(this.draft || "").trim() && !this.pendingImages.length;
+        const stopHere = this.sending && this.turns === this.streamingTurns;
+        const waiting = this.sending && !stopHere;
+        const empty = !stopHere && !String(this.draft || "").trim() && !this.pendingImages.length;
+        if (waiting) create(composer, "div", "slim-composer-hint", "SLIM is answering in another chat");
         const send = iconButton(
           right,
-          this.sending ? "square" : "arrow-up",
-          this.sending ? "Stop response" : "Send",
-          `slim-send${this.sending ? " is-stop" : ""}${empty ? " is-empty" : ""}`
+          stopHere ? "square" : "arrow-up",
+          stopHere ? "Stop response" : waiting ? "SLIM is answering in another chat" : "Send",
+          `slim-send${stopHere ? " is-stop" : ""}${empty || waiting ? " is-empty" : ""}`
         );
-        send.onclick = () => this.sending ? this.cancel() : this.send();
+        send.disabled = waiting;
+        send.onclick = () => stopHere ? this.cancel() : waiting ? void 0 : this.send();
         this.el.send = send;
         composer.ondragover = (event) => {
           if ([...event.dataTransfer?.items || []].some((item) => item.kind === "file")) event.preventDefault();
@@ -1033,8 +1065,12 @@ var require_render = __commonJS({
         this.caretAt = null;
         if (focused && typeof input.focus === "function") {
           input.focus();
-          const at2 = Number.isInteger(caretAt) && caretAt <= input.value.length ? caretAt : input.value.length;
-          input.selectionStart = input.selectionEnd = at2;
+          if (!Number.isInteger(caretAt) && this.keptCaret) {
+            [input.selectionStart, input.selectionEnd] = this.keptCaret;
+          } else {
+            const at2 = Number.isInteger(caretAt) && caretAt <= input.value.length ? caretAt : input.value.length;
+            input.selectionStart = input.selectionEnd = at2;
+          }
         }
       },
       // The search box and the rows under it. Only the rows are redrawn when results land, so
@@ -1046,6 +1082,13 @@ var require_render = __commonJS({
         search.placeholder = "Search chats";
         search.value = this.threadQuery;
         search.oninput = () => this.searchThreads(search.value);
+        search.onfocus = () => {
+          this.searchFocused = true;
+        };
+        search.onblur = () => {
+          this.searchFocused = false;
+        };
+        this.el.search = search;
         this.el.threadRows = create(list, "div", "slim-thread-rows");
         this.drawThreadRows(this.el.threadRows);
       },
@@ -1163,7 +1206,7 @@ var require_render = __commonJS({
         }
         if (this.error) {
           const error = create(transcript, "div", "slim-copilot-error", this.error);
-          if (this.retryQuestion) {
+          if (this.retryQuestion && this.retryFor === this.activeThread?.id) {
             const retry = iconButton(error, "rotate-ccw", "Retry response");
             retry.onclick = () => this.retry();
           }
@@ -1390,11 +1433,23 @@ var require_edit_run = __commonJS({
         this.editClock.unref?.();
       },
       // ---- an edit turn in the chat: the intro, a line per step, what came of it ---------------
-      // The run streaming now, redrawn in place on each event: the transcript is not rebuilt.
+      // The run streaming now, redrawn in place on each event: the transcript is not rebuilt. Its
+      // first event turns the streaming answer into the run, in place; off screen, nothing is drawn.
       renderEdit() {
-        if (!this.el?.liveEdit) {
+        const el = this.el;
+        if (!el) {
           this.renderSoon();
           return;
+        }
+        if (!el.liveEdit) {
+          if (!el.live || !this.editRun) {
+            if (this.streamOnScreen()) this.renderSoon();
+            return;
+          }
+          this.stopLiveRender();
+          clear(el.live);
+          el.liveEdit = el.live;
+          el.liveText = el.liveTools = el.liveRendered = el.liveHost = null;
         }
         clear(this.el.liveEdit);
         this.drawLiveEdit(this.el.liveEdit);
@@ -1537,7 +1592,7 @@ var require_edit_run = __commonJS({
           if (live.touched) run.typed = true;
           this.saveRun(found.thread, found.turns);
         }
-        this.renderSoon();
+        if (found && found.turns === this.turns && !this.showThreads) this.renderSoon();
       },
       // The turn a run belongs to, in the chat on screen or in the one it was asked in.
       findRunTurn(ref) {
@@ -1550,10 +1605,11 @@ var require_edit_run = __commonJS({
         return { ...kept, turn };
       },
       // A question still waiting for its answer is not saved with it: the answer's save brings it.
+      // Decided when the save runs, not when it is queued: the answer may have landed meanwhile.
       saveRun(thread, turns) {
         if (!thread || this.deletedThreads.has(thread.id)) return this.savingRuns;
-        const settled = this.sending && turns === this.streamingTurns && turns.at(-1)?.role === "you" ? turns.slice(0, -1) : turns;
-        this.savingRuns = (this.savingRuns || Promise.resolve()).then(() => this.saveRecord(thread, settled)).catch((error) => {
+        const settled = () => this.sending && turns === this.streamingTurns && turns.at(-1)?.role === "you" ? turns.slice(0, -1) : turns;
+        this.savingRuns = (this.savingRuns || Promise.resolve()).then(() => this.saveRecord(thread, settled(), turns)).catch((error) => {
           this.error = error.message || String(error);
           this.render();
         });
@@ -1656,7 +1712,7 @@ var require_view = __commonJS({
       mentionQuery,
       mentionMatches
     } = require_text();
-    var { clear, create } = require_dom();
+    var { clear, create, composing } = require_dom();
     var MAX_PINS = 12;
     var VIEW_TYPE_COPILOT = "slim-copilot";
     var RenameModal = class extends Modal {
@@ -1678,6 +1734,7 @@ var require_view = __commonJS({
         input.type = "text";
         input.value = this.current;
         input.addEventListener("keydown", (event) => {
+          if (composing(event)) return;
           if (event.key === "Enter") {
             event.preventDefault();
             submit();
@@ -1714,6 +1771,7 @@ var require_view = __commonJS({
         this.threadQuery = "";
         this.threadSearch = null;
         this.threadVersion = 0;
+        this.searchVersion = 0;
         this.noteVersion = 0;
         this.activeThread = null;
         this.turns = [];
@@ -1727,13 +1785,16 @@ var require_view = __commonJS({
         this.abort = null;
         this.deleteArmed = null;
         this.retryQuestion = "";
-        this.pendingImages = [];
         this.retryImages = [];
+        this.retryFor = null;
+        this.retryError = "";
+        this.pendingImages = [];
         this.loadingPath = null;
         this.streamingThread = null;
         this.streamingTurns = null;
         this.el = null;
         this.composerFocused = false;
+        this.searchFocused = false;
         this.showThreads = false;
         this.stuck = true;
         this.nearbyOpen = false;
@@ -1785,7 +1846,7 @@ var require_view = __commonJS({
       // Choosing an `@` match: the `@query` leaves the draft and a chip takes its place. Never a
       // duplicate, never a 13th (the server refuses more than MAX_PINS).
       pin(item) {
-        const thread = this.activeThread || (this.newThread(), this.activeThread);
+        const thread = this.activeThread || (this.activeThread = this.freshThread());
         const found = mentionQuery(this.draft, this.caret);
         if (found) {
           const end = found.from + 1 + found.query.length;
@@ -1815,9 +1876,14 @@ var require_view = __commonJS({
         this.render();
         return this.savePins(thread);
       }
-      // Only a chat with turns is on disk; an empty one carries its pins until it has an answer.
+      // Only a chat with turns is on disk; an empty one carries its pins until it has an answer. The
+      // chat answering now is saved with its answer (or when it ends without one: `dirty`).
       async savePins(thread) {
-        if (this.sending || thread !== this.activeThread || !this.turns.length) return;
+        if (this.sending && thread === this.streamingThread) {
+          thread.dirty = true;
+          return;
+        }
+        if (thread !== this.activeThread || !this.turns.length) return;
         try {
           await this.saveRecord(thread, this.turns);
         } catch (error) {
@@ -1828,7 +1894,7 @@ var require_view = __commonJS({
       // ✕ on the open-note chip: this chat leaves the open note out, until clicked again. Not saved,
       // and an answer already streaming keeps the note it was asked on.
       toggleOpenNote() {
-        if (!this.activeThread) this.newThread();
+        if (!this.activeThread) this.activeThread = this.freshThread();
         this.activeThread.openNoteOff = !this.activeThread.openNoteOff;
         this.render();
       }
@@ -1920,12 +1986,12 @@ var require_view = __commonJS({
         if (!path) {
           this.openNote = null;
           this.loadingPath = null;
-          this.render();
+          this.renderNoteContext();
           return;
         }
         this.openNote = { path, id: null };
         this.loadingPath = path;
-        this.render();
+        this.renderNoteContext();
         try {
           if (typeof this.plugin.saveActiveNote === "function") {
             await this.plugin.saveActiveNote(file);
@@ -1940,19 +2006,19 @@ var require_view = __commonJS({
         } finally {
           if (version === this.noteVersion) {
             this.loadingPath = null;
-            this.render();
+            this.renderNoteContext();
           }
         }
       }
       // The chat history: every thread, newest first, or those that match the search box.
       async loadThreads() {
-        const version = ++this.threadVersion;
+        const version = ++this.searchVersion;
         const q = this.threadQuery.trim();
         try {
           const listing = await this.plugin.getJSON(
             `/api/copilot/threads${q ? `?q=${encodeURIComponent(q)}` : ""}`
           );
-          if (version !== this.threadVersion) return;
+          if (version !== this.searchVersion) return;
           this.threads = listing.threads || [];
         } catch (error) {
           console.error("[slim] threads", error);
@@ -1988,19 +2054,30 @@ var require_view = __commonJS({
         if (this.openNote?.path === path) this.openNote = { path, id: fresh.source?.id ?? this.openNote.id };
         if (this.context?.source?.path === path) this.context = { ...this.context, source: fresh.source };
       }
-      newThread() {
-        this.activeThread = {
+      // A new chat's record, on no disk yet: it is saved with its first answer.
+      freshThread() {
+        return {
           id: threadId(),
           title: "New chat",
           pins: [],
           ...this.openNote ? { source_id: this.openNote.id, source_path: this.openNote.path } : {}
         };
-        this.turns = [];
-        this.stage = "";
-        this.error = "";
-        this.retryQuestion = "";
+      }
+      newThread() {
+        this.enterThread(this.freshThread(), []);
+      }
+      // The chat on screen from now on. What belonged to the one before goes with it: its error, an
+      // armed delete or restore, images pasted for it. The chat a question failed in shows its error
+      // and Retry again when it is opened again, and only there.
+      enterThread(thread, turns) {
+        this.activeThread = thread;
+        this.turns = turns;
+        this.error = this.retryFor === thread.id ? this.retryError : "";
+        this.deleteArmed = null;
+        this.restoreArmed = null;
+        this.restoreRefused = null;
+        this.beforeTexts.clear();
         this.pendingImages = [];
-        this.retryImages = [];
         this.showThreads = false;
         this.stuck = true;
         this.render();
@@ -2016,19 +2093,36 @@ var require_view = __commonJS({
         });
       }
       // Any chat opens as it is: it never moves the note the owner has open.
+      // The chat answering now is opened as it is in memory: the copy on disk has neither its
+      // question nor its answer, and a question asked in that copy would save over both.
       async openThread(id) {
         const version = ++this.threadVersion;
+        const streaming = () => this.sending && this.streamingThread?.id === id;
+        if (streaming()) {
+          this.enterThread(this.streamingThread, this.streamingTurns);
+          return;
+        }
         const data = await this.plugin.getJSON(`/api/copilot/thread?id=${encodeURIComponent(id)}`);
         if (version !== this.threadVersion) return;
-        this.activeThread = data;
-        this.turns = data.turns || [];
-        this.pendingImages = [];
-        this.retryImages = [];
-        this.showThreads = false;
-        this.stuck = true;
-        this.render();
+        if (streaming()) {
+          this.enterThread(this.streamingThread, this.streamingTurns);
+          return;
+        }
+        const turns = data.turns || [];
+        this.keepRuns(data, turns);
+        this.enterThread(data, turns);
       }
-      async saveRecord(thread, turns) {
+      // The runs kept for ↺ and Cmd-Z (runTurns) follow their chat's newest copy: one saved from an
+      // older copy would replace the chat on disk and lose every turn after it.
+      keepRuns(thread, turns) {
+        for (const [ref, kept] of this.runTurns) {
+          if (kept.thread.id === thread.id && kept.turns !== turns) this.runTurns.set(ref, { thread, turns });
+        }
+      }
+      // `live` is the chat's own array when `turns` is a part of it (saveRun leaves out a question
+      // still waiting for its answer).
+      async saveRecord(thread, turns, live = turns) {
+        delete thread.dirty;
         const body = {
           id: thread.id,
           title: thread.title,
@@ -2044,9 +2138,11 @@ var require_view = __commonJS({
         };
         const saved = await this.plugin.postJSON("/api/copilot/thread/save", body);
         Object.assign(thread, saved);
+        this.keepRuns(thread, live);
+        const { turns: _turns, ...row } = thread;
         const index = this.threads.findIndex((item) => item.id === thread.id);
-        if (index >= 0) this.threads[index] = { ...thread };
-        else this.threads.unshift({ ...thread });
+        if (index >= 0) this.threads[index] = row;
+        else this.threads.unshift(row);
         return saved;
       }
       async addImages(files) {
@@ -2071,11 +2167,12 @@ var require_view = __commonJS({
         const question = String(text || "").trim() || (outgoingImages.length ? "Explain this image." : "");
         if (!question || this.sending) return;
         this.clearBefore();
-        if (!this.activeThread) this.newThread();
-        const failed = this.turns.at(-1);
-        if (this.retryQuestion && failed?.role === "you" && failed.text === this.retryQuestion) this.turns.pop();
-        this.retryQuestion = "";
-        this.retryImages = [];
+        if (!this.activeThread) this.activeThread = this.freshThread();
+        if (this.retryFor === this.activeThread.id) {
+          const failed = this.turns.at(-1);
+          if (this.retryQuestion && failed?.role === "you" && failed.text === this.retryQuestion) this.turns.pop();
+          this.clearRetry();
+        }
         const thread = this.activeThread;
         const turns = this.turns;
         const path = thread.openNoteOff ? null : this.openNote?.path ?? null;
@@ -2239,49 +2336,67 @@ var require_view = __commonJS({
           const answer = { role: "slim", text: completed.answer || streamed, turn: completed };
           this.seenTurns.add(answer);
           turns.push(answer);
-          this.retryQuestion = "";
-          this.retryImages = [];
           await this.saveRecord(thread, turns);
         } catch (error) {
           const stopped = error.name === "AbortError";
+          const message = error.message || String(error);
+          const here = () => this.activeThread === thread;
           if (run && turns.at(-1) === asked) {
-            const partial = await this.partialTurn(run, stopped ? "stopped" : `error: ${error.message || error}`);
+            const partial = await this.partialTurn(run, stopped ? "stopped" : `error: ${message}`);
             this.seenTurns.add(partial);
             turns.push(partial);
-            if (!stopped) this.error = error.message || String(error);
+            if (!stopped && here()) this.error = message;
             if (!this.deletedThreads.has(thread.id)) {
               await this.saveRecord(thread, turns).catch((e) => {
-                this.error = e.message || String(e);
+                if (here()) this.error = e.message || String(e);
               });
             }
           } else if (stopped) {
             if (turns.at(-1) === asked) {
               turns.pop();
-              this.draft = question;
-              this.pendingImages = outgoingImages;
+              if (!this.deletedThreads.has(thread.id)) {
+                this.draft = question;
+                this.pendingImages = outgoingImages;
+              }
             }
           } else if (turns.at(-1) === asked) {
-            this.error = error.message || String(error);
+            this.retryFor = thread.id;
+            this.retryError = message;
             this.retryQuestion = question;
             this.retryImages = outgoingImages;
-          } else {
-            this.error = error.message || String(error);
+            if (here()) this.error = message;
+          } else if (here()) {
+            this.error = message;
           }
         } finally {
           if (local) this.plugin.live?.dropRun(tracked, local);
           if (run) this.finishRun(run);
-          clearInterval(this.stageClock);
-          this.stageClock = null;
-          this.abort = null;
-          this.sending = false;
-          this.stopLiveRender();
-          this.streamingText = "";
-          this.liveTools = [];
-          this.streamingThread = null;
-          this.streamingTurns = null;
-          this.stage = "";
+          if (thread.dirty && !this.deletedThreads.has(thread.id)) {
+            const settled = turns.at(-1) === asked ? turns.slice(0, -1) : turns;
+            if (settled.length) {
+              this.savingRuns = (this.savingRuns || Promise.resolve()).then(() => this.saveRecord(thread, settled, turns)).catch((e) => console.error("[slim] save chat", e));
+            }
+          }
+          if (this.abort === abort) {
+            clearInterval(this.stageClock);
+            this.stageClock = null;
+            this.abort = null;
+            this.sending = false;
+            this.stopLiveRender();
+            this.streamingText = "";
+            this.liveTools = [];
+            this.streamingThread = null;
+            this.streamingTurns = null;
+            this.stage = "";
+          }
           this.render();
         }
+      }
+      clearRetry() {
+        this.retryFor = null;
+        this.retryError = "";
+        this.retryQuestion = "";
+        this.retryImages = [];
       }
       // A call started: its seconds count from now, ticking on the second.
       stageStarted() {
@@ -2308,14 +2423,16 @@ var require_view = __commonJS({
           if (ref) this.plugin.live.showBefore(view, ref, "", false);
         }
       }
+      // Stop: the stream is aborted, and the turn ends in send()'s own `finally`, which alone puts
+      // the composer back to Send. Ending it here let a second click send while the first turn was
+      // still unwinding, and that turn's cleanup then wiped the new one's state.
       cancel() {
         this.clearBefore();
         if (this.abort) this.abort.abort();
-        this.abort = null;
-        this.sending = false;
         this.stopLiveRender();
         this.streamingText = "";
-        this.stage = "";
+        this.stage = this.sending ? "Stopping" : "";
+        if (this.sending) this.renderStage();
       }
       // Ask the last question again: the pair comes off the thread and the question goes back
       // through send() with the image refs it had, so the answer lands where the first one did.
@@ -2331,12 +2448,11 @@ var require_view = __commonJS({
       }
       async retry() {
         const question = this.retryQuestion;
-        if (!question || this.sending) return;
+        if (!question || this.sending || this.retryFor !== this.activeThread?.id) return;
         const last = this.turns.at(-1);
         if (last?.role === "you" && last.text === question) this.turns.pop();
-        this.retryQuestion = "";
         this.pendingImages = this.retryImages;
-        this.retryImages = [];
+        this.clearRetry();
         await this.send(question);
       }
       async deleteThread(id) {
@@ -2346,6 +2462,7 @@ var require_view = __commonJS({
           return;
         }
         this.deletedThreads.add(id);
+        if (this.retryFor === id) this.clearRetry();
         if (this.sending && this.streamingThread?.id === id) this.cancel();
         await this.plugin.postJSON("/api/copilot/thread/delete", { id });
         this.threads = this.threads.filter((item) => item.id !== id);
@@ -2353,18 +2470,31 @@ var require_view = __commonJS({
         this.deleteArmed = null;
         this.render();
       }
+      // The chat answering now takes the title in memory, and its answer's save carries it (or, if
+      // there is no answer, the save when it ends): a copy saved now would have the question with no
+      // answer, and the answer's save would put the old title back.
       async renameThread(id) {
-        let thread = this.activeThread?.id === id ? this.activeThread : null;
-        let turns = this.activeThread?.id === id ? this.turns : null;
-        if (!thread) {
-          thread = await this.plugin.getJSON(`/api/copilot/thread?id=${encodeURIComponent(id)}`);
-          turns = thread.turns || [];
-        }
-        const title = await this.promptTitle(thread.title);
+        const fetch = () => this.plugin.getJSON(`/api/copilot/thread?id=${encodeURIComponent(id)}`);
+        const known = [this.streamingThread, this.activeThread, ...this.threads].find((item) => item?.id === id) || await fetch();
+        const title = await this.promptTitle(known.title);
         if (!title) return;
-        thread.title = title.slice(0, 120);
-        if (this.activeThread?.id === id) this.activeThread.title = thread.title;
-        await this.saveRecord(thread, turns);
+        const name = title.slice(0, 120);
+        const row = this.threads.find((item) => item.id === id);
+        if (row) row.title = name;
+        if (this.sending && this.streamingThread?.id === id) {
+          this.streamingThread.title = name;
+          this.streamingThread.dirty = true;
+        } else {
+          let thread = this.activeThread?.id === id ? this.activeThread : null;
+          let turns = thread ? this.turns : null;
+          if (!thread) {
+            thread = await fetch();
+            turns = thread.turns || [];
+          }
+          thread.title = name;
+          await this.saveRecord(thread, turns);
+        }
+        if (this.activeThread?.id === id) this.activeThread.title = name;
         this.render();
       }
       // Guarded like the recorder's "Open note" button: openLinkText CREATES a missing target,

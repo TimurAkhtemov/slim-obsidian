@@ -53,4 +53,10 @@ function atBottom(element) {
   return element.scrollHeight - element.scrollTop - element.clientHeight <= 40;
 }
 
-module.exports = { clear, create, icon, glyphIcon, iconButton, autoGrow, atBottom };
+// A key pressed while an input method composes (Japanese, Chinese, …): its Enter confirms a
+// candidate, and must never send, pick or submit. Safari reports such a key as keyCode 229.
+function composing(event) {
+  return Boolean(event?.isComposing || event?.keyCode === 229);
+}
+
+module.exports = { clear, create, icon, glyphIcon, iconButton, autoGrow, atBottom, composing };

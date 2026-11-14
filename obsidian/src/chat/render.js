@@ -8,7 +8,7 @@ const { MarkdownRenderer, MarkdownRenderChild } = require("obsidian");
 const { threadRows, relativeDate, folderOf, pathStem, groupCitations, slashQuery, matchSkills, inputsText,
         normalizeMath, LIVE_RENDER_MS, EFFORTS, EFFORT_HINTS, effortLabel, metaText, stageLine, toolIcon,
         toolSummary, starters } = require("./text");
-const { clear, create, icon, iconButton, autoGrow, atBottom } = require("./dom");
+const { clear, create, icon, iconButton, autoGrow, atBottom, composing } = require("./dom");
 
 // The composer grows to about ten lines, then scrolls (the CSS max-height says the same).
 const INPUT_MAX_PX = 240;
@@ -126,14 +126,14 @@ module.exports = {
 
   renderLive() {
     const el = this.el;
-    if (!el?.live || !this.sending) return;
+    if (!el?.liveText || !this.sending) return;
     const version = ++this.liveRenderVersion;
     this.liveRenderedAt = Date.now();
     const buffer = create(el.live, "div", "slim-message-text slim-rendered-markdown");
     buffer.hidden = true;
     const host = this.liveHost(buffer);
     return this.renderMarkdown(buffer, this.streamingText, host).then(() => {
-      if (version !== this.liveRenderVersion || this.el !== el || !this.sending) { this.dropLive(buffer, host); return; }
+      if (version !== this.liveRenderVersion || this.el !== el || !el.liveText || !this.sending) { this.dropLive(buffer, host); return; }
       this.dropLive(el.liveRendered, el.liveHost);
       el.liveRendered = buffer;
       el.liveHost = host;
@@ -211,7 +211,14 @@ module.exports = {
   renderTools() {
     if (this.el?.liveEdit) this.renderEdit();
     else if (this.el?.liveTools) { this.fillTools(this.el.liveTools, this.liveTools); this.follow(); }
-    else this.renderSoon();
+    else if (!this.el || this.streamOnScreen()) this.renderSoon();
+    // Not on screen (another chat, the chat list): nothing is drawn; opening it draws it whole.
+  },
+
+  // The turn streaming now is the one on screen. Off screen, its events redraw nothing: a full
+  // render per lookup took the focus from the history search and moved the composer's caret.
+  streamOnScreen() {
+    return this.sending && !this.showThreads && this.turns === this.streamingTurns;
   },
 
   renderStage() {
@@ -237,6 +244,12 @@ module.exports = {
     const root = this.contentEl;
     if (!root || !root.createEl) return;
     const focused = this.composerFocused;
+    // Where the caret was, in the composer and the history search, so a redraw keeps it there
+    // (while their text is what the redraw draws).
+    const caretOf = (input, value) => (input && input.value === value && Number.isInteger(input.selectionStart)
+      ? [input.selectionStart, input.selectionEnd ?? input.selectionStart] : null);
+    this.keptCaret = focused ? caretOf(this.el?.input, this.draft) : null;
+    this.keptSearch = this.searchFocused ? caretOf(this.el?.search, this.threadQuery) || [this.threadQuery.length, this.threadQuery.length] : null;
     // Scrolled up, a redraw (an effort picked, a pin) keeps their place; at the bottom it stays there.
     const kept = !this.stuck && this.el?.transcript ? this.el.transcript.scrollTop : null;
     clear(root);
@@ -252,6 +265,22 @@ module.exports = {
     if (this.showThreads) this.renderThreadList(root);
     else this.renderTranscript(root, kept);
     this.renderComposer(root, focused);
+    const search = this.keptSearch;
+    if (search && this.el.search && typeof this.el.search.focus === "function") {
+      this.el.search.focus();
+      [this.el.search.selectionStart, this.el.search.selectionEnd] = search;
+    }
+  },
+
+  // The open note shows in the composer's chips and the nearby notes (and in an empty chat's
+  // starters): a note switch redraws those, not every answer of a long chat.
+  renderNoteContext() {
+    const holder = this.el?.context;
+    if (!holder || (!this.turns.length && !this.showThreads)) { this.render(); return; }
+    clear(holder);
+    this.el.nearby = this.el.nearbyChip = null;
+    this.renderNearby(holder);
+    this.renderChips(holder);
   },
 
   // One slim row: the chat's title, then history and new chat.
@@ -407,9 +436,12 @@ module.exports = {
     // The menus and popovers open above the composer, over the conversation.
     this.el.slash = create(composer, "div", "slim-slash-menu");
     this.el.mention = create(composer, "div", "slim-mention-menu");
-    this.renderNearby(composer);
     this.renderEffortMenu(composer);
-    this.renderChips(composer);
+    // The open note's chips and nearby notes, in a holder of their own that a note switch
+    // redraws alone (renderNoteContext); it lays out as if they were the composer's own.
+    this.el.context = create(composer, "div", "slim-composer-context");
+    this.renderNearby(this.el.context);
+    this.renderChips(this.el.context);
     if (this.pendingImages.length) {
       const previews = create(composer, "div", "slim-copilot-image-previews");
       this.pendingImages.forEach((attachment, index) => {
@@ -427,8 +459,8 @@ module.exports = {
     input.value = this.draft;
     input.rows = 1;
     autoGrow(input, INPUT_MAX_PX);
-    const syncSend = () => this.el.send?.classList?.toggle("is-empty",
-      !this.sending && !String(input.value || "").trim() && !this.pendingImages.length);
+    const syncSend = () => this.el.send?.classList?.toggle("is-empty", this.sending
+      ? this.turns !== this.streamingTurns : !String(input.value || "").trim() && !this.pendingImages.length);
     input.oninput = () => {
       this.draft = input.value;
       this.caret = input.selectionStart;
@@ -452,6 +484,7 @@ module.exports = {
     input.onblur = () => { this.composerFocused = false; };
     this.el.input = input;
     input.onkeydown = (event) => {
+      if (composing(event)) return;
       // A half-typed command completes before it sends: "/con" + Enter is "/consolidate… ".
       const picks = this.mentionDismissed ? [] : this.mentionHits();
       if (picks.length) {
@@ -498,7 +531,11 @@ module.exports = {
         this.pickSkill(valid);
         return;
       }
-      if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); this.send(); }
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        // A bare "/" is the start of a command, never a question.
+        if (String(this.draft || "").trim() !== "/") this.send();
+      }
       if ((event.key === "Backspace" || event.key === "Delete") &&
           !event.metaKey && !event.altKey && !event.ctrlKey) {
         // Obsidian's sidebar keymap can consume deletion before Electron applies the
@@ -572,10 +609,17 @@ module.exports = {
       this.showEffortMenu(true);
     };
     this.el.effortButton = effort;
-    const empty = !this.sending && !String(this.draft || "").trim() && !this.pendingImages.length;
-    const send = iconButton(right, this.sending ? "square" : "arrow-up", this.sending ? "Stop response" : "Send",
-      `slim-send${this.sending ? " is-stop" : ""}${empty ? " is-empty" : ""}`);
-    send.onclick = () => this.sending ? this.cancel() : this.send();
+    // One turn at a time: the server runs one model call at a time, and the sidebar draws one
+    // stream. Stop is offered in the chat that is answering; another chat waits, and says why.
+    const stopHere = this.sending && this.turns === this.streamingTurns;
+    const waiting = this.sending && !stopHere;
+    const empty = !stopHere && !String(this.draft || "").trim() && !this.pendingImages.length;
+    if (waiting) create(composer, "div", "slim-composer-hint", "SLIM is answering in another chat");
+    const send = iconButton(right, stopHere ? "square" : "arrow-up",
+      stopHere ? "Stop response" : waiting ? "SLIM is answering in another chat" : "Send",
+      `slim-send${stopHere ? " is-stop" : ""}${empty || waiting ? " is-empty" : ""}`);
+    send.disabled = waiting;
+    send.onclick = () => (stopHere ? this.cancel() : waiting ? undefined : this.send());
     this.el.send = send;
     composer.ondragover = (event) => {
       if ([...(event.dataTransfer?.items || [])].some((item) => item.kind === "file")) event.preventDefault();
@@ -595,8 +639,12 @@ module.exports = {
     this.caretAt = null;
     if (focused && typeof input.focus === "function") {
       input.focus();
-      const at = Number.isInteger(caretAt) && caretAt <= input.value.length ? caretAt : input.value.length;
-      input.selectionStart = input.selectionEnd = at;
+      if (!Number.isInteger(caretAt) && this.keptCaret) {
+        [input.selectionStart, input.selectionEnd] = this.keptCaret;
+      } else {
+        const at = Number.isInteger(caretAt) && caretAt <= input.value.length ? caretAt : input.value.length;
+        input.selectionStart = input.selectionEnd = at;
+      }
     }
   },
 
@@ -609,6 +657,9 @@ module.exports = {
     search.placeholder = "Search chats";
     search.value = this.threadQuery;
     search.oninput = () => this.searchThreads(search.value);
+    search.onfocus = () => { this.searchFocused = true; };
+    search.onblur = () => { this.searchFocused = false; };
+    this.el.search = search;
     this.el.threadRows = create(list, "div", "slim-thread-rows");
     this.drawThreadRows(this.el.threadRows);
   },
@@ -731,7 +782,7 @@ module.exports = {
     }
     if (this.error) {
       const error = create(transcript, "div", "slim-copilot-error", this.error);
-      if (this.retryQuestion) {
+      if (this.retryQuestion && this.retryFor === this.activeThread?.id) {
         const retry = iconButton(error, "rotate-ccw", "Retry response");
         retry.onclick = () => this.retry();
       }

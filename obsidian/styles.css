@@ -715,7 +715,12 @@
   border-color: var(--background-modifier-border-focus);
   box-shadow: 0 0 0 1px var(--background-modifier-border-focus);
 }
+/* The open note's chips and nearby notes: a holder a note switch redraws, laid out as if absent. */
+.slim-composer-context { display: contents; }
 .slim-composer-chips { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; padding: 0 2px 2px; }
+/* Another chat is answering: this one's Send waits, and says why. */
+.slim-composer-hint { padding: 0 4px; color: var(--text-faint); font-size: var(--font-ui-smaller); }
+.slim-copilot .slim-send:disabled { cursor: default; }
 .slim-copilot :is(.slim-ctx-chip, .slim-pin) {
   display: inline-flex; align-items: center; gap: 4px; max-width: 100%; min-width: 0; height: 22px;
   padding: 0 3px 0 6px; border: 1px solid var(--background-modifier-border); border-radius: var(--radius-s);

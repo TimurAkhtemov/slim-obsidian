@@ -653,3 +653,67 @@ test("switching notes mid-run stops the run, and the next change is skipped", as
   assert.equal(run.stopped, "stopped");
   assert.equal(run.path, "Notes/one.md");
 });
+
+test("↺ on a run after its chat was reopened and continued saves the chat as it is now, not as the run left it", async () => {
+  const { live, editor, runs } = fakeLive();
+  const disk = new Map();
+  const ref = "8".repeat(32);
+  const view = editView({ live, editor, events: async (body, handlers) => {
+    if (body.question === "rename it") {
+      handlers.edit({ before_ref: ref, hash_before: sha256Hex(editor.text) });
+      handlers.change(change("c1", 1));
+      handlers.turn({ answer: "edited", citations: [], edit_run: { plan: PLAN, steps_done: 1, before_ref: ref } });
+    } else {
+      handlers.turn({ answer: "second answer", citations: [] });
+    }
+  } });
+  const post = view.plugin.postJSON;
+  view.plugin.postJSON = async (route, body) => {
+    if (route.endsWith("thread/save")) { disk.set(body.id, structuredClone(body)); return {}; }
+    return post(route, body);
+  };
+  view.plugin.getJSON = async (route) => {
+    const id = decodeURIComponent(route.split("id=")[1] || "");
+    return structuredClone(disk.get(id) || { id, title: id, turns: [] });
+  };
+  await view.send("rename it");
+  await view.openThread("B");
+  await view.openThread("chat-1");                                  // a fresh copy from disk
+  await view.send("follow-up");
+  assert.deepEqual(disk.get("chat-1").turns.map((t) => t.text), ["rename it", "edited", "follow-up", "second answer"]);
+  await view.openThread("B");
+  runs.get(ref).changes[0].state = "undone";                        // Cmd-Z in the note
+  view.runChanged(editor, ref);
+  await view.savingRuns;
+  const saved = disk.get("chat-1").turns;
+  assert.deepEqual(saved.map((t) => t.text), ["rename it", "edited", "follow-up", "second answer"]);
+  assert.equal(saved[1].turn.edit_run.changes[0].state, "undone");
+});
+
+test("a rename after a run is kept when ↺ on that run saves its chat later", async () => {
+  const { live, editor, runs } = fakeLive();
+  const disk = new Map();
+  const ref = "9".repeat(32);
+  const view = editView({ live, editor, events: async (_body, handlers) => {
+    handlers.edit({ before_ref: ref, hash_before: sha256Hex(editor.text) });
+    handlers.change(change("c1", 1));
+    handlers.turn({ answer: "edited", citations: [], edit_run: { plan: PLAN, steps_done: 1, before_ref: ref } });
+  } });
+  const post = view.plugin.postJSON;
+  view.plugin.postJSON = async (route, body) => {
+    if (route.endsWith("thread/save")) { disk.set(body.id, structuredClone(body)); return {}; }
+    return post(route, body);
+  };
+  view.plugin.getJSON = async (route) => {
+    const id = decodeURIComponent(route.split("id=")[1] || "");
+    return structuredClone(disk.get(id) || { id, title: id, turns: [] });
+  };
+  view.promptTitle = async () => "Renamed";
+  await view.send("rename it");
+  await view.openThread("B");
+  await view.renameThread("chat-1");                                // from the history list
+  runs.get(ref).changes[0].state = "undone";
+  view.runChanged(editor, ref);
+  await view.savingRuns;
+  assert.equal(disk.get("chat-1").title, "Renamed");
+});
