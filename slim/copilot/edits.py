@@ -595,8 +595,10 @@ def apply(note: Note, name: str, args: dict, *, change_id: str, step: int,
 
 
 def ollama_tools(names: list[str]) -> list[dict]:
-    return [{"type": "function", "function": {"name": n, "description": TOOLS[n]["description"],
-                                              "parameters": TOOLS[n]["parameters"]}} for n in names]
+    from . import lookup      # lazy: lookup imports edits
+    tools = {**TOOLS, **lookup.TOOLS}
+    return [{"type": "function", "function": {"name": n, "description": tools[n]["description"],
+                                              "parameters": tools[n]["parameters"]}} for n in names]
 
 
 # --- a new note -------------------------------------------------------------------------------
