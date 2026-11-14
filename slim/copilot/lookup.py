@@ -15,7 +15,7 @@ from ..config import EXCLUDED_DIRS, EXCLUDED_TOP
 from ..index import search as search_mod
 
 SEARCH_HITS = 8
-PASSAGE_CHARS = 400
+PASSAGE_CHARS = 600
 READ_MAX_CHARS = 40_000
 LIST_MAX = 200
 
@@ -23,6 +23,7 @@ _TOP_CF = {name.casefold() for name in EXCLUDED_TOP}
 _DIRS_CF = {name.casefold() for name in EXCLUDED_DIRS}
 _HANDLE = re.compile(r"[bs]\d+(?:\s*[-–]\s*[bs]\d+)?")     # a block, a section, or a range
 _PAGE = re.compile(r"(b\d+)(?:#(\d+))?")                    # a locked block, or one page of it
+_WORD = re.compile(r"\w+")
 
 TOOLS: dict[str, dict] = {
     "search": {
@@ -146,7 +147,7 @@ class Reader:
             head = f"{hit.path} · {hit.title or PurePosixPath(hit.path).stem}"
             if hit.heading_path:
                 head += f" § {hit.heading_path}"
-            passage = " ".join(hit.text.split())[:PASSAGE_CHARS]
+            passage = _passage(hit.text, query, f"{hit.path} {hit.title or ''}")
             out.append(f"{head}\n{passage}")
             if hit.path not in self.searched:
                 self.searched.append(hit.path)
@@ -165,7 +166,7 @@ class Reader:
         if pure.suffix.lower() != ".md":
             raise _Refused(f"'{raw}' is not a note path; give a path ending in .md")
         if not (edits._exact(self.vault, path) and (self.vault / path).is_file()):
-            raise _Refused(f"there is no note '{raw}'; search or list_folder to find it")
+            path = self._resolve(path, raw)
         section = args.get("section")
         if section is not None and not isinstance(section, str):
             raise _Refused("section must be text")
@@ -186,6 +187,24 @@ class Reader:
             self.read.append(path)
         self.seen.append(path)
         return f"=== {path} ===\n{body}"
+
+    def _resolve(self, path: str, raw: str) -> str:
+        """The one note whose path ends with what the model wrote: it drops a top folder
+        (`job-search/…` for `Notes/job-search/…`, seen live 2026-11-14) or gives a bare file name.
+        Several matches are named back; none is the plain refusal."""
+        tail = "/" + path.casefold()
+        pool = list(self.seen) + ([self.open_note[0]] if self.open_note else [])
+        if self.con is not None:
+            pool += [row[0] for row in self.con.execute(
+                "SELECT path FROM sources WHERE lower(path) LIKE ?", ("%" + path.casefold(),))]
+        found = [p for p in dict.fromkeys(pool)
+                 if ("/" + p.casefold()).endswith(tail) and (searchable(p) or self._is_open(p))
+                 and edits._exact(self.vault, p) and (self.vault / p).is_file()]
+        if len(found) == 1:
+            return found[0]
+        if found:
+            raise _Refused(f"several notes end with '{raw}': " + ", ".join(found[:8]) + "; give the full path")
+        raise _Refused(f"there is no note '{raw}'; search or list_folder to find it")
 
     @staticmethod
     def _cap(text: str, heads: list[str]) -> str:
@@ -261,6 +280,35 @@ class Reader:
         if path and not (edits._exact(self.vault, path) and (self.vault / path).is_dir()):
             raise _Refused(f"there is no folder '{raw}'")
         return listing(self.vault / path, root=not path)
+
+
+def _passage(text: str, query: str, named: str) -> str:
+    """What a search shows of a hit: the PASSAGE_CHARS of it where the query's words are, as grep
+    shows the matching line, not the section's head (live 2026-11-14 the figures asked about sat
+    1,300 characters in). Words the hit's path or title already name don't steer the window."""
+    flat = " ".join(text.split())
+    if len(flat) <= PASSAGE_CHARS:
+        return flat
+    skip = {w.casefold() for w in _WORD.findall(named)}
+    terms = {w.casefold() for w in _WORD.findall(query) if len(w) >= 3} - skip
+
+    def matches(word: str) -> set[str]:
+        word = word.casefold()
+        return {t for t in terms if word.startswith(t) or (len(word) >= 4 and t.startswith(word))}
+
+    hits = [(m.start(), matches(m.group())) for m in _WORD.finditer(flat)]
+    hits = [(at, found) for at, found in hits if found]
+    start, best = 0, 0
+    for at, _ in hits:
+        begin = max(0, at - PASSAGE_CHARS // 5)
+        covered = set().union(*(f for a, f in hits if begin <= a < begin + PASSAGE_CHARS))
+        if len(covered) > best:
+            start, best = begin, len(covered)
+    if start:
+        start = min(flat.find(" ", start) + 1 or start, start + 40)   # begin on a word
+    start = min(start, len(flat) - PASSAGE_CHARS)
+    window = flat[start:start + PASSAGE_CHARS]
+    return ("… " if start else "") + window + (" …" if start + PASSAGE_CHARS < len(flat) else "")
 
 
 def listing(folder: Path, *, root: bool) -> str:

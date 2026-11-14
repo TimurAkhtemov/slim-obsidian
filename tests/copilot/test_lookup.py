@@ -149,3 +149,41 @@ def test_a_long_open_note_shows_whole_blocks_and_shown_is_what_it_showed(vault):
         block = next(b for b in note.blocks if b.handle == handle)
         assert f"[{handle}] {block.text}" in out
     assert "Sections:\n" in out and out.endswith("[… the rest: read_note(path, section) for one section]")
+
+
+FILLER = " ".join(f"Databricks launchpad program detail number {i}." for i in range(40))
+
+
+def test_a_search_passage_is_where_the_query_matched_not_the_section_head(con, vault):
+    # Live 2026-11-14: the figures sat 1,300 characters into the chunk; a head-only passage hid
+    # them and the model answered from a neighbouring note's "150 base".
+    path = write(vault, "Notes/jobs/Databricks/screen.md", f"# Notes\n\n{FILLER} Comp: OTE 151,800, 206,900 TC.\n")
+    ingest(con, vault, path)
+    out = lookup.Reader(con, vault).call("search", {"query": "Databricks total comp"})
+    assert "151,800" in out and "206,900" in out
+    assert "… " in out                      # says the passage starts mid-section
+
+
+def test_a_short_section_is_shown_whole(con, vault, two):
+    out = lookup.Reader(con, vault).call("search", {"query": "shortest"})
+    assert "Dijkstra shortest path algorithm." in out and "…" not in out
+
+
+@pytest.mark.parametrize("given", ["school/cs-201/graphs.md", "cs-201/graphs.md", "graphs.md",
+                                   "notes/school/CS-201/graphs.md"])
+def test_read_note_finds_the_one_note_a_shortened_path_names(con, vault, two, given):
+    out = lookup.Reader(con, vault).call("read_note", {"path": given})
+    assert out.startswith("=== Notes/school/cs-201/graphs.md ===") and "Dijkstra shortest" in out
+
+
+def test_read_note_names_the_candidates_when_a_shortened_path_is_ambiguous(con, vault, two):
+    other = write(vault, "Notes/work/graphs.md", "# Graphs\n\nwork graphs\n")
+    ingest(con, vault, other)
+    out = lookup.Reader(con, vault).call("read_note", {"path": "graphs.md"})
+    assert out.startswith("refused:")
+    assert "Notes/school/cs-201/graphs.md" in out and "Notes/work/graphs.md" in out
+
+
+def test_a_shortened_path_never_reaches_an_excluded_folder(con, vault):
+    write(vault, "_Reflections/r.md", "# R\n\nsecret\n")
+    assert lookup.Reader(con, vault).call("read_note", {"path": "r.md"}).startswith("refused:")
