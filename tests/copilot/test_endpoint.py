@@ -425,8 +425,9 @@ def test_a_new_call_in_a_turn_resets_the_streamed_text(server_url, a_note):
     script(("Let me look.", [("list_folder", {"path": "Notes"})]), ("It is a note.", []))
     _status, _headers, body = stream(server_url, source, "what is in Notes?")
     events = events_of(body)
-    assert [e for e, _ in events] == ["stage", "delta", "delta_reset", "stage", "delta", "turn"]
-    assert events[2][1] == {} and events[-1][1]["answer"] == "It is a note."
+    assert [e for e, _ in events] == ["stage", "delta", "stage", "delta_reset", "stage", "delta", "turn"]
+    assert events[2][1] == {"stage": "Listing Notes"}            # the lookup names itself
+    assert events[3][1] == {} and events[-1][1]["answer"] == "It is a note."
 
 
 def test_the_gate_path_answers_as_before_when_the_loop_is_off(server_url, a_note, monkeypatch):

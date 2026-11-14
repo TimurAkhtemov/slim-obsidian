@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .. import llm
 from . import blocks, edits as edits_mod, lookup as lookup_mod, skills as skills_mod
@@ -345,6 +345,16 @@ class _Drafts:
                 self.failed += 1
 
 
+def _looking(name: str, args) -> str:
+    """The stage line while a lookup runs, so a turn of several does not sit on "Writing"."""
+    path = str((args if isinstance(args, dict) else {}).get("path") or "").strip().strip("/")
+    if name == "read_note":
+        return f"Reading {PurePosixPath(path).stem or 'a note'}"
+    if name == "list_folder":
+        return f"Listing {path or 'the vault'}"
+    return "Searching"
+
+
 def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tuple[str, ...],
           note: blocks.Note | None, before_text: str, only: set[str] | None = None, create=None,
           temperature: float = FIRST_TEMPERATURE, first_predict: int, nudge: bool = False, on_edit,
@@ -402,6 +412,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
     def look(call: dict) -> str:
         """One lookup, run; what it found goes back to the model, and what it was to the trace."""
         args = call.get("arguments")
+        on_stage(_looking(call["name"], args))
         said = lookups.call(call["name"], args)
         if note is not None and note.shown is not None:
             note.shown |= lookups.shown         # a section it read is a section it may change

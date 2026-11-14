@@ -408,3 +408,13 @@ def test_each_new_call_in_a_turn_resets_the_streamed_text(ask, monkeypatch):
     scripted(monkeypatch, ("Let me look.", [("list_folder", {"path": "Notes"})]), ("Here it is.", []))
     got = ask("what is in Notes?")
     assert got["deltas"] == ["Let me look.", RESET, "Here it is."]
+
+
+def test_the_stage_line_names_each_lookup(ask, con, vault, monkeypatch):
+    put(con, vault, "Notes/school/cs-201/zebra.md", "# Zebras\n\nZebras have stripes.\n")
+    scripted(monkeypatch, ("", [("search", {"query": "zebras"})]),
+             ("", [("read_note", {"path": "Notes/school/cs-201/zebra.md"})]),
+             ("", [("list_folder", {"path": "Notes/school"}), ("list_folder", {"path": ""})]), ("Done.", []))
+    got = ask("zebras?")
+    assert got["stages"] == ["Writing", "Searching", "Writing", "Reading zebra", "Writing",
+                             "Listing Notes/school", "Listing the vault", "Writing"]
