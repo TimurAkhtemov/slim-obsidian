@@ -5,7 +5,7 @@
 const { ItemView, Modal } = require("obsidian");
 const { MAX_COPILOT_IMAGES, resizeCopilotImage } = require("./images");
 const { sha256Hex, editorSelection, MAX_EDIT_CHARS, quickOrDeep, titleFromQuestion, threadId,
-        cancelledError, historyText } = require("./text");
+        cancelledError, historyText, threadRows } = require("./text");
 const { clear, create } = require("./dom");
 
 const VIEW_TYPE_COPILOT = "slim-copilot";
@@ -134,8 +134,10 @@ class CopilotView extends ItemView {
     }
     const file = this.app.workspace.getActiveFile ? this.app.workspace.getActiveFile() : null;
     this.loadSkills();
-    this.loadThreads();
-    await this.setActiveFile(file);
+    await Promise.all([this.loadThreads(), this.setActiveFile(file)]);
+    // Reopen the most recent chat, if there is one and nothing has been started meanwhile.
+    const latest = threadRows(this.threads)[0];
+    if (latest && !this.activeThread && !this.sending) await this.openThread(latest.id);
   }
 
   async onClose() { this.cancel(); }
@@ -190,8 +192,8 @@ class CopilotView extends ItemView {
       this.context = context;
       this.openNote = { path, id: context.source?.id ?? null };
     } catch (error) {
-      // Nearby notes are a convenience: a note the server will not index still opens, and the
-      // question is sent with its path.
+      // Nearby notes are a convenience. A 400 is a note the server does not index (Skills/,
+      // Profile/, _Reflections/): it still opens, and the question is sent with its path.
       if (version === this.noteVersion) console.warn("[slim] nearby notes", path, error.message || error);
     } finally {
       if (version === this.noteVersion) {
@@ -235,7 +237,16 @@ class CopilotView extends ItemView {
       await this.plugin.saveActiveNote(file);
     }
     await this.saveOpenCopies(path);
-    const fresh = await this.plugin.postJSON("/api/copilot/context", { path, related: false });
+    let fresh;
+    try {
+      fresh = await this.plugin.postJSON("/api/copilot/context", { path, related: false });
+    } catch (error) {
+      // 400: the server does not index this note; it reads it from disk. Anything else surfaces,
+      // in the server's own sentence where it gave one.
+      if (error.status === 400) return;
+      if (error.detail) throw new Error(error.detail);
+      throw error;
+    }
     if (this.openNote?.path === path) this.openNote = { path, id: fresh.source?.id ?? this.openNote.id };
     if (this.context?.source?.path === path) this.context = { ...this.context, source: fresh.source };
   }

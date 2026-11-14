@@ -1229,7 +1229,8 @@ var require_view = __commonJS({
       titleFromQuestion,
       threadId,
       cancelledError,
-      historyText
+      historyText,
+      threadRows
     } = require_text();
     var { clear, create } = require_dom();
     var VIEW_TYPE_COPILOT = "slim-copilot";
@@ -1357,8 +1358,9 @@ var require_view = __commonJS({
         }
         const file = this.app.workspace.getActiveFile ? this.app.workspace.getActiveFile() : null;
         this.loadSkills();
-        this.loadThreads();
-        await this.setActiveFile(file);
+        await Promise.all([this.loadThreads(), this.setActiveFile(file)]);
+        const latest = threadRows(this.threads)[0];
+        if (latest && !this.activeThread && !this.sending) await this.openThread(latest.id);
       }
       async onClose() {
         this.cancel();
@@ -1449,7 +1451,14 @@ var require_view = __commonJS({
           await this.plugin.saveActiveNote(file);
         }
         await this.saveOpenCopies(path);
-        const fresh = await this.plugin.postJSON("/api/copilot/context", { path, related: false });
+        let fresh;
+        try {
+          fresh = await this.plugin.postJSON("/api/copilot/context", { path, related: false });
+        } catch (error) {
+          if (error.status === 400) return;
+          if (error.detail) throw new Error(error.detail);
+          throw error;
+        }
         if (this.openNote?.path === path) this.openNote = { path, id: fresh.source?.id ?? this.openNote.id };
         if (this.context?.source?.path === path) this.context = { ...this.context, source: fresh.source };
       }

@@ -843,3 +843,51 @@ test("history is flat and searchable", async () => {
   assert.equal(rows().length, 1);
   assert.equal(find(root, (n) => n.cls === "slim-thread-search"), search);   // the box survives the redraw
 });
+
+function refusing(status, detail) {
+  return async (route, body) => {
+    if (route.endsWith("context")) { const e = new Error(`${route} returned ${status}: ${detail}`); e.status = status; e.detail = detail; throw e; }
+    return route.endsWith("save") ? {} : { threads: [] };
+  };
+}
+
+test("a note the server does not index still sends its path, with no error", async () => {
+  const bodies = [];
+  const view = makeView({
+    postJSON: refusing(400, "SLIM does not index this note"),
+    streamCopilot: async (body, handlers) => { bodies.push(body); handlers.turn({ answer: "ok", mode: "quick", citations: [] }); },
+  });
+  view.render = () => {};
+  await view.setActiveFile(noteFile("Skills/brief.md"));
+  await view.send("What does this do?");
+  assert.equal(bodies[0].path, "Skills/brief.md");
+  assert.equal(view.error, "");
+  assert.equal(view.turns.at(-1).text, "ok");
+});
+
+test("a server failure while syncing the note surfaces in the server's sentence", async () => {
+  const view = makeView({ postJSON: refusing(500, "index is busy") });
+  view.render = () => {};
+  view.openNote = { path: "A.md", id: null };
+  await view.send("Q");
+  assert.equal(view.error, "index is busy");
+});
+
+test("opening the sidebar reopens the most recently updated chat and navigates nowhere", async () => {
+  let linked = 0;
+  const threads = [
+    { id: "old", updated_at: "2026-01-01" }, { id: "new", updated_at: "2026-02-01" },
+  ];
+  const view = makeView({
+    getJSON: async (url) => url.startsWith("/api/copilot/threads") ? { threads }
+      : url.startsWith("/api/copilot/thread?") ? { id: url.split("=")[1], title: url.split("=")[1], reasoning_mode: "quick",
+          turns: [{ role: "you", text: `Q ${url.split("=")[1]}` }] } : { skills: [] },
+  });
+  view.app.workspace.openLinkText = () => { linked += 1; };
+  view.app.workspace.getActiveFile = () => null;
+  view.render = () => {};
+  await view.onOpen();
+  assert.equal(view.activeThread.id, "new");
+  assert.deepEqual(view.turns.map((t) => t.text), ["Q new"]);
+  assert.equal(linked, 0);
+});
