@@ -349,7 +349,8 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
           note: blocks.Note | None, before_text: str, only: set[str] | None = None, create=None,
           temperature: float = FIRST_TEMPERATURE, first_predict: int, nudge: bool = False, on_edit,
           should_stop, on_stage=lambda _name: None, lookups: lookup_mod.Reader | None = None,
-          on_reply=None, no_edit: str | None = None, looked_up: list | None = None) -> dict:
+          on_reply=None, no_edit: str | None = None, looked_up: list | None = None,
+          on_reset=None) -> dict:
     """One editing turn. Every call offers the same `tools`, in the same order: they sit at the
     top of the prompt, and a different list re-reads the whole note. `step_tools` are those that
     change something. The first call answers in text, makes a small change at once, or plans a
@@ -365,6 +366,8 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
     the first answer, plan or edit. Inside a run a lookup is answered too, and costs a call, never
     a refusal or a step. `on_reply` hears each reply's text as it decodes. `looked_up`, when given,
     is the list each lookup's record goes into as it runs, so a turn that fails still names them.
+    `on_reset()` hears each model call start after the first: the text streamed so far was that
+    call's (a lookup's preamble, a step's chatter), never the answer.
 
     With `no_edit` (THE LOOP with no note it may change) the plan and edit tools are still offered,
     so the prompt stays the same, but every call to them is refused with that reason, counted as
@@ -375,7 +378,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
            "retries": 0, "first_call_edits": 0, "timing": [], "nudged": False,
            "outline_details": None, "corrections": 0, "steps_missed": 0,
            "first_temperature": temperature, "looked_up": looked_up if looked_up is not None else []}
-    spent, failed = 0, []
+    spent, failed, started = 0, [], [0]
     looks = lookup_mod.NAMES if lookups is not None else ()
     barred = {"plan", *STEP_TOOLS} if no_edit else set()
     acting = tuple(name for name in step_tools if name not in barred)
@@ -427,6 +430,9 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
             out["stopped"] = "stopped"
         if out["stopped"]:
             raise _Stopped
+        if started[0] and on_reset:
+            on_reset()
+        started[0] += 1
         on_stage("Thinking deeply" if think else "Writing")
         if drafts:
             drafts.next_reply()

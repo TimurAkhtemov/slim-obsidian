@@ -120,6 +120,24 @@ test("history sent with a question names the note each earlier one was on and wh
                    ["(on Notes/one.md) What is A?", "Answer 1\nread: Notes/two.md"]);
 });
 
+test("a new model call in the turn clears what streamed before it", async () => {
+  const view = makeView({
+    postJSON: async (route) => route.endsWith("context") ? { source: { id: "source-1", path: "Notes/one.md" } } : {},
+    streamCopilot: async (_body, handlers) => {
+      handlers.delta({ text: "Let me search [b12]…" });
+      handlers.delta_reset({});
+      assert.equal(view.streamingText, "");
+      handlers.delta({ text: "Found " });
+      handlers.delta({ text: "it." });
+      assert.equal(view.streamingText, "Found it.");
+      handlers.turn({ mode: "quick", citations: [] });
+    },
+  });
+  view.render = () => {};
+  await view.send("Where is it?");
+  assert.equal(view.turns.at(-1).text, "Found it.");      // a turn with no answer keeps what streamed last
+});
+
 test("cancel aborts the in-flight stream and returns the composer to idle", () => {
   const view = makeView();
   let aborted = false;

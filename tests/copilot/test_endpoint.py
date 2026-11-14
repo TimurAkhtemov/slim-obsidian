@@ -388,15 +388,16 @@ def test_the_stream_emits_the_edit_events_in_order(server_url, a_note):
     status, _headers, body = stream(server_url, source, "rename A and add a line")
     assert status == 200
     events = events_of(body)
-    assert [e for e, _ in events] == ["stage", "edit", "plan", "step", "stage", "change", "step", "step", "stage",
-                                      "change", "step", "turn"]    # each model call names its stage as it starts
+    assert [e for e, _ in events] == ["stage", "edit", "plan", "step", "delta_reset", "stage", "change", "step",
+                                      "step", "delta_reset", "stage", "change", "step", "turn"]
+    # each model call names its stage as it starts, and after the first clears the text streamed so far
     edit = events[1][1]
     assert set(edit) == {"before_ref", "hash_before", "attachments"} and edit["hash_before"] == edits.digest(NOTE)
     assert edit["attachments"] == []
     assert threads.load_before("chat-1", edit["before_ref"]) == NOTE
     assert events[2][1] == {"intro": "Rename A and add a line.", "steps": ["Rename A", "Add a line"],
                             "outline": None}
-    assert events[5][1]["id"] == "c1" and events[9][1]["id"] == "c2"
+    assert events[6][1]["id"] == "c1" and events[11][1]["id"] == "c2"
     assert [p["stage"] for e, p in events if e == "stage"] == ["Writing"] * 3
     run = events[-1][1]["edit_run"]
     assert run["before_ref"] == edit["before_ref"] and run["hash_before"] == edit["hash_before"]
@@ -417,6 +418,15 @@ def test_a_text_answer_streams_as_it_decodes_with_no_edit_events(server_url, a_n
     assert [e for e, _ in events] == ["stage", "delta", "turn"]
     assert events[1][1] == {"text": "It is a note."}
     assert events[-1][1]["edit_run"] is None and events[-1][1]["answer"] == "It is a note."
+
+
+def test_a_new_call_in_a_turn_resets_the_streamed_text(server_url, a_note):
+    source, script = a_note
+    script(("Let me look.", [("list_folder", {"path": "Notes"})]), ("It is a note.", []))
+    _status, _headers, body = stream(server_url, source, "what is in Notes?")
+    events = events_of(body)
+    assert [e for e, _ in events] == ["stage", "delta", "delta_reset", "stage", "delta", "turn"]
+    assert events[2][1] == {} and events[-1][1]["answer"] == "It is a note."
 
 
 def test_the_gate_path_answers_as_before_when_the_loop_is_off(server_url, a_note, monkeypatch):

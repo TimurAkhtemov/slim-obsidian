@@ -14,6 +14,7 @@ from .conftest import scripted
 OPEN = "Notes/school/n.md"
 NOTE = "# Title\n\nIntro para.\n\n## A\n\nText a.\n"
 LOOKUPS = ["search", "read_note", "list_folder"]
+RESET = None                    # a new model call: the plugin clears the text streamed so far
 ALL_TOOLS = [*LOOKUPS, "plan", "replace", "edit_text", "insert", "move", "create_note"]
 
 
@@ -58,7 +59,8 @@ def ask(con, vault):
         events, deltas, stages = [], [], []
         result = copilot_turn.run_turn(con, open_path, question, list(history), mode, pins=list(pins),
                                        vault=vault, on_edit=lambda e, p: events.append((e, p)),
-                                       on_delta=deltas.append, on_stage=stages.append, **sent)
+                                       on_delta=deltas.append, on_reset=lambda: deltas.append(RESET),
+                                       on_stage=stages.append, **sent)
         result["events"], result["deltas"], result["stages"] = events, deltas, stages
         return result
     return go
@@ -400,3 +402,9 @@ def test_a_failure_inside_the_turn_still_traces_its_lookups(ask, monkeypatch):
     (record,) = records
     assert record["status"] == "failed" and record["error_type"] == "LLMError"
     assert record["looked_up"] == [{"name": "list_folder", "path": "Notes", "refused": False}]
+
+
+def test_each_new_call_in_a_turn_resets_the_streamed_text(ask, monkeypatch):
+    scripted(monkeypatch, ("Let me look.", [("list_folder", {"path": "Notes"})]), ("Here it is.", []))
+    got = ask("what is in Notes?")
+    assert got["deltas"] == ["Let me look.", RESET, "Here it is."]

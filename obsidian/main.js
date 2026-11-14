@@ -1815,6 +1815,13 @@ var require_view = __commonJS({
               this.streamingText = streamed;
               this.renderDelta();
             },
+            // A new model call in the turn: what streamed before it (a lookup's preamble, a step's
+            // chatter, a raw handle) was that call's, never the answer.
+            delta_reset: () => {
+              streamed = "";
+              this.streamingText = "";
+              this.renderDelta();
+            },
             draft: on((data) => {
               const [view2, id] = drafting();
               if (view2) this.plugin.live?.startDraft?.(view2, id, data);

@@ -504,6 +504,7 @@ class _Handler(BaseHTTPRequestHandler):
                 selection=selection, selection_from=selection_from, doc=doc, doc_hash=doc_hash,
                 on_stage=lambda stage: emit("stage", {"stage": stage}),
                 on_delta=lambda text: emit("delta", {"text": text}),
+                on_reset=lambda: quietly(lambda: emit("delta_reset", {})),
                 on_edit=on_edit, should_stop=should_stop)
             turn["attachments"] = attachments
             if turn.get("edit_run"):

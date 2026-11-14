@@ -504,14 +504,15 @@ def _answer_or_edit(con, vault: Path, source: dict, question: str, history: list
 
 def _loop(con, vault: Path, source: dict | None, question: str, history: list[dict], mode: str, *,
           pins, skill, args: str, images, selection: str, doc: str | None, on_stage, on_delta,
-          on_edit, should_stop, entry: dict) -> dict:
+          on_edit, should_stop, entry: dict, on_reset=None) -> dict:
     """One turn of THE LOOP. Every call offers LOOP_TOOLS under one system message, whatever is
     open; with no note it may change (none, the chip's ✕, a note the tools cannot take, or one
     sent without the editor's text for being over MAX_EDIT_CHARS), the edit tools refuse. A chat
     skill offers the lookups alone, its notes (`gather`) in the open note's place. The messages:
     the persona and the rider, the pins
     and an assistant's "Noted." (roles alternate), the history that fits, the open note's images,
-    then the open note and the question. Reply text streams through `on_delta`."""
+    then the open note and the question. Reply text streams through `on_delta`, and `on_reset()`
+    says a new model call started, so the text streamed before it was not the answer."""
     stage = on_stage or (lambda _name: None)
     path = source["path"] if source else None
     folder = PurePosixPath(path).parent.as_posix() if path else ""
@@ -576,7 +577,7 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
                              on_edit=on_edit or (lambda _event, _payload: None), should_stop=should_stop,
                              on_stage=stage, lookups=reader, on_reply=on_delta, no_edit=no_edit,
                              # filled as the turn runs: traced even when it fails or is refused
-                             looked_up=entry.setdefault("looked_up", []))
+                             looked_up=entry.setdefault("looked_up", []), on_reset=on_reset)
     if out["kind"] == "answer" and out["refusals"]:
         entry["refusals"] = [item["code"] for item in out["refusals"]]
     last = out["timing"][-1] if out["timing"] else {}
@@ -658,7 +659,7 @@ def _source(con, vault: Path, open_path: str | None) -> dict | None:
 def run_turn(con, open_path: str | None, question: str, history: list[dict], mode: str,
              *, pins=(), images=None, on_stage=None, on_delta=None, on_edit=None, selection: str = "",
              selection_from: int | None = None, vault: Path | None = None, doc: str | None = None,
-             doc_hash: str | None = None, should_stop=lambda: False) -> dict:
+             doc_hash: str | None = None, should_stop=lambda: False, on_reset=None) -> dict:
     """One sidebar turn, on the note open at `open_path` (None: no note open), with the chat's
     `@` pins. With LOOP it is one loop that answers, looks things up and edits (`_loop`); an edit
     or new-note skill runs as before. Off, a `/command` whose output is chat reads whole notes
@@ -666,7 +667,8 @@ def run_turn(con, open_path: str | None, question: str, history: list[dict], mod
     change the open note, which it reads from `doc` — the editor's text, whose `doc_hash` must
     match — or else from disk; `selection_from` is where the selection starts in it, in UTF-16
     units. `on_edit(event, payload)` gets each part of an edit as it lands; nothing is written
-    here: the plugin applies each change through the editor."""
+    here: the plugin applies each change through the editor. In THE LOOP `on_reset()` hears each
+    model call after a turn's first start: what `on_delta` streamed before it is not the answer."""
     vault = Path(vault or config_mod.VAULT)
     source = _source(con, vault, open_path)
     loaded = skills_mod.load(vault)
@@ -705,7 +707,8 @@ def run_turn(con, open_path: str | None, question: str, history: list[dict], mod
         if LOOP and not (skill and skill.output != "chat"):
             result = _loop(con, vault, source, question, history, mode, pins=pins, skill=skill, args=args,
                            images=images, selection=selection, doc=doc, on_stage=on_stage,
-                           on_delta=on_delta, on_edit=on_edit, should_stop=should_stop, entry=entry)
+                           on_delta=on_delta, on_edit=on_edit, should_stop=should_stop, entry=entry,
+                           on_reset=on_reset)
         elif skill and skill.output == "chat":
             pack = context.gather(con, vault, source, skill=skill, links_from=args, selection=selection)
             cited = [{"n": i + 1, "path": doc["path"], "title": doc["title"]}
