@@ -12,6 +12,23 @@ function shortDate(value) {
   return Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
+// A history row's date, by calendar day: "Today", "Yesterday", "3 days ago" within the week, then "Nov 13".
+function relativeDate(value, now = Date.now()) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const day = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((day(new Date(now)) - day(date)) / 86_400_000);
+  if (days === 0) return "Today";
+  if (days === 1) return "Yesterday";
+  if (days > 1 && days < 7) return `${days} days ago`;
+  return shortDate(value);
+}
+
+// The folder a note is in ("Notes/nlp" for "Notes/nlp/Tokens.md"), or "" at the vault's root.
+function folderOf(path) {
+  return String(path || "").split("/").slice(0, -1).join("/");
+}
+
 // --- what the sidebar shows instead of paths ------------------------------------------------
 
 function pathStem(path) {
@@ -146,6 +163,32 @@ function effortLabel(effort) {
   return effortOf(effort)[0].toUpperCase() + effortOf(effort).slice(1);
 }
 
+// The line under each level in the effort menu.
+const EFFORT_HINTS = { off: "fastest", low: "quick thinking", medium: "default", high: "most thorough" };
+
+// A lookup's icon in the chat (lucide names); a refused one is drawn as refused, whatever it was.
+const TOOL_ICONS = { search: "search", read_note: "file-text", list_folder: "folder" };
+const TOOL_VERBS = { search: "Searched", read_note: "Read", list_folder: "Listed" };
+
+function toolIcon(tool) {
+  return tool?.refused ? "circle-slash" : TOOL_ICONS[tool?.name] || "dot";
+}
+
+// The one row a finished turn's lookups fold into: "Searched 2 · Read 1 · Listed 1 · 1 refused".
+// A refused lookup did not happen, so it counts as refused, not under its verb.
+function toolSummary(tools) {
+  const counts = new Map();
+  let refused = 0;
+  for (const tool of tools || []) {
+    if (tool?.refused) { refused += 1; continue; }
+    const verb = TOOL_VERBS[tool?.name] || "Used";
+    counts.set(verb, (counts.get(verb) || 0) + 1);
+  }
+  const parts = [...counts].map(([verb, n]) => `${verb} ${n}`);
+  if (refused) parts.push(`${refused} refused`);
+  return parts.join(" · ");
+}
+
 // The effort an answer ran at. A turn saved before effort names its mode: Quick ran as Medium
 // runs now, Deep as High. Saved chats are read this way, never rewritten.
 function turnEffort(turn) {
@@ -166,11 +209,16 @@ function stageLine(stage, since, now) {
   return `${stage || "Working"}…${seconds >= 1 ? ` ${seconds} s` : ""}`;
 }
 
-const SUGGESTED_PROMPTS = [
-  "Explain this note like I'm new to it",
-  "Quiz me on this note",
-  "What is unclear or missing here?",
-];
+// A new chat's three ways in. Each fills the composer, never sends: `text` is what lands there,
+// with the caret after it, so "about " waits for the subject. Tidying needs a note to tidy.
+function starters(noteOpen) {
+  return [
+    { label: "Summarize this note", text: "Summarize this note" },
+    { label: "What's in my notes about \u2026", text: "What's in my notes about " },
+    noteOpen ? { label: "Tidy this note", text: "Tidy this note" }
+      : { label: "Find a note about \u2026", text: "Find a note about " },
+  ];
+}
 
 function titleFromQuestion(question) {
   const title = question.trim().replace(/\s+/g, " ");
@@ -276,7 +324,8 @@ function editOutcome(run) {
     + `${left.length ? ` Not done: ${list}.` : ""}`;
 }
 
-module.exports = { threadRows, shortDate, pathStem, groupCitations, sha256Hex, slashQuery, matchSkills, mentionQuery, mentionMatches,
+module.exports = { threadRows, shortDate, relativeDate, folderOf, pathStem, groupCitations, sha256Hex, slashQuery, matchSkills, mentionQuery, mentionMatches,
         inputsText, editorSelection, MAX_SELECTION_CHARS, MAX_EDIT_CHARS, looksLikeMath, normalizeMath,
-        LIVE_RENDER_MS, EFFORTS, effortOf, effortLabel, turnEffort, metaText, stageLine, SUGGESTED_PROMPTS, titleFromQuestion, threadId,
+        LIVE_RENDER_MS, EFFORTS, EFFORT_HINTS, effortOf, effortLabel, turnEffort, metaText, stageLine, toolIcon, toolSummary,
+        starters, titleFromQuestion, threadId,
         cancelledError, runCounts, historyText, STOPPED_BECAUSE, editOutcome };

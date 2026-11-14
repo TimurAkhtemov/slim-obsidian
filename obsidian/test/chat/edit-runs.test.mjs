@@ -28,7 +28,7 @@ test("a question sends the open note's text and its hash; there is no toggle and
   const { view: shown, root } = renderedView();
   shown.render();
   assert.equal(find(root, (node) => String(node.cls).includes("slim-edit-toggle")), null);
-  assert.equal(find(root, (node) => node.tag === "textarea").placeholder, "Ask SLIM, or / for skills");
+  assert.equal(find(root, (node) => node.tag === "textarea").placeholder, "Ask anything \u00B7 @ to add context");
 });
 
 test("only a /command carries the note's selection", async () => {

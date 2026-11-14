@@ -239,7 +239,7 @@ test("an old thread opens and renames without touching the effort", async () => 
   assert.equal("reasoning_mode" in saves[0] || "effort" in saves[0], false);
 });
 
-test("the effort selector offers Pi's four levels, starts at the saved one and keeps the last chosen", async () => {
+test("the effort menu offers Pi's four levels with a hint each, starts at the saved one and keeps the last chosen", async () => {
   const settings = { port: 7546, effort: "high" };
   let writes = 0;
   const bodies = [];
@@ -248,12 +248,20 @@ test("the effort selector offers Pi's four levels, starts at the saved one and k
     streamCopilot: async (body, handlers) => { bodies.push(body); handlers.turn({ answer: "ok", effort: body.effort, citations: [] }); },
   });
   view.render();
-  const select = find(root, (node) => node.cls === "slim-effort");
-  assert.deepEqual(select.children.map((o) => [o.value, o.textContent]),
-                   [["off", "Off"], ["low", "Low"], ["medium", "Medium"], ["high", "High"]]);
-  assert.deepEqual(select.children.filter((o) => o.selected).map((o) => o.value), ["high"]);
-  select.value = "off";
-  select.onchange();
+  const button = () => find(root, (node) => node.cls === "slim-effort");
+  const menu = () => find(root, (node) => node.cls === "slim-effort-menu");
+  assert.equal(find(button(), (node) => node.cls === "slim-effort-label").textContent, "High");
+  assert.equal(menu().hidden, true);
+  button().onclick();
+  assert.equal(menu().hidden, false);
+  assert.equal(button().attrs["aria-expanded"], "true");
+  const items = menu().children;
+  assert.deepEqual(items.map((item) => item.children.map((part) => part.textContent)),
+                   [["Off", "fastest"], ["Low", "quick thinking"], ["Medium", "default"], ["High", "most thorough"]]);
+  assert.deepEqual(items.filter((item) => item.cls.includes("is-selected")).map((item) => item.children[0].textContent), ["High"]);
+  items[0].onclick();
+  assert.equal(menu().hidden, true);                                // picking closes the menu
+  assert.equal(find(button(), (node) => node.cls === "slim-effort-label").textContent, "Off");
   assert.equal(view.effort, "off");
   assert.equal(settings.effort, "off");
   assert.equal(writes, 1);
@@ -887,7 +895,8 @@ test("history is flat and searchable", async () => {
   view.render();
   const root = view.contentEl;
   const rows = () => { const out = []; find(root, (n) => { if (n.cls.startsWith("slim-chat-row")) out.push(n); return false; }); return out; };
-  assert.deepEqual(rows().map((row) => row.children[0].textContent.split(" ")[0]), ["Three", "Two", "One"]);
+  const titles = () => rows().map((row) => find(row, (n) => n.cls === "slim-chat-title").textContent);
+  assert.deepEqual(titles(), ["Three", "Two", "One"]);
   const faint = find(root, (n) => n.cls === "slim-chat-note");
   assert.equal(faint.textContent.trim(), "b");
   const search = find(root, (n) => n.tag === "input" && n.cls === "slim-thread-search");
@@ -1106,4 +1115,106 @@ test("the / menu: arrows keep the highlighted skill in view", () => {
   const selected = rows("slim-slash-item").find((row) => row.cls.includes("is-selected"));
   assert.equal(view.slashIndex, 1);
   assert.deepEqual(selected.scrolledIntoView, [{ block: "nearest" }]);
+});
+
+// --- the composer: one box, its chips, its toolbar ------------------------------------------------
+
+const composerOf = (root) => find(root, (node) => node.cls === "slim-copilot-composer");
+
+test("the @ button puts an @ at the caret and opens the same picker as typing it", () => {
+  const { view, root, key, rows } = pickerView();
+  const at = () => find(root, (node) => node.attrs["aria-label"] === "Add a note or folder");
+  view.draft = "about";
+  view.render();
+  at().onclick();
+  const input = find(root, (node) => node.tag === "textarea");
+  assert.equal(input.value, "about @");                             // a space first: an @ touching a word is no mention
+  assert.equal(input.focused, true);
+  assert.equal(input.selectionStart, 7);
+  assert.equal(find(root, (node) => node.cls === "slim-mention-menu").hidden, false);
+  assert.equal(rows("slim-mention-item").length, 5);
+  key("Enter");                                                     // the picker's keys, as when typed
+  assert.deepEqual(view.activeThread.pins, [{ kind: "folder", path: "Notes" }]);
+  view.draft = "a b";
+  view.caret = 1;
+  at().onclick();
+  assert.equal(view.draft, "a @ b");                                // at the caret, not the end
+  assert.equal(view.mentionHits().length, 5);
+});
+
+test("the send button is a stop button while a turn runs, and stopping ends the turn", async () => {
+  let started;
+  const running = new Promise((resolve) => { started = resolve; });
+  const { view, root } = renderedView({
+    streamCopilot: (_body, _handlers, signal) => new Promise((_resolve, reject) => {
+      started();
+      signal.addEventListener("abort", () => reject(Object.assign(new Error("Cancelled"), { name: "AbortError" })));
+    }),
+  });
+  view.render();
+  const send = () => find(root, (node) => node.cls?.split(" ").includes("slim-send"));
+  assert.equal(send().attrs["aria-label"], "Send");
+  assert.ok(send().cls.includes("is-empty"));                       // nothing to send yet
+  view.draft = "a long question";
+  view.render();
+  assert.ok(!send().cls.includes("is-empty"));
+  const turn = send().onclick();
+  await running;
+  assert.equal(send().attrs["aria-label"], "Stop response");
+  assert.ok(send().cls.includes("is-stop"));
+  send().onclick();                                                 // stop
+  await turn;
+  assert.equal(view.sending, false);
+  assert.equal(send().attrs["aria-label"], "Send");
+  assert.equal(view.draft, "a long question");                      // the unanswered question comes back
+});
+
+test("the composer's chips are the open note and the @ pins, inside the composer", () => {
+  const { view, root } = renderedView();
+  view.newThread();
+  view.activeThread.pins = [{ kind: "note", path: "Notes/x.md" }, { kind: "folder", path: "Capture/weekly" }];
+  view.render();
+  const chips = find(composerOf(root), (node) => node.cls === "slim-composer-chips");
+  const names = chips.children.map((chip) => find(chip, (node) => ["slim-copilot-note", "slim-pin-name"].includes(node.cls)).textContent);
+  assert.deepEqual(names, ["One", "x", "weekly/"]);
+  assert.deepEqual(chips.children.map((chip) => chip.cls),
+                   ["slim-ctx-chip slim-copilot-note-chip", "slim-pin is-note", "slim-pin is-folder"]);
+  assert.equal(chips.children[2].attrs.title, "Capture/weekly");
+  view.toggleOpenNote();                                            // left out: struck through, ↩ to bring it back
+  const off = find(composerOf(root), (node) => node.cls?.includes("slim-copilot-note-off"));
+  assert.ok(off.cls.includes("is-off"));
+  assert.equal(off.attrs["aria-label"], "Include the open note again");
+  view.openNote = null;
+  view.activeThread.pins = [];
+  view.render();
+  assert.equal(find(root, (node) => node.cls === "slim-composer-chips"), null);   // nothing to show: no row
+});
+
+test("the effort menu closes on Escape and on a click elsewhere", () => {
+  const { view, root } = renderedView();
+  view.render();
+  const menu = () => find(root, (node) => node.cls === "slim-effort-menu");
+  const button = find(root, (node) => node.cls === "slim-effort");
+  button.onclick();
+  assert.equal(menu().hidden, false);
+  view.onRootClick({ target: { closest: (selector) => (selector.includes(".slim-effort-menu") ? {} : null) } });
+  assert.equal(menu().hidden, false);                               // a click inside keeps it
+  view.onRootClick({ target: { closest: () => null } });
+  assert.equal(menu().hidden, true);
+  button.onclick();
+  menu().onkeydown({ key: "Escape", preventDefault() {} });
+  assert.equal(menu().hidden, true);
+  assert.equal(view.effortOpen, false);
+});
+
+test("history rows show a faint relative date and the note the chat was on", () => {
+  const { view, root } = renderedView();
+  view.threads = [{ id: "a", title: "A", source_path: "Notes/one.md", updated_at: new Date().toISOString() },
+                  { id: "b", title: "B", updated_at: "2026-01-02T12:00:00Z" }];
+  view.showThreads = true;
+  view.render();
+  assert.equal(find(root, (node) => node.cls === "slim-copilot-title").textContent, "Chats");
+  const subs = [];
+  find(root, (node) => { if (node.cls === "slim-chat-sub") subs.push(node.children.map((part) => part.textContent)); return false; });
+  assert.deepEqual(subs, [["Today", "one"], ["Jan 2"]]);
 });

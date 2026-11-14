@@ -3,7 +3,10 @@
 
 const { Notice } = require("obsidian");
 const { sha256Hex, effortLabel, metaText, runCounts, editOutcome } = require("./text");
-const { clear, create, atBottom } = require("./dom");
+const { clear, create, glyphIcon, atBottom } = require("./dom");
+
+// A step's state as the chat draws it: a lucide icon, with a glyph where Obsidian draws none.
+const STEP_ICONS = { done: ["check", "\u2713"], partial: ["circle-dashed", "\u25D0"], skipped: ["minus", "\u2013"] };
 
 module.exports = {
   // ---- an editing run, as it lands ------------------------------------------------------------
@@ -146,7 +149,7 @@ module.exports = {
     const follow = atBottom(this.el.transcript);
     clear(this.el.liveEdit);
     this.drawLiveEdit(this.el.liveEdit);
-    if (follow) this.el.transcript.scrollTop = this.el.transcript.scrollHeight;
+    this.stick(this.el.transcript, follow);
   },
 
   drawLiveEdit(parent) {
@@ -174,7 +177,9 @@ module.exports = {
       const list = create(box, "ul", "slim-steps");
       for (const [text, state] of shown) {
         const item = create(list, "li", `slim-step is-${state}`);
-        create(item, "span", "slim-step-icon", { doing: "", done: "✓", partial: "◐", skipped: "–" }[state] ?? "");
+        const [name, glyph] = STEP_ICONS[state] || [];
+        const mark = create(item, "span", "slim-step-icon");
+        if (name) glyphIcon(mark, name, glyph);
         create(item, "span", state === "doing" ? "slim-step-text slim-shimmer" : "slim-step-text", text);
       }
     }

@@ -41,7 +41,7 @@
 }
 .slim-object-head-copy { min-width: 0; }
 .slim-object-head h3 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.slim-object-eyebrow, .slim-object-section-label, .slim-copilot-eyebrow, .slim-copilot-label {
+.slim-object-eyebrow, .slim-object-section-label {
   margin-bottom: 4px;
   color: var(--text-muted);
   font-size: 10px;
@@ -500,197 +500,349 @@
 .slim-toggle input[type="checkbox"] { margin: 0; }
 .slim-toggle .slim-hint { flex-basis: 100%; margin: 0.25em 0 0 0; }
 
-/* Open-note copilot. A chat surface, native to the active theme: the conversation owns the
-   pane, their turns sit in a tinted bubble on the right, SLIM's answers read as rendered notes
-   on the left. Titles, never paths — the path is the tooltip. Nearby notes fold under the
-   title; chats live behind the history button; sources are a footnote row of chips. */
+/* The vault assistant's sidebar, laid out as a modern copilot (Cursor's chat pane, Notion AI's
+   panel): a slim header, the conversation, and one rounded composer pinned to the bottom.
+   Obsidian's variables only, so light, dark and community themes carry it; it must read at
+   280-480px wide and never scroll sideways, so every text that can run long is one line with
+   an ellipsis inside a `min-width: 0` box, and rows of chips wrap. The pane takes the editor's
+   background wherever it is docked (a sidebar is --background-secondary), so the bubble and the
+   composer stand off it. */
 .slim-copilot {
-  height: 100%; min-height: 0; padding: 8px 10px 10px;
-  display: flex; flex-direction: column; gap: 10px; overflow: hidden;
+  height: 100%; min-height: 0; padding: 6px 10px 10px;
+  display: flex; flex-direction: column; gap: 8px; overflow: hidden;
+  background: var(--background-primary);
 }
+/* `hidden` must win over the display a rule below gives the same element. */
+.slim-copilot [hidden] { display: none !important; }
 /* Only the conversation slot gives way. Without this a short pane squeezes the header — a
    flex child with overflow-y: auto shrinks to nothing (measured in a 760px pane). */
-.slim-copilot > * { flex: 0 0 auto; }
-.slim-copilot-head { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.slim-copilot-head-row { min-height: 24px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.slim-copilot-tools { display: flex; align-items: center; gap: 2px; }
+.slim-copilot > * { flex: 0 0 auto; min-width: 0; }
+/* Obsidian gives every <button> a filled, shadowed, fixed-height look; these are ghost rows and
+   chips. `.slim-copilot` in front outranks Obsidian's `button:not(.clickable-icon)`. */
+.slim-copilot :is(.slim-chat-open, .slim-related-note, .slim-ctx-chip, .slim-chip-x, .slim-tool-summary,
+  .slim-sources-toggle, .slim-source, .slim-suggest, .slim-effort, .slim-effort-item, .slim-slash-item,
+  .slim-mention-item) {
+  height: auto; background: transparent; border: 0; box-shadow: none; font-weight: normal;
+  justify-content: flex-start; cursor: pointer;
+}
+
+/* ---- header: the chat's title, history, new chat ---- */
+.slim-copilot-head { display: flex; align-items: center; gap: 6px; min-height: 28px; }
+.slim-copilot-title {
+  flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: var(--font-ui-small); font-weight: var(--font-semibold); color: var(--text-normal);
+}
+.slim-copilot-tools { flex: none; display: flex; align-items: center; gap: 2px; }
+.slim-copilot-tools .clickable-icon { --icon-size: var(--icon-s); padding: var(--size-2-2); }
 .slim-history.is-active { color: var(--text-accent); background: var(--background-modifier-hover); }
-.slim-copilot-eyebrow, .slim-copilot-label { margin: 0; }
-.slim-copilot-note {
-  min-width: 0; font-size: var(--font-ui-medium); font-weight: var(--font-semibold);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.slim-copilot-note-row { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
-.slim-copilot-note.is-off { color: var(--text-faint); text-decoration: line-through; }
-.slim-copilot-note-off { flex: 0 0 auto; padding: 0 4px; background: none; border: 0; box-shadow: none; height: auto; }
-.slim-pins { grid-area: pins; display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
-.slim-pin {
-  display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 1px 4px 1px 8px;
-  font-size: var(--font-ui-smaller); color: var(--text-muted);
-  background: var(--background-secondary); border: 1px solid var(--background-modifier-border); border-radius: 10px;
-}
-.slim-pin.is-folder { border-style: dashed; }
-.slim-pin-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.slim-pin .slim-chip-x { padding: 0 3px; background: none; border: 0; box-shadow: none; height: auto; }
-.slim-copilot-context { min-width: 0; }
-.slim-copilot-context > summary {
-  display: flex; align-items: baseline; gap: 8px; min-width: 0; cursor: pointer; list-style: none;
-}
-.slim-copilot-context > summary::-webkit-details-marker { display: none; }
-.slim-copilot-nearby-count { flex: 0 0 auto; color: var(--text-faint); font-size: var(--font-ui-smaller); }
-.slim-copilot-nearby-count::before { content: "\25B8  "; }
-.slim-copilot-context[open] .slim-copilot-nearby-count::before { content: "\25BE  "; }
-.slim-copilot-context > .slim-related-note:first-of-type { margin-top: 4px; }
-.slim-related-note, .slim-chat-open {
-  width: 100%; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto;
-  align-items: baseline; gap: 10px; padding: 3px 6px; text-align: left;
-  color: var(--text-muted); background: transparent; border: 0; border-radius: var(--radius-s, 4px);
-  box-shadow: none; font-size: var(--font-ui-small); line-height: 1.4; cursor: pointer;
-}
-.slim-related-note:hover, .slim-chat-open:hover {
-  color: var(--text-normal); background: var(--background-modifier-hover);
-}
-.slim-related-note > span, .slim-chat-open {
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.slim-related-note > small { color: var(--text-faint); font-size: var(--font-ui-smaller); }
-/* The history list takes the conversation's slot; it is the same flex child. */
+
+/* ---- history: a quiet list in the conversation's slot ---- */
 .slim-copilot-threads {
-  flex: 1 1 auto; min-height: 120px; overflow-y: auto;
-  display: flex; flex-direction: column; gap: 1px;
+  flex: 1 1 auto; min-height: 120px; overflow-y: auto; overflow-x: hidden;
+  display: flex; flex-direction: column; gap: 2px;
 }
-.slim-thread-rows { display: flex; flex-direction: column; gap: 1px; }
 .slim-thread-search { width: 100%; margin-bottom: 6px; }
-.slim-chat-date, .slim-chat-note { color: var(--text-faint); }
+.slim-thread-rows { display: flex; flex-direction: column; gap: 1px; }
 .slim-chat-row {
-  min-height: 28px; display: grid; grid-template-columns: minmax(0, 1fr) 26px 26px;
-  align-items: center; border-radius: var(--radius-s, 4px);
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 1px;
+  padding-right: 2px; border-radius: var(--radius-s);
 }
+.slim-chat-row:hover { background: var(--background-modifier-hover); }
 .slim-chat-row.is-active { background: var(--background-modifier-active-hover); }
-.slim-chat-row .clickable-icon { opacity: 0; }
+.slim-copilot .slim-chat-open {
+  min-width: 0; display: flex; flex-direction: column; align-items: stretch; gap: 1px;
+  padding: 5px 8px; text-align: left; color: var(--text-normal);
+}
+.slim-chat-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--font-ui-small); }
+.slim-chat-sub { display: flex; min-width: 0; color: var(--text-faint); font-size: var(--font-ui-smaller); }
+.slim-chat-date { flex: none; }
+.slim-chat-note { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slim-chat-date + .slim-chat-note::before { content: "\00B7"; margin: 0 5px; }
+.slim-chat-row .clickable-icon { --icon-size: var(--icon-xs); padding: var(--size-2-2); opacity: 0; }
 .slim-chat-row:hover .clickable-icon, .slim-chat-row:focus-within .clickable-icon,
-.slim-chat-row.is-active .clickable-icon, .slim-chat-row .clickable-icon.is-armed { opacity: 1; }
+.slim-chat-row .clickable-icon.is-armed { opacity: 1; }
+.slim-chat-row .clickable-icon.is-armed { color: var(--text-error); }
+@media (hover: none) { .slim-chat-row .clickable-icon { opacity: 1; } }
+
+/* ---- the conversation ---- */
+.slim-transcript-wrap { flex: 1 1 auto; min-height: 120px; position: relative; display: flex; flex-direction: column; }
 .slim-copilot-transcript {
-  flex: 1 1 auto; min-height: 120px; overflow-y: auto; padding: 4px 0;
-  display: flex; flex-direction: column; gap: 18px;
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 4px 2px 8px;
+  display: flex; flex-direction: column; gap: 16px;
   /* Obsidian disables selection on custom ItemViews. Restore normal document behavior so
      questions and completed answers can be highlighted and copied. */
   -webkit-user-select: text;
   user-select: text;
 }
 .slim-message { min-width: 0; }
+/* Their turn: a soft bubble on the right. SLIM's answer: no bubble, the full width. */
 .slim-message.is-you {
-  align-self: flex-end; max-width: 88%; padding: 8px 12px; border-radius: 14px;
-  background: var(--background-secondary-alt, var(--background-secondary));
+  align-self: flex-end; max-width: 85%; padding: 7px 12px; border-radius: var(--radius-l);
+  background: var(--background-secondary); color: var(--text-normal);
 }
+/* The note a question was asked on, faint above its bubble when it changed. */
+.slim-message-context {
+  align-self: flex-end; max-width: 85%; min-width: 0; margin-bottom: -12px;
+  display: inline-flex; align-items: center; gap: 4px; color: var(--text-faint); font-size: var(--font-ui-smaller);
+}
+.slim-message-context-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slim-ctx-icon { flex: none; display: inline-flex; --icon-size: 12px; }
 .slim-message-text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: var(--line-height-normal); }
 .slim-message-text.slim-rendered-markdown { white-space: normal; }
 .slim-message-text.slim-rendered-markdown > :first-child { margin-top: 0; }
 .slim-message-text.slim-rendered-markdown > :last-child { margin-bottom: 0; }
-.slim-message.is-streaming .slim-message-text::after {
+.slim-message.is-slim .slim-message-text { line-height: 1.6; }
+.slim-message.is-streaming .slim-message-text:not(:empty)::after {
   content: "\258D"; margin-left: 1px; color: var(--text-accent);
   animation: slim-blink 1s steps(2, start) infinite;
 }
 @keyframes slim-blink { to { visibility: hidden; } }
 .slim-message-images { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.slim-message.is-you .slim-message-images { margin: 2px 0 6px; justify-content: flex-end; }
 .slim-message-image {
   display: block; max-width: min(100%, 260px); max-height: 180px; object-fit: contain;
-  border: 1px solid var(--background-modifier-border); border-radius: var(--radius-s, 4px);
+  border: 1px solid var(--background-modifier-border); border-radius: var(--radius-s);
 }
+.slim-message.is-you .slim-message-image { max-width: min(100%, 120px); max-height: 90px; object-fit: cover; }
 .slim-image-chip {
   padding: 3px 7px; border-radius: 999px; color: var(--text-muted);
   background: var(--background-secondary); font-size: var(--font-ui-smaller);
 }
+/* Copy and regenerate: ghost icons under an answer, shown on hover or focus, always under the
+   last one, then how it was made, faint. */
 .slim-message-actions {
-  margin-top: 4px; display: flex; align-items: center; gap: 2px; min-height: 24px;
+  margin-top: 6px; display: flex; align-items: center; gap: 2px; min-height: 24px; min-width: 0;
   opacity: 0; transition: opacity 120ms ease;
 }
 .slim-message:hover .slim-message-actions, .slim-message:focus-within .slim-message-actions,
-.slim-message:last-child .slim-message-actions { opacity: 1; }
-.slim-message-actions .clickable-icon { width: 24px; height: 24px; padding: 0; }
-.slim-message-meta { margin-left: 6px; color: var(--text-faint); font-size: var(--font-ui-smaller); }
-@media (prefers-reduced-motion: reduce) { .slim-message-actions { transition: none; } }
-.slim-sources { margin-top: 10px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; }
-.slim-sources > .slim-copilot-label { margin-right: 2px; }
-.slim-source {
-  max-width: 100%; padding: 2px 9px; border-radius: 999px; box-shadow: none; cursor: pointer;
-  border: 1px solid var(--background-modifier-border); background: transparent;
+.slim-message:last-of-type .slim-message-actions { opacity: 1; }
+.slim-message-actions .clickable-icon {
+  --icon-size: var(--icon-xs); width: 24px; height: 24px; padding: 0; color: var(--text-faint);
+}
+.slim-message-actions .clickable-icon:hover { color: var(--text-normal); }
+.slim-message-meta {
+  margin-left: 6px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text-faint); font-size: var(--font-ui-smaller); font-variant-numeric: tabular-nums;
+}
+/* The lookups: compact rows live; once answered, one summary row that opens to them. */
+.slim-tools { margin-bottom: 8px; }
+.slim-tool-group { margin-bottom: 8px; min-width: 0; }
+.slim-tool-group > .slim-tools {
+  margin: 4px 0 0 6px; padding-left: 9px; border-left: 1px solid var(--background-modifier-border);
+}
+.slim-copilot :is(.slim-tool-summary, .slim-sources-toggle) {
+  display: flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0; padding: 2px 4px 2px 0;
+  color: var(--text-muted); font-size: var(--font-ui-smaller);
+}
+.slim-copilot :is(.slim-tool-summary, .slim-sources-toggle):hover { color: var(--text-normal); background: transparent; }
+.slim-tool-summary-text, .slim-sources-count { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slim-chevron { flex: none; display: inline-flex; --icon-size: 12px; color: var(--text-faint); transition: transform 120ms ease; }
+[aria-expanded="true"] > .slim-chevron { transform: rotate(90deg); }
+.slim-tool .slim-step-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slim-tool.is-refused { color: var(--text-faint); }
+/* Sources: "N sources" with stacked file icons; open, a title per note and its folder, faint. */
+.slim-sources { margin-top: 10px; min-width: 0; }
+.slim-sources-stack { flex: none; display: inline-flex; }
+.slim-sources-file {
+  display: inline-flex; --icon-size: 11px; padding: 2px; border-radius: var(--radius-s);
+  color: var(--text-muted); background: var(--background-primary); border: 1px solid var(--background-modifier-border);
+}
+.slim-sources-file + .slim-sources-file { margin-left: -8px; }
+.slim-sources-list { margin-top: 4px; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.slim-copilot .slim-source {
+  display: flex; align-items: baseline; gap: 10px; width: 100%; min-width: 0; padding: 3px 6px;
+  border-radius: var(--radius-s); color: var(--text-muted); font-size: var(--font-ui-smaller); text-align: left;
+}
+.slim-copilot .slim-source:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
+.slim-source-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slim-source-path {
+  flex: 0 1 auto; max-width: 50%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text-faint);
+}
+/* While waiting: one shimmering status line. */
+.slim-copilot-stage {
+  align-self: flex-start; max-width: 100%; font-size: var(--font-ui-small); font-variant-numeric: tabular-nums;
+  background: linear-gradient(90deg, var(--text-muted) 35%, var(--text-normal) 50%, var(--text-muted) 65%);
+  background-size: 250% 100%; -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: slim-stage-shimmer 1.6s linear infinite;
+}
+@keyframes slim-stage-shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+.slim-copilot-status { color: var(--text-muted); font-size: var(--font-ui-small); }
+.slim-copilot-error { color: var(--text-error); font-size: var(--font-ui-small); overflow-wrap: anywhere; }
+.slim-verification { display: block; margin-top: 4px; color: var(--text-warning); font-size: var(--font-ui-smaller); }
+.slim-inputs { display: block; margin-top: 6px; color: var(--text-faint); font-size: var(--font-ui-smaller); }
+/* A new chat: a small centred block, and starters that fill the composer. */
+.slim-empty {
+  margin: auto 0; padding: 16px 4px; display: flex; flex-direction: column; align-items: center;
+  gap: 6px; text-align: center; min-width: 0;
+}
+.slim-empty-icon {
+  display: inline-flex; --icon-size: 20px; padding: 8px; border-radius: 50%;
+  color: var(--text-muted); background: var(--background-secondary);
+}
+.slim-empty-name { font-size: var(--font-ui-medium); font-weight: var(--font-semibold); }
+.slim-empty-line { margin: 0 0 8px; max-width: 280px; color: var(--text-muted); font-size: var(--font-ui-small); }
+.slim-suggestions { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; max-width: 100%; }
+.slim-copilot .slim-suggest {
+  display: block; max-width: 100%; padding: 4px 10px; border: 1px solid var(--background-modifier-border); border-radius: 999px;
   color: var(--text-muted); font-size: var(--font-ui-smaller);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.slim-source:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
-/* An empty thread offers three ways in, hugging the composer. */
-.slim-suggestions { margin-top: auto; display: flex; flex-direction: column; gap: 6px; padding: 8px 0 2px; }
-.slim-suggest {
-  width: 100%; text-align: left; padding: 8px 12px; border-radius: 12px; box-shadow: none; cursor: pointer;
-  border: 1px solid var(--background-modifier-border); background: transparent;
-  color: var(--text-muted); font-size: var(--font-ui-small);
+.slim-copilot .slim-suggest:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
+/* ↓ back to the newest, while they read further up. */
+.slim-copilot .slim-jump {
+  position: absolute; left: 50%; bottom: 8px; z-index: 5; transform: translateX(-50%);
+  width: 28px; height: 28px; padding: 0; border-radius: 50%; --icon-size: var(--icon-s);
+  color: var(--text-muted); background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border); box-shadow: var(--shadow-s);
 }
-.slim-suggest:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
-.slim-copilot-stage, .slim-copilot-status { color: var(--text-muted); font-size: var(--font-ui-small); }
-.slim-copilot-stage { animation: slim-copilot-pulse 1.6s ease-in-out infinite; font-variant-numeric: tabular-nums; }
-@keyframes slim-copilot-pulse { 50% { opacity: .45; } }
-@media (prefers-reduced-motion: reduce) {
-  .slim-copilot-stage, .slim-message.is-streaming .slim-message-text::after { animation: none; }
-}
-.slim-copilot-error { color: var(--text-error); font-size: var(--font-ui-small); overflow-wrap: anywhere; }
-.slim-verification { display: block; margin-top: 4px; color: var(--text-warning); font-size: var(--font-ui-smaller); }
+.slim-copilot .slim-jump:hover { color: var(--text-normal); background: var(--background-primary); }
 .slim-rename-input { width: 100%; margin: 8px 0 12px; }
+
+/* ---- the composer: chips, the textarea, the toolbar, in one rounded box ---- */
 .slim-copilot-composer {
-  position: relative;
-  flex: 0 0 auto; display: grid; grid-template-columns: minmax(80px, auto) 1fr 32px 32px;
-  grid-template-areas: "pins pins pins pins" "previews previews previews previews" "input input input input" "effort . attach send";
-  gap: 6px; border-top: 1px solid var(--background-modifier-border); padding-top: 8px;
+  position: relative; display: flex; flex-direction: column; gap: 2px; padding: 6px 6px 4px;
+  background: var(--background-primary-alt); border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-l); transition: border-color 120ms ease, box-shadow 120ms ease;
 }
-.slim-slash-menu {
-  position: absolute; left: 0; right: 0; bottom: 100%; z-index: 10; margin-bottom: 4px;
-  display: flex; flex-direction: column; max-height: 260px; overflow-y: auto; padding: 4px;
+.slim-copilot-composer:focus-within {
+  border-color: var(--background-modifier-border-focus);
+  box-shadow: 0 0 0 1px var(--background-modifier-border-focus);
+}
+.slim-composer-chips { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; padding: 0 2px 2px; }
+.slim-copilot :is(.slim-ctx-chip, .slim-pin) {
+  display: inline-flex; align-items: center; gap: 4px; max-width: 100%; min-width: 0; height: 22px;
+  padding: 0 3px 0 6px; border: 1px solid var(--background-modifier-border); border-radius: var(--radius-s);
+  background: var(--background-primary); color: var(--text-muted); font-size: var(--font-ui-smaller); line-height: 1;
+}
+.slim-copilot .slim-copilot-nearby-count { padding-right: 6px; color: var(--text-faint); }
+.slim-copilot .slim-copilot-nearby-count:hover,
+.slim-copilot .slim-copilot-nearby-count[aria-expanded="true"] { color: var(--text-normal); background: var(--background-modifier-hover); }
+.slim-pin.is-folder { border-style: dashed; }
+.slim-copilot-note, .slim-pin-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slim-copilot-note.is-off { color: var(--text-faint); text-decoration: line-through; }
+.slim-copilot .slim-chip-x { flex: none; padding: 0 3px; color: var(--text-faint); font-size: 10px; line-height: 1; }
+.slim-copilot .slim-chip-x:hover { color: var(--text-normal); background: transparent; }
+.slim-copilot-image-picker { display: none; }
+.slim-copilot-image-previews { display: flex; gap: 6px; overflow-x: auto; padding: 2px 2px 4px; }
+.slim-copilot-image-preview { position: relative; flex: 0 0 56px; height: 44px; }
+.slim-copilot-image-preview > img {
+  width: 100%; height: 100%; object-fit: cover; border-radius: var(--radius-s);
+  border: 1px solid var(--background-modifier-border);
+}
+.slim-copilot-image-preview > .clickable-icon {
+  position: absolute; top: 2px; right: 2px; width: 18px; height: 18px; padding: 0; --icon-size: 12px;
+  color: var(--text-normal); background: var(--background-primary); box-shadow: var(--shadow-s);
+}
+/* No border or ring of its own: the box around it shows focus. */
+.slim-copilot .slim-copilot-input,
+.slim-copilot .slim-copilot-input:hover,
+.slim-copilot .slim-copilot-input:focus,
+.slim-copilot .slim-copilot-input:focus-visible {
+  border: 0; box-shadow: none; outline: none; background: transparent;
+}
+.slim-copilot-input {
+  width: 100%; min-height: 36px; max-height: 240px; resize: none; overflow-y: auto;
+  padding: 7px 6px; font-size: inherit; line-height: var(--line-height-normal); color: var(--text-normal);
+}
+.slim-composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-width: 0; }
+.slim-composer-left, .slim-composer-right { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.slim-composer-right { gap: 6px; }
+.slim-composer-left .clickable-icon {
+  --icon-size: var(--icon-s); width: 28px; height: 28px; padding: 0; color: var(--text-muted);
+}
+.slim-copilot .slim-effort {
+  display: inline-flex; align-items: center; gap: 4px; height: 26px; min-width: 0; padding: 0 8px;
+  border-radius: 999px; color: var(--text-muted); font-size: var(--font-ui-smaller);
+}
+.slim-copilot .slim-effort:hover,
+.slim-copilot .slim-effort[aria-expanded="true"] { color: var(--text-normal); background: var(--background-modifier-hover); }
+.slim-effort-icon { flex: none; display: inline-flex; --icon-size: 14px; }
+.slim-effort-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slim-copilot .slim-send {
+  flex: none; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; --icon-size: 16px;
+  color: var(--text-on-accent); background: var(--interactive-accent); box-shadow: none; cursor: pointer;
+}
+.slim-copilot .slim-send:hover { color: var(--text-on-accent); background: var(--interactive-accent-hover); }
+.slim-copilot .slim-send.is-empty { opacity: 0.45; }
+.slim-copilot .slim-send.is-stop svg { fill: currentColor; --icon-size: 12px; }
+
+/* ---- menus and popovers: above the composer, over the conversation ---- */
+.slim-copilot :is(.slim-slash-menu, .slim-mention-menu, .slim-copilot-nearby, .slim-effort-menu) {
+  position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 10;
+  display: flex; flex-direction: column; max-height: 260px; overflow-y: auto; overflow-x: hidden; padding: 4px;
   background: var(--background-primary); border: 1px solid var(--background-modifier-border);
-  border-radius: 10px; box-shadow: var(--shadow-s);
+  border-radius: var(--radius-m); box-shadow: var(--shadow-s);
 }
-.slim-slash-menu[hidden] { display: none; }
-.slim-slash-item {
-  display: flex; flex-direction: column; align-items: flex-start; gap: 1px; height: auto;
-  padding: 6px 8px; text-align: left; background: none; box-shadow: none; border-radius: 6px;
+/* One menu at a time: a picker opened by typing covers the nearby notes. */
+.slim-copilot-composer:has(.slim-slash-menu:not([hidden])) .slim-copilot-nearby,
+.slim-copilot-composer:has(.slim-mention-menu:not([hidden])) .slim-copilot-nearby { display: none; }
+.slim-popover-label { padding: 4px 8px 2px; color: var(--text-faint); font-size: var(--font-ui-smaller); }
+.slim-copilot .slim-slash-item {
+  flex: none; display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+  padding: 6px 8px; text-align: left; border-radius: var(--radius-s); white-space: normal;
 }
-.slim-slash-item:hover, .slim-slash-item.is-selected { background: var(--background-modifier-hover); }
+.slim-copilot .slim-slash-item:hover, .slim-copilot .slim-slash-item.is-selected { background: var(--background-modifier-hover); }
 .slim-slash-name { font-family: var(--font-monospace); font-size: var(--font-ui-small); }
 .slim-slash-about { color: var(--text-muted); font-size: var(--font-ui-smaller); white-space: normal; }
 .slim-slash-item.is-broken .slim-slash-about { color: var(--text-error); }
 /* The @ picker: one line per note or folder, the UI font, a title left and its folder faint right,
    each cut with an ellipsis; about eight rows show, the rest scroll, never sideways. */
-.slim-mention-menu {
-  position: absolute; left: 0; right: 0; bottom: 100%; z-index: 10; margin-bottom: 4px;
-  display: flex; flex-direction: column; max-height: calc(8 * 28px + 8px); overflow-y: auto; overflow-x: hidden;
-  padding: 4px; background: var(--background-primary); border: 1px solid var(--background-modifier-border);
-  border-radius: 10px; box-shadow: var(--shadow-s);
-}
-.slim-mention-menu[hidden] { display: none; }
-.slim-mention-item {
+.slim-copilot .slim-mention-menu { max-height: calc(8 * 28px + 8px); }
+.slim-copilot .slim-mention-item {
   flex: none; display: flex; align-items: center; gap: 8px; height: 28px; min-width: 0; width: 100%;
-  padding: 0 8px; text-align: left; background: none; box-shadow: none; border-radius: 6px;
+  padding: 0 8px; text-align: left; border-radius: var(--radius-s);
   font-family: var(--font-interface); font-size: var(--font-ui-small);
 }
-.slim-mention-item:hover, .slim-mention-item.is-selected { background: var(--background-modifier-hover); }
+.slim-copilot .slim-mention-item:hover, .slim-copilot .slim-mention-item.is-selected { background: var(--background-modifier-hover); }
 .slim-mention-label { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 5px; }
-.slim-mention-icon { flex: none; display: inline-flex; color: var(--text-muted); }
-.slim-mention-icon svg { width: 14px; height: 14px; }
+.slim-mention-icon { flex: none; display: inline-flex; color: var(--text-muted); --icon-size: 14px; }
 .slim-mention-name, .slim-mention-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .slim-mention-path { flex: 0 1 auto; max-width: 45%; color: var(--text-faint); font-size: var(--font-ui-smaller); }
-.slim-inputs { display: block; margin-top: 6px; color: var(--text-faint); font-size: var(--font-ui-smaller); }
+.slim-copilot .slim-related-note {
+  flex: none; width: 100%; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline; gap: 10px; padding: 4px 8px; text-align: left; border-radius: var(--radius-s);
+  color: var(--text-muted); font-size: var(--font-ui-small);
+}
+.slim-copilot .slim-related-note:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
+.slim-related-note > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slim-related-note > small { color: var(--text-faint); font-size: var(--font-ui-smaller); }
+.slim-copilot .slim-effort-menu { left: auto; width: 200px; max-width: 100%; }
+.slim-copilot .slim-effort-item {
+  flex: none; display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+  padding: 6px 8px; text-align: left; border-radius: var(--radius-s);
+}
+.slim-copilot .slim-effort-item:hover, .slim-copilot .slim-effort-item.is-selected { background: var(--background-modifier-hover); }
+.slim-effort-name { color: var(--text-normal); font-size: var(--font-ui-small); }
+.slim-effort-item.is-selected .slim-effort-name { color: var(--text-accent); }
+.slim-effort-hint { color: var(--text-faint); font-size: var(--font-ui-smaller); }
+
+/* ---- motion: a new message rises in; nothing moves for those who asked for less ---- */
+@keyframes slim-rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.slim-copilot [data-new] { animation: slim-rise 120ms ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .slim-copilot [data-new], .slim-message.is-streaming .slim-message-text::after { animation: none; }
+  .slim-message-actions, .slim-chevron, .slim-copilot-composer { transition: none; }
+  .slim-copilot-stage { animation: none; background: none; color: var(--text-muted); }
+}
 /* An edit turn: its intro, one muted line per step as it happens, then what came of it. */
 .slim-edit { display: grid; gap: 7px; }
 .slim-edit-intro > :first-child { margin-top: 0; }
 .slim-edit-intro > :last-child { margin-bottom: 0; }
-.slim-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; color: var(--text-muted); font-size: var(--font-ui-small); }
-.slim-step { display: flex; gap: 7px; align-items: baseline; }
-.slim-step-icon { flex: none; width: 14px; text-align: center; color: var(--text-faint); }
+/* A step, a lookup: one row language, an icon then the label. The icon box is one line tall, so a
+   step that wraps keeps its icon on its first line. */
+.slim-steps {
+  list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; min-width: 0;
+  color: var(--text-muted); font-size: var(--font-ui-smaller);
+}
+.slim-edit .slim-steps { font-size: var(--font-ui-small); }
+.slim-step { display: flex; gap: 7px; align-items: flex-start; min-width: 0; line-height: 1.5; }
+.slim-step-icon {
+  flex: none; width: 14px; height: 1.5em; display: inline-flex; align-items: center; justify-content: center;
+  color: var(--text-faint); --icon-size: 13px;
+}
+.slim-step.is-done .slim-step-icon { color: var(--text-success); }
 .slim-step.is-partial .slim-step-icon { color: var(--color-orange); }
-/* A turn's lookups, a step line each, above its answer or its run. */
-.slim-tools { margin-bottom: 6px; }
-.slim-tools[hidden] { display: none; }
-.slim-tool .slim-step-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.slim-tool.is-refused .slim-step-text { color: var(--text-faint); }
 .slim-step.is-doing .slim-step-icon::before {
   content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--color-orange);
   animation: slim-pulse 0.8s ease-in-out infinite alternate;
@@ -783,31 +935,6 @@
   .slim-arrive { animation: none; }
   .slim-undo, .slim-undo-tip { transition: none; }
 }
-.slim-effort {
-  grid-area: effort; justify-self: start; height: 28px; min-width: 0; padding: 0 24px 0 10px;
-  border-radius: 999px; box-shadow: none; font-size: var(--font-ui-smaller); color: var(--text-muted);
-  background-color: var(--background-secondary); border: 1px solid var(--background-modifier-border);
-}
-.slim-attach { grid-area: attach; width: 32px; height: 32px; padding: 0; }
-.slim-send { grid-area: send; width: 32px; height: 32px; padding: 0; border-radius: 50%; }
-.slim-copilot-input {
-  grid-area: input; width: 100%; min-height: 36px; max-height: 180px; resize: none;
-  padding: 8px 10px; border-radius: 12px; line-height: var(--line-height-normal);
-}
-.slim-copilot-image-picker { display: none; }
-.slim-copilot-image-previews {
-  grid-area: previews; display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px;
-}
-.slim-copilot-image-preview { position: relative; flex: 0 0 72px; height: 58px; }
-.slim-copilot-image-preview > img {
-  width: 100%; height: 100%; object-fit: cover; border-radius: var(--radius-s, 4px);
-  border: 1px solid var(--background-modifier-border);
-}
-.slim-copilot-image-preview > .clickable-icon {
-  position: absolute; top: 2px; right: 2px; width: 22px; height: 22px;
-  color: var(--text-normal); background: var(--background-primary); box-shadow: var(--shadow-s);
-}
-
 /* Retry summary — Notion's button, with the steer they type beside it. */
 .slim-retry {
   display: flex;

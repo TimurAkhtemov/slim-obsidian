@@ -11,7 +11,7 @@ import { PLAN, change, editView, fakeLive, makeView, renderedView,
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
-const { SUGGESTED_PROMPTS, sha256Hex, stageLine } = require("../../src/chat/text.js");
+const { sha256Hex, stageLine, toolSummary } = require("../../src/chat/text.js");
 
 const transcriptOf = (root) => find(root, (node) => node.cls === "slim-copilot-transcript");
 
@@ -140,36 +140,50 @@ test("a turn shows when its answer was cut off; a bracket in prose is plain text
   assert.match(notes[0], /cut off/i);
 });
 
-test("the header shows the note title and keeps the path as a tooltip", () => {
+const composerOf = (root) => find(root, (node) => node.cls === "slim-copilot-composer");
+
+test("the header is the chat's title; the open note is a chip in the composer with its path as a tooltip", () => {
   const { view, root } = renderedView();
   view.openNote = { path: "Notes/nlp/Introduction to NLP.md", id: "s1" };
   view.context.source = { id: "s1", path: "Notes/nlp/Introduction to NLP.md", title: "Introduction to NLP" };
   view.render();
-  const note = find(root, (node) => node.cls === "slim-copilot-note");
+  const title = find(root, (node) => node.cls === "slim-copilot-title");
+  assert.equal(title.textContent, "New chat");                      // no chat yet
+  const note = find(composerOf(root), (node) => node.cls === "slim-copilot-note");
   assert.equal(note.textContent, "Introduction to NLP");
   assert.equal(note.attrs.title, "Notes/nlp/Introduction to NLP.md");
-  assert.equal(find(root, (node) => node.cls === "slim-copilot-path"), null);
-  assert.equal(find(root, (node) => node.cls === "slim-copilot-eyebrow").textContent, "SLIM");
+  view.activeThread = { id: "chat-1", title: "What is a token?" };
+  view.render();
+  assert.equal(find(root, (node) => node.cls === "slim-copilot-title").textContent, "What is a token?");
+  view.openNote = null;
+  view.render();
+  assert.equal(find(root, (node) => node.cls === "slim-copilot-note"), null);   // no note open: no chip
 });
 
-test("nearby notes fold under the title, closed until they open them, and stay open across renders", () => {
+test("nearby notes open from the note chip's count, closed until they open them, and stay open across renders", () => {
   const { view, root } = renderedView();
   view.context.related = [
     { source_id: "s2", path: "Notes/nlp/Word embeddings.md", title: "Word embeddings", scope: "course" },
     { source_id: "s3", path: "Notes/nlp/Tokens.md", title: "Tokens", scope: "folder" },
   ];
   view.render();
-  const chip = () => find(root, (node) => node.cls === "slim-copilot-context");
-  assert.equal(chip().open, false);
-  const summary = chip().children.find((child) => child.tag === "summary");
-  assert.deepEqual(summary.children.map((child) => child.textContent), ["One", "\u2715", "2 nearby"]);
-  assert.equal(summary.children[0].attrs.title, "Notes/one.md");
-  summary.onclick();
+  const list = () => find(root, (node) => node.cls === "slim-copilot-nearby");
+  const count = () => find(root, (node) => node.cls?.includes("slim-copilot-nearby-count"));
+  assert.equal(list().hidden, true);
+  assert.equal(count().textContent, "2 nearby");
+  const chip = find(root, (node) => node.cls?.includes("slim-copilot-note-chip"));
+  assert.deepEqual(chip.children.map((child) => child.textContent), ["", "One", "\u2715"]);   // icon, title, ✕
+  count().onclick();
+  assert.equal(list().hidden, false);
+  assert.equal(count().attrs["aria-expanded"], "true");
   view.render();
-  assert.equal(chip().open, true);
+  assert.equal(list().hidden, false);
+  view.onRootClick({ target: { closest: () => null } });           // a click elsewhere closes it
+  assert.equal(list().hidden, true);
   view.context.related = [];
   view.render();
-  assert.equal(chip(), null);                                       // no chip without nearby notes
+  assert.equal(list(), null);                                       // nothing without nearby notes
+  assert.equal(count(), null);
   assert.equal(find(root, (node) => node.cls === "slim-copilot-note").textContent, "One");
 });
 
@@ -197,19 +211,35 @@ test("the history button swaps the chat list into the conversation's slot; openi
   assert.notEqual(find(root, (node) => node.cls === "slim-copilot-transcript"), null);
 });
 
-test("an empty thread offers suggested prompts, and one click sends it", () => {
+test("a new chat shows SLIM, one line and three starters; a starter fills the composer and sends nothing", () => {
   const { view, root } = renderedView();
   const sent = [];
   view.send = async (text) => { sent.push(text); };
   view.render();
-  const chips = [];
-  find(root, (node) => { if (node.cls === "slim-suggest") chips.push(node); return false; });
-  assert.deepEqual(chips.map((chip) => chip.textContent), SUGGESTED_PROMPTS);
-  chips[1].onclick();
-  assert.deepEqual(sent, ["Quiz me on this note"]);
+  const empty = find(root, (node) => node.cls === "slim-empty");
+  assert.equal(find(empty, (node) => node.cls === "slim-empty-name").textContent, "SLIM");
+  assert.equal(find(empty, (node) => node.cls === "slim-empty-line").textContent,
+               "Ask about your notes, or have SLIM edit the open one.");
+  const chips = () => { const out = []; find(root, (node) => { if (node.cls === "slim-suggest") out.push(node); return false; }); return out; };
+  assert.deepEqual(chips().map((chip) => chip.textContent),
+                   ["Summarize this note", "What's in my notes about \u2026", "Tidy this note"]);
+  chips()[1].onclick();
+  assert.deepEqual(sent, []);
+  const input = find(root, (node) => node.tag === "textarea");
+  assert.equal(input.value, "What's in my notes about ");
+  assert.equal(input.focused, true);
+  assert.equal(input.selectionStart, "What's in my notes about ".length);   // the caret after "about "
+  view.draft = "";
+  view.openNote = null;                                             // nothing to tidy
+  view.render();
+  assert.deepEqual(chips().map((chip) => chip.textContent),
+                   ["Summarize this note", "What's in my notes about \u2026", "Find a note about \u2026"]);
+  chips()[2].onclick();
+  assert.equal(view.draft, "Find a note about ");
   view.turns = [{ role: "you", text: "Q" }];
   view.render();
   assert.equal(find(root, (node) => node.cls === "slim-suggest"), null);
+  assert.equal(find(root, (node) => node.cls === "slim-empty"), null);
 });
 
 test("their turn is a bubble on the right and the composer starts as one line", () => {
@@ -220,7 +250,7 @@ test("their turn is a bubble on the right and the composer starts as one line", 
   const { view, root } = renderedView();
   view.render();
   const input = find(root, (node) => node.tag === "textarea");
-  assert.equal(input.placeholder, "Ask SLIM, or / for skills");
+  assert.equal(input.placeholder, "Ask anything \u00B7 @ to add context");
 });
 
 test("nearby notes and history rows read as titles, with the path on hover", () => {
@@ -262,23 +292,35 @@ const citedTurn = () => {
   ] } };
 };
 
-test("sources are one chip per note under the answer, and open that note", () => {
+test("sources fold into one row under the answer that opens to a title per note, each opening it", () => {
   const { view, root } = renderedView();
   const opened = [];
   view.openFile = async (path) => { opened.push(path); };
   view.turns = [citedTurn()];
   view.render();
-  const rows = [];
-  find(root, (node) => { if (node.cls === "slim-source") rows.push(node); return false; });
-  assert.equal(rows.length, 2);                                     // seven fragments, two notes
-  assert.deepEqual(rows.map((row) => row.textContent), ["Introduction to NLP", "Word embeddings"]);
+  const toggle = () => find(root, (node) => node.cls === "slim-sources-toggle");
+  const list = () => find(root, (node) => node.cls === "slim-sources-list");
+  assert.equal(find(toggle(), (node) => node.cls === "slim-sources-count").textContent, "2 sources");   // seven fragments, two notes
+  assert.equal(find(toggle(), (node) => node.cls === "slim-sources-stack").children.length, 2);        // a file icon per note
+  assert.equal(list().hidden, true);                                // closed until clicked
+  toggle().onclick();
+  assert.equal(list().hidden, false);
+  assert.equal(toggle().attrs["aria-expanded"], "true");
+  const rows = list().children;
+  assert.deepEqual(rows.map((row) => row.children.map((part) => part.textContent)),
+                   [["Introduction to NLP", "Notes/nlp"], ["Word embeddings", "Notes/nlp"]]);
   assert.equal(rows[0].attrs.title, "Notes/nlp/Introduction to NLP.md");
-  assert.equal(find(root, (node) => node.cls === "slim-sources").children[0].textContent, "From your notes");
   rows[0].onclick();
   assert.deepEqual(opened, ["Notes/nlp/Introduction to NLP.md"]);
+  view.render();
+  assert.equal(list().hidden, false);                               // stays open across renders
   view.turns = [{ role: "slim", text: "General knowledge.", turn: { citations: [] } }];
   view.render();
   assert.equal(find(root, (node) => node.cls === "slim-sources"), null);   // nothing when no note was used
+  view.turns = [{ role: "slim", text: "One note.", turn: { citations: [{ n: 1, path: "Top.md", title: "Top" }] } }];
+  view.render();
+  assert.equal(find(root, (node) => node.cls === "slim-sources-count").textContent, "1 source");
+  assert.deepEqual(list().children[0].children.map((part) => part.textContent), ["Top"]);   // at the root: no folder
 });
 
 test("the rendered-answer chain settles without a throw on a DOM that has no text nodes", async () => {
@@ -398,17 +440,59 @@ test("each lookup shows as a muted line above the streaming answer as it arrives
   assert.deepEqual(toolLines(root), [[false, 'Searched the vault for "comp"'], [true, "Read nope — refused"]]);
 });
 
-test("a saved turn shows its lookups again on reload, and a turn with none shows no list", () => {
+test("a saved turn shows its lookups again on reload, folded into one row; a turn with none shows no row", () => {
   const { view, root } = renderedView();
   view.turns = [{ role: "slim", text: "Fixed.", turn: { citations: [], tools: [
     { name: "read_note", label: "Read Screen notes", refused: false }] } }];
   view.render();
   const message = find(root, (node) => node.cls === "slim-message is-slim");
-  assert.ok(message.children[0].cls.includes("slim-tools"));
+  assert.equal(message.children[0].cls, "slim-tool-group");          // above the answer
+  assert.equal(find(message, (node) => node.cls === "slim-tool-summary-text").textContent, "Read 1");
   assert.deepEqual(toolLines(root), [[false, "Read Screen notes"]]);
   view.turns = [{ role: "slim", text: "Hi.", turn: { citations: [] } }];
   view.render();
   assert.equal(find(root, (node) => node.cls?.includes("slim-tools")), null);
+  assert.equal(find(root, (node) => node.cls === "slim-tool-group"), null);
+});
+
+test("after the answer the lookups fold into one summary row that opens on click, live and on reload", async () => {
+  const tools = [{ name: "search", label: 'Searched the vault for "bees"', refused: false },
+                 { name: "search", label: 'Searched the vault for "hives"', refused: false },
+                 { name: "read_note", label: "Read Bees", refused: false },
+                 { name: "list_folder", label: "Listed Notes", refused: false },
+                 { name: "read_note", label: "Read nope — refused", refused: true }];
+  const { view, root } = renderedView({
+    streamCopilot: async (_body, handlers) => {
+      for (const tool of tools) handlers.tool(tool);
+      assert.equal(find(root, (node) => node.cls === "slim-tool-group"), null);   // live: a row each, no fold
+      assert.equal(toolLines(root).length, 5);
+      handlers.turn({ answer: "Bees.", citations: [], tools });
+    },
+  });
+  view.render();
+  await view.send("bees?");
+  const summary = () => find(root, (node) => node.cls === "slim-tool-summary");
+  const rows = () => find(root, (node) => node.cls === "slim-tool-group").children[1];
+  assert.equal(find(summary(), (node) => node.cls === "slim-tool-summary-text").textContent,
+               "Searched 2 \u00B7 Read 1 \u00B7 Listed 1 \u00B7 1 refused");
+  assert.equal(rows().hidden, true);
+  assert.equal(summary().attrs["aria-expanded"], "false");
+  summary().onclick();
+  assert.equal(rows().hidden, false);
+  assert.equal(summary().attrs["aria-expanded"], "true");
+  assert.deepEqual(toolLines(root).at(-1), [true, "Read nope — refused"]);       // refused: shown faint
+  view.render();
+  assert.equal(rows().hidden, false);                               // stays open across renders
+  summary().onclick();
+  assert.equal(rows().hidden, true);
+  // Reloaded from the saved chat: the same fold.
+  const saved = structuredClone(view.turns);
+  view.turns = saved;
+  view.render();
+  assert.equal(rows().hidden, true);
+  assert.equal(find(summary(), (node) => node.cls === "slim-tool-summary-text").textContent,
+               "Searched 2 \u00B7 Read 1 \u00B7 Listed 1 \u00B7 1 refused");
+  assert.equal(toolSummary([{ name: "read_note", refused: true }]), "1 refused");
 });
 
 test("lookups before an edit stay above the run's steps", async () => {
@@ -427,4 +511,72 @@ test("lookups before an edit stay above the run's steps", async () => {
   delete view.render;                                             // editView stubs it; draw for real
   await view.send("add the bee facts");
   assert.equal(view.turns.at(-1).turn.tools[0].label, "Read Bee facts");
+});
+
+// ---- the conversation's details: the note a question was on, motion, the way back down -----------
+
+test("the note a question was asked on shows faint above its bubble, only when it changed", () => {
+  const { view, root } = renderedView();
+  const answer = { role: "slim", text: "A", turn: { citations: [] } };
+  view.turns = [{ role: "you", text: "a", note: "Notes/one.md" }, answer,
+                { role: "you", text: "b", note: "Notes/one.md" }, { ...answer },
+                { role: "you", text: "c", note: "Notes/two.md" }, { ...answer },
+                { role: "you", text: "d" }, { ...answer }];
+  view.render();
+  const transcript = transcriptOf(root);
+  const contexts = transcript.children.filter((child) => child.cls === "slim-message-context");
+  assert.deepEqual(contexts.map((chip) => [chip.children.at(-1).textContent, chip.attrs.title]),
+                   [["one", "Notes/one.md"], ["two", "Notes/two.md"]]);
+  const next = (chip) => transcript.children[transcript.children.indexOf(chip) + 1];
+  assert.deepEqual(contexts.map((chip) => [next(chip).cls, next(chip).children.at(-1).textContent]),
+                   [["slim-message is-you", "a"], ["slim-message is-you", "c"]]);
+});
+
+test("a message fades in the first time it is drawn; a redraw, or the answer taking the stream's place, does not", async () => {
+  const fresh = (root) => {
+    const out = [];
+    find(root, (node) => { if (node.cls?.startsWith("slim-message ") && "data-new" in node.attrs) out.push(node.cls); return false; });
+    return out;
+  };
+  let during = null;
+  const { view, root } = renderedView({
+    streamCopilot: async (_body, handlers) => {
+      during = fresh(root);
+      view.render();
+      assert.deepEqual(fresh(root), []);                            // drawn already: no second fade
+      handlers.turn({ answer: "Hi.", citations: [] });
+    },
+  });
+  view.render();
+  await view.send("hello");
+  assert.deepEqual(during, ["slim-message is-you", "slim-message is-slim is-streaming"]);
+  assert.deepEqual(fresh(root), []);                                // the answer replaces the stream in place
+  view.turns = [{ role: "you", text: "q" }];
+  view.render();
+  assert.deepEqual(fresh(root), ["slim-message is-you"]);
+  view.render();
+  assert.deepEqual(fresh(root), []);
+});
+
+test("scrolled up while an answer streams, a ↓ button appears and brings them back down", () => {
+  const { view, root } = renderedView();
+  view.sending = true;
+  view.streamingTurns = view.turns;
+  view.streamingText = "Gro";
+  view.render();
+  const transcript = transcriptOf(root);
+  const jump = find(root, (node) => node.cls?.includes("slim-jump"));
+  assert.equal(jump.hidden, true);
+  transcript.scrollHeight = 900;
+  transcript.scrollTop = 100;                                       // reading further up
+  view.streamingText = "Grounded";
+  view.renderDelta();
+  assert.equal(transcript.scrollTop, 100);
+  assert.equal(jump.hidden, false);
+  jump.onclick();
+  assert.equal(transcript.scrollTop, 900);
+  assert.equal(jump.hidden, true);
+  transcript.scrollTop = 0;
+  transcript.onscroll();
+  assert.equal(jump.hidden, false);
 });

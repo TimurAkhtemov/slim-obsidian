@@ -102,6 +102,19 @@ var require_text = __commonJS({
       const date = new Date(value);
       return Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
     }
+    function relativeDate(value, now = Date.now()) {
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return "";
+      const day = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+      const days = Math.round((day(new Date(now)) - day(date)) / 864e5);
+      if (days === 0) return "Today";
+      if (days === 1) return "Yesterday";
+      if (days > 1 && days < 7) return `${days} days ago`;
+      return shortDate(value);
+    }
+    function folderOf(path) {
+      return String(path || "").split("/").slice(0, -1).join("/");
+    }
     function pathStem(path) {
       const name = String(path || "").split("/").pop() || "";
       return name.replace(/\.md$/i, "");
@@ -190,6 +203,27 @@ var require_text = __commonJS({
     function effortLabel(effort) {
       return effortOf(effort)[0].toUpperCase() + effortOf(effort).slice(1);
     }
+    var EFFORT_HINTS = { off: "fastest", low: "quick thinking", medium: "default", high: "most thorough" };
+    var TOOL_ICONS = { search: "search", read_note: "file-text", list_folder: "folder" };
+    var TOOL_VERBS = { search: "Searched", read_note: "Read", list_folder: "Listed" };
+    function toolIcon(tool) {
+      return tool?.refused ? "circle-slash" : TOOL_ICONS[tool?.name] || "dot";
+    }
+    function toolSummary(tools) {
+      const counts = /* @__PURE__ */ new Map();
+      let refused = 0;
+      for (const tool of tools || []) {
+        if (tool?.refused) {
+          refused += 1;
+          continue;
+        }
+        const verb = TOOL_VERBS[tool?.name] || "Used";
+        counts.set(verb, (counts.get(verb) || 0) + 1);
+      }
+      const parts = [...counts].map(([verb, n]) => `${verb} ${n}`);
+      if (refused) parts.push(`${refused} refused`);
+      return parts.join(" \xB7 ");
+    }
     function turnEffort(turn) {
       if (EFFORTS.includes(turn?.effort)) return turn.effort;
       return turn?.mode === "deep" ? "high" : "medium";
@@ -203,11 +237,13 @@ var require_text = __commonJS({
       const seconds = since ? Math.floor((now - since) / 1e3) : 0;
       return `${stage || "Working"}\u2026${seconds >= 1 ? ` ${seconds} s` : ""}`;
     }
-    var SUGGESTED_PROMPTS = [
-      "Explain this note like I'm new to it",
-      "Quiz me on this note",
-      "What is unclear or missing here?"
-    ];
+    function starters(noteOpen) {
+      return [
+        { label: "Summarize this note", text: "Summarize this note" },
+        { label: "What's in my notes about \u2026", text: "What's in my notes about " },
+        noteOpen ? { label: "Tidy this note", text: "Tidy this note" } : { label: "Find a note about \u2026", text: "Find a note about " }
+      ];
+    }
     function titleFromQuestion(question) {
       const title = question.trim().replace(/\s+/g, " ");
       return title.length > 60 ? `${title.slice(0, 57)}...` : title || "Conversation";
@@ -287,6 +323,8 @@ ${line}` : said;
     module2.exports = {
       threadRows,
       shortDate,
+      relativeDate,
+      folderOf,
       pathStem,
       groupCitations,
       sha256Hex,
@@ -302,12 +340,15 @@ ${line}` : said;
       normalizeMath,
       LIVE_RENDER_MS,
       EFFORTS,
+      EFFORT_HINTS,
       effortOf,
       effortLabel,
       turnEffort,
       metaText,
       stageLine,
-      SUGGESTED_PROMPTS,
+      toolIcon,
+      toolSummary,
+      starters,
       titleFromQuestion,
       threadId,
       cancelledError,
@@ -343,6 +384,11 @@ var require_dom = __commonJS({
       if (typeof setIcon === "function") setIcon(el, name);
       return el;
     }
+    function glyphIcon(el, name, glyph) {
+      if (typeof setIcon === "function") setIcon(el, name);
+      if (!el.querySelector?.("svg")) el.textContent = glyph;
+      return el;
+    }
     function iconButton(parent, icon2, label, cls = "clickable-icon") {
       const button = create(parent, "button", cls);
       button.setAttribute("aria-label", label);
@@ -359,7 +405,7 @@ var require_dom = __commonJS({
     function atBottom(element) {
       return element.scrollHeight - element.scrollTop - element.clientHeight <= 40;
     }
-    module2.exports = { clear, create, icon, iconButton, autoGrow, atBottom };
+    module2.exports = { clear, create, icon, glyphIcon, iconButton, autoGrow, atBottom };
   }
 });
 
@@ -370,22 +416,26 @@ var require_render = __commonJS({
     var { MarkdownRenderer, MarkdownRenderChild } = require("obsidian");
     var {
       threadRows,
-      shortDate,
+      relativeDate,
+      folderOf,
       pathStem,
       groupCitations,
       slashQuery,
       matchSkills,
-      mentionQuery,
       inputsText,
       normalizeMath,
       LIVE_RENDER_MS,
       EFFORTS,
+      EFFORT_HINTS,
       effortLabel,
       metaText,
       stageLine,
-      SUGGESTED_PROMPTS
+      toolIcon,
+      toolSummary,
+      starters
     } = require_text();
     var { clear, create, icon, iconButton, autoGrow, atBottom } = require_dom();
+    var INPUT_MAX_PX = 240;
     module2.exports = {
       renderSlash() {
         const menu = this.el?.slash;
@@ -444,6 +494,12 @@ var require_render = __commonJS({
         const port = this.plugin.settings?.port || 7546;
         return `http://127.0.0.1:${port}/api/copilot/image?thread=${encodeURIComponent(threadId)}&id=${encodeURIComponent(imageId)}`;
       },
+      // The transcript follows new text while they read its bottom; scrolled up, it stays where they
+      // are and the ↓ button offers the way back.
+      stick(transcript, follow) {
+        if (follow) transcript.scrollTop = transcript.scrollHeight;
+        if (this.el?.jump) this.el.jump.hidden = follow;
+      },
       // Per-token updates touch two live nodes. A full render() per delta tore the whole view
       // down ~40 times a second: the transcript's scroll position reset to the top on every
       // token, the composer lost focus per keystroke, and a hand-expanded group snapped shut.
@@ -456,7 +512,7 @@ var require_render = __commonJS({
         const transcript = this.el.transcript;
         const follow = atBottom(transcript);
         this.el.liveText.textContent = this.streamingText;
-        if (follow) transcript.scrollTop = transcript.scrollHeight;
+        this.stick(transcript, follow);
         this.scheduleLiveRender();
       },
       // Markdown while it streams: plain text shows until the first rendered swap, then a detached
@@ -512,20 +568,67 @@ var require_render = __commonJS({
           el.liveHost = host;
           buffer.hidden = false;
           el.liveText.hidden = true;
-          if (follow) el.transcript.scrollTop = el.transcript.scrollHeight;
+          this.stick(el.transcript, follow);
         }).catch((e) => console.error("[slim] live render", e));
       },
-      // The turn's lookups, a muted line each, as Pi shows each tool call: drawn live as each one ran
-      // (`liveTools`), and again from the saved turn. The edit run's step style.
+      // The turn's lookups, a compact row each (an icon for what it did, its label, one line): drawn
+      // live as each one ran (`liveTools`), and folded under one summary row once the turn is saved.
       fillTools(list, tools) {
         clear(list);
         list.hidden = !tools?.length;
         for (const tool of tools || []) {
+          const label = String(tool.label || tool.name || "");
           const item = create(list, "li", `slim-step slim-tool${tool.refused ? " is-refused" : ""}`);
-          create(item, "span", "slim-step-icon", tool.refused ? "\u2013" : "\u2713");
-          create(item, "span", "slim-step-text", String(tool.label || tool.name || ""));
+          item.setAttribute("title", label);
+          icon(create(item, "span", "slim-step-icon"), toolIcon(tool));
+          create(item, "span", "slim-step-text", label);
         }
         return list;
+      },
+      // A row that folds a list away under it, open or shut per turn across renders. The chevron
+      // turns with aria-expanded.
+      foldable(toggle, list, opened, key) {
+        const show = (open) => {
+          list.hidden = !open;
+          toggle.setAttribute("aria-expanded", String(open));
+        };
+        show(opened.has(key));
+        toggle.onclick = () => {
+          if (opened.has(key)) opened.delete(key);
+          else opened.add(key);
+          show(opened.has(key));
+        };
+      },
+      // A finished turn's lookups: one summary row ("Searched 2 · Read 1"), the rows under it.
+      renderToolGroup(message, turn, tools) {
+        const group = create(message, "div", "slim-tool-group");
+        const toggle = create(group, "button", "slim-tool-summary");
+        icon(create(toggle, "span", "slim-step-icon"), toolIcon(tools.find((tool) => !tool.refused) || tools[0]));
+        create(toggle, "span", "slim-tool-summary-text", toolSummary(tools));
+        icon(create(toggle, "span", "slim-chevron"), "chevron-right");
+        const list = this.fillTools(create(group, "ul", "slim-steps slim-tools"), tools);
+        this.foldable(toggle, list, this.toolsOpen, turn);
+        return group;
+      },
+      // The notes an answer drew on: "N sources" with stacked file icons; open, a title per note,
+      // its folder faint on the right, each opening the note.
+      renderSources(message, turn, sources) {
+        const box = create(message, "div", "slim-sources");
+        const toggle = create(box, "button", "slim-sources-toggle");
+        const stack = create(toggle, "span", "slim-sources-stack");
+        for (let i = 0; i < Math.min(3, sources.length); i++) icon(create(stack, "span", "slim-sources-file"), "file-text");
+        create(toggle, "span", "slim-sources-count", `${sources.length} source${sources.length === 1 ? "" : "s"}`);
+        icon(create(toggle, "span", "slim-chevron"), "chevron-right");
+        const list = create(box, "div", "slim-sources-list");
+        for (const source of sources) {
+          const row = create(list, "button", "slim-source");
+          row.setAttribute("title", source.path);
+          create(row, "span", "slim-source-title", source.title);
+          const folder = folderOf(source.path);
+          if (folder) create(row, "span", "slim-source-path", folder);
+          row.onclick = () => this.openFile(source.path);
+        }
+        this.foldable(toggle, list, this.sourcesOpen, turn);
       },
       renderTools() {
         if (this.el?.liveEdit) this.renderEdit();
@@ -571,10 +674,18 @@ var require_render = __commonJS({
           this.mdHost = this.addChild(new MarkdownRenderChild(root));
         }
         root.addClass?.("slim-copilot");
+        this.renderHeader(root);
+        if (this.showThreads) this.renderThreadList(root);
+        else this.renderTranscript(root);
+        this.renderComposer(root, focused);
+      },
+      // One slim row: the chat's title, then history and new chat.
+      renderHeader(root) {
         const header = create(root, "header", "slim-copilot-head");
-        const headRow = create(header, "div", "slim-copilot-head-row");
-        create(headRow, "div", "slim-copilot-eyebrow", "SLIM");
-        const tools = create(headRow, "div", "slim-copilot-tools");
+        const name = this.showThreads ? "Chats" : this.activeThread?.title || "New chat";
+        const title = create(header, "div", "slim-copilot-title", name);
+        title.setAttribute("title", name);
+        const tools = create(header, "div", "slim-copilot-tools");
         const history = iconButton(
           tools,
           "history",
@@ -586,58 +697,113 @@ var require_render = __commonJS({
           this.render();
           if (this.showThreads) this.loadThreads();
         };
-        const add = iconButton(tools, "plus", "New chat");
+        const add = iconButton(tools, "square-pen", "New chat", "clickable-icon slim-new-chat");
         add.onclick = () => this.newThread();
+      },
+      // The notes near the open one, a popover over the conversation opened from the composer's
+      // "N nearby" chip: context to reach for, not the reason the pane is open.
+      renderNearby(composer) {
+        const path = this.openNote?.path;
+        const related = path && this.context?.source?.path === path ? this.context.related || [] : [];
+        if (!related.length) return;
+        const list = create(composer, "div", "slim-copilot-nearby");
+        list.hidden = !this.nearbyOpen;
+        this.el.nearby = list;
+        create(list, "div", "slim-popover-label", "Nearby notes");
+        for (const item of related) {
+          const button = create(list, "button", "slim-related-note");
+          button.setAttribute("title", item.path);
+          create(button, "span", "", item.title || pathStem(item.path));
+          create(button, "small", "", item.scope || "");
+          button.onclick = () => this.openFile(item.path);
+        }
+      },
+      // How hard the model thinks, as Pi's levels; the last one chosen is kept in the settings.
+      renderEffortMenu(composer) {
+        const menu = create(composer, "div", "slim-effort-menu");
+        menu.setAttribute("role", "menu");
+        menu.hidden = !this.effortOpen;
+        this.el.effortMenu = menu;
+        for (const value of EFFORTS) {
+          const item = create(menu, "button", `slim-effort-item${value === this.effort ? " is-selected" : ""}`);
+          item.setAttribute("role", "menuitemradio");
+          item.setAttribute("aria-checked", String(value === this.effort));
+          create(item, "span", "slim-effort-name", effortLabel(value));
+          create(item, "small", "slim-effort-hint", EFFORT_HINTS[value]);
+          item.onclick = () => {
+            this.effortOpen = false;
+            this.setEffort(value);
+            this.render();
+          };
+        }
+        menu.onkeydown = (event) => {
+          if (event.key !== "Escape") return;
+          event.preventDefault?.();
+          this.showEffortMenu(false);
+          this.el.effortButton?.focus?.();
+        };
+      },
+      showEffortMenu(open) {
+        this.effortOpen = open;
+        if (this.el?.effortMenu) this.el.effortMenu.hidden = !open;
+        this.el?.effortButton?.setAttribute("aria-expanded", String(open));
+        if (open && this.nearbyOpen) this.showNearby(false);
+      },
+      showNearby(open) {
+        this.nearbyOpen = open;
+        if (this.el?.nearby) this.el.nearby.hidden = !open;
+        this.el?.nearbyChip?.setAttribute("aria-expanded", String(open));
+        if (open && this.effortOpen) this.showEffortMenu(false);
+      },
+      // The context the next question carries, as chips inside the composer: the open note (✕ leaves
+      // it out of this chat), "N nearby", and the `@` pins. Small, one line each, wrapping.
+      renderChips(composer) {
         const sourcePath = this.openNote?.path || "";
-        const nearby = this.context?.source?.path === sourcePath ? this.context : null;
-        const sourceTitle = nearby?.source?.title || (sourcePath ? pathStem(sourcePath) : "No note open");
-        const related = nearby?.related || [];
-        const off = Boolean(this.activeThread?.openNoteOff);
-        const toggle = (parent) => {
-          if (!sourcePath) return;
-          const button = create(
-            parent,
-            "button",
-            `slim-chip-x slim-copilot-note-off${off ? " is-off" : ""}`,
-            off ? "\u21A9" : "\u2715"
-          );
+        const pins = this.activeThread?.pins || [];
+        if (!sourcePath && !pins.length) return;
+        const chips = create(composer, "div", "slim-composer-chips");
+        if (sourcePath) {
+          const nearby = this.context?.source?.path === sourcePath ? this.context : null;
+          const off = Boolean(this.activeThread?.openNoteOff);
+          const chip = create(chips, "span", `slim-ctx-chip slim-copilot-note-chip${off ? " is-off" : ""}`);
+          icon(create(chip, "span", "slim-ctx-icon"), "file-text");
+          const note = create(chip, "span", `slim-copilot-note${off ? " is-off" : ""}`, nearby?.source?.title || pathStem(sourcePath));
+          note.setAttribute("title", sourcePath);
           const label = off ? "Include the open note again" : "Leave the open note out of this chat";
-          button.setAttribute("title", label);
-          button.setAttribute("aria-label", label);
-          button.onclick = (event) => {
+          const x = create(chip, "button", `slim-chip-x slim-copilot-note-off${off ? " is-off" : ""}`, off ? "\u21A9" : "\u2715");
+          x.setAttribute("title", label);
+          x.setAttribute("aria-label", label);
+          x.onclick = (event) => {
             event.preventDefault();
             event.stopPropagation();
             this.toggleOpenNote();
           };
-        };
-        const noteCls = `slim-copilot-note${off ? " is-off" : ""}`;
-        if (related.length) {
-          const context = create(header, "details", "slim-copilot-context");
-          context.open = this.nearbyOpen;
-          const summary = create(context, "summary", "slim-copilot-context-summary");
-          summary.onclick = () => {
-            this.nearbyOpen = !context.open;
-          };
-          const note = create(summary, "span", noteCls, sourceTitle);
-          note.setAttribute("title", sourcePath);
-          toggle(summary);
-          create(summary, "small", "slim-copilot-nearby-count", `${related.length} nearby`);
-          for (const item of related) {
-            const button = create(context, "button", "slim-related-note");
-            button.setAttribute("title", item.path);
-            create(button, "span", "", item.title || pathStem(item.path));
-            create(button, "small", "", item.scope || "");
-            button.onclick = () => this.openFile(item.path);
+          const related = nearby?.related || [];
+          if (related.length) {
+            const more = create(chips, "button", "slim-ctx-chip slim-copilot-nearby-count", `${related.length} nearby`);
+            more.setAttribute("aria-expanded", String(Boolean(this.nearbyOpen)));
+            more.setAttribute("title", "Notes near the open one");
+            this.el.nearbyChip = more;
+            more.onclick = () => this.showNearby(!this.nearbyOpen);
           }
-        } else {
-          const row = create(header, "div", "slim-copilot-note-row");
-          const note = create(row, "div", noteCls, sourceTitle);
-          note.setAttribute("title", sourcePath);
-          toggle(row);
         }
-        if (this.showThreads) this.renderThreadList(root);
-        else this.renderTranscript(root);
+        for (const pin of pins) {
+          const chip = create(chips, "span", `slim-pin is-${pin.kind}`);
+          chip.setAttribute("title", pin.path);
+          icon(create(chip, "span", "slim-ctx-icon"), pin.kind === "folder" ? "folder" : "file-text");
+          create(chip, "span", "slim-pin-name", pin.kind === "folder" ? `${pathStem(pin.path)}/` : pathStem(pin.path));
+          const x = create(chip, "button", "slim-chip-x", "\u2715");
+          x.setAttribute("aria-label", `Unpin ${pin.path}`);
+          x.onclick = () => this.unpin(pin.path);
+        }
+      },
+      renderComposer(root, focused) {
         const composer = create(root, "footer", "slim-copilot-composer");
+        this.el.slash = create(composer, "div", "slim-slash-menu");
+        this.el.mention = create(composer, "div", "slim-mention-menu");
+        this.renderNearby(composer);
+        this.renderEffortMenu(composer);
+        this.renderChips(composer);
         if (this.pendingImages.length) {
           const previews = create(composer, "div", "slim-copilot-image-previews");
           this.pendingImages.forEach((attachment, index) => {
@@ -652,35 +818,15 @@ var require_render = __commonJS({
             };
           });
         }
-        const pins = this.activeThread?.pins || [];
-        if (pins.length) {
-          const chips = create(composer, "div", "slim-pins");
-          for (const pin of pins) {
-            const chip = create(chips, "span", `slim-pin is-${pin.kind}`);
-            chip.setAttribute("title", pin.path);
-            create(chip, "span", "slim-pin-name", pin.kind === "folder" ? `${pathStem(pin.path)}/` : pathStem(pin.path));
-            const x = create(chip, "button", "slim-chip-x", "\u2715");
-            x.setAttribute("aria-label", `Unpin ${pin.path}`);
-            x.onclick = () => this.unpin(pin.path);
-          }
-        }
-        const slash = create(composer, "div", "slim-slash-menu");
-        this.el.slash = slash;
-        this.el.mention = create(composer, "div", "slim-mention-menu");
-        const effort = create(composer, "select", "slim-effort");
-        effort.setAttribute("aria-label", "Effort");
-        effort.setAttribute("title", "Effort: how much the model thinks before it answers");
-        for (const value of EFFORTS) {
-          const option = create(effort, "option", "", effortLabel(value));
-          option.value = value;
-          option.selected = value === this.effort;
-        }
-        effort.onchange = () => this.setEffort(effort.value);
         const input = create(composer, "textarea", "slim-copilot-input");
-        input.placeholder = "Ask SLIM, or / for skills";
+        input.placeholder = "Ask anything \xB7 @ to add context";
         input.value = this.draft;
         input.rows = 1;
-        autoGrow(input);
+        autoGrow(input, INPUT_MAX_PX);
+        const syncSend = () => this.el.send?.classList?.toggle(
+          "is-empty",
+          !this.sending && !String(input.value || "").trim() && !this.pendingImages.length
+        );
         input.oninput = () => {
           this.draft = input.value;
           this.caret = input.selectionStart;
@@ -688,7 +834,8 @@ var require_render = __commonJS({
           this.slashIndex = 0;
           this.mentionDismissed = false;
           this.mentionIndex = 0;
-          autoGrow(input);
+          autoGrow(input, INPUT_MAX_PX);
+          syncSend();
           if (input.value === "/") this.loadSkills();
           else this.renderSlash();
           this.renderMention();
@@ -765,7 +912,8 @@ var require_render = __commonJS({
               input.selectionStart = input.selectionEnd = start;
               this.draft = input.value;
               this.slashDismissed = false;
-              autoGrow(input);
+              autoGrow(input, INPUT_MAX_PX);
+              syncSend();
               this.renderSlash();
             }
           }
@@ -785,10 +933,16 @@ var require_render = __commonJS({
           input.value = `${input.value.slice(0, start)}${text}${input.value.slice(end)}`;
           input.selectionStart = input.selectionEnd = start + text.length;
           this.draft = input.value;
-          autoGrow(input);
+          autoGrow(input, INPUT_MAX_PX);
+          syncSend();
           this.renderSlash();
         };
-        const picker = create(composer, "input", "slim-copilot-image-picker");
+        const bar = create(composer, "div", "slim-composer-bar");
+        const left = create(bar, "div", "slim-composer-left");
+        const at = iconButton(left, "at-sign", "Add a note or folder", "clickable-icon slim-at");
+        at.onmousedown = (event) => event?.preventDefault?.();
+        at.onclick = () => this.openMention();
+        const picker = create(left, "input", "slim-copilot-image-picker");
         picker.type = "file";
         picker.accept = "image/png,image/jpeg,image/webp";
         picker.multiple = true;
@@ -796,8 +950,27 @@ var require_render = __commonJS({
           this.addImages(picker.files);
           picker.value = "";
         };
-        const attach = iconButton(composer, "image-plus", "Attach images", "clickable-icon slim-attach");
+        const attach = iconButton(left, "image-plus", "Attach images", "clickable-icon slim-attach");
         attach.onclick = () => picker.click();
+        const right = create(bar, "div", "slim-composer-right");
+        const effort = create(right, "button", "slim-effort");
+        effort.setAttribute("aria-label", `Effort: ${effortLabel(this.effort)}`);
+        effort.setAttribute("title", "Effort: how much the model thinks before it answers");
+        effort.setAttribute("aria-haspopup", "menu");
+        effort.setAttribute("aria-expanded", String(Boolean(this.effortOpen)));
+        icon(create(effort, "span", "slim-effort-icon"), "brain");
+        create(effort, "span", "slim-effort-label", effortLabel(this.effort));
+        effort.onclick = () => this.showEffortMenu(!this.effortOpen);
+        this.el.effortButton = effort;
+        const empty = !this.sending && !String(this.draft || "").trim() && !this.pendingImages.length;
+        const send = iconButton(
+          right,
+          this.sending ? "square" : "arrow-up",
+          this.sending ? "Stop response" : "Send",
+          `slim-send${this.sending ? " is-stop" : ""}${empty ? " is-empty" : ""}`
+        );
+        send.onclick = () => this.sending ? this.cancel() : this.send();
+        this.el.send = send;
         composer.ondragover = (event) => {
           if ([...event.dataTransfer?.items || []].some((item) => item.kind === "file")) event.preventDefault();
         };
@@ -808,18 +981,14 @@ var require_render = __commonJS({
             this.addImages(files);
           }
         };
-        const send = iconButton(
-          composer,
-          this.sending ? "square" : "send",
-          this.sending ? "Stop response" : "Send",
-          "mod-cta slim-send"
-        );
-        send.onclick = () => this.sending ? this.cancel() : this.send();
         this.renderSlash();
         this.renderMention();
+        const caretAt = this.caretAt;
+        this.caretAt = null;
         if (focused && typeof input.focus === "function") {
           input.focus();
-          input.selectionStart = input.selectionEnd = input.value.length;
+          const at2 = Number.isInteger(caretAt) && caretAt <= input.value.length ? caretAt : input.value.length;
+          input.selectionStart = input.selectionEnd = at2;
         }
       },
       // The search box and the rows under it. Only the rows are redrawn when results land, so
@@ -839,6 +1008,8 @@ var require_render = __commonJS({
         clear(this.el.threadRows);
         this.drawThreadRows(this.el.threadRows);
       },
+      // A quiet list: the title, and under it a faint date and the note it was started on; rename
+      // and delete show on hover.
       drawThreadRows(list) {
         if (!this.threads.length) {
           create(list, "p", "slim-copilot-status", this.threadQuery.trim() ? "No chats match." : "No chats yet.");
@@ -846,12 +1017,15 @@ var require_render = __commonJS({
         }
         for (const thread of threadRows(this.threads)) {
           const row = create(list, "div", `slim-chat-row${thread.id === this.activeThread?.id ? " is-active" : ""}`);
-          const open = create(row, "button", "slim-chat-open", thread.title || "Conversation");
+          const open = create(row, "button", "slim-chat-open");
+          open.setAttribute("title", thread.title || "Conversation");
           open.onclick = () => this.openThread(thread.id);
-          const date = shortDate(thread.updated_at);
-          if (date) create(open, "small", "slim-chat-date", ` ${date}`);
+          create(open, "span", "slim-chat-title", thread.title || "Conversation");
+          const sub = create(open, "span", "slim-chat-sub");
+          const date = relativeDate(thread.updated_at);
+          if (date) create(sub, "small", "slim-chat-date", date);
           if (thread.source_path) {
-            const label = create(open, "small", "slim-chat-note", ` ${pathStem(thread.source_path)}`);
+            const label = create(sub, "small", "slim-chat-note", pathStem(thread.source_path));
             label.setAttribute("title", thread.source_path);
           }
           const rename = iconButton(row, "pencil", `Rename ${thread.title}`);
@@ -866,46 +1040,71 @@ var require_render = __commonJS({
           remove.onclick = () => this.deleteThread(thread.id);
         }
       },
+      // A new chat: SLIM's name, one line, and three starters that fill the composer.
+      renderEmpty(transcript) {
+        const empty = create(transcript, "div", "slim-empty");
+        icon(create(empty, "div", "slim-empty-icon"), "message-square-text");
+        create(empty, "div", "slim-empty-name", "SLIM");
+        create(empty, "p", "slim-empty-line", "Ask about your notes, or have SLIM edit the open one.");
+        const list = create(empty, "div", "slim-suggestions");
+        const noteOpen = Boolean(this.openNote?.path) && !this.activeThread?.openNoteOff;
+        for (const starter of starters(noteOpen)) {
+          const button = create(list, "button", "slim-suggest", starter.label);
+          button.onclick = () => this.useStarter(starter.text);
+        }
+      },
       renderTranscript(root) {
-        const transcript = create(root, "section", "slim-copilot-transcript");
+        const wrap = create(root, "div", "slim-transcript-wrap");
+        const transcript = create(wrap, "section", "slim-copilot-transcript");
         this.el.transcript = transcript;
         const pending = [];
+        let lastNote = null;
         for (const turn of this.turns) {
-          const message = create(transcript, "article", `slim-message is-${turn.role}`);
-          const run = turn.role === "slim" ? turn.turn?.edit_run : null;
-          if (turn.role === "slim" && turn.turn?.tools?.length) {
-            this.fillTools(create(message, "ul", "slim-steps slim-tools"), turn.turn.tools);
+          const fresh = !this.seenTurns.has(turn);
+          this.seenTurns.add(turn);
+          if (turn.role === "you") {
+            if (turn.note && turn.note !== lastNote) {
+              const on = create(transcript, "div", "slim-message-context");
+              on.setAttribute("title", turn.note);
+              if (fresh) on.setAttribute("data-new", "");
+              icon(create(on, "span", "slim-ctx-icon"), "file-text");
+              create(on, "span", "slim-message-context-name", pathStem(turn.note));
+            }
+            lastNote = turn.note || null;
+            const message2 = create(transcript, "article", "slim-message is-you");
+            if (fresh) message2.setAttribute("data-new", "");
+            if (turn.attachments?.length) this.renderAttachments(message2, turn.attachments);
+            create(message2, "div", "slim-message-text", turn.text);
+            continue;
           }
+          const message = create(transcript, "article", `slim-message is-${turn.role}`);
+          if (fresh) message.setAttribute("data-new", "");
+          const run = turn.turn?.edit_run;
+          if (turn.turn?.tools?.length) this.renderToolGroup(message, turn, turn.turn.tools);
           if (run) {
             this.renderEditRun(message, run, pending);
-          } else if (turn.role === "slim") {
+          } else {
             const body = create(message, "div", "slim-message-text slim-rendered-markdown");
             pending.push(this.renderMarkdown(body, turn.text).catch((e) => console.error("[slim] render answer", e)));
-          } else {
-            create(message, "div", "slim-message-text", turn.text);
           }
           if (turn.attachments?.length) this.renderAttachments(message, turn.attachments);
           const sources = groupCitations(turn.turn?.citations);
-          if (sources.length) {
-            const list = create(message, "div", "slim-sources");
-            create(list, "span", "slim-copilot-label", "From your notes");
-            for (const source of sources) {
-              const chip = create(list, "button", "slim-source", source.title);
-              chip.setAttribute("title", source.path);
-              chip.onclick = () => this.openFile(source.path);
-            }
-          }
+          if (sources.length) this.renderSources(message, turn, sources);
           const read = inputsText(turn.turn?.inputs);
           if (read) create(message, "small", "slim-inputs", read);
           if (turn.turn?.verification?.truncated && !run) {
             create(message, "small", "slim-verification", "Cut off at the length limit \u2014 ask for the rest.");
           }
           if (run) this.renderEditMeta(message, run, turn);
-          else if (turn.role === "slim" && turn.turn) this.renderActions(message, turn);
+          else if (turn.turn) this.renderActions(message, turn);
         }
         const streamingHere = this.sending && this.turns === this.streamingTurns;
         if (streamingHere) {
           const live = create(transcript, "article", "slim-message is-slim is-streaming");
+          if (this.liveFresh) {
+            live.setAttribute("data-new", "");
+            this.liveFresh = false;
+          }
           this.el.live = live;
           if (this.editRun) {
             this.el.liveEdit = live;
@@ -923,13 +1122,17 @@ var require_render = __commonJS({
             retry.onclick = () => this.retry();
           }
         }
-        if (!this.turns.length && !streamingHere && !this.error) {
-          const suggestions = create(transcript, "div", "slim-suggestions");
-          for (const prompt of SUGGESTED_PROMPTS) {
-            const button = create(suggestions, "button", "slim-suggest", prompt);
-            button.onclick = () => this.send(prompt);
-          }
-        }
+        if (!this.turns.length && !streamingHere && !this.error) this.renderEmpty(transcript);
+        const jump = iconButton(wrap, "arrow-down", "Jump to the latest", "clickable-icon slim-jump");
+        jump.hidden = true;
+        jump.onclick = () => {
+          transcript.scrollTop = transcript.scrollHeight;
+          jump.hidden = true;
+        };
+        transcript.onscroll = () => {
+          jump.hidden = atBottom(transcript);
+        };
+        this.el.jump = jump;
         transcript.scrollTop = transcript.scrollHeight;
         if (pending.length) {
           const anchor = transcript.scrollTop;
@@ -992,7 +1195,8 @@ var require_edit_run = __commonJS({
     "use strict";
     var { Notice } = require("obsidian");
     var { sha256Hex, effortLabel, metaText, runCounts, editOutcome } = require_text();
-    var { clear, create, atBottom } = require_dom();
+    var { clear, create, glyphIcon, atBottom } = require_dom();
+    var STEP_ICONS = { done: ["check", "\u2713"], partial: ["circle-dashed", "\u25D0"], skipped: ["minus", "\u2013"] };
     module2.exports = {
       // ---- an editing run, as it lands ------------------------------------------------------------
       // A change to the note goes in through its editor; a new note is created at once. Either way
@@ -1143,7 +1347,7 @@ var require_edit_run = __commonJS({
         const follow = atBottom(this.el.transcript);
         clear(this.el.liveEdit);
         this.drawLiveEdit(this.el.liveEdit);
-        if (follow) this.el.transcript.scrollTop = this.el.transcript.scrollHeight;
+        this.stick(this.el.transcript, follow);
       },
       drawLiveEdit(parent) {
         const run = this.editRun;
@@ -1168,7 +1372,9 @@ var require_edit_run = __commonJS({
           const list = create(box, "ul", "slim-steps");
           for (const [text, state] of shown) {
             const item = create(list, "li", `slim-step is-${state}`);
-            create(item, "span", "slim-step-icon", { doing: "", done: "\u2713", partial: "\u25D0", skipped: "\u2013" }[state] ?? "");
+            const [name, glyph] = STEP_ICONS[state] || [];
+            const mark = create(item, "span", "slim-step-icon");
+            if (name) glyphIcon(mark, name, glyph);
             create(item, "span", state === "doing" ? "slim-step-text slim-shimmer" : "slim-step-text", text);
           }
         }
@@ -1479,6 +1685,12 @@ var require_view = __commonJS({
         this.composerFocused = false;
         this.showThreads = false;
         this.nearbyOpen = false;
+        this.effortOpen = false;
+        this.caretAt = null;
+        this.seenTurns = /* @__PURE__ */ new WeakSet();
+        this.liveFresh = false;
+        this.toolsOpen = /* @__PURE__ */ new WeakSet();
+        this.sourcesOpen = /* @__PURE__ */ new WeakSet();
         this.liveRenderTimer = null;
         this.liveRenderVersion = 0;
         this.liveRenderedAt = 0;
@@ -1573,6 +1785,27 @@ var require_view = __commonJS({
         this.composerFocused = true;
         this.render();
       }
+      // The toolbar's @: an `@` at the caret (after a space, where it would touch a word), which
+      // opens the same picker as typing it.
+      openMention() {
+        const draft = String(this.draft || "");
+        const at = Number.isInteger(this.caret) && this.caret <= draft.length ? this.caret : draft.length;
+        const before = draft.slice(0, at);
+        const lead = before && !/\s$/.test(before) ? " " : "";
+        this.draft = `${before}${lead}@${draft.slice(at)}`;
+        this.caret = this.caretAt = at + lead.length + 1;
+        this.mentionDismissed = false;
+        this.mentionIndex = 0;
+        this.composerFocused = true;
+        this.render();
+      }
+      // An empty chat's starter: its words in the composer, the caret after them, nothing sent.
+      useStarter(text) {
+        this.draft = text;
+        this.caret = this.caretAt = text.length;
+        this.composerFocused = true;
+        this.render();
+      }
       getViewType() {
         return VIEW_TYPE_COPILOT;
       }
@@ -1585,9 +1818,9 @@ var require_view = __commonJS({
       async onOpen() {
         const root = this.contentEl;
         if (typeof this.registerDomEvent === "function") {
-          this.registerDomEvent(root, "click", (event) => this.onLinkClick(event));
+          this.registerDomEvent(root, "click", (event) => this.onRootClick(event));
         } else if (root && typeof root.addEventListener === "function") {
-          root.addEventListener("click", (event) => this.onLinkClick(event));
+          root.addEventListener("click", (event) => this.onRootClick(event));
         }
         const file = this.app.workspace.getActiveFile ? this.app.workspace.getActiveFile() : null;
         this.loadSkills();
@@ -1597,6 +1830,14 @@ var require_view = __commonJS({
       }
       async onClose() {
         this.cancel();
+      }
+      // A click anywhere else closes the composer's popovers (the effort menu, nearby notes).
+      onRootClick(event) {
+        const target = event?.target;
+        const inside = (selector) => Boolean(target?.closest?.(selector));
+        if (this.effortOpen && !inside(".slim-effort, .slim-effort-menu")) this.showEffortMenu(false);
+        if (this.nearbyOpen && !inside(".slim-copilot-nearby, .slim-copilot-nearby-count")) this.showNearby(false);
+        this.onLinkClick(event);
       }
       // MarkdownRenderer turns an answer's [[wikilink]] into <a class="internal-link">, but Obsidian
       // wires clicks on those only inside its own note views; in this sidebar they were dead.
@@ -1804,6 +2045,7 @@ var require_view = __commonJS({
         this.liveTools = [];
         this.streamingThread = thread;
         this.streamingTurns = turns;
+        this.liveFresh = true;
         let completed = null;
         let run = null;
         let local = null, tracked = null;
@@ -1939,14 +2181,18 @@ var require_view = __commonJS({
           asked.attachments = completed.attachments || [];
           delete completed.attachments;
           if (run) completed.edit_run = await this.settleRun(run, completed.edit_run || {});
-          turns.push({ role: "slim", text: completed.answer || streamed, turn: completed });
+          const answer = { role: "slim", text: completed.answer || streamed, turn: completed };
+          this.seenTurns.add(answer);
+          turns.push(answer);
           this.retryQuestion = "";
           this.retryImages = [];
           await this.saveRecord(thread, turns);
         } catch (error) {
           const stopped = error.name === "AbortError";
           if (run && turns.at(-1) === asked) {
-            turns.push(await this.partialTurn(run, stopped ? "stopped" : `error: ${error.message || error}`));
+            const partial = await this.partialTurn(run, stopped ? "stopped" : `error: ${error.message || error}`);
+            this.seenTurns.add(partial);
+            turns.push(partial);
             if (!stopped) this.error = error.message || String(error);
             if (!this.deletedThreads.has(thread.id)) {
               await this.saveRecord(thread, turns).catch((e) => {

@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import "../copilot-harness.mjs";
 
 const require = createRequire(import.meta.url);
-const { editorSelection, groupCitations, threadRows, inputsText, matchSkills, normalizeMath,
+const { editorSelection, groupCitations, relativeDate, threadRows, inputsText, matchSkills, normalizeMath,
         slashQuery } = require("../../src/chat/text.js");
 
 test("thread rows are one flat list, newest first", () => {
@@ -96,4 +96,14 @@ test("mentions match by substring, folders first, then shorter paths, at most 20
     { kind: "note", path: "x/y/week2.md" }, { kind: "note", path: "Notes/week-long.md" }]);
   const many = Array.from({ length: 30 }, (_, i) => `n${i}.md`);
   assert.equal(mentionMatches("", many, []).length, 20);
+});
+
+test("a history date is Today, Yesterday, days ago within the week, then the date", () => {
+  const now = new Date(2026, 10, 14, 9, 0).getTime();
+  const at = (day, hour = 12) => new Date(2026, 10, day, hour, 0).toISOString();
+  assert.equal(relativeDate(at(14, 1), now), "Today");
+  assert.equal(relativeDate(at(13, 23), now), "Yesterday");
+  assert.equal(relativeDate(at(11), now), "3 days ago");
+  assert.equal(relativeDate(at(1), now), "Nov 1");
+  assert.equal(relativeDate("not a date", now), "");
 });

@@ -88,7 +88,13 @@ class CopilotView extends ItemView {
     this.el = null;                 // live handles from the last full render()
     this.composerFocused = false;
     this.showThreads = false;       // the history button: the chat list in the conversation's slot
-    this.nearbyOpen = false;        // the context chip under the title
+    this.nearbyOpen = false;        // the nearby-notes popover over the composer
+    this.effortOpen = false;        // the effort menu over the composer's toolbar
+    this.caretAt = null;            // where the next render puts the composer's caret, once
+    this.seenTurns = new WeakSet(); // turns already drawn: only a new one fades in
+    this.liveFresh = false;         // the streaming answer is about to be drawn for the first time
+    this.toolsOpen = new WeakSet(); // turns whose folded lookups are open
+    this.sourcesOpen = new WeakSet(); // turns whose sources are open
     this.liveRenderTimer = null;    // the throttled Markdown render of the streaming answer
     this.liveRenderVersion = 0;
     this.liveRenderedAt = 0;
@@ -187,6 +193,29 @@ class CopilotView extends ItemView {
     this.render();
   }
 
+  // The toolbar's @: an `@` at the caret (after a space, where it would touch a word), which
+  // opens the same picker as typing it.
+  openMention() {
+    const draft = String(this.draft || "");
+    const at = Number.isInteger(this.caret) && this.caret <= draft.length ? this.caret : draft.length;
+    const before = draft.slice(0, at);
+    const lead = before && !/\s$/.test(before) ? " " : "";
+    this.draft = `${before}${lead}@${draft.slice(at)}`;
+    this.caret = this.caretAt = at + lead.length + 1;
+    this.mentionDismissed = false;
+    this.mentionIndex = 0;
+    this.composerFocused = true;
+    this.render();
+  }
+
+  // An empty chat's starter: its words in the composer, the caret after them, nothing sent.
+  useStarter(text) {
+    this.draft = text;
+    this.caret = this.caretAt = text.length;
+    this.composerFocused = true;
+    this.render();
+  }
+
   getViewType() { return VIEW_TYPE_COPILOT; }
   getDisplayText() { return "SLIM Copilot"; }
   getIcon() { return "message-square-text"; }
@@ -195,9 +224,9 @@ class CopilotView extends ItemView {
     // On the root, which outlives every render(): answers are rebuilt, the listener is not.
     const root = this.contentEl;
     if (typeof this.registerDomEvent === "function") {
-      this.registerDomEvent(root, "click", (event) => this.onLinkClick(event));
+      this.registerDomEvent(root, "click", (event) => this.onRootClick(event));
     } else if (root && typeof root.addEventListener === "function") {
-      root.addEventListener("click", (event) => this.onLinkClick(event));
+      root.addEventListener("click", (event) => this.onRootClick(event));
     }
     const file = this.app.workspace.getActiveFile ? this.app.workspace.getActiveFile() : null;
     this.loadSkills();
@@ -208,6 +237,15 @@ class CopilotView extends ItemView {
   }
 
   async onClose() { this.cancel(); }
+
+  // A click anywhere else closes the composer's popovers (the effort menu, nearby notes).
+  onRootClick(event) {
+    const target = event?.target;
+    const inside = (selector) => Boolean(target?.closest?.(selector));
+    if (this.effortOpen && !inside(".slim-effort, .slim-effort-menu")) this.showEffortMenu(false);
+    if (this.nearbyOpen && !inside(".slim-copilot-nearby, .slim-copilot-nearby-count")) this.showNearby(false);
+    this.onLinkClick(event);
+  }
 
   // MarkdownRenderer turns an answer's [[wikilink]] into <a class="internal-link">, but Obsidian
   // wires clicks on those only inside its own note views; in this sidebar they were dead.
@@ -431,6 +469,7 @@ class CopilotView extends ItemView {
     this.liveTools = [];
     this.streamingThread = thread;
     this.streamingTurns = turns;
+    this.liveFresh = true;
     let completed = null;
     let run = null;                       // an editing run, from its `edit` event on
     let local = null, tracked = null;     // the editor tracking it from Send, and its name there
@@ -550,7 +589,10 @@ class CopilotView extends ItemView {
       asked.attachments = completed.attachments || [];
       delete completed.attachments;          // refs belong to the user turn, not the answer
       if (run) completed.edit_run = await this.settleRun(run, completed.edit_run || {});
-      turns.push({ role: "slim", text: completed.answer || streamed, turn: completed });
+      // The answer takes the streaming one's place: it is not new on screen, so it does not fade in.
+      const answer = { role: "slim", text: completed.answer || streamed, turn: completed };
+      this.seenTurns.add(answer);
+      turns.push(answer);
       this.retryQuestion = "";
       this.retryImages = [];
       await this.saveRecord(thread, turns);
@@ -559,7 +601,9 @@ class CopilotView extends ItemView {
       if (run && turns.at(-1) === asked) {
         // What landed is in the note: it stays, and the turn keeps how far the run got and the
         // copy from before, so See before and Restore work after a reload too.
-        turns.push(await this.partialTurn(run, stopped ? "stopped" : `error: ${error.message || error}`));
+        const partial = await this.partialTurn(run, stopped ? "stopped" : `error: ${error.message || error}`);
+        this.seenTurns.add(partial);
+        turns.push(partial);
         if (!stopped) this.error = error.message || String(error);
         if (!this.deletedThreads.has(thread.id)) {
           await this.saveRecord(thread, turns).catch((e) => { this.error = e.message || String(e); });

@@ -26,6 +26,13 @@ function icon(el, name) {
   return el;
 }
 
+// An Obsidian icon, or `glyph` where none was drawn (no Obsidian, or a name its icon set lacks).
+function glyphIcon(el, name, glyph) {
+  if (typeof setIcon === "function") setIcon(el, name);
+  if (!el.querySelector?.("svg")) el.textContent = glyph;
+  return el;
+}
+
 function iconButton(parent, icon, label, cls = "clickable-icon") {
   const button = create(parent, "button", cls);
   button.setAttribute("aria-label", label);
@@ -46,4 +53,4 @@ function atBottom(element) {
   return element.scrollHeight - element.scrollTop - element.clientHeight <= 40;
 }
 
-module.exports = { clear, create, icon, iconButton, autoGrow, atBottom };
+module.exports = { clear, create, icon, glyphIcon, iconButton, autoGrow, atBottom };
