@@ -703,7 +703,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
                 break
             answer = first.content.strip() or next((_summary(c) for c in first.calls if c["name"] == "done"), "")
             if not (editable and claimed is None and not out["stopped"] and claims_edit(answer)):
-                return answered(answer)
+                return answered(answer or claimed or "")   # a correction that ended with no text: the claim
             # It says it changed the note and changed nothing: told so, once, as a refusal is, in
             # a call of its own (the text streamed so far is reset, as for any new call).
             claimed, out["claimed_edit"] = answer, "corrected"

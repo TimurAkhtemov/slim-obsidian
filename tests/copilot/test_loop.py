@@ -764,6 +764,15 @@ def test_a_claim_whose_correction_fails_is_kept_flagged(ask, monkeypatch, record
     assert records[0]["claimed_edit"] == "flagged"
 
 
+def test_a_claim_whose_correction_ends_with_no_answer_is_kept_flagged(ask, monkeypatch, records):
+    stuck = ("", [("web_search", {"query": "x"}), ("read_note", {"path": "Notes/missing.md"})])
+    seen = scripted(monkeypatch, ("I've shortened the note.", []), *[stuck] * edit_run.MAX_REFUSALS)
+    got = ask("make it shorter")
+    assert len(seen) == 1 + edit_run.MAX_REFUSALS
+    assert got["answer"] == "I've shortened the note.\n\nNo change was made to the note."
+    assert records[0]["claimed_edit"] == "flagged"
+
+
 def test_an_answer_with_no_claim_is_one_call(ask, monkeypatch, records):
     seen = scripted(monkeypatch, ("It introduces A.", []))
     got = ask("what is this note about?")
