@@ -574,8 +574,9 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
                              note=note, before_text=text or "", create=create,
                              temperature=edit_run.FIRST_TEMPERATURE, first_predict=room,
                              on_edit=on_edit or (lambda _event, _payload: None), should_stop=should_stop,
-                             on_stage=stage, lookups=reader, on_reply=on_delta, no_edit=no_edit)
-    entry["looked_up"] = out["looked_up"]       # traced even when the checks below refuse the turn
+                             on_stage=stage, lookups=reader, on_reply=on_delta, no_edit=no_edit,
+                             # filled as the turn runs: traced even when it fails or is refused
+                             looked_up=entry.setdefault("looked_up", []))
     if out["kind"] == "answer" and out["refusals"]:
         entry["refusals"] = [item["code"] for item in out["refusals"]]
     last = out["timing"][-1] if out["timing"] else {}

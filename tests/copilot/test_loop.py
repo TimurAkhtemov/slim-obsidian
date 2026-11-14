@@ -388,3 +388,15 @@ def test_a_pinned_excluded_folder_never_scopes_search(ask, con, vault, monkeypat
     ask("q", pins=[{"kind": "folder", "path": "Skills"}])
     found = seen[1]["messages"][-1]["content"]
     assert not found.startswith("refused:") and "cs-201/graphs.md" in found
+
+
+def test_a_failure_inside_the_turn_still_traces_its_lookups(ask, monkeypatch):
+    records = []
+    monkeypatch.setattr(copilot_turn.trace, "record", lambda kind, payload: records.append(payload))
+    scripted(monkeypatch, ("", [("list_folder", {"path": "Notes"})]),
+             llm.LLMError("the server failed"), llm.LLMError("the server failed"))
+    with pytest.raises(llm.LLMError):
+        ask("q")
+    (record,) = records
+    assert record["status"] == "failed" and record["error_type"] == "LLMError"
+    assert record["looked_up"] == [{"name": "list_folder", "path": "Notes", "refused": False}]
