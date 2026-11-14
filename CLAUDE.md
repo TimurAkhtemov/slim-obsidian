@@ -206,6 +206,8 @@ moves can hit this.
      that claims it again keeps "No change was made to the note." under it (traced as
      `claimed_edit`). One run in 5 of one edit request wrote the new text in the chat and said
      "I've replaced…" with nothing changed (2026-11-14), and a prompt rule alone is not a fix.
+     It is off once the chat holds an earlier SLIM edit (`turn.edited_before`): "I replaced the
+     intro…" is then as likely a recap, and the change marks still show what landed.
 
 ## Where things live
 

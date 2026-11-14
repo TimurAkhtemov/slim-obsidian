@@ -122,6 +122,18 @@ NEW_NOTE_RIDER = """You can create a new note with the create_note tool: its pat
 (the open note's folder is `{folder}/`), and its whole text in Markdown. Then call done with one
 sentence for the owner saying what you made."""
 
+# An earlier editing run, as the plugin sends it in the history (`historyText`, `runText`).
+EARLIER_EDIT = "[Changed the note:"
+
+
+def edited_before(history: list[dict]) -> bool:
+    """Whether this chat holds an earlier SLIM edit. After one, "I replaced the intro…" is as
+    likely a recap of it as a false claim, so the claimed-edit check (`run.claims_edit`) is off;
+    the change marks still show what landed."""
+    return any(turn.get("role") == "slim" and str(turn.get("text") or "").lstrip().startswith(EARLIER_EDIT)
+               for turn in history)
+
+
 # THE LOOP's sources: the notes a turn looked at, a chip each under the answer. Nothing in a prompt
 # asks for citations: [n] markers made a citation bot (measured 2026-09-01).
 SOURCES_MAX = 8
@@ -339,7 +351,7 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
                              on_stage=stage, lookups=reader, on_reply=on_delta, no_edit=no_edit,
                              # filled as the turn runs: traced even when it fails or is refused
                              looked_up=entry.setdefault("looked_up", []), on_reset=on_reset, fits=fits,
-                             on_tool=on_tool,
+                             on_tool=on_tool, check_claims=not edited_before(history),
                              # pins, lookups and history fill it too, not only the note
                              too_long="this conversation no longer fits the model's window; "
                                       "start a new chat or unpin something")
@@ -449,7 +461,8 @@ def _skill_run(con, vault: Path, source: dict, effort: str, history: list[dict],
                              note=note, before_text=text, only=only, create=create,
                              temperature=temperature, first_predict=room,
                              on_edit=on_edit or (lambda _event, _payload: None),
-                             should_stop=should_stop, on_stage=stage)
+                             should_stop=should_stop, on_stage=stage,
+                             check_claims=not edited_before(history))
     entry["claimed_edit"] = out["claimed_edit"]
     last = out["timing"][-1] if out["timing"] else {}
     run = None

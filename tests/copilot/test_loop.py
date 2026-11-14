@@ -688,6 +688,7 @@ CLAIMS = [
     "I will now update the heading.",
     "Done: 1 change",
     "Done — the note is shorter.",
+    "**Done** — the note is shorter.",
     "Done.",
 ]
 NOT_CLAIMS = [
@@ -705,6 +706,11 @@ NOT_CLAIMS = [
     "```\nI've updated the note.\n```\nThat is the example's first line.",
     "Done right, softmax is stable.",
     "Softmax turns scores into probabilities.",
+    "I added up the numbers: the total is 42.",
+    "I've added a short summary below:",
+    "Let me add some context now.",
+    "I'll add one more point: softmax is now the default.",
+    "I'll update the heading if you want; the note is now long.",
 ]
 
 
@@ -769,6 +775,39 @@ def test_a_claim_whose_correction_ends_with_no_answer_is_kept_flagged(ask, monke
     seen = scripted(monkeypatch, ("I've shortened the note.", []), *[stuck] * edit_run.MAX_REFUSALS)
     got = ask("make it shorter")
     assert len(seen) == 1 + edit_run.MAX_REFUSALS
+    assert got["answer"] == "I've shortened the note.\n\nNo change was made to the note."
+    assert records[0]["claimed_edit"] == "flagged"
+
+
+EARLIER_EDIT = [{"role": "you", "text": "shorten the intro"},
+                {"role": "slim", "text": "[Changed the note: Shortened the intro.; 1 change, 0 undone]"}]
+
+
+def test_a_recap_of_an_earlier_edit_in_the_chat_is_not_corrected(ask, monkeypatch, records):
+    seen = scripted(monkeypatch, ("I replaced the intro with a shorter version.", []))
+    got = ask("What did you change?", history=EARLIER_EDIT)
+    assert len(seen) == 1 and got["answer"] == "I replaced the intro with a shorter version."
+    assert records[0]["claimed_edit"] is None
+
+
+def test_a_claim_after_earlier_answers_that_edited_nothing_is_corrected(ask, monkeypatch, records):
+    history = [{"role": "you", "text": "what is softmax?"}, {"role": "slim", "text": "It turns scores into probabilities."}]
+    seen = scripted(monkeypatch, ("Simpler: Intro.\n\nI've replaced “Softmax Function” with this condensed version.", []),
+                    ("I did not change the note.", []))
+    ask("Can you change this so that it is a bit simpler?", history=history)
+    assert len(seen) == 2 and records[0]["claimed_edit"] == "corrected"
+    assert copilot_turn.edited_before(EARLIER_EDIT) and not copilot_turn.edited_before(history)
+
+
+def test_a_claim_whose_correction_overflows_the_window_is_kept_flagged(ask, monkeypatch, records):
+    seen = scripted(monkeypatch, ("I've shortened the note.", []), ("cut", []))
+    real = copilot_turn.llm.chat_tools
+
+    def saturated(messages, tools=None, **opts):
+        msg, stats = real(messages, tools, **opts)
+        return msg, {**stats, "ctx_saturated": len(seen) == 2}
+    monkeypatch.setattr(copilot_turn.llm, "chat_tools", saturated)
+    got = ask("make it shorter")
     assert got["answer"] == "I've shortened the note.\n\nNo change was made to the note."
     assert records[0]["claimed_edit"] == "flagged"
 

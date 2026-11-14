@@ -59,16 +59,20 @@ CLAIMED_EDIT = ("No change was made to the note: your reply says you changed it,
 FLAGGED = "No change was made to the note."
 _EDITED = ("replaced|updated|changed|added|rewrote|rewritten|edited|renamed|inserted|removed|deleted|"
            "moved|simplified|condensed|shortened")
-_EDIT = "replace|update|change|add|rewrite|edit|rename|insert|remove|delete|move|simplify|condense|shorten"
+# "add" is not among these: "Let me add some context now" is said of the reply as often as the note.
+_EDIT = "replace|update|change|rewrite|edit|rename|insert|remove|delete|move|simplify|condense|shorten"
 # A sentence that starts with the claim: "I've replaced …", "I have updated …", "I replaced …" (but
-# not "I added nothing"), or "I'll / I will / Let me <verb> … now". A list marker, bold, or "Sure,"
-# before it is still its start; a quote mark, a blockquote or a code block is not.
+# not "I added nothing" or "I added up the numbers"), or "I'll / I will / Let me <verb> … now", the
+# "now" right after "will" or ending the sentence. A list marker, bold, or "Sure," before it is
+# still its start; a quote mark, a blockquote or a code block is not.
 _CLAIM = re.compile(
     r"(?:(?:sure|ok|okay|alright|all right|great|done)\s*[,!:—–-]+\s*)?"
     rf"(?:I(?:['’]ve|\s+have)?\s+(?:now\s+|just\s+|also\s+|already\s+)?(?:{_EDITED})\b"
-    r"(?!\s+(?:nothing|none|no)\b)"
-    rf"|(?:I['’]ll|I\s+will|Let\s+me)\s+(?:now\s+(?:{_EDIT})\b|(?:{_EDIT})\b[^\n]*?\bnow\b))", re.I)
-_DONE = re.compile(r"Done(?:[.!:]|\s*$|\s+[—–-])", re.I)        # "Done: 2 changes", "Done — …"
+    r"(?!\s+(?:nothing|none|no|up)\b)"
+    rf"|(?:I['’]ll|I\s+will|Let\s+me)\s+(?:now\s+(?:{_EDIT})\b|(?:{_EDIT})\b.*\bnow[.!:]?\s*$))", re.I)
+# "I've added a short summary below:" points at the reply itself.
+_IN_THE_REPLY = re.compile(r"\b(?:below|here)\s*[:.]?\s*$", re.I)
+_DONE = re.compile(r"Done(?:\*\*|__)?(?:[.!:]|\s*$|\s+[—–-])", re.I)   # "Done: 2 changes", "**Done** — …"
 _FENCE = re.compile(r"^(`{3,}|~{3,}).*?^\1[^\n]*$", re.M | re.S)
 _SENTENCE_START = re.compile(r"^[ \t]*(?:[-*+][ \t]+|\d+[.)][ \t]+)?(?:\*\*|__|\*|_)?")
 
@@ -84,7 +88,8 @@ def claims_edit(reply: str) -> bool:
         return True
     for line in lines:
         for sentence in re.split(r"(?<=[.!?])\s+", line):
-            if _CLAIM.match(_SENTENCE_START.sub("", sentence, count=1)):
+            sentence = _SENTENCE_START.sub("", sentence, count=1)
+            if _CLAIM.match(sentence) and not _IN_THE_REPLY.search(sentence):
                 return True
     return False
 
@@ -450,7 +455,8 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
           should_stop, on_stage=lambda _name: None, lookups: lookup_mod.Reader | None = None,
           on_reply=None, no_edit: str | None = None, looked_up: list | None = None,
           on_reset=None, fits=None, too_long: str = NOTE_TOO_LONG, think_budget: int = THINK_BUDGET,
-          think_stage: str = "Thinking deeply", sampling: dict | None = None, on_tool=None) -> dict:
+          think_stage: str = "Thinking deeply", sampling: dict | None = None, on_tool=None,
+          check_claims: bool = True) -> dict:
     """One editing turn. Every call offers the same `tools`, in the same order: they sit at the
     top of the prompt, and a different list re-reads the whole note. `step_tools` are those that
     change something. The first call answers in text, makes a small change at once, or plans a
@@ -473,6 +479,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
     Every call that thinks adds `think_budget` to the run's output budget, and names its stage
     `think_stage`; after MAX_THINKING_CALLS of them, calls run with thinking off. Every call but a step's samples with `sampling` too. `on_tool` hears each lookup
     once it ran, as {name, label, refused} (`_tool_label`); the turn keeps them all in "tools".
+    `check_claims` False skips the claimed-edit check (`claims_edit`) for this turn.
 
     With `no_edit` (THE LOOP with no note it may change) the plan and edit tools are still offered,
     so the prompt stays the same, but every call to them is refused with that reason, counted as
@@ -592,7 +599,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
         if reply.stats.get("ctx_saturated"):
             # The prompt lost its start — the rules, the note, what was looked up — so this reply's
             # calls are guesses: none of them lands.
-            if out["kind"] == "answer":
+            if out["kind"] == "answer" and claimed is None:     # a correction's keeps the claim
                 raise CopilotError(too_long)
             out["stopped"] = "error: the conversation no longer fits the model's window"
             raise _Stopped
@@ -641,7 +648,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
 
     # An answer that claims a change to the note when none landed (`claims_edit`): the claim, kept
     # in case the corrective call never answers.
-    editable, claimed = note is not None and bool(acting), None
+    editable, claimed = note is not None and bool(acting) and check_claims, None
 
     def answered(answer: str) -> dict:
         if editable and claims_edit(answer) and (claimed is not None or out["stopped"]):
