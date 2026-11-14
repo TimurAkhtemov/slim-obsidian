@@ -44,7 +44,7 @@ flowchart TB
     subgraph S["Surfaces"]
         direction LR
         REC["Obsidian recorder<br/>one click"]
-        COP["Copilot sidebar<br/>the open note"]
+        COP["Copilot sidebar<br/>the vault, the open note first"]
         CLI["slim CLI<br/>ingest / reflect / status"]
     end
 
@@ -89,7 +89,7 @@ writes something, and it creates them itself with their parents:
 
 | Folder | When it appears | What it is |
 |---|---|---|
-| `Journal/` | first journal entry | the private floor — permanent, flat, and no route ever carries a note out of it |
+| `Journal/` | first journal entry | your journals — flat, and no route ever carries a note out of it |
 | `Capture/<subject>/` | first filed recording | every recording, organised by subject and nothing else |
 | `Notes/<subject>/` | you make it, if you want it | curated writing; any depth below level 2 is yours |
 | `Attachments/` | first recording | archived audio, named by content hash |
@@ -100,11 +100,11 @@ Subjects are yours — they are the ids you define in `config/projects.yaml`.
 **One real friction, named rather than hidden:** the filing card proposes destinations under
 `Capture/` and `Notes/` only. It will not offer you folders you already use. A new recording
 therefore lands in `Capture/<subject>/`, and you drag it wherever you like afterwards —
-because identity is the content hash, not the path, a move keeps the note's history and its
-saved copilot chats.
+because identity is the content hash, not the path, a move keeps the note's history, and the
+chats started on it still find it.
 
-Two degradations, both graceful. Without registered subjects, the copilot's scope ladder
-stops at the note's own folder instead of widening further. And the nightly reflection reads
+Two degradations, both graceful. Without registered subjects, the copilot's Nearby notes stay
+in the note's own folder instead of widening further. And the nightly reflection reads
 journals under `Journal/` only, so a note with `type: journal` moved anywhere else drops out of it.
 
 ## How a recording is filed
@@ -163,22 +163,27 @@ Index before and after a move, and a rename is free.
 
 ```mermaid
 flowchart LR
-    Q["your question"] --> N["1 · sync the open note<br/>index + embed on demand"]
-    N --> W["2 · widen by PATH<br/>note → folder → course → subject"]
-    W --> H["3 · hybrid retrieval<br/>BM25 + cosine, fused by reciprocal rank<br/>vector weighted 4:1, per-source cap"]
-    H --> G["4 · answer<br/>notes ride in the SYSTEM message, titles only"]
-    G --> C["5 · sources<br/>a SECOND call, after the answer"]
+    Q["your question<br/>with the open note and any @ pins"] --> L["one agent loop<br/>a model call at a time, thinking on"]
+    L -- "search · read_note · list_folder" --> I["the index<br/>BM25 + cosine, fused by reciprocal rank"]
+    I --> L
+    L -- "replace · edit_text · insert · move · plan" --> E["the open note<br/>each change applied in the editor"]
+    L --> A["the answer, streamed<br/>sources = what it looked at"]
 ```
 
-Two deliberate details. The notes pack carries **titles and no numbers**, so the prose is
-structurally unable to fabricate a `[1]`-style citation; attribution is a separate bounded
-call that is shown the finished answer and asked which notes it drew on. And scope is always
-a *path*, never a similarity score — the copilot is a note- and folder-scoped assistant, not a
-vault-wide question answering engine. "When did I first…" is a SQL question about
-`authored_at`, and answering it with a similarity score would be wrong.
+The copilot is one agent loop, shaped like a coding agent's: each model call may answer, look
+something up in the vault, or edit the open note, and the model decides. Chats stand on their
+own — one history with a search box — and the note you have open rides along with each
+question, so switching notes never ends a conversation; `@` pins a note or a folder into a
+chat. Code holds every limit: lookups before an answer, plan steps, calls, refusals, output
+tokens.
 
-Quick mode disables model thinking; Deep enables it with a larger budget. The copilot has no
-profile in its prompt, edits only the open note (a skill may also create a new one), with every
+Two deliberate details. The lookups see only what the index sees, so SLIM never finds its own
+reflections and treats them as evidence. And a turn's sources are the notes code saw it look
+at: no model call decides them and nothing in the prompt asks for citations, so an answer
+reads like an assistant talking, not a footnoted report.
+
+Quick and Deep both think; Deep has a larger budget. The copilot has no profile in its prompt,
+edits only the open note (it may also create a new note in an existing folder), with every
 change applied in the editor and undoable, and its chat history lives outside the vault and is
 never treated as evidence.
 
@@ -248,15 +253,15 @@ discovery falls back to `~/Documents/Obsidian Vault` whether or not anything is 
 existing vault of any shape is fine — see [Your vault stays yours](#your-vault-stays-yours).
 
 **2. Name your subjects.** Copy the example and edit it: the subject ids are your folder names
-under `Notes/` and `Capture/`, which the copilot widens across, and `owner` is how the prompts
-address you.
+under `Notes/` and `Capture/`, which the copilot's Nearby notes widen across, and `owner` is how
+the prompts address you.
 
 ```bash
 cp config/projects.example.yaml config/projects.yaml
 ```
 
-This file is gitignored and optional — without it SLIM still runs, but the copilot's scope stops
-at the note's own folder. Filing does not read it: the card proposes folders that exist, else
+This file is gitignored and optional — without it SLIM still runs, but Nearby notes stay in the
+note's own folder. Filing does not read it: the card proposes folders that exist, else
 `Capture/_unfiled`.
 
 **3. Install the plugin** into that same vault:
@@ -280,7 +285,7 @@ uv run slim status    # prints the vault, the counts, and anything still unembed
 
 If it picked the wrong vault: `export SLIM_VAULT=/path/to/vault`.
 
-**5. Use it.** The microphone icon records; the message icon is the open-note copilot. The
+**5. Use it.** The microphone icon records; the message icon is the copilot. The
 plugin starts `slim chat` when it needs to. A reused server does not hot-reload, so restart a
 stale one before testing changes:
 
@@ -317,10 +322,11 @@ nightly, and a restic backup of the vault daily.
   progress, locks), `note.py` (the sole writer of a recorded note), `suggest.py` (the filing
   card).
 - `slim/index/` — `ingest.py`, `chunk.py` (fragments), `embed.py`, `search.py`.
-- `slim/copilot/` — `turn.py` (one turn: the gate and the Ask path), `context.py` (what it
-  reads), `run.py` (the editing run), `edits.py` (the tools) and `blocks.py` (the note as
-  blocks with handles); `threads.py`, `images.py` (chat attachments), `skills.py`; the built-in
-  skill templates are `slim/skills/`.
+- `slim/copilot/` — `turn.py` (one turn of the loop), `lookup.py` (search, read_note,
+  list_folder), `context.py` (the open note, pins and what a skill reads), `run.py` (the run of
+  model calls), `edits.py` (the edit tools) and `blocks.py` (the note as blocks with handles);
+  `threads.py`, `images.py` (chat attachments), `skills.py`; the built-in skill templates are
+  `slim/skills/`.
 - `obsidian/src/` — the plugin: `recorder/`, `chat/` and `live/` feature folders, with the entry,
   `plugin.js`, `server.js`, `settings-tab.js` and `sse.js` at the top; one job per file, bundled by
   esbuild (`npm run build`) into the committed `obsidian/main.js` that Obsidian loads. `obsidian/test/`
@@ -333,8 +339,8 @@ nightly, and a restic backup of the vault daily.
 - **Deterministic truth in code.** Hashes, ids, timestamps, filters and paths are code. The
   model is for interpretation, classification, synthesis and language — never for a fact the
   machine already knows.
-- **`Journal/` is a floor, and the floor is a path.** No route carries a note out of it, and a
-  test enforces that.
+- **`Journal/` is flat, and it is a path.** No route carries a note out of it, and a test
+  enforces that.
 - **Subject is the only folder axis.** A path encodes one fact; type, course and status live in
   frontmatter where they can be queried. Folders SLIM invents are at most two segments deep;
   depth you create is yours.

@@ -1,8 +1,9 @@
 # SLIM — Sparse Local Intelligence & Memory
 
 A private local assistant that lives in an Obsidian vault. The owner speaks; it transcribes,
-labels, files, indexes and reflects, and a small copilot talks with them about the note they
-have open. Everything runs on one Mac; cloud is a separate future project (`BACKLOG.md`).
+labels, files, indexes and reflects, and a copilot talks with them about their notes, the one
+they have open first. Everything runs on one Mac; cloud is a separate future project
+(`BACKLOG.md`).
 
 **The owner's own words: "I record and forget."** SLIM is the PIPELINE that makes spoken audio
 filable and findable. It replaces the Notion failure: "I click record, it sits somewhere, and
@@ -18,7 +19,7 @@ live. The queue is `BACKLOG.md`; the README is for outsiders.
 ## Commands
 
 ```bash
-uv run pytest -q                        # ~875 tests; `uv` always — the system python is 3.9
+uv run pytest -q                        # ~890 tests; `uv` always — the system python is 3.9
 node --test "obsidian/test/**/*.test.mjs"   # plugin tests; they load obsidian/src/ directly
 (cd obsidian && npm install && npm run build)   # src/ -> the committed main.js; bundle.test.mjs fails if stale
 uv run slim chat --reload               # dev server; respawns on any slim/**/*.py save (not .yaml)
@@ -40,8 +41,9 @@ audio  ->  transcript  ->  LABEL  ->  FILE  ->  INDEX  ->  (REFLECT, TALK)
 
 After a change to notes, `slim ingest`; embedding is part of it, and `slim status` reports
 `unembedded`. Ingest recognizes a rename by content hash, so **a hand edit plus a hand move
-between two ingests reads as delete + create and the note loses its id** (and the chats saved
-against it). The server's own edit-and-move passes the old path, so only hand moves can hit this.
+between two ingests reads as delete + create and the note loses its id** (and a chat started
+on it loses its link to it). The server's own edit-and-move passes the old path, so only hand
+moves can hit this.
 
 1. **Capture.** The Obsidian recorder plugin (`obsidian/src/`, bundled by esbuild into the
    committed `obsidian/main.js`, the one file Obsidian loads) is the one capture lane and the
@@ -102,40 +104,79 @@ against it). The server's own edit-and-move passes the old path, so only hand mo
 4. **Reflect** — `slim reflect` writes ONE journal-synthesis note into `_Reflections/`,
    nightly. **This is the part the owner reads.** Judge changes by whether the note is worth
    reading, nothing else.
-5. **Talk** — the open-note copilot sidebar, backed by `slim chat` on 127.0.0.1:7546; scope
-   widens note → folder → course → subject, all by PATH. It answers from general knowledge
-   with the vault as context: the notes pack rides in the system message with titles only,
-   so prose cannot cite (measured 2026-09-01), and sources come from a bounded follow-up call
-   after the answer. It ranks by similarity alone, with no threshold, by design. Quick or Deep
-   (thinking on). The open note's embedded images ride with every turn, at most 6
-   (`copilot.context.MAX_NOTE_IMAGES`), those beside the pack's passages first: what an image
-   says is not searchable. Per-note chat history and pasted images live outside the vault.
-   **(owner)** There is no vault-wide Q&A lane, and no profile injection (it pandered under two
-   wordings, measured 2026-09-01).
+5. **Talk** — the copilot sidebar, backed by `slim chat` on 127.0.0.1:7546: a vault assistant
+   shaped like the Pi coding agent, which runs on the same model and server. **(owner)** It
+   answers from the whole vault (2026-11-13): the old vault-wide stack and the Ask path were too
+   restrictive and over-cited; an assistant, not a citation engine. **(owner)** No profile
+   injection (it pandered under two wordings, measured 2026-09-01); pinning `Profile/` is the
+   owner's own act.
+   - **Chats stand on their own** (`copilot/threads.py`, outside the vault with their pasted
+     images, never evidence): one history list, newest first, with a search box. Switching notes
+     never ends or swaps a chat; the sidebar reopens the latest. A question keeps the note it was
+     asked on, and an earlier answer one line naming what it looked at and changed; tool results
+     are not replayed, so history stays small and the model looks again if it needs to.
+   - **One loop, no gate** (`turn._loop` over `run._turn`): every call is offered the lookups, the
+     edit tools and `create_note`, and the model decides whether to answer, look or edit. The
+     one loop tried on 2026-10-13 was replaced that day by an intent gate, on Ollama: every
+     question paid the edit prefill, answers stopped streaming, and Ollama's renderer broke the
+     think-then-call shape. On llama-server (10-23) the raw call streams, the cached prefix is
+     reused, and Pi runs that shape cleanly. Measured 2026-11-14, 20 cases side by side: the gate
+     and its Ask path said "no record" on 5 of 7 questions whose answers were in other notes, and
+     invented one date; the loop answered them. It is 1.5–6× slower on questions about the open
+     note, because it thinks on every turn: the owner accepted that trade.
+   - **One system message and one tool list for every turn** (`turn.loop_system`, `LOOP_TOOLS`);
+     **the open note rides with the question**, as Cursor attaches the current file. The tools
+     render at the prompt's start, so anything there that followed the note would re-read the
+     pins and the history every turn; fixed, it stays llama-server's cached prefix. With no note
+     it may change (none, the chip's ✕, a note the tools cannot take, one over the plugin's 400k
+     edit limit, which rides as plain text), an edit call is refused with a reason the model
+     reads. A note over `context.ATTACH_MAX_CHARS` (40k) rides as its sections map and the head
+     that fits: a long transcript is not prefilled every turn, `read_note` shows the rest by
+     section with its handles, and a part the turn has not been shown cannot be edited.
+   - **`@` pins** a note or a folder: one message before the history, which changes only when the
+     pins do (`context.pinned_message`). A pinned note is read from disk whatever its folder: any
+     note the owner points at is fair game. A pinned folder is where search looks by default.
+   - **Lookups** (`copilot/lookup.py`, read-only): `search` returns the passage where the query
+     matched; `read_note` reads a note whole or by section, pages a long note or transcript, and
+     finds the one note a shortened path names; `list_folder`. They see only what the index sees
+     (`EXCLUDED_TOP` closed, except the open note), so SLIM never finds its own reflections as
+     evidence. At most 6 before the first answer or edit (`run.MAX_LOOKUPS`); one whose result
+     would overflow the window is refused. Each is a line in the chat, live as it runs.
+   - **Thinking on, as Pi does**: every call but a plan step's thinks (Quick 8192 tokens, Deep
+     16384, each call its own allowance, at most 8 calls a turn: `run.MAX_THINKING_CALLS`) and
+     samples as Qwen recommends with thinking (1.0, top_p 0.95, top_k 20, presence 1.5). Its
+     prompt is Pi-shaped and vault-first: the tutor persona's "use your general knowledge
+     freely" made a question about the owner's own numbers a guess with no lookup (2026-11-13).
+   - **Sources are what code saw**: the notes a turn read or its searches found (at most 8), then
+     the pins; the open note only when a tool read it. Code knows what the turn looked at, so no
+     model call decides them, and no prompt asks for citations: [n] markers made a citation bot
+     (2026-09-01).
+   - The open note's embedded images ride with every turn, at most 6
+     (`copilot.context.MAX_NOTE_IMAGES`), in note order: what an image says is not searchable.
+     Nearby notes, under the note's chip, are its neighbours by PATH (folder → course → subject,
+     `context.related_notes`), ranked by similarity alone, with no threshold, by design.
    - **Skills** are `/commands`: prompt templates in `slim/skills/` and the vault's `Skills/`
      (same name wins; `copilot/skills.py`). A skill reads WHOLE notes chosen by code
      (`copilot.context.gather`: the open note, the selection, the folder filtered by frontmatter
-     and cut to one section, `[[links]]`), inside a fixed budget, and names what it left out.
-     Code knows what it read, so a skill turn makes no sources call.
-   - **Answer or edit** — one chat, no mode. A question first meets the intent gate
-     (`copilot/turn.py`, `_intent`): one small JSON call on its own short prompt (SLIM's last
-     answer and the question, never the note) asks whether the owner wants the note changed.
-     No: the Ask path above. Yes, or it can't tell: the model edits the open note through tools
-     (`copilot.edits.TOOLS`: `replace`, `edit_text`, `insert`, `move`, `plan`) that point at
-     block handles — [b12] a block, s7 the section under heading b7, b11-b15 a range — at
-     temperature 0.0. A small change is one call; a larger one is a plan carried out one call
-     per step, and nothing after the steps (fix-ups for the plan's outline were cut: every time
-     they fired they wasted calls or undid work). Code holds the plan and the limits
-     (`copilot/run.py`: 8 steps, 30 calls, 3 refusals in a row, 12k output tokens) and refuses
+     and cut to one section, `[[links]]`), inside a fixed budget, and names what it left out; it
+     needs a note open. A chat skill runs in the loop on its own prompt (the persona), with the
+     lookups only; an edit or new-note skill runs the editing run on its own (`turn._skill_run`).
+   - **Edits** go through tools (`copilot.edits.TOOLS`: `replace`, `edit_text`, `insert`, `move`,
+     `plan`) that point at block handles — [b12] a block, s7 the section under heading b7,
+     b11-b15 a range. A small change is one call; a larger one is a plan carried out one call
+     per step, a step at temperature 0.0 with no thinking (retyping at 0.7 drifted), and nothing
+     after the steps (fix-ups for the plan's outline were cut: every time they fired they wasted
+     calls or undid work). Code holds the plan and the limits (`copilot/run.py`: 8 steps, 30
+     calls, 3 refusals in a row, 12k output tokens beside the thinking allowances) and refuses
      what a call must not do, with a reason the model reads back: among them, a later step
      rewriting what an earlier step wrote, and new HTML blocks, which Obsidian renders no
      Markdown inside (a new `<details>` is written as a folded callout instead,
      `copilot.edits.fold`). A change that reworks only the run's own text is `part_of` the
      change it grew from, so the owner never sees SLIM's drafts as removals. What the owner
      reads (steps, labels, summary) names text, never a handle (`copilot.blocks.Note.plain`,
-     `copilot.blocks.quote`). `llm.hold()` keeps the model lock for the run. An `edit` skill
-     runs the same loop (tidy: the selection's blocks only); a `new-note` skill only
-     `create_note`s, in existing folders.
+     `copilot.blocks.quote`). `llm.hold()` keeps the model lock for the turn. An `edit` skill
+     sees the note whole, at 0.0 (tidy: the selection's blocks only); `create_note` makes a new
+     note in an existing folder, and is all a `new-note` skill may do.
      **The server never writes the note** (2026-10-12): the note is open in the owner's editor, and
      writing the file behind it would fight their typing and the editor's undo.
      It works on the editor's text (`doc` + its hash) and streams each change as UTF-16 splices;
@@ -158,7 +199,7 @@ against it). The server's own edit-and-move passes the old path, so only hand mo
 Journal/            flat · never routes out
 Capture/<subject>/  every recording, router-owned; `_unfiled` when no subject is known
 Notes/<subject>/    curated writing; any depth below level 2 is the owner's
-Profile/            the owner's self-description; not indexed, not injected
+Profile/            the owner's self-description; not indexed or injected; open or @-pin it
 Attachments/        binaries                   _Reflections/   derived, excluded from ingest
 Skills/             the owner's copilot /commands; not indexed
 ```
@@ -172,8 +213,8 @@ are frontmatter, where they can be queried. The only folder SLIM invents is `Cap
 
 **`Journal/` is flat, a top-level sibling of `Capture/`:** the card files a journal there, and no
 route carries a note out of it (test-enforced). `reflect` reads `type = 'journal'` notes under
-`Journal/` only, so one placed elsewhere by hand is not in the nightly synthesis. Privacy gates
-on `Journal/` were removed on the owner's word (2026-11-13).
+`Journal/` only, so one placed elsewhere by hand is not in the nightly synthesis. These are
+filing rules, not privacy: the privacy gates are gone (the owner's rulings, below).
 
 The code, `slim/`: subpackages are feature folders. Imports run one way:
 `vault <- index <- copilot`, `vault <- capture <- recorder` (which also uses
@@ -188,9 +229,10 @@ slim/capture/    audio to labelled text: audio, transcribe, speakers, summarize,
 slim/recorder/   the capture lane: routes, pipeline, review, state, note (the note's sole writer),
                  suggest (the filing card)
 slim/index/      ingest, chunk, embed, search
-slim/copilot/    Talk: turn (the intent gate is `_intent`), context, run (the editing run), edits,
-                 blocks (the note as handled blocks), threads, images, skills; the built-in
-                 skill templates are `slim/skills/`
+slim/copilot/    Talk: turn (the loop's turn, `_loop`; a skill's run, `_skill_run`), lookup (search,
+                 read_note, list_folder), context, run (the run of model calls), edits, blocks
+                 (the note as handled blocks), threads, images, skills; the built-in skill
+                 templates are `slim/skills/`
 ```
 
 The plugin, `obsidian/src/`, has the same shape: `recorder/`, `chat/` and `live/` feature folders;
@@ -201,12 +243,14 @@ the entry, `plugin.js`, `server.js`, `settings-tab.js` and `sse.js` at the top. 
 
 Five cuts (2026-07-31, 08-27, 09-01, 09-03, 11-05) removed roughly 60k lines of code nobody used:
 curated memory, context packs, an evidence rail, MCP tools and server, policy tiers, a
-vault-wide ask stack, the desktop app and its chat lane, a tool loop for search (the editing
-loop in Talk is the owner's call of 2026-10-12), re-filing and re-labelling passes, the phone's
-Voice Memos sweep and its spoken-opening router (`slim memos`, 2026-11-05: the owner had stopped
-recording memos), and the schema columns and prose that described them. **Restoring any of
-these is the owner's call: stop and ask.** The maintainer's archive holds them. Model evaluations run from harnesses kept
-outside the repo.
+vault-wide ask stack, the desktop app and its chat lane, a tool loop for search, re-filing and
+re-labelling passes, the phone's Voice Memos sweep and its spoken-opening router (`slim memos`,
+2026-11-05: the owner had stopped recording memos), and the schema columns and prose that
+described them. The vault-wide ask and the search loop came back on 2026-11-13, in the form
+Talk describes (the owner's call); the intent gate, the Ask path and its sources call, which
+the loop replaced, went on 2026-11-14. **Restoring any of these is the owner's call: stop and
+ask.** The maintainer's archive holds them. Model evaluations run from harnesses kept outside
+the repo.
 
 ## Traps that will bite you, and what they cost when they did
 
@@ -238,15 +282,15 @@ qwen3.6's prompt with its own Go renderer, whose open bugs hit the thinking-then
 (ollama#14493, #16383), and the Pi coding agent on it looped until killed in 2 of 8 replays where
 llama-server finished 8 of 8. Ollama keeps the embedder. `qwen3.6` thinks
 by default and thinking tokens count against the output cap, so an unset `think` returns
-`content=""`; every call sets `enable_thinking` explicitly (`think=True` only for the recorder's
-summary and the copilot's Deep mode), and turns off the server's thinking budget, which is the
-coding agent's. Greedy decoding into a JSON grammar loops forever on an unbounded
+`content=""`; every call sets `enable_thinking` explicitly (`think=True` for the recorder's summary, every
+copilot loop call but a plan step's, and a skill's Deep mode), and turns off the server's
+thinking budget, which is the coding agent's. Greedy decoding into a JSON grammar loops forever on an unbounded
 string: cap `num_predict`, put `maxLength` on short fields (Ollama could not compile one above
 ~1500; llama.cpp's limit is unmeasured). LaTeX does not survive JSON — `\b \f \n \r \t` collide
 with `\beta \frac \nabla \rho \text` — so the summarizer bans backslashes and
 `capture.summarize._repair` reverses the decode.
 `llm.py` serializes live calls; temperature 0.0 for structured work, 0.7 for prose a person
-reads. A call with tools goes RAW: its prompt rendered by the server (`/apply-template`, the
+reads, and the copilot loop's thinking calls 1.0 with Qwen's recommended sampling. A call with tools goes RAW: its prompt rendered by the server (`/apply-template`, the
 GGUF's own chat template) and completed by `/completion`, streamed, its reply read by
 `llm_render._Reader` — the chat endpoint would parse the call into JSON arguments, and the draft
 shows a parameter's text as it decodes. A model with another tool-call format needs its own
@@ -305,14 +349,19 @@ that reacts to a vault `delete` must first ask whether the server caused it (202
 
 These are value calls, not technical constraints; they change only on the owner's word.
 
+- **No privacy gates on `Journal/`** (2026-11-13): "don't worry about journal anymore … we can
+  expel with the privacy gates now". The voice-memo pipeline that fed it was scrapped. This
+  supersedes the 2026-08-01 ruling (journal transcripts not to be read by agents) and the
+  2026-08-31 one (`Journal/` the only privacy rule). Filing into `Journal/` is unchanged and
+  test-enforced.
 - **Autonomous writes are fine** (2026-07-31): enrichment, reflection and the recorder write
   without confirmation; provenance stays in frontmatter.
 - **ONE generative model, `qwen3.6:35b` (`llm.MODEL`), for everything** (2026-09-01) — chosen
   against the summarization experiment's evidence (best at grounding, worst at summarization;
   do not call it "the model the bake-off chose"). Embedder `embeddinggemma`: its task prefixes
   are load-bearing (`index/embed.py`); changing it means deleting the brain DB and re-ingesting.
-- Also marked **(owner)** above: one click with no settings, the card's filing roots, no
-  vault-wide Q&A and no profile injection, and the cut list.
+- Also marked **(owner)** above: one click with no settings, the card's filing roots, a copilot
+  that answers from the whole vault (2026-11-13) and no profile injection, and the cut list.
 
 ## Environment
 
