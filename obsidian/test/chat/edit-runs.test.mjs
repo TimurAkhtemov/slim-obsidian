@@ -717,3 +717,29 @@ test("a rename after a run is kept when ↺ on that run saves its chat later", a
   await view.savingRuns;
   assert.equal(disk.get("chat-1").title, "Renamed");
 });
+
+test("a note switch redraws a run line whose editor is gone, and nothing else", async () => {
+  const { live, editor, runs } = fakeLive();
+  let holding = true;
+  const { view, root, rebuilds } = renderedView({
+    live, liveRunView: (id) => (holding && live.state(editor, id) ? editor : null),
+    postJSON: async (_route, body) => ({ source: { id: "s2", path: body.path, title: "Two" }, related: [] }),
+  });
+  const ref = "b".repeat(32);
+  const run = { plan: PLAN, steps_done: 2, step_states: ["done", "done"], stopped: null, summary: PLAN.intro,
+                before_ref: ref, hash_before: "h0", hash_after: "h1",
+                changes: [{ id: "c1", label: "Replaced s1", state: "applied" }] };
+  view.turns = [{ role: "you", text: "go" }, { role: "slim", text: PLAN.intro, turn: { mode: "quick", edit_run: run } }];
+  runs.set(ref, { changes: run.changes, active: false, marks: true, redoable: false, touched: false });
+  view.render();
+  const labels = () => { const all = []; (function walk(el) { if (el.textContent) all.push(el.textContent); el.children.forEach(walk); })(root); return all; };
+  assert.ok(labels().includes("Undo all"));
+  let before = rebuilds();
+  await view.setActiveFile({ path: "Notes/two.md", extension: "md" });
+  assert.equal(rebuilds(), before);                       // the editor still holds the run: chips only
+  holding = false;
+  before = rebuilds();
+  await view.setActiveFile({ path: "Notes/three.md", extension: "md" });
+  assert.ok(rebuilds() > before);
+  assert.ok(!labels().includes("Undo all") && labels().includes("Restore"));
+});

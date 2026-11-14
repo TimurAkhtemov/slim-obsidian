@@ -201,3 +201,24 @@ def test_a_note_under_a_pinned_excluded_folder_may_be_read_and_listed(con, vault
     assert reader.call("read_note", {"path": "Skills/s.md"}).startswith("refused:")    # not pinned
     assert reader.call("search", {"query": "graphs", "folder": "Profile"}).startswith("refused:")
     assert lookup.Reader(con, vault).call("read_note", {"path": "Profile/about/me.md"}).startswith("refused:")
+
+
+def test_a_head_that_reached_every_block_does_not_promise_a_rest(vault):
+    """A paged block makes the section too long, but nothing is left unread after the head."""
+    from slim.copilot import blocks
+    note = blocks.Note("## S\n\nintro\n\n" + "word " * 9000 + "\n")
+    path = write(vault, "Notes/a.md", "x")
+    r = lookup.Reader(None, vault, open_note=(path, note))
+    out = r.call("read_note", {"path": path, "section": "s1"})
+    assert "too long to show" in out and "the rest:" not in out
+
+
+def test_a_block_just_under_the_limit_is_shown_whole_never_paged(vault):
+    from slim.copilot import blocks
+    note = blocks.Note("para " * (lookup.READ_MAX_CHARS // 5 - 1) + "\n")
+    assert len(note.blocks[0].text) < lookup.READ_MAX_CHARS < len(note.render())
+    path = write(vault, "Notes/a.md", "x")
+    r = lookup.Reader(None, vault, open_note=(path, note))
+    out = r.call("read_note", {"path": path, "section": "b1"})
+    assert "too long" not in out and "para para" in out
+    assert not note.paged and note.blocks[0].handle in r.shown

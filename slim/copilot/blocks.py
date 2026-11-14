@@ -611,8 +611,9 @@ class Note:
         out, kept, size, reached = [], [], 0, 0
         for block in chosen:
             piece = self.render([block])
-            shown = size + len(piece) <= limit
-            if not shown and (block.locked or len(piece) > limit):
+            # A block's own text decides "too long", not its label: one that fits alone is shown.
+            shown = size + len(piece) <= limit or (not out and not block.locked and len(block.text) <= limit)
+            if not shown and (block.locked or len(block.text) > limit):
                 h = block.handle
                 if block.locked:
                     piece = (f"[locked {h}] (part of the recording, {len(block.text):,} characters; "
@@ -622,7 +623,7 @@ class Note:
                     self.paged.add(h)
                     piece = (f"[{h}: too long to show] ({len(block.text):,} characters; "
                              f'read_note("{path}", "{h}") reads it a page at a time, read-only)\n\n')
-            if size + len(piece) > limit:
+            if size + len(piece) > limit and not shown:
                 break
             if shown:
                 kept.append(block)

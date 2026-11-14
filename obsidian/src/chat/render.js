@@ -254,6 +254,7 @@ module.exports = {
     const kept = !this.stuck && this.el?.transcript ? this.el.transcript.scrollTop : null;
     clear(root);
     this.el = {};
+    this.editMetas = [];
     // Rendered Markdown attaches child components (embeds, callouts) to the component it is
     // given. One host per render, replaced by the next, so they do not pile up on the view.
     if (this.mdHost) { this.removeChild(this.mdHost); this.mdHost = null; }
@@ -277,6 +278,11 @@ module.exports = {
   renderNoteContext() {
     const holder = this.el?.context;
     if (!holder || (!this.turns.length && !this.showThreads)) { this.render(); return; }
+    // A run line's controls follow whether its note's editor still holds the run: only then redraw.
+    if (this.editMetas?.some((m) => m.ref && Boolean(this.plugin.liveRunView?.(m.ref)) !== m.live)) {
+      this.render();
+      return;
+    }
     clear(holder);
     this.el.nearby = this.el.nearbyChip = null;
     this.renderNearby(holder);

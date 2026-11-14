@@ -553,7 +553,8 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
         lookup, `done` in the loop): answered, and the call made again."""
         names = [c["name"] for c in reply.calls]
         return (any(n in looks or n in barred or n not in tools for n in names)
-                and not any((n == "plan" or n in step_tools) and n not in barred for n in names))
+                and not any(((n == "plan" and "plan" in tools) or n in step_tools) and n not in barred
+                            for n in names))
 
     def bar(name: str, step: int) -> str:
         out["refusals"].append({"step": step, "tool": name, "code": "no_note"})
@@ -646,7 +647,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
 
     def split(reply: _Reply):
         """A first reply's plan, and its other calls if any of them changes something."""
-        plans = [c for c in reply.calls if c["name"] == "plan" and "plan" not in barred]
+        plans = [c for c in reply.calls if c["name"] == "plan" and "plan" in tools and "plan" not in barred]
         others = [c for c in reply.calls if c not in plans]
         acts = any(c["name"] in acting for c in others) or (plans and any(c["name"] in looks for c in others))
         return plans, others if acts else []

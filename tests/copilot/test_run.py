@@ -1033,14 +1033,14 @@ def test_a_first_reply_edit_off_its_step_is_judged_but_not_sent_back(turn, monke
 
 # --- the lookup phase: read-only tools before, and inside, the run (2026-11-13) ---------------
 
-def _looking(vault, monkeypatch, *replies, note=NOTE):
+def _looking(vault, monkeypatch, *replies, note=NOTE, tools=None):
     from slim.copilot import lookup
     seen = scripted(monkeypatch, *replies)
     draft = blocks.Note(note)
     reader = lookup.Reader(None, vault, open_note=("Notes/school/n.md", draft))
     write(vault, "Notes/school/b.md", "Bee text.")
     events, said = [], []
-    tools = ["search", "read_note", "list_folder", "plan", *STEP_TOOLS]
+    tools = tools or ["search", "read_note", "list_folder", "plan", *STEP_TOOLS]
     out = edit_run._turn([{"role": "user", "content": "q"}], think=False, tools=tools,
                          step_tools=edit_run.STEP_TOOLS, note=draft, before_text=note, first_predict=100,
                          on_edit=lambda e, p: events.append((e, p)), should_stop=lambda: False,
@@ -1057,6 +1057,14 @@ def test_lookups_run_before_the_first_answer_and_the_reply_streams(vault, monkey
     assert seen[1]["messages"][-1]["role"] == "tool" and "Bee text." in seen[1]["messages"][-1]["content"]
     assert out["looked_up"] == [{"name": "read_note", "path": "Notes/school/b.md", "refused": False}]
     assert out["calls"] == 1
+
+
+def test_a_plan_where_plan_is_not_offered_is_refused_and_starts_no_run(vault, monkeypatch):
+    out, seen, events, _said = _looking(
+        vault, monkeypatch, ("", [("plan", {"intro": "x", "steps": ["a"]})]), ("Just an answer.", []),
+        tools=["search", "read_note", "list_folder"])
+    assert events == [] and out["kind"] == "answer" and out["answer"] == "Just an answer."
+    assert seen[1]["messages"][-1]["content"].startswith("refused: plan is not available now")
 
 
 def test_a_reply_mixing_a_lookup_and_a_tool_not_offered_runs_the_lookup(vault, monkeypatch):

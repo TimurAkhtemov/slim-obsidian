@@ -228,6 +228,7 @@ module.exports = {
     const inNote = landed.some((change) => change.op !== "create");
     const view = ref && this.plugin.liveRunView?.(ref);
     const live = view && this.plugin.live?.state(view, ref);
+    (this.editMetas ||= []).push({ ref, live: Boolean(live) });
     if (this.restoreRefused?.ref === ref) {
       create(meta, "div", "slim-edit-warning", this.restoreRefused.message).setAttribute("role", "alert");
     }

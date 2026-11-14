@@ -229,7 +229,7 @@ class Reader:
             block = next((b for b in note.blocks if b.handle == page[1]), None)
             # A recording's part, or a block too long to read whole (one pasted 60k paragraph):
             # a page at a time, read-only.
-            if block is not None and (block.locked or len(note.render([block])) > READ_MAX_CHARS):
+            if block is not None and (block.locked or len(block.text) > READ_MAX_CHARS):
                 if not block.locked:
                     note.paged.add(block.handle)
                 return self._pages(path, block, int(page[2] or 1))
@@ -253,12 +253,14 @@ class Reader:
         else:
             chosen = list(note.blocks)
         text = note.render(chosen)
+        total = len(chosen)
         if len(text) > READ_MAX_CHARS:
             # Whole blocks only, so what it shows and what it may then change (`.shown`) agree.
-            text, chosen, _reached = note.head(chosen, READ_MAX_CHARS, path)
+            text, chosen, reached = note.head(chosen, READ_MAX_CHARS, path)
             sections = "" if section else note.sections()
-            text = (f"Sections:\n{sections}\n\n" if sections else "") + text + \
-                "[… the rest: read_note(path, section) for one section]"
+            text = (f"Sections:\n{sections}\n\n" if sections else "") + text
+            if reached < total:
+                text += "[… the rest: read_note(path, section) for one section]"
         self.shown |= {b.handle for b in chosen if b.kind != "blank" and not b.locked}
         return text
 

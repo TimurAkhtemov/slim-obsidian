@@ -685,6 +685,7 @@ var require_render = __commonJS({
         const kept = !this.stuck && this.el?.transcript ? this.el.transcript.scrollTop : null;
         clear(root);
         this.el = {};
+        this.editMetas = [];
         if (this.mdHost) {
           this.removeChild(this.mdHost);
           this.mdHost = null;
@@ -708,6 +709,10 @@ var require_render = __commonJS({
       renderNoteContext() {
         const holder = this.el?.context;
         if (!holder || !this.turns.length && !this.showThreads) {
+          this.render();
+          return;
+        }
+        if (this.editMetas?.some((m) => m.ref && Boolean(this.plugin.liveRunView?.(m.ref)) !== m.live)) {
           this.render();
           return;
         }
@@ -1520,6 +1525,7 @@ var require_edit_run = __commonJS({
         const inNote = landed.some((change) => change.op !== "create");
         const view = ref && this.plugin.liveRunView?.(ref);
         const live = view && this.plugin.live?.state(view, ref);
+        (this.editMetas ||= []).push({ ref, live: Boolean(live) });
         if (this.restoreRefused?.ref === ref) {
           create(meta, "div", "slim-edit-warning", this.restoreRefused.message).setAttribute("role", "alert");
         }
