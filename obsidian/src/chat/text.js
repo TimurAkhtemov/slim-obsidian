@@ -61,6 +61,25 @@ function slashQuery(draft) {
   return match ? match[1] : null;
 }
 
+// "ask @wee" with the caret at 8 → {query: "wee", from: 4}: an `@` that starts a word, up to the
+// caret, with no space since. `from` is where the `@` is.
+function mentionQuery(draft, caret) {
+  const text = String(draft || "");
+  const end = Number.isInteger(caret) ? caret : text.length;
+  const match = /(?:^|\s)@([^\s@]*)$/.exec(text.slice(0, end));
+  return match ? { query: match[1], from: end - match[1].length - 1 } : null;
+}
+
+const MAX_MENTIONS = 20;
+
+// Folders first, then shorter paths first; a case-insensitive substring of the path.
+function mentionMatches(query, files, folders) {
+  const needle = String(query || "").toLowerCase();
+  const rank = (kind) => (paths) => (paths || []).filter((p) => String(p).toLowerCase().includes(needle))
+    .sort((a, b) => a.length - b.length || a.localeCompare(b)).map((path) => ({ kind, path }));
+  return [...rank("folder")(folders), ...rank("note")(files)].slice(0, MAX_MENTIONS);
+}
+
 function matchSkills(skills, query) {
   if (query === null || query === undefined) return [];
   return (skills || []).filter((skill) => skill.name.startsWith(query)).slice(0, 8);
@@ -233,7 +252,7 @@ function editOutcome(run) {
     + `${left.length ? ` Not done: ${list}.` : ""}`;
 }
 
-module.exports = { threadRows, shortDate, pathStem, noteTitle, groupCitations, sha256Hex, slashQuery, matchSkills,
+module.exports = { threadRows, shortDate, pathStem, noteTitle, groupCitations, sha256Hex, slashQuery, matchSkills, mentionQuery, mentionMatches,
         inputsText, editorSelection, MAX_SELECTION_CHARS, MAX_EDIT_CHARS, looksLikeMath, normalizeMath,
         LIVE_RENDER_MS, quickOrDeep, metaText, stageLine, SUGGESTED_PROMPTS, titleFromQuestion, threadId,
         cancelledError, runCounts, historyText, STOPPED_BECAUSE, editOutcome };

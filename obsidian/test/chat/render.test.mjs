@@ -160,7 +160,7 @@ test("nearby notes fold under the title, closed until they open them, and stay o
   const chip = () => find(root, (node) => node.cls === "slim-copilot-context");
   assert.equal(chip().open, false);
   const summary = chip().children.find((child) => child.tag === "summary");
-  assert.deepEqual(summary.children.map((child) => child.textContent), ["One", "2 nearby"]);
+  assert.deepEqual(summary.children.map((child) => child.textContent), ["One", "\u2715", "2 nearby"]);
   assert.equal(summary.children[0].attrs.title, "Notes/one.md");
   summary.onclick();
   view.render();

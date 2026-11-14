@@ -92,3 +92,22 @@ test("the selection comes from the pane showing the open note, not the focused o
     editor: { getSelection: () => "right" } } }] } };
   assert.deepEqual(editorSelection(bare, "Notes/a.md"), { text: "right" });   // an editor that cannot say where
 });
+
+test("@ starts a mention only at the start of a word, up to the caret", () => {
+  const { mentionQuery, mentionMatches } = require("../../src/chat/text.js");
+  assert.deepEqual(mentionQuery("ask @wee", 8), { query: "wee", from: 4 });
+  assert.deepEqual(mentionQuery("@", 1), { query: "", from: 0 });
+  assert.equal(mentionQuery("a@b", 3), null);
+  assert.equal(mentionQuery("ask @wee now", 12), null);
+  assert.deepEqual(mentionQuery("ask @wee now", 8), { query: "wee", from: 4 });
+});
+
+test("mentions match by substring, folders first, then shorter paths, at most 20", () => {
+  const { mentionMatches } = require("../../src/chat/text.js");
+  const hits = mentionMatches("WEEK", ["Notes/week-long.md", "week.md", "x/y/week2.md"], ["Capture/weekly", "Notes/other"]);
+  assert.deepEqual(hits, [
+    { kind: "folder", path: "Capture/weekly" }, { kind: "note", path: "week.md" },
+    { kind: "note", path: "x/y/week2.md" }, { kind: "note", path: "Notes/week-long.md" }]);
+  const many = Array.from({ length: 30 }, (_, i) => `n${i}.md`);
+  assert.equal(mentionMatches("", many, []).length, 20);
+});

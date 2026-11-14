@@ -520,6 +520,18 @@
   min-width: 0; font-size: var(--font-ui-medium); font-weight: var(--font-semibold);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.slim-copilot-note-row { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.slim-copilot-note.is-off { color: var(--text-faint); text-decoration: line-through; }
+.slim-copilot-note-off { flex: 0 0 auto; padding: 0 4px; background: none; border: 0; box-shadow: none; height: auto; }
+.slim-pins { grid-area: pins; display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.slim-pin {
+  display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 1px 4px 1px 8px;
+  font-size: var(--font-ui-smaller); color: var(--text-muted);
+  background: var(--background-secondary); border: 1px solid var(--background-modifier-border); border-radius: 10px;
+}
+.slim-pin.is-folder { border-style: dashed; }
+.slim-pin-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slim-pin .slim-chip-x { padding: 0 3px; background: none; border: 0; box-shadow: none; height: auto; }
 .slim-copilot-context { min-width: 0; }
 .slim-copilot-context > summary {
   display: flex; align-items: baseline; gap: 8px; min-width: 0; cursor: pointer; list-style: none;
@@ -627,7 +639,7 @@
 .slim-copilot-composer {
   position: relative;
   flex: 0 0 auto; display: grid; grid-template-columns: minmax(80px, auto) 1fr 32px 32px;
-  grid-template-areas: "previews previews previews previews" "input input input input" "mode . attach send";
+  grid-template-areas: "pins pins pins pins" "previews previews previews previews" "input input input input" "mode . attach send";
   gap: 6px; border-top: 1px solid var(--background-modifier-border); padding-top: 8px;
 }
 .slim-slash-menu {

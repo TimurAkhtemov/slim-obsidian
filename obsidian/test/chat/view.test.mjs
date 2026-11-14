@@ -891,3 +891,81 @@ test("opening the sidebar reopens the most recently updated chat and navigates n
   assert.deepEqual(view.turns.map((t) => t.text), ["Q new"]);
   assert.equal(linked, 0);
 });
+
+// --- @ pins and the open-note chip ---------------------------------------------------------
+
+function pinView(extra = {}) {
+  const bodies = [], saved = [];
+  const view = makeView({
+    postJSON: async (route, body) => { if (route.endsWith("save")) { saved.push(body); return body; } return { source: { id: "s1", path: "Notes/one.md" } }; },
+    streamCopilot: async (body, handlers) => { bodies.push(body); handlers.turn({ answer: "ok", mode: "quick", citations: [] }); },
+    ...extra,
+  });
+  view.app.vault = {
+    getMarkdownFiles: () => [{ path: "Notes/x.md" }, { path: ".trash/old.md" }],
+    getAllLoadedFiles: () => [{ path: "/", children: [] }, { path: "Notes", children: [] }, { path: ".obsidian", children: [] }, { path: "Notes/x.md" }],
+  };
+  view.render = () => {};
+  view.openNote = { path: "Notes/one.md", id: "s1" };
+  return { view, bodies, saved };
+}
+
+test("picking an @ match pins it, clears the @query, and the next send carries the pin", async () => {
+  const { view, bodies } = pinView();
+  view.draft = "ask @wee";
+  view.pin({ kind: "note", path: "Notes/x.md" });
+  assert.equal(view.draft, "ask ");
+  view.pin({ kind: "note", path: "Notes/x.md" });                 // no duplicate
+  assert.deepEqual(view.activeThread.pins, [{ kind: "note", path: "Notes/x.md" }]);
+  await view.send("what is it");
+  assert.deepEqual(bodies[0].pins, [{ kind: "note", path: "Notes/x.md" }]);
+});
+
+test("the picker lists notes and folders, never the root or hidden folders", () => {
+  const { view } = pinView();
+  view.draft = "@";
+  assert.deepEqual(view.mentionHits(), [{ kind: "folder", path: "Notes" }, { kind: "note", path: "Notes/x.md" }]);
+});
+
+test("a chat holds at most 12 pins; the 13th is refused with a sentence", () => {
+  const { view } = pinView();
+  for (let i = 0; i < 13; i++) { view.draft = "@"; view.pin({ kind: "note", path: `n${i}.md` }); }
+  assert.equal(view.activeThread.pins.length, 12);
+  assert.match(view.error, /at most 12/);
+});
+
+test("unpinning removes the chip and saves the thread without it", async () => {
+  const { view, saved } = pinView();
+  view.newThread();
+  view.activeThread.pins = [{ kind: "folder", path: "Capture" }, { kind: "note", path: "Notes/x.md" }];
+  view.turns = [{ role: "you", text: "q" }, { role: "slim", text: "a" }];
+  await view.unpin("Capture");
+  assert.deepEqual(view.activeThread.pins, [{ kind: "note", path: "Notes/x.md" }]);
+  assert.deepEqual(saved.at(-1).pins, [{ kind: "note", path: "Notes/x.md" }]);
+});
+
+test("the open-note chip's ✕ leaves the note out (path and doc) until clicked again", async () => {
+  const { view, bodies } = pinView();
+  view.plugin.liveViewFor = () => ({ state: { doc: { toString: () => "# one" } } });
+  view.toggleOpenNote();
+  await view.send("first");
+  assert.equal(bodies[0].path, null);
+  assert.equal("doc" in bodies[0], false);
+  view.toggleOpenNote();
+  await view.send("second");
+  assert.equal(bodies[1].path, "Notes/one.md");
+  assert.equal(bodies[1].doc, "# one");
+});
+
+test("the sidebar draws pin chips with a remove button and an ✕ on the open-note chip", () => {
+  const { view, root } = renderedView();
+  view.newThread();
+  view.activeThread.pins = [{ kind: "note", path: "Notes/x.md" }];
+  view.render();
+  const chip = find(root, (n) => n.cls?.includes("slim-pin "));
+  assert.ok(chip);
+  find(chip, (n) => n.cls === "slim-chip-x").onclick();
+  assert.deepEqual(view.activeThread.pins, []);
+  find(root, (n) => n.cls?.includes("slim-copilot-note-off")).onclick({ preventDefault() {}, stopPropagation() {} });
+  assert.equal(view.activeThread.openNoteOff, true);
+});

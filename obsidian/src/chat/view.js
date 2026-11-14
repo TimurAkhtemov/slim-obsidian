@@ -5,8 +5,9 @@
 const { ItemView, Modal } = require("obsidian");
 const { MAX_COPILOT_IMAGES, resizeCopilotImage } = require("./images");
 const { sha256Hex, editorSelection, MAX_EDIT_CHARS, quickOrDeep, titleFromQuestion, threadId,
-        cancelledError, historyText, threadRows } = require("./text");
+        cancelledError, historyText, threadRows, mentionQuery, mentionMatches } = require("./text");
 const { clear, create } = require("./dom");
+const MAX_PINS = 12;     // the server refuses more (copilot.turn)
 
 const VIEW_TYPE_COPILOT = "slim-copilot";
 
@@ -112,6 +113,71 @@ class CopilotView extends ItemView {
       console.error("[slim] skills", error);
     }
     this.renderSlash();
+  }
+
+  // The notes and folders `@` offers: Markdown files, and every folder but the root and the
+  // app's own (.obsidian, .trash).
+  mentionSources() {
+    const vault = this.app?.vault;
+    const files = (vault?.getMarkdownFiles?.() || []).map((file) => file.path)
+      .filter((path) => !path.split("/").some((part) => part.startsWith(".")));
+    const folders = (vault?.getAllLoadedFiles?.() || []).filter((item) => item.children && item.path
+      && item.path !== "/" && !item.path.split("/").some((part) => part.startsWith(".")))
+      .map((item) => item.path);
+    return { files, folders };
+  }
+
+  mentionHits() {
+    const found = mentionQuery(this.draft, this.caret);
+    if (!found) return [];
+    const { files, folders } = this.mentionSources();
+    return mentionMatches(found.query, files, folders);
+  }
+
+  // Choosing an `@` match: the `@query` leaves the draft and a chip takes its place. Never a
+  // duplicate, never a 13th (the server refuses more than MAX_PINS).
+  pin(item) {
+    const thread = this.activeThread || (this.newThread(), this.activeThread);
+    const found = mentionQuery(this.draft, this.caret);
+    if (found) {
+      const end = found.from + 1 + found.query.length;
+      this.draft = this.draft.slice(0, found.from) + this.draft.slice(end).replace(/^ /, "");
+      this.caret = found.from;
+    }
+    thread.pins = thread.pins || [];
+    this.error = "";
+    if (thread.pins.some((pin) => pin.path === item.path)) { this.composerFocused = true; this.render(); return; }
+    if (thread.pins.length >= MAX_PINS) {
+      this.error = `A chat holds at most ${MAX_PINS} pinned notes and folders.`;
+    } else {
+      thread.pins = [...thread.pins, { kind: item.kind, path: item.path }];
+    }
+    this.composerFocused = true;
+    this.render();
+    return this.savePins(thread);
+  }
+
+  unpin(path) {
+    const thread = this.activeThread;
+    if (!thread) return;
+    thread.pins = (thread.pins || []).filter((pin) => pin.path !== path);
+    this.render();
+    return this.savePins(thread);
+  }
+
+  // Only a chat with turns is on disk; an empty one carries its pins until it has an answer.
+  async savePins(thread) {
+    if (this.sending || thread !== this.activeThread || !this.turns.length) return;
+    try { await this.saveRecord(thread, this.turns); } catch (error) { this.error = error.message || String(error); }
+    this.render();
+  }
+
+  // ✕ on the open-note chip: this chat leaves the open note out, until clicked again. Not saved,
+  // and an answer already streaming keeps the note it was asked on.
+  toggleOpenNote() {
+    if (!this.activeThread) this.newThread();
+    this.activeThread.openNoteOff = !this.activeThread.openNoteOff;
+    this.render();
   }
 
   pickSkill(skill) {
@@ -344,7 +410,8 @@ class CopilotView extends ItemView {
     // lands — otherwise B was saved with A's answer and A's question was never saved.
     const thread = this.activeThread;
     const turns = this.turns;
-    const path = this.openNote?.path ?? null;   // the note this question is asked on
+    // The note this question is asked on; null when the chat leaves it out (✕ on its chip).
+    const path = thread.openNoteOff ? null : this.openNote?.path ?? null;
     if (!turns.length) thread.title = titleFromQuestion(question);
     const asked = { role: "you", text: question, ...(path ? { note: path } : {}),
       ...(outgoingImages.length ? { attachments: outgoingImages } : {}) };
@@ -377,7 +444,7 @@ class CopilotView extends ItemView {
     const drafting = () => (run ? (this.inView(run) ? [run.view, run.ref] : []) : local ? [tracked, local] : []);
     this.render();
     try {
-      await this.refreshNote();
+      if (path) await this.refreshNote();
       if (abort.signal.aborted) throw cancelledError();
       // The editor's text, not the file: Obsidian saves a moment after typing, and an editing
       // run works on exactly what the owner sees. The editor tracks the owner's typing from

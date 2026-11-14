@@ -137,6 +137,18 @@ var require_text = __commonJS({
       const match = /^\/([a-z0-9-]*)$/.exec(String(draft || ""));
       return match ? match[1] : null;
     }
+    function mentionQuery(draft, caret) {
+      const text = String(draft || "");
+      const end = Number.isInteger(caret) ? caret : text.length;
+      const match = /(?:^|\s)@([^\s@]*)$/.exec(text.slice(0, end));
+      return match ? { query: match[1], from: end - match[1].length - 1 } : null;
+    }
+    var MAX_MENTIONS = 20;
+    function mentionMatches(query, files, folders) {
+      const needle = String(query || "").toLowerCase();
+      const rank = (kind) => (paths) => (paths || []).filter((p) => String(p).toLowerCase().includes(needle)).sort((a, b) => a.length - b.length || a.localeCompare(b)).map((path) => ({ kind, path }));
+      return [...rank("folder")(folders), ...rank("note")(files)].slice(0, MAX_MENTIONS);
+    }
     function matchSkills(skills, query) {
       if (query === null || query === void 0) return [];
       return (skills || []).filter((skill) => skill.name.startsWith(query)).slice(0, 8);
@@ -260,6 +272,8 @@ var require_text = __commonJS({
       sha256Hex,
       slashQuery,
       matchSkills,
+      mentionQuery,
+      mentionMatches,
       inputsText,
       editorSelection,
       MAX_SELECTION_CHARS,
@@ -334,6 +348,7 @@ var require_render = __commonJS({
       groupCitations,
       slashQuery,
       matchSkills,
+      mentionQuery,
       inputsText,
       normalizeMath,
       LIVE_RENDER_MS,
@@ -364,6 +379,27 @@ var require_render = __commonJS({
           item.onclick = () => {
             if (!skill.error) this.pickSkill(skill);
           };
+        });
+      },
+      // The `@` picker, built like the slash menu: notes and folders, the chosen row highlighted.
+      renderMention() {
+        const menu = this.el?.mention;
+        if (!menu) return;
+        clear(menu);
+        const hits = this.mentionDismissed ? [] : this.mentionHits();
+        menu.hidden = !hits.length;
+        if (!hits.length) {
+          this.mentionIndex = 0;
+          return;
+        }
+        const idx = Math.min(Math.max(0, this.mentionIndex || 0), hits.length - 1);
+        this.mentionIndex = idx;
+        hits.forEach((hit, i) => {
+          const item = create(menu, "button", `slim-slash-item${i === idx ? " is-selected" : ""}`);
+          create(item, "span", "slim-slash-name", hit.kind === "folder" ? `${hit.path}/` : pathStem(hit.path));
+          create(item, "small", "slim-slash-about", hit.kind === "folder" ? "Folder" : hit.path);
+          item.onmousedown = (event) => event.preventDefault();
+          item.onclick = () => this.pin(hit);
         });
       },
       imageURL(threadId, imageId) {
@@ -501,6 +537,25 @@ var require_render = __commonJS({
         const nearby = this.context?.source?.path === sourcePath ? this.context : null;
         const sourceTitle = nearby?.source?.title || (sourcePath ? pathStem(sourcePath) : "No note open");
         const related = nearby?.related || [];
+        const off = Boolean(this.activeThread?.openNoteOff);
+        const toggle = (parent) => {
+          if (!sourcePath) return;
+          const button = create(
+            parent,
+            "button",
+            `slim-chip-x slim-copilot-note-off${off ? " is-off" : ""}`,
+            off ? "\u21A9" : "\u2715"
+          );
+          const label = off ? "Include the open note again" : "Leave the open note out of this chat";
+          button.setAttribute("title", label);
+          button.setAttribute("aria-label", label);
+          button.onclick = (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            this.toggleOpenNote();
+          };
+        };
+        const noteCls = `slim-copilot-note${off ? " is-off" : ""}`;
         if (related.length) {
           const context = create(header, "details", "slim-copilot-context");
           context.open = this.nearbyOpen;
@@ -508,8 +563,9 @@ var require_render = __commonJS({
           summary.onclick = () => {
             this.nearbyOpen = !context.open;
           };
-          const note = create(summary, "span", "slim-copilot-note", sourceTitle);
+          const note = create(summary, "span", noteCls, sourceTitle);
           note.setAttribute("title", sourcePath);
+          toggle(summary);
           create(summary, "small", "slim-copilot-nearby-count", `${related.length} nearby`);
           for (const item of related) {
             const button = create(context, "button", "slim-related-note");
@@ -519,8 +575,10 @@ var require_render = __commonJS({
             button.onclick = () => this.openFile(item.path);
           }
         } else {
-          const note = create(header, "div", "slim-copilot-note", sourceTitle);
+          const row = create(header, "div", "slim-copilot-note-row");
+          const note = create(row, "div", noteCls, sourceTitle);
           note.setAttribute("title", sourcePath);
+          toggle(row);
         }
         if (this.showThreads) this.renderThreadList(root);
         else this.renderTranscript(root);
@@ -539,8 +597,21 @@ var require_render = __commonJS({
             };
           });
         }
+        const pins = this.activeThread?.pins || [];
+        if (pins.length) {
+          const chips = create(composer, "div", "slim-pins");
+          for (const pin of pins) {
+            const chip = create(chips, "span", `slim-pin is-${pin.kind}`);
+            chip.setAttribute("title", pin.path);
+            create(chip, "span", "slim-pin-name", pin.kind === "folder" ? `${pathStem(pin.path)}/` : pathStem(pin.path));
+            const x = create(chip, "button", "slim-chip-x", "\u2715");
+            x.setAttribute("aria-label", `Unpin ${pin.path}`);
+            x.onclick = () => this.unpin(pin.path);
+          }
+        }
         const slash = create(composer, "div", "slim-slash-menu");
         this.el.slash = slash;
+        this.el.mention = create(composer, "div", "slim-slash-menu slim-mention-menu");
         const modes = create(composer, "select", "slim-mode-select");
         for (const value of ["quick", "deep"]) {
           const option = create(modes, "option", "", value[0].toUpperCase() + value.slice(1));
@@ -557,11 +628,21 @@ var require_render = __commonJS({
         autoGrow(input);
         input.oninput = () => {
           this.draft = input.value;
+          this.caret = input.selectionStart;
           this.slashDismissed = false;
           this.slashIndex = 0;
+          this.mentionDismissed = false;
+          this.mentionIndex = 0;
           autoGrow(input);
           if (input.value === "/") this.loadSkills();
           else this.renderSlash();
+          this.renderMention();
+        };
+        input.onclick = input.onkeyup = () => {
+          if (input.selectionStart !== this.caret) {
+            this.caret = input.selectionStart;
+            this.renderMention();
+          }
         };
         input.onfocus = () => {
           this.composerFocused = true;
@@ -571,6 +652,26 @@ var require_render = __commonJS({
         };
         this.el.input = input;
         input.onkeydown = (event) => {
+          const picks = this.mentionDismissed ? [] : this.mentionHits();
+          if (picks.length) {
+            if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+              event.preventDefault();
+              this.mentionIndex = ((this.mentionIndex || 0) + (event.key === "ArrowDown" ? 1 : -1) + picks.length) % picks.length;
+              this.renderMention();
+              return;
+            }
+            if (event.key === "Escape") {
+              event.preventDefault();
+              this.mentionDismissed = true;
+              this.renderMention();
+              return;
+            }
+            if (event.key === "Tab" || event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              this.pin(picks[Math.min(this.mentionIndex || 0, picks.length - 1)]);
+              return;
+            }
+          }
           const hits = this.slashDismissed ? [] : matchSkills(this.skills, slashQuery(this.draft));
           if (hits.length && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
             event.preventDefault();
@@ -658,6 +759,7 @@ var require_render = __commonJS({
         );
         send.onclick = () => this.sending ? this.cancel() : this.send();
         this.renderSlash();
+        this.renderMention();
         if (focused && typeof input.focus === "function") {
           input.focus();
           input.selectionStart = input.selectionEnd = input.value.length;
@@ -1230,9 +1332,12 @@ var require_view = __commonJS({
       threadId,
       cancelledError,
       historyText,
-      threadRows
+      threadRows,
+      mentionQuery,
+      mentionMatches
     } = require_text();
     var { clear, create } = require_dom();
+    var MAX_PINS = 12;
     var VIEW_TYPE_COPILOT = "slim-copilot";
     var RenameModal = class extends Modal {
       constructor(app, current, onSubmit) {
@@ -1334,6 +1439,70 @@ var require_view = __commonJS({
           console.error("[slim] skills", error);
         }
         this.renderSlash();
+      }
+      // The notes and folders `@` offers: Markdown files, and every folder but the root and the
+      // app's own (.obsidian, .trash).
+      mentionSources() {
+        const vault = this.app?.vault;
+        const files = (vault?.getMarkdownFiles?.() || []).map((file) => file.path).filter((path) => !path.split("/").some((part) => part.startsWith(".")));
+        const folders = (vault?.getAllLoadedFiles?.() || []).filter((item) => item.children && item.path && item.path !== "/" && !item.path.split("/").some((part) => part.startsWith("."))).map((item) => item.path);
+        return { files, folders };
+      }
+      mentionHits() {
+        const found = mentionQuery(this.draft, this.caret);
+        if (!found) return [];
+        const { files, folders } = this.mentionSources();
+        return mentionMatches(found.query, files, folders);
+      }
+      // Choosing an `@` match: the `@query` leaves the draft and a chip takes its place. Never a
+      // duplicate, never a 13th (the server refuses more than MAX_PINS).
+      pin(item) {
+        const thread = this.activeThread || (this.newThread(), this.activeThread);
+        const found = mentionQuery(this.draft, this.caret);
+        if (found) {
+          const end = found.from + 1 + found.query.length;
+          this.draft = this.draft.slice(0, found.from) + this.draft.slice(end).replace(/^ /, "");
+          this.caret = found.from;
+        }
+        thread.pins = thread.pins || [];
+        this.error = "";
+        if (thread.pins.some((pin) => pin.path === item.path)) {
+          this.composerFocused = true;
+          this.render();
+          return;
+        }
+        if (thread.pins.length >= MAX_PINS) {
+          this.error = `A chat holds at most ${MAX_PINS} pinned notes and folders.`;
+        } else {
+          thread.pins = [...thread.pins, { kind: item.kind, path: item.path }];
+        }
+        this.composerFocused = true;
+        this.render();
+        return this.savePins(thread);
+      }
+      unpin(path) {
+        const thread = this.activeThread;
+        if (!thread) return;
+        thread.pins = (thread.pins || []).filter((pin) => pin.path !== path);
+        this.render();
+        return this.savePins(thread);
+      }
+      // Only a chat with turns is on disk; an empty one carries its pins until it has an answer.
+      async savePins(thread) {
+        if (this.sending || thread !== this.activeThread || !this.turns.length) return;
+        try {
+          await this.saveRecord(thread, this.turns);
+        } catch (error) {
+          this.error = error.message || String(error);
+        }
+        this.render();
+      }
+      // ✕ on the open-note chip: this chat leaves the open note out, until clicked again. Not saved,
+      // and an answer already streaming keeps the note it was asked on.
+      toggleOpenNote() {
+        if (!this.activeThread) this.newThread();
+        this.activeThread.openNoteOff = !this.activeThread.openNoteOff;
+        this.render();
       }
       pickSkill(skill) {
         this.draft = `/${skill.name} `;
@@ -1546,7 +1715,7 @@ var require_view = __commonJS({
         this.retryImages = [];
         const thread = this.activeThread;
         const turns = this.turns;
-        const path = this.openNote?.path ?? null;
+        const path = thread.openNoteOff ? null : this.openNote?.path ?? null;
         if (!turns.length) thread.title = titleFromQuestion(question);
         const asked = {
           role: "you",
@@ -1583,7 +1752,7 @@ var require_view = __commonJS({
         const drafting = () => run ? this.inView(run) ? [run.view, run.ref] : [] : local ? [tracked, local] : [];
         this.render();
         try {
-          await this.refreshNote();
+          if (path) await this.refreshNote();
           if (abort.signal.aborted) throw cancelledError();
           const shown = path ? this.plugin.liveViewFor?.(path) || null : null;
           const text2 = shown ? shown.state.doc.toString() : null;
