@@ -102,7 +102,7 @@ test("sending streams deltas and stores the turn with the depth they picked", as
   assert.equal(saved[0].turns[0].note, "Notes/one.md");
 });
 
-test("history sent with a question names the note each earlier one was on and what its answer read", async () => {
+test("history sent with a question names the note each earlier one was on and what its answer looked at", async () => {
   const bodies = [];
   const view = makeView({
     postJSON: async (route) => route.endsWith("context") ? { source: { id: "source-1", path: "Notes/one.md" } } : {},
@@ -117,7 +117,7 @@ test("history sent with a question names the note each earlier one was on and wh
   await view.send("What is A?");
   await view.send("And B?");
   assert.deepEqual(bodies[1].history.map((turn) => turn.text),
-                   ["(on Notes/one.md) What is A?", "Answer 1\nread: Notes/two.md"]);
+                   ["(on Notes/one.md) What is A?", "Answer 1\nlooked at: Notes/two.md"]);
 });
 
 test("a new model call in the turn clears what streamed before it", async () => {

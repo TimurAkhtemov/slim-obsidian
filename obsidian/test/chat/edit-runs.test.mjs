@@ -438,13 +438,13 @@ test("history names the note a question was on, and what each answer read and ch
   assert.equal(historyText({ role: "you", text: "what is A?", note: "Notes/a.md" }), "(on Notes/a.md) what is A?");
   const read = [{ n: 1, path: "Notes/b.md", title: "b" }, { n: 2, path: "Notes/c.md", title: "c" }];
   assert.equal(historyText({ role: "slim", text: "An answer.", turn: { citations: read } }),
-               "An answer.\nread: Notes/b.md, Notes/c.md");
+               "An answer.\nlooked at: Notes/b.md, Notes/c.md");
   const run = { plan: { intro: "Rename it.", steps: [] }, path: "Notes/a.md",
                 changes: [{ state: "applied" }, { state: "applied" }, { state: "skipped" },
                           { op: "create", path: "Notes/new.md", state: "applied" }] };
   assert.equal(historyText({ role: "slim", text: "x", turn: { citations: read.slice(0, 1), edit_run: run } }),
                "[Changed the note: Rename it.; 3 changes, 0 undone]\n"
-               + "read: Notes/b.md · edited: Notes/a.md (2 changes) · made: Notes/new.md");
+               + "looked at: Notes/b.md · edited: Notes/a.md (2 changes) · made: Notes/new.md");
   assert.equal(historyText({ role: "slim", text: "x", turn: { citations: [], edit_run: {
     plan: { intro: "Nothing.", steps: [] }, path: "Notes/a.md", changes: [{ state: "skipped" }] } } }),
                "[Changed the note: Nothing.; 0 changes, 0 undone]");

@@ -201,7 +201,7 @@ function runCounts(run) {
 
 // What the model sees of an earlier turn: a question after the note it was asked on; an answer's
 // prose; an edit turn as its plan and what became of its changes, never the text it wrote (that
-// is in the note, which the model reads). After an answer, one line names what it read and
+// is in the note, which the model reads). After an answer, one line names what it looked at and
 // changed: tool results are not replayed, so the model reads again if it needs to.
 function historyText(turn) {
   if (turn?.role === "you") return turn.note ? `(on ${turn.note}) ${turn.text}` : turn.text;
@@ -221,11 +221,12 @@ function runText(run) {
     + `${run.stopped && steps.length ? `; stopped after ${run.steps_done || 0} of ${steps.length} steps` : ""}]`;
 }
 
-// "read: a.md, b.md · edited: c.md (3 changes) · made: d.md", each part only when it has something.
+// "looked at: a.md, b.md · edited: c.md (3 changes) · made: d.md", each part only when it has
+// something. Looked at, not read: a turn's sources include notes its searches only found.
 function turnLine(turn) {
   const parts = [];
-  const read = [...new Set((turn?.citations || []).map((cited) => cited?.path).filter(Boolean))];
-  if (read.length) parts.push(`read: ${read.join(", ")}`);
+  const looked = [...new Set((turn?.citations || []).map((cited) => cited?.path).filter(Boolean))];
+  if (looked.length) parts.push(`looked at: ${looked.join(", ")}`);
   const run = turn?.edit_run;
   if (run) {
     const { landed } = runCounts(run);

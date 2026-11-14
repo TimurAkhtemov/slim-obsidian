@@ -241,8 +241,8 @@ ${line}` : said;
     }
     function turnLine(turn) {
       const parts = [];
-      const read = [...new Set((turn?.citations || []).map((cited) => cited?.path).filter(Boolean))];
-      if (read.length) parts.push(`read: ${read.join(", ")}`);
+      const looked = [...new Set((turn?.citations || []).map((cited) => cited?.path).filter(Boolean))];
+      if (looked.length) parts.push(`looked at: ${looked.join(", ")}`);
       const run = turn?.edit_run;
       if (run) {
         const { landed } = runCounts(run);
