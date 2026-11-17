@@ -90,17 +90,17 @@ writes something, and it creates them itself with their parents:
 | Folder | When it appears | What it is |
 |---|---|---|
 | `Journal/` | first journal entry | your journals — flat, and no route ever carries a note out of it |
-| `Capture/<subject>/` | first filed recording | every recording, organised by subject and nothing else |
-| `Notes/<subject>/` | you make it, if you want it | curated writing; any depth below level 2 is yours |
-| `Attachments/` | first recording | archived audio, named by content hash |
+| `Notes/_unfiled/` | first recording | a recording's draft, and a recording no folder was found for |
+| `Notes/<subject>/` | you make it | recordings and your own writing, by subject; any depth below level 2 is yours |
+| `Attachments/` | first recording | archived audio, named by content hash; the plugin hides it from the file explorer |
 | `_Reflections/` | first nightly run | derived synthesis, excluded from indexing |
 
 Subjects are yours — they are the ids you define in `config/projects.yaml`.
 
 **One real friction, named rather than hidden:** the filing card proposes destinations under
-`Capture/` and `Notes/` only. It will not offer you folders you already use. A new recording
-therefore lands in `Capture/<subject>/`, and you drag it wherever you like afterwards —
-because identity is the content hash, not the path, a move keeps the note's history, and the
+`Notes/` only, and only folders that exist. It will not offer you folders you keep elsewhere. A
+new recording therefore lands in `Notes/<subject>/`, or `Notes/_unfiled` until you make that
+folder, and you drag it wherever you like afterwards — because identity is the content hash, not the path, a move keeps the note's history, and the
 chats started on it still find it.
 
 Two degradations, both graceful. Without registered subjects, the copilot's Nearby notes stay
@@ -257,7 +257,7 @@ discovery falls back to `~/Documents/Obsidian Vault` whether or not anything is 
 existing vault of any shape is fine — see [Your vault stays yours](#your-vault-stays-yours).
 
 **2. Name your subjects.** Copy the example and edit it: the subject ids are your folder names
-under `Notes/` and `Capture/`, which the copilot's Nearby notes widen across, and `owner` is how
+under `Notes/`, which the copilot's Nearby notes widen across, and `owner` is how
 the prompts address you.
 
 ```bash
@@ -266,7 +266,7 @@ cp config/projects.example.yaml config/projects.yaml
 
 This file is gitignored and optional — without it SLIM still runs, but Nearby notes stay in the
 note's own folder. Filing does not read it: the card proposes folders that exist, else
-`Capture/_unfiled`.
+`Notes/_unfiled`.
 
 **3. Install the plugin** into that same vault:
 

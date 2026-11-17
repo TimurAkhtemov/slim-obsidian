@@ -95,12 +95,13 @@ moves can hit this.
 
    Labels are written once, at capture, with `tagged_by`/`subject_by` recording which layer
    decided. A wrong one is the owner's edit, on the card or in the frontmatter.
-3. **File** — the card: `suggest` proposes `Capture/<subject>/`; an invented destination
-   collapses to its deepest existing ancestor, else `Capture/_unfiled`, and a journal is
+3. **File** — the card: `suggest` proposes `Notes/<subject>/`; an invented destination
+   collapses to its deepest existing ancestor, else `Notes/_unfiled`, and a journal is
    forced flat to `Journal/`. The owner can edit it, and `/api/record/apply` moves the note.
-   A later move is a drag in Obsidian. **(owner)** The card offers folders under `Capture/` and
-   `Notes/` only (`recorder.suggest.FILING_ROOTS`); `Inbox/` is staging and derived folders are
-   never offered either way.
+   A later move is a drag in Obsidian. **(owner)** The card offers folders under `Notes/`
+   only (`recorder.suggest.FILING_ROOTS`), and derived folders never: a separate `Capture/` tree
+   for recordings put every subject in two places, the owner was moving recordings into `Notes/`
+   by hand, and the copilot's lookups had two trees to search (2026-11-14).
 4. **Reflect** — `slim reflect` writes ONE journal-synthesis note into `_Reflections/`,
    nightly. **This is the part the owner reads.** Judge changes by whether the note is worth
    reading, nothing else.
@@ -237,10 +238,11 @@ moves can hit this.
 
 ```
 Journal/            flat · never routes out
-Capture/<subject>/  every recording, router-owned; `_unfiled` when no subject is known
-Notes/<subject>/    curated writing; any depth below level 2 is the owner's
+Notes/<subject>/    recordings and the owner's writing; `_unfiled` when no subject is known;
+                    any depth below level 2 is the owner's
 Profile/            the owner's self-description; not indexed or injected; open or @-pin it
-Attachments/        binaries                   _Reflections/   derived, excluded from ingest
+Attachments/        binaries; the plugin hides it from Obsidian's file explorer
+_Reflections/       derived, excluded from ingest
 Skills/             the owner's copilot /commands; not indexed
 ```
 
@@ -248,10 +250,10 @@ Subjects are the ids in `config/projects.yaml` (gitignored; copy `config/project
 The file also carries `owner`, the name the prompts address; nothing else reads it.
 
 **Subject is the only folder axis SLIM uses:** a path encodes one fact; type, course and status
-are frontmatter, where they can be queried. The only folder SLIM invents is `Capture/_unfiled`
+are frontmatter, where they can be queried. The only folder SLIM invents is `Notes/_unfiled`
 (the card files into folders that exist), so folders don't multiply across every axis; depth the owner creates is theirs, and the card files into it.
 
-**`Journal/` is flat, a top-level sibling of `Capture/`:** the card files a journal there, and no
+**`Journal/` is flat, a top-level sibling of `Notes/`:** the card files a journal there, and no
 route carries a note out of it (test-enforced). `reflect` reads `type = 'journal'` notes under
 `Journal/` only, so one placed elsewhere by hand is not in the nightly synthesis. These are
 filing rules, not privacy: the privacy gates are gone (the owner's rulings, below).
