@@ -46,14 +46,11 @@ def registry() -> dict:
 OWNER: str = str(_load().get("owner") or "the vault's owner")
 
 
-def project_prefixes(project_id: str) -> tuple[str, ...]:
-    """Every vault path prefix that belongs to one project: `Notes/<id>` (curated) and
-    `Capture/<id>` (raw recordings, filed by the router).
-
-    Both DERIVED from the id, never configured, so there is no second place for a path to
-    drift out of sync. A caller that scopes by path must consider both subtrees.
-    """
-    return (f"Notes/{project_id}", f"Capture/{project_id}")
+def project_prefix(project_id: str) -> str:
+    """The one vault folder that belongs to a project: `Notes/<id>`, recordings and the owner's
+    writing alike. DERIVED from the id, never configured, so there is no second place for a
+    path to drift out of sync."""
+    return f"Notes/{project_id}"
 
 
 # chunking targets (chars; ~4 chars/token)

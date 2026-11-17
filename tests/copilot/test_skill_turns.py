@@ -17,13 +17,12 @@ def con(tmp_path):
 @pytest.fixture
 def vault(tmp_path):
     root = tmp_path / "vault"
-    (root / "Capture/work").mkdir(parents=True)
     (root / "Notes/work").mkdir(parents=True)
     return root
 
 
 def meeting(root: Path, name: str, when: str, notes: str | None) -> str:
-    path = f"Capture/work/{name}.md"
+    path = f"Notes/work/{name}.md"
     section = f"## Notes\n\n{notes}\n\n" if notes is not None else ""
     (root / path).write_text(
         f"---\ntitle: {name}\ndate: {when[:10]}\ntype: meeting\nrecorded_at: {when}\n---\n\n"
@@ -47,7 +46,7 @@ def test_folder_input_filters_cuts_to_the_section_and_fills_newest_first(con, va
     second = meeting(vault, "Review", "2026-09-08T09:00:00", "middle point")
     third = meeting(vault, "Retro", "2026-09-15T09:00:00", "newest point")
     meeting(vault, "Silent", "2026-09-16T09:00:00", None)                 # no Notes section
-    note(vault, "Capture/work/Index.md", "---\ntype: note\n---\n\nnot a meeting\n")
+    note(vault, "Notes/work/Index.md", "---\ntype: note\n---\n\nnot a meeting\n")
     source = open_source(con, vault, second)
     skill = skills.load(vault)["consolidate-my-notes"]
     budget = len("middle point") + len("newest point") + 5
@@ -56,14 +55,14 @@ def test_folder_input_filters_cuts_to_the_section_and_fills_newest_first(con, va
     assert [doc["path"] for doc in pack.docs] == [second, third]           # oldest first to read
     assert [doc["text"] for doc in pack.docs] == ["middle point", "newest point"]
     assert pack.dropped == [first]                                         # the oldest did not fit
-    assert pack.skipped == ["Capture/work/Silent.md"]
+    assert pack.skipped == ["Notes/work/Silent.md"]
 
 
 def test_links_resolve_by_name_nearest_folder_first_and_missing_ones_are_named(con, vault):
     open_path = note(vault, "Notes/work/plan.md", "the plan\n")
     near = note(vault, "Notes/work/budget.md", "near budget\n")
-    note(vault, "Capture/work/deeper/budget.md", "far budget\n")
-    for path in (open_path, near, "Capture/work/deeper/budget.md"):
+    note(vault, "Notes/work/deeper/budget.md", "far budget\n")
+    for path in (open_path, near, "Notes/work/deeper/budget.md"):
         open_source(con, vault, path)
     source = open_source(con, vault, open_path)
     pack = context.gather(con, vault, source, links_from="use [[budget]] and [[Nope|x]]")
@@ -146,7 +145,7 @@ def test_a_skill_reads_the_folder_when_the_invocation_says_so(con, vault, monkey
     assert turn["inputs"]["used"] == [kickoff, source["path"]]
     # A chat skill runs in the loop: its notes ride with its prompt, under the persona.
     notes, prompt = seen[0]["messages"][-1]["content"].split("\n\n---\n\n")
-    assert "=== Capture/work/Kickoff.md · 2026-09-01 ===" in notes
+    assert "=== Notes/work/Kickoff.md · 2026-09-01 ===" in notes
     assert prompt.endswith("only mine") and "folder" not in prompt
     assert seen[0]["messages"][0]["content"].startswith(copilot_turn.PERSONA)
     assert [c["path"] for c in turn["citations"]] == [kickoff]       # what code read, the open note aside
@@ -223,7 +222,7 @@ def test_consolidation_makes_a_new_note_as_a_change_and_writes_nothing(con, vaul
     source = open_source(con, vault, open_path)
     body = "# Work\n\n- Ship moved from Friday to Monday [[Review]]"
     seen = tooled(monkeypatch, ("", [("create_note", {"path": "Consolidated.md", "markdown": body}),
-                                     ("create_note", {"path": "Capture/work/Consolidated.md", "markdown": body}),
+                                     ("create_note", {"path": "Notes/work/Consolidated.md", "markdown": body}),
                                      ("done", {"summary": "Merged your two meetings."})]))
     events = []
     turn = copilot_turn.run_turn(con, source["path"], "/consolidate-my-notes focus on dates", [], "high",
@@ -231,18 +230,18 @@ def test_consolidation_makes_a_new_note_as_a_change_and_writes_nothing(con, vaul
     system, user = seen[0]["messages"][0]["content"], seen[0]["messages"][-1]["content"]
     assert seen[0]["tools"] == ["create_note", "done"] and len(seen) == 1
     assert seen[0]["opts"]["temperature"] == edit_run.FIRST_TEMPERATURE     # a new note is prose they read
-    assert copilot_turn.NEW_NOTE_RIDER.format(folder="Capture/work") in system and copilot_turn.EDIT_RIDER not in system
-    assert "=== Capture/work/Kickoff.md · 2026-09-01 ===\nship friday" in system
+    assert copilot_turn.NEW_NOTE_RIDER.format(folder="Notes/work") in system and copilot_turn.EDIT_RIDER not in system
+    assert "=== Notes/work/Kickoff.md · 2026-09-01 ===\nship friday" in system
     assert "words from" not in system                                 # the section, not the transcript
     assert user.endswith("focus on dates")
     assert [event for event, _ in events] == ["start", "plan", "change"]
     created = events[2][1]
-    assert created == {"id": "c1", "step": 1, "op": "create", "label": "Created Capture/work/Consolidated.md",
-                       "needs": [], "path": "Capture/work/Consolidated.md",
+    assert created == {"id": "c1", "step": 1, "op": "create", "label": "Created Notes/work/Consolidated.md",
+                       "needs": [], "path": "Notes/work/Consolidated.md",
                        "text": "---\norigin: copilot\n---\n\n" + body + "\n"}
     assert len(turn["edit_run"]["changes"]) == 1             # the same new note twice is refused
     assert turn["edit_run"]["summary"] == "Merged your two meetings." == turn["answer"]
-    assert not (vault / "Capture/work/Consolidated.md").exists()       # the plugin creates it
+    assert not (vault / "Notes/work/Consolidated.md").exists()       # the plugin creates it
     assert [c["path"] for c in turn["citations"]] == [kickoff, open_path]
     assert turn["inputs"]["used"] == [kickoff, open_path]
 
@@ -304,7 +303,7 @@ def test_a_new_note_call_that_could_not_be_read_is_asked_for_once_more(con, vaul
     assert seen[1]["messages"][-1] == {"role": "tool", "content": (
         "refused: your tool call could not be read (a tool call came back as text); write it again\n\n"
         "Make the new note with the create_note tool.")}
-    assert [c["path"] for c in turn["edit_run"]["changes"]] == ["Capture/work/All.md"]
+    assert [c["path"] for c in turn["edit_run"]["changes"]] == ["Notes/work/All.md"]
 
 
 def test_the_built_in_skills_speak_of_changes_not_search_blocks(vault):
@@ -327,9 +326,9 @@ def test_brief_makes_one_new_note_in_the_open_notes_folder(con, vault, monkeypat
                                  on_edit=lambda event, payload: events.append((event, payload)))
     assert seen[0]["tools"] == ["create_note", "done"] and seen[0]["opts"]["think"] is True    # its own depth
     assert "ONE new note in this folder" in seen[0]["messages"][-1]["content"]
-    assert "the open note's folder is `Capture/work/`" in seen[0]["messages"][0]["content"]
-    assert [p["path"] for e, p in events if e == "change"] == ["Capture/work/Pricing brief.md"]
-    assert turn["edit_run"]["summary"] == "Wrote the brief." and not (vault / "Capture/work/Pricing brief.md").exists()
+    assert "the open note's folder is `Notes/work/`" in seen[0]["messages"][0]["content"]
+    assert [p["path"] for e, p in events if e == "change"] == ["Notes/work/Pricing brief.md"]
+    assert turn["edit_run"]["summary"] == "Wrote the brief." and not (vault / "Notes/work/Pricing brief.md").exists()
 
 
 def test_a_new_notes_prose_list_is_never_read_as_a_plan(con, vault, monkeypatch):

@@ -24,7 +24,6 @@ def vault(tmp_path):
     (root / "Notes/school/cs-201/week-01").mkdir(parents=True)
     (root / "Notes/school/cs-201/week-02").mkdir(parents=True)
     (root / "Notes/school/cs-202").mkdir(parents=True)
-    (root / "Capture/school/cs-201").mkdir(parents=True)
     (root / "Journal").mkdir()
     return root
 
@@ -313,7 +312,7 @@ def test_the_outline_is_read_leniently_and_locked_headings_are_left_out(turn, mo
     for outline in ([" [b1] #   Memo "], ["#Memo", chunk.TRANSCRIPT_MARKER]):
         seen = scripted(monkeypatch, ("", [("plan", {"intro": "x", "outline": outline, "steps": ["Shorten"]})]),
                         ("", [("replace", {"target": "b2", "markdown": "Short."})]))
-        got, _ = turn("shorten", text=memo, path="Capture/m.md")
+        got, _ = turn("shorten", text=memo, path="Notes/m.md")
         assert got["edit_run"]["outline_met"] is True and len(seen) == 2, outline
 
 
@@ -446,7 +445,7 @@ def test_a_recordings_own_parts_are_refused(turn, monkeypatch):
     seen = scripted(monkeypatch, ("", [("plan", {"intro": "x", "steps": ["Shorten"]})]),
                     ("", [("replace", {"target": "b4", "markdown": "## Transcript\n\nMe: bye"})]),
                     ("", [("replace", {"target": "b3", "markdown": "One line."})]))
-    got, _ = turn("shorten", text=memo, path="Capture/call.md")
+    got, _ = turn("shorten", text=memo, path="Notes/call.md")
     assert "[locked] ## Transcript" in seen[0]["messages"][-1]["content"]
     assert "b4 is part of the recording; SLIM never edits it" in seen[2]["messages"][-1]["content"]
     assert got["final"] == memo.replace("one\n", "One line.\n")

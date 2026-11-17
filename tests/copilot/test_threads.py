@@ -156,7 +156,7 @@ def test_you_turn_keeps_note():
 
 
 def test_pins_saved_and_bounded():
-    pins = [{"kind": "note", "path": "Notes/a.md"}, {"kind": "folder", "path": "Capture/x"}]
+    pins = [{"kind": "note", "path": "Notes/a.md"}, {"kind": "folder", "path": "Notes/x"}]
     summary = threads.save_copilot("p", "Pins", [], pins=pins)
     assert list(summary.pins) == pins and threads.load("p")["pins"] == pins
     for bad in ([{"kind": "note", "path": "../x.md"}], [{"kind": "tag", "path": "a"}],

@@ -55,23 +55,18 @@ def scope_levels(path: str) -> list[tuple[str, tuple[str, ...]]]:
     parent = note.parent.as_posix()
     if note.is_absolute() or ".." in note.parts or parent == ".":
         return []
-    subject_prefixes = ()
-    for project_id in config_mod.registry():
-        prefixes = config_mod.project_prefixes(project_id)
-        if any(_matches(path, prefix) for prefix in prefixes):
-            subject_prefixes = prefixes
-            break
-    if not subject_prefixes:
+    subject = next((prefix for prefix in map(config_mod.project_prefix, config_mod.registry())
+                    if _matches(path, prefix)), None)
+    if subject is None:
         return [("folder", (parent,))]
-    matched_root = next(prefix for prefix in subject_prefixes if _matches(path, prefix))
     # Sliced, not `relative_to`: `_matches` casefolds and APFS is case-insensitive, so
     # `notes/School/x.md` under prefix `Notes/school` must not raise here.
-    relative_parts = note.parts[len(PurePosixPath(matched_root).parts):]
+    relative_parts = note.parts[len(PurePosixPath(subject).parts):]
     course = relative_parts[0] if len(relative_parts) > 1 else None
     levels = [("folder", (parent,))]
     if course:
-        levels.append(("course", tuple(f"{prefix}/{course}" for prefix in subject_prefixes)))
-    levels.append(("subject", subject_prefixes))
+        levels.append(("course", (f"{subject}/{course}",)))
+    levels.append(("subject", (subject,)))
     out = []
     for label, prefixes in levels:
         normalized = tuple(dict.fromkeys(prefix.rstrip("/") for prefix in prefixes))

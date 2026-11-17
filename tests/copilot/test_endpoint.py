@@ -82,7 +82,7 @@ def test_thread_save_takes_the_indexed_path_over_the_one_sent(server_url):
 def test_thread_save_without_source_id(server_url):
     status, _headers, body = post(server_url, "/api/copilot/thread/save", {
         "id": "loose", "title": "Loose", "turns": [],
-        "pins": [{"kind": "folder", "path": "Capture"}]})
+        "pins": [{"kind": "folder", "path": "Notes"}]})
     assert status == 200
     assert json.loads(body)["source_path"] is None
 

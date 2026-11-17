@@ -19,7 +19,6 @@ def vault(tmp_path):
     (root / "Notes/school/cs-201/week-01").mkdir(parents=True)
     (root / "Notes/school/cs-201/week-02").mkdir(parents=True)
     (root / "Notes/school/cs-202").mkdir(parents=True)
-    (root / "Capture/school/cs-201").mkdir(parents=True)
     (root / "Journal").mkdir()
     return root
 
@@ -56,8 +55,8 @@ def test_scope_levels_come_only_from_the_open_path(monkeypatch):
     monkeypatch.setattr(context.config_mod, "registry", lambda: {"school": {"vault_path": "Notes/school"}})
     assert context.scope_levels("Notes/school/cs-201/week-01/lesson.md") == [
         ("folder", ("Notes/school/cs-201/week-01",)),
-        ("course", ("Notes/school/cs-201", "Capture/school/cs-201")),
-        ("subject", ("Notes/school", "Capture/school")),
+        ("course", ("Notes/school/cs-201",)),
+        ("subject", ("Notes/school",)),
     ]
     assert context.scope_levels("Journal/2026-08-23.md") == [("folder", ("Journal",))]
 
@@ -103,14 +102,20 @@ def test_related_notes_widens_dedupes_and_drops_missing_paths(con, vault, monkey
     assert len(calls[0]) <= context.RELATED_QUERY_CHARS
 
 
+def test_a_note_under_capture_has_only_its_folder_scope(monkeypatch):
+    # One tree per subject: a folder outside `Notes/` is not part of any subject.
+    monkeypatch.setattr(context.config_mod, "registry", lambda: {"school": {}})
+    assert context.scope_levels("Capture/school/x.md") == [("folder", ("Capture/school",))]
+
+
 def test_scope_levels_survive_a_case_only_folder_rename(monkeypatch):
     # APFS is case-insensitive: `notes/School/` IS `Notes/school/`. `_matches` already casefolds;
     # the relative-path step must not raise on the same input.
     monkeypatch.setattr(context.config_mod, "registry", lambda: {"school": {"vault_path": "Notes/school"}})
     assert context.scope_levels("notes/School/cs-201/week-01/lesson.md") == [
         ("folder", ("notes/School/cs-201/week-01",)),
-        ("course", ("Notes/school/cs-201", "Capture/school/cs-201")),
-        ("subject", ("Notes/school", "Capture/school")),
+        ("course", ("Notes/school/cs-201",)),
+        ("subject", ("Notes/school",)),
     ]
 
 

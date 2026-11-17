@@ -124,8 +124,8 @@ def test_cancelling_a_job_stops_the_pass_and_writes_nothing(tmp_path, monkeypatc
 
     assert (tmp_path / audio).is_file(), "the audio is the recording; cancel never deletes it"
     assert (tmp_path / draft).is_file(), "their typed notes survive a cancel"
-    assert not list((tmp_path / "Capture").glob("**/*.md")) or \
-        all(p.name.endswith(".slim-draft.md") for p in (tmp_path / "Capture").glob("**/*.md"))
+    assert all(p.name.endswith(".slim-draft.md") for p in (tmp_path / "Notes").glob("**/*.md")), \
+        "nothing was filed"
 
 
 def test_cancelling_before_the_expensive_part_is_honoured(tmp_path, monkeypatch):

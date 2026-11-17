@@ -22,7 +22,6 @@ def vault(tmp_path):
     (root / "Notes/school/cs-201/week-01").mkdir(parents=True)
     (root / "Notes/school/cs-201/week-02").mkdir(parents=True)
     (root / "Notes/school/cs-202").mkdir(parents=True)
-    (root / "Capture/school/cs-201").mkdir(parents=True)
     (root / "Journal").mkdir()
     return root
 
