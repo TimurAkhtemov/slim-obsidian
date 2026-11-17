@@ -704,3 +704,16 @@ def test_the_stream_syncs_an_indexable_open_note_first(server_url, a_note, monke
     for path in ("Notes/n.md", "Profile/me.md", "Notes/gone.md"):
         post(server_url, "/api/copilot/stream", {"thread_id": "chat-1", "path": path, "question": "q", "history": []})
     assert synced == ["Notes/n.md"]
+
+
+def test_a_failed_sync_of_the_open_note_still_answers(server_url, a_note, monkeypatch):
+    """Only search's freshness hangs on it: the embedder down, or a sync racing this one."""
+    source, script = a_note
+
+    def down(*_a, **_k):
+        raise RuntimeError("embedder down")
+    monkeypatch.setattr(context, "sync_note", down)
+    script(("Fine.", []))
+    status, _headers, body = stream(server_url, source, "what is this?")
+    events = events_of(body)
+    assert status == 200 and events[-1][0] == "turn" and events[-1][1]["answer"] == "Fine."

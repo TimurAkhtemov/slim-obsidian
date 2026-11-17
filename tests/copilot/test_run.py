@@ -1094,6 +1094,17 @@ def test_a_plan_beside_a_lookup_reads_first_then_does_its_step(vault, monkeypatc
     assert seen[1]["opts"]["temperature"] == edit_run.STEP_TEMPERATURE
 
 
+def test_a_lookup_before_its_plan_gets_its_own_result_first(vault, monkeypatch):
+    # The template pairs results with calls by order: the plan's "ok" sits where the plan was.
+    out, seen, _events, _said = _looking(
+        vault, monkeypatch,
+        ("", [("read_note", {"path": "Notes/school/b.md"}), ("plan", {"intro": "Add bee.", "steps": ["Add it"]})]),
+        ("", [("insert", {"after": "b2", "markdown": "Bee text."})]))
+    assert out["kind"] == "edit" and len(seen) == 2
+    told = [m["content"] for m in seen[1]["messages"] if m["role"] == "tool"]
+    assert "Bee text." in told[0] and told[1].startswith("ok: plan accepted")
+
+
 def test_drafts_ignore_reply_text():
     events = []
     drafts = edit_run._Drafts(blocks.Note(NOTE), None, lambda e, p: events.append(e))

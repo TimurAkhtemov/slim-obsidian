@@ -151,6 +151,24 @@ def test_a_long_open_note_shows_whole_blocks_and_shown_is_what_it_showed(vault):
     assert "Sections:\n" in out and out.endswith("[… the rest: read_note(path, section) for one section]")
 
 
+def test_a_long_range_of_a_headingless_open_note_names_the_blocks_not_shown(vault):
+    text = "".join(f"Paragraph {n}. " + "word " * 1000 + "\n\n" for n in range(20))
+    path = write(vault, "Notes/o.md", "x")
+    note = blocks.Note(text)
+    r = lookup.Reader(None, vault, open_note=(path, note))
+    last = next(b.handle for b in reversed(note.blocks) if b.kind != "blank")
+    out = r.call("read_note", {"path": path, "section": f"b1-{last}"})
+    hint = __import__("re").search(r'read_note\("Notes/o\.md", "(b\d+)-(b\d+)"\)\]$', out)
+    assert hint and hint[1] not in r.shown and hint[2] == last
+    assert r.call("read_note", {"path": path, "section": f"{hint[1]}-{last}"}) != out
+
+
+def test_a_page_of_a_block_the_open_note_lacks_is_refused_as_missing(vault):
+    path = write(vault, "Notes/o.md", "x")
+    r = lookup.Reader(None, vault, open_note=(path, blocks.Note("# T\n\nText.\n")))
+    assert r.call("read_note", {"path": path, "section": "b99#2"}) == "refused: the open note has no block b99"
+
+
 FILLER = " ".join(f"Pancake batter step detail number {i}." for i in range(40))
 
 

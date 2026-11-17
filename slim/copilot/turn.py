@@ -323,6 +323,31 @@ def _conversation(history: list[dict], question: str, images=None,
     return transcript, embedded, current
 
 
+def _creator(vault: Path, folder: str):
+    """A turn's `create`: a new note through `edits.create_note`, a bare name in `folder`, and
+    never two of one name in the turn (the plugin creates each after the run hands it over)."""
+    made: set[str] = set()
+
+    def create(path, markdown):
+        new = edits_mod.create_note(vault, path, markdown, folder=folder)
+        if new["path"].casefold() in made:
+            raise blocks.ToolError(f"{new['path']} is already made in this turn; give the next "
+                                   "note a name of its own", "exists")
+        made.add(new["path"].casefold())
+        return new
+    return create
+
+
+def _run_record(out: dict, text: str, note: blocks.Note | None) -> dict:
+    """An editing run as the turn returns it: its plan, how far it got, its changes, and the
+    note's hash before and after."""
+    return {"plan": out["plan"], "steps_done": min(out["steps_done"], len(out["plan"]["steps"])),
+            "changes": out["changes"], "stopped": out["stopped"], "outline_met": out["outline_met"],
+            "hash_before": edits_mod.digest(text),
+            "hash_after": edits_mod.digest(note.text() if note is not None else text),
+            "summary": out["summary"]}
+
+
 def _loop(con, vault: Path, source: dict | None, question: str, history: list[dict], effort: str, *,
           pins, skill, args: str, images, selection: str, doc: str | None, on_stage, on_delta,
           on_edit, should_stop, entry: dict, on_reset=None, on_tool=None) -> dict:
@@ -370,16 +395,7 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
             asked, no_edit = question, NO_NOTE
         reader = lookup.Reader(con, vault, default_folder=scope, pinned=(*held, *left),
                                open_note=(path, note) if note is not None else None)
-        made: set[str] = set()
-
-        def create(new_path, markdown):
-            new = edits_mod.create_note(vault, new_path, markdown, folder=folder)
-            if new["path"].casefold() in made:
-                raise blocks.ToolError(f"{new['path']} is already made in this turn; give the next "
-                                       "note a name of its own", "exists")
-            made.add(new["path"].casefold())
-            return new
-
+        create = _creator(vault, folder)
         shown, skipped = context.open_note_images(vault, source) if source else ([], [])
         entry.update(note_images=len(shown), note_images_skipped=len(skipped))
         transcript, embedded, current = _conversation(history, asked, images, shown)
@@ -434,11 +450,7 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
         if not answer:
             raise CopilotError("the local model returned no answer")
     else:
-        run = {"plan": out["plan"], "steps_done": min(out["steps_done"], len(out["plan"]["steps"])),
-               "changes": out["changes"], "stopped": out["stopped"], "outline_met": out["outline_met"],
-               "hash_before": edits_mod.digest(text or ""),
-               "hash_after": edits_mod.digest(note.text() if note is not None else text or ""),
-               "summary": out["summary"]}
+        run = _run_record(out, text or "", note)
         answer = out["summary"] or out["plan"]["intro"]
         entry["edit_run"] = edit_run._facts(out, run)
     # Sources are the notes code saw the turn look at, with no call to decide them: a skill's other
@@ -498,15 +510,7 @@ def _skill_run(con, vault: Path, source: dict, effort: str, history: list[dict],
                      for i, d in enumerate(d for d in pack.docs if d["role"] != "selection")]
             inputs, note, temperature = context.pack_inputs(pack), None, edit_run.FIRST_TEMPERATURE
             tools, step_tools = ["create_note", "done"], ("create_note",)
-            made: set[str] = set()
-
-            def create(path, markdown):
-                new = edits_mod.create_note(vault, path, markdown, folder=folder)
-                if new["path"].casefold() in made:
-                    raise blocks.ToolError(f"{new['path']} is already made in this turn; give the next "
-                                           "note a name of its own", "exists")
-                made.add(new["path"].casefold())
-                return new
+            create = _creator(vault, folder)
         else:
             # A wanted change, written at STEP_TEMPERATURE. Code knows what it read (the open note).
             cited = [{"n": 1, "path": source["path"], "title": PurePosixPath(source["path"]).stem}]
@@ -545,11 +549,7 @@ def _skill_run(con, vault: Path, source: dict, effort: str, history: list[dict],
             raise CopilotError("the local model returned no answer")
         (on_delta or (lambda _text: None))(answer)
     else:
-        run = {"plan": out["plan"], "steps_done": min(out["steps_done"], len(out["plan"]["steps"])),
-               "changes": out["changes"], "stopped": out["stopped"], "outline_met": out["outline_met"],
-               "hash_before": edits_mod.digest(text),
-               "hash_after": edits_mod.digest(note.text() if note is not None else text),
-               "summary": out["summary"]}
+        run = _run_record(out, text, note)
         answer = out["summary"] or out["plan"]["intro"]
         entry["edit_run"] = edit_run._facts(out, run)
     result = {

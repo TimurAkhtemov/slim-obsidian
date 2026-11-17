@@ -202,8 +202,10 @@ class Reader:
         tail = "/" + path.casefold()
         pool = list(self.seen) + ([self.open_note[0]] if self.open_note else [])
         if self.con is not None:
+            # LIKE is case-blind for ASCII already; `_like` keeps a `_` in the path literal.
             pool += [row[0] for row in self.con.execute(
-                "SELECT path FROM sources WHERE lower(path) LIKE ?", ("%" + path.casefold(),))]
+                "SELECT path FROM sources WHERE deleted=0 AND path LIKE ? ESCAPE '\\'",
+                ("%" + search_mod._like(path),))]
         found = [p for p in dict.fromkeys(pool)
                  if ("/" + p.casefold()).endswith(tail) and (searchable(p) or self._is_open(p) or _under(p, self.pinned))
                  and edits._exact(self.vault, p) and (self.vault / p).is_file()]
@@ -234,6 +236,8 @@ class Reader:
                     note.paged.add(block.handle)
                 return self._pages(path, block, int(page[2] or 1))
             if page[2]:
+                if block is None:
+                    raise _Refused(f"the open note has no block {page[1]}")
                 raise _Refused(f"{page[1]} is short enough to read whole; read it without a page")
         if section:
             target = section
@@ -256,11 +260,19 @@ class Reader:
         total = len(chosen)
         if len(text) > READ_MAX_CHARS:
             # Whole blocks only, so what it shows and what it may then change (`.shown`) agree.
-            text, chosen, reached = note.head(chosen, READ_MAX_CHARS, path)
+            picked = chosen
+            text, chosen, reached = note.head(picked, READ_MAX_CHARS, path)
             sections = "" if section else note.sections()
             text = (f"Sections:\n{sections}\n\n" if sections else "") + text
             if reached < total:
-                text += "[… the rest: read_note(path, section) for one section]"
+                # With no sections map (a section or range asked for, or a note with no headings),
+                # "one section" points nowhere: the blocks not shown are named, as a range.
+                rest = [b for b in picked[reached:] if b.kind != "blank" and not b.locked]
+                if sections or not rest:
+                    text += "[… the rest: read_note(path, section) for one section]"
+                else:
+                    span = f"{rest[0].handle}-{rest[-1].handle}" if len(rest) > 1 else rest[0].handle
+                    text += f'[… the rest: read_note("{path}", "{span}")]'
         self.shown |= {b.handle for b in chosen if b.kind != "blank" and not b.locked}
         return text
 

@@ -511,6 +511,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
     # a change landed there.
     current = {"k": None, "count": 1, "landed": 0, "refused": False, "target": None, "hit": False}
     steps: list[str] = []
+    ran = False                 # the steps have begun: `results` holds the last calls' results
     # What the owner reads names text, never a handle; the model keeps its own words.
     plain = note.plain if note is not None else (lambda words: words)
     drafts = _Drafts(note, only, on_edit) if note is not None else None
@@ -641,6 +642,10 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
 
     def finish() -> dict:
         close_step()
+        # The last calls' results close the turn, which the turns after it replay
+        # (`turn._conversation`): otherwise they go only with the next step's instruction.
+        if ran and messages and messages[-1]["role"] == "assistant" and messages[-1].get("tool_calls"):
+            messages.extend({"role": "tool", "content": result} for result in results)
         if drafts:
             drafts.end()
             out["draft_failures"] = drafts.failed
@@ -745,7 +750,7 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
             intro, written = listed
             steps += written
             covered = len(made)
-        elif edits and not steps:       # edits with no plan, or with an empty one: a one-step run
+        elif made and not steps:        # edits with no plan, or with an empty one: a one-step run
             steps.append(ONE_REPLY)
         intro, shown = plain(intro), [] if steps == [ONE_REPLY] else [plain(step) for step in steps]
         out.update(kind="edit", plan={"intro": intro, "steps": shown},
@@ -757,19 +762,28 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
             return finish()
 
         results, in_row = ["ok: plan accepted"], 0
+        ran = True
 
         def step(instruction: str, number: int):
             """One model call for one step, its tool calls applied in order, with the
             note's map as it is now."""
             sections = note.sections() if note is not None else ""
             now = f"\n\nSections now:\n{sections}" if sections else ""
-            messages.extend(_results(results, instruction + now))
+            sent = _results(results, instruction + now)
             # Every earlier call's arguments and the map are in this prompt: checked before the
             # call, so the run stops with what landed rather than on the server's HTTP 400.
-            if fits is not None and not fits(messages, []):
+            if fits is not None and not fits([*messages, *sent], []):
                 out["stopped"] = "error: the conversation no longer fits the model's window"
                 raise _Stopped
-            reply = ask(tools, False, STEP_TEMPERATURE, STEP_NUM_PREDICT, None)    # as measured
+            messages.extend(sent)
+            try:
+                reply = ask(tools, False, STEP_TEMPERATURE, STEP_NUM_PREDICT, None)    # as measured
+            except _Stopped:
+                # An instruction no call answered is never the turn's last word: the turns after
+                # it would replay it just before the owner's next question. finish() closes the
+                # turn with these results instead.
+                del messages[-len(sent):]
+                raise
             return reply, apply_calls(reply.calls, number)
 
         def land(name: str, args, number: int) -> tuple[dict, str]:
@@ -867,7 +881,10 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
                     numbers.append(min(m, covered - 1) + 1)
                     m += call["name"] in step_tools
                 landed = out["first_call_edits"] = apply_calls(edits, numbers)
-                results = (["ok: plan accepted"] if plans else []) + results
+                if plans:               # where the plan was: the template pairs results with calls by order
+                    at = first.calls.index(plans[0])
+                    at = min(sum(c not in plans for c in first.calls[:at]), len(results))
+                    results = results[:at] + ["ok: plan accepted"] + results[at:]
             else:
                 reply, landed = step(instruction(k), k + 1)
             if out["stopped"]:
@@ -902,6 +919,8 @@ def _turn(messages: list[dict], *, think: bool, tools: list[str], step_tools: tu
             out["summary"] = intro or f"Done: {n} change{'' if n == 1 else 's'}"
     except _Stopped:
         if out["kind"] == "answer" and claimed is not None:
+            if messages and messages[-1] == {"role": "user", "content": CLAIMED_EDIT}:
+                messages.pop()          # never answered: not the last word of a turn replayed later
             return answered(claimed)    # the corrective call never answered: the claim stands, flagged
         if out["kind"] == "answer":     # no run started, and no answer either
             if failed:

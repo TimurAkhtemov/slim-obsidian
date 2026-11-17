@@ -31,7 +31,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
 from urllib.parse import parse_qs, urlparse
 
-from . import config, db
+from . import config, db, trace
 from .index import ingest as ingest_mod
 from .recorder import routes
 from .copilot import (blocks, context, edits as edits_mod, images as chat_images,
@@ -509,10 +509,17 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             con = db.connect()
             # The open note as it is now, indexed and embedded, so search finds what they just
-            # wrote; a note the index leaves out is read from disk by the turn instead.
+            # wrote; a note the index leaves out is read from disk by the turn instead. Only
+            # search's freshness hangs on it: the embedder down, or a sync of the same note racing
+            # this one (`/api/copilot/context`), must not cost the question its answer.
             if (open_path and open_path.lower().endswith(".md") and ingest_mod.indexable(Path(open_path))
                     and (Path(config.VAULT) / open_path).is_file()):
-                context.sync_note(con, config.VAULT, open_path)
+                try:
+                    context.sync_note(con, config.VAULT, open_path)
+                except Exception as exc:        # noqa: BLE001
+                    con.rollback()
+                    trace.record("copilot", {"status": "sync_failed", "open_path": open_path,
+                                             "error_type": type(exc).__name__})
             turn = copilot_turn.run_turn(
                 con, open_path, question, history, effort, pins=pins, vault=config.VAULT, images=images,
                 selection=selection, selection_from=selection_from, doc=doc, doc_hash=doc_hash,

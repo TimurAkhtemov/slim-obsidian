@@ -1066,6 +1066,49 @@ def test_a_turn_returns_its_transcript_with_thinking_calls_and_results(ask, con,
     assert script[3] == {"role": "assistant", "content": "They have stripes.", "thinking": "It says stripes."}
 
 
+def test_an_edit_turns_transcript_ends_with_its_last_calls_results(ask, monkeypatch):
+    """The turns after it replay it: its last edit's result closes it, so a follow-up sees
+    whether that edit landed."""
+    scripted(monkeypatch, ("", [("edit_text", {"target": "b2", "old": "Intro para.", "new": "Intro."})]))
+    script = ask("shorten the intro")["transcript"]
+    assert [m["role"] for m in script] == ["user", "assistant", "tool"]
+    assert script[-1]["content"].startswith("ok: ")
+
+
+def test_a_run_stopped_at_the_window_never_ends_on_an_unanswered_step(ask, monkeypatch):
+    plan = {"intro": "Two steps.", "steps": ["Rewrite the intro", "Rename A"]}
+    long = "A rewritten intro sentence. " * 120
+    replies = [("", [("plan", plan)]), ("", [("replace", {"target": "b2", "markdown": long})]),
+               ("", [("replace", {"target": "b3", "markdown": "## A renamed"})])]
+    seen = scripted(monkeypatch, *replies)
+    ask("rewrite it")
+    room = copilot_turn.ANSWER_NUM_PREDICT + edit_run.THINK_BUDGETS["medium"]
+    monkeypatch.setattr(llm, "RESIDENT_CTX", int(sum(map(copilot_turn._tokens, seen[1]["messages"])) + room + 400))
+    scripted(monkeypatch, *replies)
+    script = ask("rewrite it")["transcript"]
+    assert script[-1]["role"] == "tool" and script[-1]["content"].startswith("ok: ")
+    assert not any("Step 2 of 2" in m["content"] for m in script)
+
+
+def test_a_failed_step_call_never_leaves_its_instruction_last(ask, monkeypatch):
+    plan = {"intro": "Two steps.", "steps": ["Shorten the intro", "Rename A"]}
+    scripted(monkeypatch, ("", [("plan", plan)]),
+             ("", [("edit_text", {"target": "b2", "old": "Intro para.", "new": "Intro."})]),
+             llm.LLMError("down"), llm.LLMError("down"))
+    got = ask("tidy it")
+    assert got["edit_run"]["stopped"].startswith("error:")
+    script = got["transcript"]
+    assert script[-1]["role"] == "tool" and not any("Step 2 of 2" in m["content"] for m in script)
+
+
+def test_a_plan_with_no_steps_beside_a_lookup_is_an_empty_plan(ask, monkeypatch):
+    """Not a one-reply run told to "make your change again, fixing what was refused"."""
+    seen = scripted(monkeypatch, ("", [("plan", {"intro": "Nothing to do.", "steps": []}),
+                                       ("search", {"query": "zebras"})]))
+    got = ask("tidy it")
+    assert len(seen) == 1 and got["edit_run"]["stopped"] == "empty plan"
+
+
 def test_a_follow_up_sees_what_the_last_turn_read(ask, con, vault, monkeypatch):
     """The live failure (2026-11-14): history kept only the answer, so a follow-up took the answer
     for all it knew. Replayed, the turn's results are in the follow-up's prompt."""
