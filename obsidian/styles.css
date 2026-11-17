@@ -967,3 +967,9 @@
 .slim-row .slim-delete { flex: 0 0 auto; margin-left: auto; }
 .slim-setup-actions { justify-content: flex-end; }
 .slim-resume-row { padding: 0 20px 14px; }
+
+/* Attachments/ holds audio and images the owner never manages by hand: out of the file
+   explorer, still reachable by link and by search. No setting, by the one-click rule. */
+.nav-files-container .nav-folder:has(> .nav-folder-title[data-path="Attachments"]) {
+  display: none;
+}

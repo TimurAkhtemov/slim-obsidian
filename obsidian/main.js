@@ -3895,6 +3895,7 @@ var require_meeting_note = __commonJS({
     var RECORDER_ATTACHMENTS = "Attachments/Recorder";
     var ARCHIVE_DIR = "Attachments/Recordings";
     var DRAFT_SUFFIX = ".slim-draft.md";
+    var DRAFT_FOLDER = "Notes/_unfiled";
     var EMPTY_MEETING_BLOCK = "````slim-meeting\n\n````\n\n";
     var TYPES = [
       ["meeting-note", "Meeting"],
@@ -4064,6 +4065,7 @@ ${fence}`);
       RECORDER_ATTACHMENTS,
       ARCHIVE_DIR,
       DRAFT_SUFFIX,
+      DRAFT_FOLDER,
       EMPTY_MEETING_BLOCK,
       TYPES,
       recordingIdFromStaged,
@@ -6214,6 +6216,7 @@ var require_view2 = __commonJS({
       STAGING_DIR,
       RECORDER_ATTACHMENTS,
       DRAFT_SUFFIX,
+      DRAFT_FOLDER,
       EMPTY_MEETING_BLOCK,
       recordingIdFromStaged,
       recordingId,
@@ -6581,7 +6584,7 @@ var require_view2 = __commonJS({
         const draft = this.draftRel;
         const audios = [...new Set([...this.segments || [], this.audioRel].filter(Boolean))];
         const attachmentFolder = id ? `${RECORDER_ATTACHMENTS}/${id}` : "";
-        const draftIsManaged = draft && draft.endsWith(DRAFT_SUFFIX) && (draft.startsWith("Capture/_unfiled/") || draft.startsWith("Journal/"));
+        const draftIsManaged = draft && draft.endsWith(DRAFT_SUFFIX) && (draft.startsWith(`${DRAFT_FOLDER}/`) || draft.startsWith("Journal/"));
         const managed = (audio) => Boolean(audio) && Boolean(id) && audio.startsWith(`${STAGING_DIR}/`) && recordingIdFromStaged(audio) === id;
         if (draftIsManaged) await this.trashManagedPath(draft);
         for (const audio of audios) {
@@ -6599,7 +6602,7 @@ var require_view2 = __commonJS({
         if (!this.recordingId) this.recordingId = recordingId();
         const digits = this.recordingId.slice(0, 8);
         const date = `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
-        const folder = this.type === "journal" ? "Journal" : "Capture/_unfiled";
+        const folder = this.type === "journal" ? "Journal" : DRAFT_FOLDER;
         await this.ensureVaultDirs(folder);
         this.draftRel = `${folder}/${date}--recording--${this.recordingId}${DRAFT_SUFFIX}`;
         await this.app.vault.create(this.draftRel, EMPTY_MEETING_BLOCK);
@@ -6609,7 +6612,7 @@ var require_view2 = __commonJS({
       }
       async ensureDraftLocation() {
         if (!this.draftRel) return this.createDraft();
-        const folder = this.type === "journal" ? "Journal" : "Capture/_unfiled";
+        const folder = this.type === "journal" ? "Journal" : DRAFT_FOLDER;
         if (this.draftRel.startsWith(`${folder}/`)) return this.draftRel;
         const file = this.app.vault.getAbstractFileByPath(this.draftRel);
         if (!file) {
@@ -7022,6 +7025,7 @@ var require_plugin = __commonJS({
     var {
       STAGING_DIR,
       DRAFT_SUFFIX,
+      DRAFT_FOLDER,
       recordingIdFromStaged,
       renderPassiveMeetingBlock
     } = require_meeting_note();
@@ -7307,7 +7311,7 @@ var require_plugin = __commonJS({
           }
           if (!stranded.length) return;
           const draftsById = /* @__PURE__ */ new Map();
-          for (const folder of ["Capture/_unfiled", "Journal"]) {
+          for (const folder of [DRAFT_FOLDER, "Journal"]) {
             if (!await adapter.exists(folder)) continue;
             const drafts = await adapter.list(folder);
             for (const path of drafts.files || []) {

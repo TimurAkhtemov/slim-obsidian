@@ -78,7 +78,7 @@ test("an error block names the recording whose sources need recovery", () => {
   const v = view();
   v.title = "Client interview B";
   v.errorText = "ASR unavailable";
-  v.draftRel = "Capture/_unfiled/b.slim-draft.md";
+  v.draftRel = "Notes/_unfiled/b.slim-draft.md";
   v.audioRel = "Attachments/_incoming/b-001.webm";
 
   const root = fakeContentEl();
@@ -155,7 +155,7 @@ test("the review always says exactly where the durable note was saved", () => {
 test("a reopened card fetches the vault's folders and tags, and redraws with them", async () => {
   // 2026-09-29: after a reload "browse the vault" was an empty box and every topic read "new":
   // only a fresh recording's response carried either list.
-  const path = "Capture/job-search/pending.md";
+  const path = "Notes/job-search/pending.md";
   const { v, files, editorLeaf } = fileBackedView();
   const file = { path, basename: "pending", text: [
     "---", "origin: recorded", "review_status: pending", "---", "", "````slim-meeting",
@@ -167,12 +167,12 @@ test("a reopened card fetches the vault's folders and tags, and redraws with the
   const asked = [];
   v.plugin.getJSON = async (route) => {
     asked.push(route);
-    return { folders: [{ path: "Capture/job-search", count: 3 }], tag_counts: { "job-search": 3 } };
+    return { folders: [{ path: "Notes/job-search", count: 3 }], tag_counts: { "job-search": 3 } };
   };
   assert.equal(await v.openExisting(file, editorLeaf), true);
   await v.cardListsLoad;
   assert.deepEqual(asked, ["/api/record/folders"]);
-  assert.deepEqual(v.result.card.folders, [{ path: "Capture/job-search", count: 3 }]);
+  assert.deepEqual(v.result.card.folders, [{ path: "Notes/job-search", count: 3 }]);
   assert.deepEqual(v.result.card.tag_counts, { "job-search": 3 });
 });
 

@@ -1190,14 +1190,14 @@ test("the send button is a stop button while a turn runs, and stopping ends the 
 test("the composer's chips are the open note and the @ pins, inside the composer", () => {
   const { view, root } = renderedView();
   view.newThread();
-  view.activeThread.pins = [{ kind: "note", path: "Notes/x.md" }, { kind: "folder", path: "Capture/weekly" }];
+  view.activeThread.pins = [{ kind: "note", path: "Notes/x.md" }, { kind: "folder", path: "Notes/weekly" }];
   view.render();
   const chips = find(composerOf(root), (node) => node.cls === "slim-composer-chips");
   const names = chips.children.map((chip) => find(chip, (node) => ["slim-copilot-note", "slim-pin-name"].includes(node.cls)).textContent);
   assert.deepEqual(names, ["One", "x", "weekly/"]);
   assert.deepEqual(chips.children.map((chip) => chip.cls),
                    ["slim-ctx-chip slim-copilot-note-chip", "slim-pin is-note", "slim-pin is-folder"]);
-  assert.equal(chips.children[2].attrs.title, "Capture/weekly");
+  assert.equal(chips.children[2].attrs.title, "Notes/weekly");
   view.toggleOpenNote();                                            // left out: struck through, ↩ to bring it back
   const off = find(composerOf(root), (node) => node.cls?.includes("slim-copilot-note-off"));
   assert.ok(off.cls.includes("is-off"));

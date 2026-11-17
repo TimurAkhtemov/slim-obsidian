@@ -17,12 +17,12 @@ test("the recorder is a controller that mounts its object into a native Markdown
   assert.equal(v instanceof obsidianStub.MarkdownView, false);
 });
 
-test("a non-journal recording creates its draft inside Capture/_unfiled", async () => {
+test("a non-journal recording creates its draft inside Notes/_unfiled", async () => {
   const { v, created, editorLeaf } = fileBackedView({ type: "lecture" });
   v.recordingId = "20260823T143000Z-abcd1234";
   await v.createDraft();
   assert.deepEqual(created, [[
-    "Capture/_unfiled/2026-08-23--recording--20260823T143000Z-abcd1234.slim-draft.md",
+    "Notes/_unfiled/2026-08-23--recording--20260823T143000Z-abcd1234.slim-draft.md",
     "````slim-meeting\n\n````\n\n",
   ]]);
   assert.equal(v.draftRel, created[0][0]);
@@ -147,14 +147,14 @@ test("delete and start over removes only the managed failed-session sources", as
   const draft = v.draftRel;
   v.audioRel = "Attachments/_incoming/20260824T210000-deadbeef.webm";
   files.set(v.audioRel, { path: v.audioRel, bytes: Buffer.from([1]) });
-  files.set("Capture/keep.md", { path: "Capture/keep.md", text: "do not delete" });
+  files.set("Notes/keep.md", { path: "Notes/keep.md", text: "do not delete" });
   v.state = "error";
 
   await v.discardSession(false);
 
   assert.equal(files.has(draft), false);
   assert.equal(files.has("Attachments/_incoming/20260824T210000-deadbeef.webm"), false);
-  assert.equal(files.has("Capture/keep.md"), true);
+  assert.equal(files.has("Notes/keep.md"), true);
   assert.equal(v.state, "idle");
 });
 
@@ -190,7 +190,7 @@ for (const [mime, ext] of [["image/png", "png"], ["image/jpeg", "jpg"],
   test(`pasted ${mime} becomes a stable vault-relative embed`, async () => {
     const { v, binaries } = fileBackedView();
     v.recordingId = "paste-id";
-    v.draftRel = "Capture/_unfiled/x.slim-draft.md";
+    v.draftRel = "Notes/_unfiled/x.slim-draft.md";
     let prevented = false;
     const image = { type: mime, name: `clipboard.${ext}`,
                     arrayBuffer: async () => Uint8Array.from([1, 2, 3]).buffer };
@@ -210,7 +210,7 @@ test("image paste dedupes without overwriting an earlier attachment", async () =
   const existing = ["Attachments/Recorder/paste-id/paste-001.png"];
   const { v, binaries } = fileBackedView({ existing });
   v.recordingId = "paste-id";
-  v.draftRel = "Capture/_unfiled/x.slim-draft.md";
+  v.draftRel = "Notes/_unfiled/x.slim-draft.md";
   const image = { type: "image/png", name: "image.png",
                   arrayBuffer: async () => Uint8Array.from([4]).buffer };
   const event = { clipboardData: { files: [image] }, preventDefault() {} };
@@ -223,7 +223,7 @@ test("image paste dedupes without overwriting an earlier attachment", async () =
 test("ordinary text paste stays entirely native to Obsidian", async () => {
   const { v, binaries } = fileBackedView();
   v.recordingId = "paste-id";
-  v.draftRel = "Capture/_unfiled/x.slim-draft.md";
+  v.draftRel = "Notes/_unfiled/x.slim-draft.md";
   let prevented = false;
   const event = { clipboardData: { files: [] }, preventDefault() { prevented = true; } };
   const editor = { replaceSelection() {} };
@@ -240,7 +240,7 @@ test("a paused recording survives an Obsidian restart", async () => {
   // the audio except `slim inbox` by hand.
   const { v, files } = fileBackedView();
   const id = "20260826T210000-deadbeef";
-  const draft = `Capture/_unfiled/2026-08-26--recording--${id}.slim-draft.md`;
+  const draft = `Notes/_unfiled/2026-08-26--recording--${id}.slim-draft.md`;
   files.set(draft, { path: draft, text: "````slim-meeting\n````\n\n- typed while listening\n" });
   for (const n of ["001", "002"]) {
     const p = `Attachments/_incoming/${id}-${n}.webm`;
@@ -259,7 +259,25 @@ test("a paused recording survives an Obsidian restart", async () => {
 
 test("a draft with no staged audio is not adopted as paused", async () => {
   const { v, files } = fileBackedView();
-  const draft = "Capture/_unfiled/2026-08-26--recording--nothing.slim-draft.md";
+  const draft = "Notes/_unfiled/2026-08-26--recording--nothing.slim-draft.md";
   files.set(draft, { path: draft, text: "````slim-meeting\n````\n" });
   assert.equal(await v.adoptPausedDraft(draft), false);
+});
+
+test("a draft under Capture/_unfiled is not the recorder's to trash", async () => {
+  // The old recordings folder may still be on disk; only Notes/_unfiled and Journal hold drafts
+  // the recorder owns.
+  const { v, files } = fileBackedView();
+  const mine = "Notes/_unfiled/2026-01-01--recording--x.slim-draft.md";
+  const old = "Capture/_unfiled/2026-01-01--recording--x.slim-draft.md";
+  for (const p of [mine, old]) files.set(p, { path: p, text: "" });
+  v.recordingId = "x";
+
+  v.draftRel = old;
+  await v.trashStagedSources();
+  assert.equal(files.has(old), true);
+
+  v.draftRel = mine;
+  await v.trashStagedSources();
+  assert.equal(files.has(mine), false);
 });

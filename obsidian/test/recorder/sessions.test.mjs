@@ -14,7 +14,7 @@ test("a processing meeting does not hold the microphone hostage", async () => {
   const { manager, made } = sessionManagerHarness();
   const meetingA = manager.createSession();
   meetingA.state = "processing";
-  meetingA.draftRel = "Capture/_unfiled/a.slim-draft.md";
+  meetingA.draftRel = "Notes/_unfiled/a.slim-draft.md";
   manager.indexSession(meetingA);
 
   const meetingB = await manager.activate();
@@ -56,7 +56,7 @@ test("reopening the microphone keeps an active capture in its own pane", async (
 function setupDraftFrom(manager, recordingId, { untouched }) {
   const meeting = manager.createSession();
   meeting.recordingId = recordingId;
-  meeting.draftRel = `Capture/_unfiled/x--recording--${recordingId}.slim-draft.md`;
+  meeting.draftRel = `Notes/_unfiled/x--recording--${recordingId}.slim-draft.md`;
   meeting.removed = 0;
   meeting.removeUntouchedDraft = async () => {
     if (!untouched) return false;
@@ -123,8 +123,8 @@ test("paths and progress remain owned by the correct meeting", () => {
   const { manager } = sessionManagerHarness();
   const meetingA = manager.createSession();
   const meetingB = manager.createSession();
-  meetingA.draftRel = "Capture/_unfiled/a.slim-draft.md";
-  meetingB.draftRel = "Capture/_unfiled/b.slim-draft.md";
+  meetingA.draftRel = "Notes/_unfiled/a.slim-draft.md";
+  meetingB.draftRel = "Notes/_unfiled/b.slim-draft.md";
   meetingA.processingProgress = { label: "Transcribing A" };
   meetingB.processingProgress = { label: "Queued B" };
   manager.indexSession(meetingA);
@@ -137,10 +137,10 @@ test("paths and progress remain owned by the correct meeting", () => {
 
   const old = meetingA.draftRel;
   meetingA.draftRel = "";
-  meetingA.filedNotePath = "Capture/project/a.md";
+  meetingA.filedNotePath = "Notes/project/a.md";
   manager.indexSession(meetingA);
   assert.equal(manager.sessionForPath(old), null);
-  assert.equal(manager.sessionForPath("Capture/project/a.md"), meetingA);
+  assert.equal(manager.sessionForPath("Notes/project/a.md"), meetingA);
   assert.equal(manager.sessionForPath(meetingB.draftRel), meetingB);
 });
 
@@ -149,9 +149,9 @@ test("reopening and deleting one meeting cannot reset another", async () => {
   const meetingA = manager.createSession();
   const meetingB = manager.createSession();
   meetingA.state = "card";
-  meetingA.filedNotePath = "Capture/project/a.md";
+  meetingA.filedNotePath = "Notes/project/a.md";
   meetingB.state = "idle";
-  meetingB.draftRel = "Capture/_unfiled/b.slim-draft.md";
+  meetingB.draftRel = "Notes/_unfiled/b.slim-draft.md";
   manager.indexSession(meetingA);
   manager.indexSession(meetingB);
   manager.claimCapture(meetingB);
@@ -202,7 +202,7 @@ test("recording from a displaced setup draft asks for the lease again", async ()
 });
 
 test("a pending review survives plugin reload while historical notes stay finished", async () => {
-  const path = "Capture/school/pending.md";
+  const path = "Notes/school/pending.md";
   const textFor = (status) => [
     "---", 'title: "Pending"', "type: lecture", "topics: [nlp]", "origin: recorded",
     ...(status ? [`review_status: ${status}`] : []), "---", "", "````slim-meeting",
@@ -228,17 +228,17 @@ test("a vault rename moves only the matching session path", () => {
   const { manager } = sessionManagerHarness();
   const meetingA = manager.createSession();
   const meetingB = manager.createSession();
-  meetingA.filedNotePath = "Capture/_unfiled/a.md";
-  meetingB.filedNotePath = "Capture/_unfiled/b.md";
+  meetingA.filedNotePath = "Notes/_unfiled/a.md";
+  meetingB.filedNotePath = "Notes/_unfiled/b.md";
   manager.indexSession(meetingA);
   manager.indexSession(meetingB);
 
-  manager.handleVaultRename({ path: "Capture/project/a.md" }, "Capture/_unfiled/a.md");
+  manager.handleVaultRename({ path: "Notes/project/a.md" }, "Notes/_unfiled/a.md");
 
-  assert.equal(meetingA.filedNotePath, "Capture/project/a.md");
-  assert.equal(manager.sessionForPath("Capture/_unfiled/a.md"), null);
-  assert.equal(manager.sessionForPath("Capture/project/a.md"), meetingA);
-  assert.equal(manager.sessionForPath("Capture/_unfiled/b.md"), meetingB);
+  assert.equal(meetingA.filedNotePath, "Notes/project/a.md");
+  assert.equal(manager.sessionForPath("Notes/_unfiled/a.md"), null);
+  assert.equal(manager.sessionForPath("Notes/project/a.md"), meetingA);
+  assert.equal(manager.sessionForPath("Notes/_unfiled/b.md"), meetingB);
 });
 
 test("deleting the active setup draft releases only that meeting", () => {
@@ -246,9 +246,9 @@ test("deleting the active setup draft releases only that meeting", () => {
   const meetingA = manager.createSession();
   const meetingB = manager.createSession();
   meetingA.state = "processing";
-  meetingA.draftRel = "Capture/_unfiled/a.slim-draft.md";
+  meetingA.draftRel = "Notes/_unfiled/a.slim-draft.md";
   meetingB.state = "idle";
-  meetingB.draftRel = "Capture/_unfiled/b.slim-draft.md";
+  meetingB.draftRel = "Notes/_unfiled/b.slim-draft.md";
   manager.indexSession(meetingA);
   manager.indexSession(meetingB);
   manager.claimCapture(meetingB);
@@ -264,7 +264,7 @@ test("deleting the active setup draft releases only that meeting", () => {
 test("resume must acquire the same exclusive capture slot", async () => {
   const v = view();
   v.state = "finished";
-  v.filedNotePath = "Capture/project/a.md";
+  v.filedNotePath = "Notes/project/a.md";
   v.result = { title: "A", summary: "", notes_md: "", card: {} };
   v.noteParts = { summary: "", notes: "", transcript: "earlier words" };
   let claimed = null;
@@ -314,7 +314,7 @@ test("the real recorder replaces a stale untouched setup draft with one named fo
   assert.notEqual(fresh, stale);
   assert.equal(manager.sessions.has(stale.sessionId), false);
   assert.equal(files.has(oldPath), false);
-  assert.match(fresh.draftRel, new RegExp(`^Capture/_unfiled/\\d{4}-\\d{2}-\\d{2}--recording--${today()}T`));
+  assert.match(fresh.draftRel, new RegExp(`^Notes/_unfiled/\\d{4}-\\d{2}-\\d{2}--recording--${today()}T`));
   assert.equal(files.has(fresh.draftRel), true);
   assert.equal(manager.activeCaptureId, fresh.sessionId);
 });

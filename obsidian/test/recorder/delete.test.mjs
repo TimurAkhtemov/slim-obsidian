@@ -10,22 +10,22 @@ test("filing reuses the tab Obsidian emptied when the server removed the draft",
   // Obsidian empties (not closes) a lone tab whose file is deleted. Read as "no editor", that
   // split a second pane beside the empty tab on every recording (2026-09-30).
   const { v, files, editorLeaf } = fileBackedView();
-  files.set("Capture/a/x.md", { path: "Capture/a/x.md", text: "" });
+  files.set("Notes/a/x.md", { path: "Notes/a/x.md", text: "" });
   editorLeaf.view = { getViewType: () => "empty" };
   v.editorLeaf = editorLeaf;
   v.app.workspace.getLeavesOfType = () => [];
   v.app.workspace.iterateAllLeaves = (fn) => fn(editorLeaf);
   v.app.workspace.getLeaf = () => { throw new Error("no new pane for a live tab"); };
 
-  await v.loadEditorFile("Capture/a/x.md");
+  await v.loadEditorFile("Notes/a/x.md");
 
   assert.equal(v.editorLeaf, editorLeaf);
-  assert.deepEqual(editorLeaf.opened, ["Capture/a/x.md"]);
+  assert.deepEqual(editorLeaf.opened, ["Notes/a/x.md"]);
 });
 
 test("a tab they pointed at something else is not taken back", async () => {
   const { v, files, editorLeaf } = fileBackedView();
-  files.set("Capture/a/x.md", { path: "Capture/a/x.md", text: "" });
+  files.set("Notes/a/x.md", { path: "Notes/a/x.md", text: "" });
   const theirs = { app: v.app, view: { getViewType: () => "pdf" } };
   v.editorLeaf = theirs;
   v.app.workspace.getLeavesOfType = () => [];
@@ -33,7 +33,7 @@ test("a tab they pointed at something else is not taken back", async () => {
   const asked = [];
   v.app.workspace.getLeaf = (how) => { asked.push(how); return editorLeaf; };
 
-  await v.loadEditorFile("Capture/a/x.md");
+  await v.loadEditorFile("Notes/a/x.md");
 
   assert.deepEqual(asked, ["tab"]);
   assert.equal(v.editorLeaf, editorLeaf);
@@ -41,14 +41,14 @@ test("a tab they pointed at something else is not taken back", async () => {
 
 test("a tab Obsidian closed is replaced by a tab, never a split", async () => {
   const { v, files, editorLeaf } = fileBackedView();
-  files.set("Capture/a/x.md", { path: "Capture/a/x.md", text: "" });
+  files.set("Notes/a/x.md", { path: "Notes/a/x.md", text: "" });
   v.editorLeaf = { app: v.app, view: null };            // detached with its siblings present
   v.app.workspace.getLeavesOfType = () => [];
   v.app.workspace.iterateAllLeaves = () => {};
   const asked = [];
   v.app.workspace.getLeaf = (how) => { asked.push(how); return editorLeaf; };
 
-  await v.loadEditorFile("Capture/a/x.md");
+  await v.loadEditorFile("Notes/a/x.md");
 
   assert.deepEqual(asked, ["tab"]);
   assert.equal(v.editorLeaf, editorLeaf);
@@ -90,8 +90,8 @@ test("Delete in setup trashes the draft and lets the session go", async () => {
 test("every state offers Delete", () => {
   const { v } = deletable();
   v.plugin.settings.port = 7546;
-  v.result = { title: "x", card: { dest_dir: "Capture/a", type_tag: "lecture", topics: [], folders: [] } };
-  v.filedNotePath = "Capture/a/x.md";
+  v.result = { title: "x", card: { dest_dir: "Notes/a", type_tag: "lecture", topics: [], folders: [] } };
+  v.filedNotePath = "Notes/a/x.md";
   v.renderSource = () => {};
   for (const state of ["idle", "recording", "processing", "paused", "error", "card", "finished"]) {
     v.state = state;
@@ -127,7 +127,7 @@ test("Delete mid-recording stops capture without filing and trashes every segmen
 
 test("Delete on a filed note trashes it, its archived audio and pasted images, and forgets it", async () => {
   const { v, files, removed } = deletable();
-  const note = "Capture/a/2026-09-30--standup--abc.md";
+  const note = "Notes/a/2026-09-30--standup--abc.md";
   const audio = "Attachments/Recordings/abc.webm";
   const shared = "Attachments/Recordings/shared.webm";
   const images = "Attachments/Recorder/20260930T090000-abcd1234";
@@ -139,7 +139,7 @@ test("Delete on a filed note trashes it, its archived audio and pasted images, a
   files.set("Attachments/Recordings/other.webm", { path: "Attachments/Recordings/other.webm" });
   // Not in the metadata cache yet, as a note filed a moment ago is not; another note names
   // the same content-addressed audio.
-  const other = { path: "Capture/a/other.md" };
+  const other = { path: "Notes/a/other.md" };
   v.app.vault.getMarkdownFiles = () => [files.get(note), other];
   v.app.metadataCache = {
     getFileCache: (f) => (f === other ? { frontmatter: { audio: shared } } : null),
@@ -191,9 +191,9 @@ test("Delete while processing cancels, then deletes whatever the job left", asyn
 
 test("Delete while processing still deletes a note the job filed before it could stop", async () => {
   const { v, files, removed } = deletable();
-  const note = "Capture/a/x.md";
+  const note = "Notes/a/x.md";
   v.recordingId = "20260930T090000-abcd1234";
-  v.draftRel = "Capture/_unfiled/2026-09-30--recording--20260930T090000-abcd1234.slim-draft.md";
+  v.draftRel = "Notes/_unfiled/2026-09-30--recording--20260930T090000-abcd1234.slim-draft.md";
   v.saveDraft = async () => {};
   v.loadEditorFile = async () => { throw new Error("a deleted note is not reopened"); };
   v.state = "processing";
@@ -214,7 +214,7 @@ test("Delete while processing still deletes a note the job filed before it could
 
 test("Discarding a resumed take leaves the filed note as it was", async () => {
   const { v, files, removed } = deletable();
-  const note = "Capture/a/x.md";
+  const note = "Notes/a/x.md";
   const seg = "Attachments/_incoming/20260930T100000-ffff0000-001.webm";
   files.set(note, { path: note, text: "keep" });
   files.set(seg, { path: seg, bytes: Buffer.from([1]) });

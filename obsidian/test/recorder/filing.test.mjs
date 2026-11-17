@@ -19,7 +19,7 @@ test("retry posts the SAME staged audio, not a new recording", async () => {
   // always carries `draft`, never `notes_md` (`submitRecording` in src/recorder/filing.js, D3).
   const { v } = fileBackedView();
   v.audioRel = "Attachments/_incoming/2026-08-23-100356.webm";
-  v.draftRel = "Capture/_unfiled/2026-08-23-100356.slim-draft.md";
+  v.draftRel = "Notes/_unfiled/2026-08-23-100356.slim-draft.md";
   v.saveDraft = async () => {};
   v.loadEditorFile = async () => {};
   v.type = "lecture";
@@ -29,7 +29,7 @@ test("retry posts the SAME staged audio, not a new recording", async () => {
   await v.submitRecording(v.audioRel);
   assert.deepEqual(posted, [{
     audio: "Attachments/_incoming/2026-08-23-100356.webm",
-    draft: "Capture/_unfiled/2026-08-23-100356.slim-draft.md",
+    draft: "Notes/_unfiled/2026-08-23-100356.slim-draft.md",
     type: "lecture",
     title: "K-means",
   }]);
@@ -47,7 +47,7 @@ test("a failed post leaves the audio path intact so it can be retried", async ()
 test("filing saves the editor before posting the draft path", async () => {
   const { v } = fileBackedView();
   const order = [];
-  v.draftRel = "Capture/_unfiled/x.slim-draft.md";
+  v.draftRel = "Notes/_unfiled/x.slim-draft.md";
   v.audioRel = "Attachments/_incoming/x.webm";
   v.title = "  K-means  ";
   v.saveDraft = async () => { order.push("save"); };
@@ -62,7 +62,7 @@ test("filing saves the editor before posting the draft path", async () => {
   assert.deepEqual(order, [
     "save",
     ["post", { audio: "Attachments/_incoming/x.webm",
-               draft: "Capture/_unfiled/x.slim-draft.md",
+               draft: "Notes/_unfiled/x.slim-draft.md",
                type: "lecture", title: "K-means" }],
     "load:Notes/x.md",
   ]);
@@ -87,19 +87,19 @@ test("review approval sends editable user notes with the summary", async () => {
 
 test("a failed draft post preserves both paths for the same retry", async () => {
   const { v } = fileBackedView();
-  v.draftRel = "Capture/_unfiled/same.slim-draft.md";
+  v.draftRel = "Notes/_unfiled/same.slim-draft.md";
   v.audioRel = "Attachments/_incoming/same.webm";
   v.plugin.postRecording = async () => { throw new Error("ASR failed"); };
 
   await assert.rejects(() => v.submitRecording(v.audioRel));
-  assert.equal(v.draftRel, "Capture/_unfiled/same.slim-draft.md");
+  assert.equal(v.draftRel, "Notes/_unfiled/same.slim-draft.md");
   assert.equal(v.audioRel, "Attachments/_incoming/same.webm");
 });
 
 test("a draft-save failure after Stop reaches the retry screen", async () => {
   const { v } = fileBackedView();
   v.audioRel = "Attachments/_incoming/same.webm";
-  v.draftRel = "Capture/_unfiled/same.slim-draft.md";
+  v.draftRel = "Notes/_unfiled/same.slim-draft.md";
   v.recorder = {
     stop() { queueMicrotask(() => this.onstop()); },
   };
@@ -117,14 +117,14 @@ test("a draft-save failure after Stop reaches the retry screen", async () => {
   assert.equal(v.editorFrozen, false);
   assert.equal(audioSaved, true);
   assert.equal(v.audioRel, "Attachments/_incoming/same.webm");
-  assert.equal(v.draftRel, "Capture/_unfiled/same.slim-draft.md");
+  assert.equal(v.draftRel, "Notes/_unfiled/same.slim-draft.md");
   assert.equal(renders, 1);
 });
 
 test("a draft-save failure during retry stays on the retry screen", async () => {
   const { v } = fileBackedView();
   v.audioRel = "Attachments/_incoming/same.webm";
-  v.draftRel = "Capture/_unfiled/same.slim-draft.md";
+  v.draftRel = "Notes/_unfiled/same.slim-draft.md";
   v.saveDraft = async () => { throw new Error("vault save failed again"); };
   let renders = 0;
   v.render = () => { renders += 1; };
@@ -266,7 +266,7 @@ test("a resumed recording writes a new segment beside the first", async () => {
 
 test("finishing a resumed recording posts every segment in order", async () => {
   const { v } = fileBackedView();
-  v.draftRel = "Capture/_unfiled/x.slim-draft.md";
+  v.draftRel = "Notes/_unfiled/x.slim-draft.md";
   v.segments = ["Attachments/_incoming/x-001.webm", "Attachments/_incoming/x-002.webm"];
   v.saveDraft = async () => {};
   v.loadEditorFile = async () => {};
@@ -282,7 +282,7 @@ test("finishing a resumed recording posts every segment in order", async () => {
 
 test("one segment still posts a bare path", async () => {
   const { v } = fileBackedView();
-  v.draftRel = "Capture/_unfiled/x.slim-draft.md";
+  v.draftRel = "Notes/_unfiled/x.slim-draft.md";
   v.saveDraft = async () => {};
   v.loadEditorFile = async () => {};
   let body = null;
@@ -298,7 +298,7 @@ test("a cancelled pass parks the session instead of failing it", async () => {
   // Their case: Stop hit by accident, 40 minutes in. A cancel is not an error — the draft and
   // every segment stay on disk and they carry on recording into the same note.
   const { v } = fileBackedView();
-  v.draftRel = "Capture/_unfiled/x.slim-draft.md";
+  v.draftRel = "Notes/_unfiled/x.slim-draft.md";
   v.segments = ["Attachments/_incoming/x-001.webm"];
   v.state = "processing";
   v.saveDraft = async () => {};
@@ -311,7 +311,7 @@ test("a cancelled pass parks the session instead of failing it", async () => {
   await v.submitRecording(v.segments).catch(() => {});
 
   assert.equal(v.state, "paused");
-  assert.equal(v.draftRel, "Capture/_unfiled/x.slim-draft.md", "the draft is not released");
+  assert.equal(v.draftRel, "Notes/_unfiled/x.slim-draft.md", "the draft is not released");
   assert.deepEqual(v.segments, ["Attachments/_incoming/x-001.webm"]);
   assert.equal(v.errorText || "", "", "a cancel is not an error screen");
 });
@@ -351,7 +351,7 @@ test("discarding a resumed session removes every segment", async () => {
   v.segments = ["Attachments/_incoming/20260826T210000-deadbeef-001.webm",
                 "Attachments/_incoming/20260826T210000-deadbeef-002.webm"];
   v.segments.forEach((p) => files.set(p, { path: p, bytes: Buffer.from([1]) }));
-  files.set("Capture/keep.md", { path: "Capture/keep.md", text: "do not delete" });
+  files.set("Notes/keep.md", { path: "Notes/keep.md", text: "do not delete" });
   v.state = "error";
 
   await v.discardSession(false);
@@ -359,7 +359,7 @@ test("discarding a resumed session removes every segment", async () => {
   assert.equal(files.has(draft), false);
   assert.equal(files.has("Attachments/_incoming/20260826T210000-deadbeef-001.webm"), false);
   assert.equal(files.has("Attachments/_incoming/20260826T210000-deadbeef-002.webm"), false);
-  assert.equal(files.has("Capture/keep.md"), true);
+  assert.equal(files.has("Notes/keep.md"), true);
 });
 
 // The server writes `<segment>.transcript.json` outside the Vault API, so Obsidian's index may
@@ -414,7 +414,7 @@ test("each attempt gets its own job, so a cancelled one cannot haunt the next", 
   // stopped watching immediately.
   const { v } = fileBackedView();
   v.recordingId = "rec-1";
-  v.draftRel = "Capture/_unfiled/x.slim-draft.md";
+  v.draftRel = "Notes/_unfiled/x.slim-draft.md";
   v.saveDraft = async () => {};
   v.loadEditorFile = async () => {};
   const jobs = [];
@@ -584,7 +584,7 @@ test("a recording with no words says so quietly and offers no scary choice", asy
   // should never be asked whether to delete their own audio over a silent take.
   const v = view();
   v.state = "processing";
-  v.draftRel = "Capture/_unfiled/x.slim-draft.md";
+  v.draftRel = "Notes/_unfiled/x.slim-draft.md";
   v.segments = ["Attachments/_incoming/x-001.webm"];
   v.saveDraft = async () => {};
   v.plugin.postRecording = async () => {
@@ -607,7 +607,7 @@ test("try again re-posts the whole recording, not its last segment", async () =>
   const v = view();
   v.state = "error";
   v.errorText = "boom";
-  v.draftRel = "Capture/_unfiled/x.slim-draft.md";
+  v.draftRel = "Notes/_unfiled/x.slim-draft.md";
   v.segments = ["Attachments/_incoming/x-001.webm", "Attachments/_incoming/x-002.webm"];
   v.audioRel = "Attachments/_incoming/x-002.webm";
   v.saveDraft = async () => {};
@@ -631,7 +631,7 @@ test("try again re-posts the whole recording, not its last segment", async () =>
 test("resuming a filed note does not mint a stray draft", async () => {
   // ⚠ DATA LOSS, found in review. `start()` calls `ensureDraftLocation()`, which creates a
   // draft whenever `draftRel` is empty — and it is empty for a filed note. So every resume
-  // created an orphan in Capture/_unfiled, switched the editor to it, and anything typed while
+  // created an orphan in Notes/_unfiled, switched the editor to it, and anything typed while
   // resuming went there and was never merged into the note or cleaned up.
   const { v, files } = fileBackedView();
   v.state = "finished";
@@ -639,7 +639,7 @@ test("resuming a filed note does not mint a stray draft", async () => {
   v.result = { title: "T", summary: "s", notes_md: "", card: {} };
   v.noteParts = { summary: "s", notes: "", transcript: "raw" };
   let madeDraft = 0;
-  v.createDraft = async () => { madeDraft += 1; return "Capture/_unfiled/stray.slim-draft.md"; };
+  v.createDraft = async () => { madeDraft += 1; return "Notes/_unfiled/stray.slim-draft.md"; };
   v.buildStream = async () => { throw new Error("stop here — the draft decision is made"); };
 
   await v.startAppendRecording().catch(() => {});
@@ -854,20 +854,20 @@ test("stopping releases the capture before its processing request begins", async
 
 test("filing reindexes only the session whose draft moved", async () => {
   const { v } = fileBackedView();
-  v.draftRel = "Capture/_unfiled/a.slim-draft.md";
+  v.draftRel = "Notes/_unfiled/a.slim-draft.md";
   v.audioRel = "Attachments/_incoming/a-001.webm";
   const indexed = [];
   v.manager = { indexSession(session) { indexed.push([session.draftRel, session.filedNotePath]); } };
   v.plugin.postRecording = async () => ({
-    note: "Capture/project/a.md", title: "A", summary: "", notes_md: "",
-    card: { dest_dir: "Capture/project", topics: [], folders: [] },
+    note: "Notes/project/a.md", title: "A", summary: "", notes_md: "",
+    card: { dest_dir: "Notes/project", topics: [], folders: [] },
   });
   v.loadEditorFile = async () => {};
   v.loadNoteParts = async () => v.noteParts;
 
   await v.submitRecording(v.audioRel);
 
-  assert.ok(indexed.some(([draft, note]) => draft === "" && note === "Capture/project/a.md"));
+  assert.ok(indexed.some(([draft, note]) => draft === "" && note === "Notes/project/a.md"));
 });
 
 test("filing indexes the note before the editor opens it, so file-open finds the session", async () => {
@@ -876,7 +876,7 @@ test("filing indexes the note before the editor opens it, so file-open finds the
   // approved separately, and a "review still pending" notice on close for the one they never
   // saw (2026-09-05, three of five lectures approved twice).
   const { v } = fileBackedView();
-  v.draftRel = "Capture/_unfiled/a.slim-draft.md";
+  v.draftRel = "Notes/_unfiled/a.slim-draft.md";
   v.audioRel = "Attachments/_incoming/a-001.webm";
   const paths = new Map();
   v.manager = { indexSession(session) {
@@ -884,8 +884,8 @@ test("filing indexes the note before the editor opens it, so file-open finds the
     for (const p of [session.draftRel, session.filedNotePath]) if (p) paths.set(p, session);
   } };
   v.plugin.postRecording = async () => ({
-    note: "Capture/project/a.md", title: "A", summary: "", notes_md: "",
-    card: { dest_dir: "Capture/project", topics: [], folders: [] },
+    note: "Notes/project/a.md", title: "A", summary: "", notes_md: "",
+    card: { dest_dir: "Notes/project", topics: [], folders: [] },
   });
   let trackedAtOpen = null;
   v.loadEditorFile = async (path) => { trackedAtOpen = paths.get(path) || null; };
@@ -894,7 +894,7 @@ test("filing indexes the note before the editor opens it, so file-open finds the
   await v.submitRecording(v.audioRel);
 
   assert.equal(trackedAtOpen, v, "the filed path is this session's before the leaf opens it");
-  assert.equal(paths.get("Capture/_unfiled/a.slim-draft.md"), undefined);
+  assert.equal(paths.get("Notes/_unfiled/a.slim-draft.md"), undefined);
 });
 
 test("the server's move of a note under review is not their deletion of it", async () => {
@@ -902,8 +902,8 @@ test("the server's move of a note under review is not their deletion of it", asy
   // delete, usually before the response lands. Read as their deletion, it reset the session
   // mid-apply: "the deleted note was released" and then "Cannot set properties of null
   // (setting 'note')" on the Approve button (2026-09-04).
-  const src = "Capture/project/a.md";
-  const dest = "Capture/other/a.md";
+  const src = "Notes/project/a.md";
+  const dest = "Notes/other/a.md";
   const { v, files } = fileBackedView({ existing: [src] });
   resetNotices();
   const manager = new MeetingSessionManager(v.plugin, () => v);
@@ -912,7 +912,7 @@ test("the server's move of a note under review is not their deletion of it", asy
   v.filedNotePath = src;
   v.audioRel = "Attachments/_incoming/a-001.webm";
   v.result = { note: src, title: "A", summary: "", notes_md: "",
-               card: { dest_dir: "Capture/other", type_tag: "lecture", topics: [] } };
+               card: { dest_dir: "Notes/other", type_tag: "lecture", topics: [] } };
   manager.indexSession(v);
   v.plugin.applyCard = async () => {
     files.delete(src);
@@ -936,16 +936,16 @@ test("approving a moved note does not reopen a leaf that already shows it", asyn
   // object's path changes. `applyCard` then reopened that same file in that same leaf — the one
   // step approve-with-edits took that approve-without did not, when "Cannot set properties of
   // null" surfaced after changing the suggested location.
-  const moved = "Capture/school/x.md";
+  const moved = "Notes/school/x.md";
   const { v, files, editorLeaf } = fileBackedView({ existing: [moved] });
   await editorLeaf.openFile(files.get(moved));
   editorLeaf.opened = [];
   v.editorLeaf = editorLeaf;
   v.state = "card";
   v.edited = true;
-  v.filedNotePath = "Capture/_unfiled/x.md";
+  v.filedNotePath = "Notes/_unfiled/x.md";
   v.result = { title: "T", summary: "s", notes_md: "", card: {
-    dest_dir: "Capture/school", type_tag: "lecture", topics: [], folders: [],
+    dest_dir: "Notes/school", type_tag: "lecture", topics: [], folders: [],
   } };
   v.noteParts = { summary: "s", notes: "", transcript: "raw" };
   v.plugin.applyCard = async () => ({ note: moved });
@@ -965,13 +965,13 @@ test("a filing the server completed finishes the review even when the pane canno
   const v = view();
   v.state = "card";
   v.edited = true;
-  v.filedNotePath = "Capture/_unfiled/x.md";
+  v.filedNotePath = "Notes/_unfiled/x.md";
   v.result = { title: "T", summary: "s", notes_md: "", card: {
-    dest_dir: "Capture/school", type_tag: "lecture", topics: [], folders: [],
+    dest_dir: "Notes/school", type_tag: "lecture", topics: [], folders: [],
   } };
   v.noteParts = { summary: "s", notes: "", transcript: "raw" };
-  v.editorLeaf = { view: { file: { path: "Capture/_unfiled/x.md" } } };   // not yet on screen
-  v.plugin.applyCard = async () => ({ note: "Capture/school/x.md" });
+  v.editorLeaf = { view: { file: { path: "Notes/_unfiled/x.md" } } };   // not yet on screen
+  v.plugin.applyCard = async () => ({ note: "Notes/school/x.md" });
   v.loadEditorFile = async () => { throw new TypeError("Cannot set properties of null (setting 'cm')"); };
   v.loadNoteParts = async () => v.noteParts;
   const root = fakeContentEl();
@@ -981,7 +981,7 @@ test("a filing the server completed finishes the review even when the pane canno
   await findButton(root, "Approve & finish").events.click();
 
   assert.equal(v.state, "finished");
-  assert.equal(v.filedNotePath, "Capture/school/x.md");
+  assert.equal(v.filedNotePath, "Notes/school/x.md");
   assert.ok(!notices.some((n) => /Cannot set properties/.test(n)), notices.join(" | "));
 
   // ...and closing that leaf later must not announce a review that is done.

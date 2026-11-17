@@ -135,7 +135,7 @@ module.exports = {
     if (!this.recordingId) this.recordingId = recordingId();
     // ⚠ A FILED NOTE IS ITS OWN DRAFT. `ensureDraftLocation` creates one whenever `draftRel`
     // is empty, and it is empty for a filed note — so a resume used to mint an orphan in
-    // Capture/_unfiled, switch the editor to it, and lose everything typed while resuming.
+    // the draft folder, switch the editor to it, and lose everything typed while resuming.
     if (!this.appendTo) await this.ensureDraftLocation();
     const mixed = await this.buildStream();
     if (!this.segments) this.segments = [];

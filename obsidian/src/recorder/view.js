@@ -4,7 +4,7 @@
 
 const { MarkdownView, Notice } = require("obsidian");
 const nodePath = require("path");
-const { STAGING_DIR, RECORDER_ATTACHMENTS, DRAFT_SUFFIX, EMPTY_MEETING_BLOCK, recordingIdFromStaged,
+const { STAGING_DIR, RECORDER_ATTACHMENTS, DRAFT_SUFFIX, DRAFT_FOLDER, EMPTY_MEETING_BLOCK, recordingIdFromStaged,
         recordingId, splitMeetingNote, frontmatterScalar, hasMeetingBlock,
         embedLegacyMeetingBlock } = require("./meeting-note");
 
@@ -419,7 +419,7 @@ class RecorderView {
     const audios = [...new Set([...(this.segments || []), this.audioRel].filter(Boolean))];
     const attachmentFolder = id ? `${RECORDER_ATTACHMENTS}/${id}` : "";
     const draftIsManaged = draft && draft.endsWith(DRAFT_SUFFIX) &&
-      (draft.startsWith("Capture/_unfiled/") || draft.startsWith("Journal/"));
+      (draft.startsWith(`${DRAFT_FOLDER}/`) || draft.startsWith("Journal/"));
     const managed = (audio) => Boolean(audio) && Boolean(id) &&
       audio.startsWith(`${STAGING_DIR}/`) && recordingIdFromStaged(audio) === id;
     if (draftIsManaged) await this.trashManagedPath(draft);
@@ -440,7 +440,7 @@ class RecorderView {
     if (!this.recordingId) this.recordingId = recordingId();
     const digits = this.recordingId.slice(0, 8);
     const date = `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
-    const folder = this.type === "journal" ? "Journal" : "Capture/_unfiled";
+    const folder = this.type === "journal" ? "Journal" : DRAFT_FOLDER;
     await this.ensureVaultDirs(folder);
     this.draftRel = `${folder}/${date}--recording--${this.recordingId}${DRAFT_SUFFIX}`;
     await this.app.vault.create(this.draftRel, EMPTY_MEETING_BLOCK);
@@ -451,7 +451,7 @@ class RecorderView {
 
   async ensureDraftLocation() {
     if (!this.draftRel) return this.createDraft();
-    const folder = this.type === "journal" ? "Journal" : "Capture/_unfiled";
+    const folder = this.type === "journal" ? "Journal" : DRAFT_FOLDER;
     if (this.draftRel.startsWith(`${folder}/`)) return this.draftRel;
     const file = this.app.vault.getAbstractFileByPath(this.draftRel);
     if (!file) { this.draftRel = ""; return this.createDraft(); }

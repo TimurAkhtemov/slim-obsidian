@@ -6,7 +6,7 @@ const { Plugin, MarkdownView, MarkdownRenderer, MarkdownRenderChild, Notice, req
 const nodePath = require("path");
 const { VIEW_TYPE_COPILOT, CopilotView } = require("./chat/view");
 const { makeLiveEditor } = require("./live/editor");
-const { STAGING_DIR, DRAFT_SUFFIX, recordingIdFromStaged,
+const { STAGING_DIR, DRAFT_SUFFIX, DRAFT_FOLDER, recordingIdFromStaged,
         renderPassiveMeetingBlock } = require("./recorder/meeting-note");
 const { serverMethods } = require("./server");
 const { MeetingSessionManager } = require("./recorder/sessions");
@@ -310,7 +310,7 @@ class SlimRecorderPlugin extends Plugin {
       if (!stranded.length) return;
 
       const draftsById = new Map();
-      for (const folder of ["Capture/_unfiled", "Journal"]) {
+      for (const folder of [DRAFT_FOLDER, "Journal"]) {
         if (!(await adapter.exists(folder))) continue;
         const drafts = await adapter.list(folder);
         for (const path of drafts.files || []) {

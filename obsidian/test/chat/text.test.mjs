@@ -90,9 +90,9 @@ test("@ starts a mention only at the start of a word, up to the caret", () => {
 
 test("mentions match by substring, folders first, then shorter paths, at most 20", () => {
   const { mentionMatches } = require("../../src/chat/text.js");
-  const hits = mentionMatches("WEEK", ["Notes/week-long.md", "week.md", "x/y/week2.md"], ["Capture/weekly", "Notes/other"]);
+  const hits = mentionMatches("WEEK", ["Notes/week-long.md", "week.md", "x/y/week2.md"], ["Notes/weekly", "Notes/other"]);
   assert.deepEqual(hits, [
-    { kind: "folder", path: "Capture/weekly" }, { kind: "note", path: "week.md" },
+    { kind: "folder", path: "Notes/weekly" }, { kind: "note", path: "week.md" },
     { kind: "note", path: "x/y/week2.md" }, { kind: "note", path: "Notes/week-long.md" }]);
   const many = Array.from({ length: 30 }, (_, i) => `n${i}.md`);
   assert.equal(mentionMatches("", many, []).length, 20);

@@ -10,6 +10,10 @@ const STAGING_DIR = "Attachments/_incoming";
 const RECORDER_ATTACHMENTS = "Attachments/Recorder";
 const ARCHIVE_DIR = "Attachments/Recordings";   // slim/capture/audio.py AUDIO_ARCHIVE
 const DRAFT_SUFFIX = ".slim-draft.md";
+// Where a recording's draft lives until it is filed (a journal's: "Journal"). The server names
+// the same folder twice: slim/capture/voicetags.py NAMESPACE + UNFILED, slim/index/ingest.py
+// _DRAFT_PARENTS.
+const DRAFT_FOLDER = "Notes/_unfiled";
 const EMPTY_MEETING_BLOCK = "````slim-meeting\n\n````\n\n";
 
 // `meeting-note` is the spelling the imported Notion transcripts carry. A type they PICK is
@@ -201,6 +205,6 @@ function renderPassiveMeetingBlock(app, plugin, el, source, sourcePath) {
   draw();
 }
 
-module.exports = { STAGING_DIR, RECORDER_ATTACHMENTS, ARCHIVE_DIR, DRAFT_SUFFIX, EMPTY_MEETING_BLOCK, TYPES,
+module.exports = { STAGING_DIR, RECORDER_ATTACHMENTS, ARCHIVE_DIR, DRAFT_SUFFIX, DRAFT_FOLDER, EMPTY_MEETING_BLOCK, TYPES,
         recordingIdFromStaged, localDay, recordingId, splitMeetingNote, frontmatterScalar, hasMeetingBlock,
         embedLegacyMeetingBlock, renderMeetingTabs, renderPassiveMeetingBlock };

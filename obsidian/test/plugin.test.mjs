@@ -37,10 +37,10 @@ async function loadedPlugin(leavesOfType = () => [], data = {}) {
 test("startup reports a recoverable draft and audio pair by recording ID", async () => {
   const id = "20260823T143000-abcd1234";
   const audio = `Attachments/_incoming/${id}.webm`;
-  const draft = `Capture/_unfiled/2026-08-23--recording--${id}.slim-draft.md`;
+  const draft = `Notes/_unfiled/2026-08-23--recording--${id}.slim-draft.md`;
   const listings = {
     "Attachments/_incoming": { files: [audio] },
-    "Capture/_unfiled": { files: [draft] },
+    "Notes/_unfiled": { files: [draft] },
     Journal: { files: [] },
   };
   const p = plugin();
@@ -66,8 +66,8 @@ test("startup reports paired and unpaired stranded recordings separately", async
       `Attachments/_incoming/${pairedId}.webm`,
       `Attachments/_incoming/${unpairedId}.webm`,
     ] },
-    "Capture/_unfiled": { files: [
-      `Capture/_unfiled/2026-08-23--recording--${pairedId}.slim-draft.md`,
+    "Notes/_unfiled": { files: [
+      `Notes/_unfiled/2026-08-23--recording--${pairedId}.slim-draft.md`,
     ] },
     Journal: { files: [] },
   };
@@ -161,19 +161,19 @@ test("a leaf change while Approve is in flight does not announce a pending revie
   const v = view();
   v.state = "card";
   v.edited = true;
-  v.filedNotePath = "Capture/_unfiled/x.md";
+  v.filedNotePath = "Notes/_unfiled/x.md";
   v.result = { title: "T", summary: "s", notes_md: "", card: {
-    dest_dir: "Capture/school", type_tag: "lecture", topics: [], folders: [],
+    dest_dir: "Notes/school", type_tag: "lecture", topics: [], folders: [],
   } };
   v.noteParts = { summary: "s", notes: "", transcript: "raw" };
-  const leaf = { view: { file: { path: "Capture/_unfiled/x.md" } } };
+  const leaf = { view: { file: { path: "Notes/_unfiled/x.md" } } };
   v.editorLeaf = leaf;
   v.plugin.app = { workspace: { getLeavesOfType: () => [] } };
   v.plugin.meetings = { sessions: new Map([["x", v]]) };
   v.plugin.applyCard = async () => {
     leaf.view.file = null;                                  // Obsidian let go of the deleted file
     PluginClass.prototype.noticeClosedPendingReviews.call(v.plugin);
-    return { note: "Capture/school/x.md" };
+    return { note: "Notes/school/x.md" };
   };
   v.loadEditorFile = async () => {};
   v.loadNoteParts = async () => v.noteParts;
@@ -205,8 +205,8 @@ test("plugin reload adopts every visible recorded block into its own session", a
     async adoptPausedDraft() { return false; },
     render() {}, onClose() {}, ownsEditor() { return false; },
   });
-  const a = { path: "Capture/project/a.md" };
-  const b = { path: "Capture/project/b.md" };
+  const a = { path: "Notes/project/a.md" };
+  const b = { path: "Notes/project/b.md" };
 
   const sessionA = await manager.adoptFile(a, {});
   const sessionB = await manager.adoptFile(b, {});
@@ -250,7 +250,7 @@ test("plugin reload adopts every already-visible meeting note", async () => {
     leaf.view.file = { path };
     return leaf;
   };
-  const leaves = [leafFor("Capture/a.md"), leafFor("Capture/b.md"), { view: {} }];
+  const leaves = [leafFor("Notes/a.md"), leafFor("Notes/b.md"), { view: {} }];
   const { p, got } = await loadedPlugin((type) => (type === "markdown" ? leaves : []));
   const adopted = [];
   p.meetings.adoptFile = async (file, leaf) => { adopted.push([file.path, leaf]); };
@@ -258,7 +258,7 @@ test("plugin reload adopts every already-visible meeting note", async () => {
 
   got.layoutReady.forEach((fn) => fn());
 
-  assert.deepEqual(adopted, [["Capture/a.md", leaves[0]], ["Capture/b.md", leaves[1]]]);
+  assert.deepEqual(adopted, [["Notes/a.md", leaves[0]], ["Notes/b.md", leaves[1]]]);
 });
 
 test("a meeting block is found while Live Preview is still building it", async () => {
@@ -268,10 +268,10 @@ test("a meeting block is found while Live Preview is still building it", async (
   const el = fakeContentEl();
   el.isConnected = false;
 
-  got.blocks["slim-meeting"]("", el, { sourcePath: "Capture/a.md" });
+  got.blocks["slim-meeting"]("", el, { sourcePath: "Notes/a.md" });
 
-  assert.equal(p.meetingBlockFor("Capture/a.md"), el);
-  assert.equal(p.meetingBlockFor("Capture/other.md"), null);
+  assert.equal(p.meetingBlockFor("Notes/a.md"), el);
+  assert.equal(p.meetingBlockFor("Notes/other.md"), null);
 });
 
 test("quitting Obsidian flushes every meeting's notes", async () => {
