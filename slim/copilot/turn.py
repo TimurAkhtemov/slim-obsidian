@@ -211,7 +211,8 @@ def plain_note_message(path: str, text: str) -> str:
     """A note the editing tools cannot take, as it rides with the question: its text, no handles."""
     text = text.lstrip("\ufeff").replace("\r\n", "\n").replace("\r", "\n")
     if len(text) > context.ATTACH_MAX_CHARS:
-        text = text[:context.ATTACH_MAX_CHARS] + "\n[… the rest: read_note(path, section) for one section]"
+        text = (text[:context.ATTACH_MAX_CHARS] + f'\n[… the rest: read_note("{path}", "#2") for the next '
+                "page, or one section by its heading]")
     return f"=== {path} · the open note ===\n{text.rstrip()}"
 
 
@@ -244,8 +245,8 @@ def clean_transcript(raw) -> list[dict] | None:
             return None
         clean = {"role": message["role"], "content": message["content"]}
         if message["role"] == "assistant":
-            if isinstance(message.get("thinking"), str) and message["thinking"]:
-                clean["thinking"] = message["thinking"]
+            # No thinking: the GGUF's template renders it only after the newest question (no
+            # `preserve_thinking`), so an earlier turn's would be counted and stored, never shown.
             calls = message.get("tool_calls")
             if calls is not None:
                 if not isinstance(calls, list) or not all(
@@ -258,6 +259,30 @@ def clean_transcript(raw) -> list[dict] | None:
                                        for call in calls]
         out.append(clean)
     return out if out[0]["role"] == "user" else None
+
+
+ATTACHED = "\n\n---\n\n"            # between what rides with a question and the question
+_SHOWN = re.compile(r"^=== (.+?)(?: · [^\n]*)? ===$", re.M)
+
+
+def without_attachment(content: str, question: str) -> str:
+    """A question as an earlier turn sent it, without the notes that rode with it: a marker names
+    them. Their old text, with handles numbered as they were then, misled a later turn's edits
+    (the note's [b12] is another block after inserts), and a copy per turn filled the window and
+    the saved chat. The open note rides with every question, as it is now; `read_note` reads any."""
+    tail = ATTACHED + question
+    if not question or not content.endswith(tail) or len(content) == len(tail):
+        return content
+    names = list(dict.fromkeys(_SHOWN.findall(content[:-len(tail)])))
+    shown = ", ".join(names) if names else "notes"
+    return f"[Shown with this question then, not repeated here: {shown}]{tail}"
+
+
+# Room the turn's own work needs beyond its first reply: what its lookups bring back and its
+# steps' replies. History packed to the reply's room alone left none, so in a long chat every
+# lookup was refused and every plan stopped after its plan. About two whole read_note results
+# (READ_MAX_CHARS each) and a step's thinking; unmeasured.
+TURN_RESERVE = 32_000
 
 
 def fit_window(transcript: list[dict], others: list[dict], num_predict: int) -> list[dict]:
@@ -299,7 +324,16 @@ def _conversation(history: list[dict], question: str, images=None,
                 asked = transcript.pop()
                 if asked.get("images"):
                     replay[0]["images"] = asked["images"]
+                # A chat saved before the store dropped them still holds the old note copies.
+                replay[0]["content"] = without_attachment(
+                    replay[0]["content"], re.sub(r"^\(on [^\n]*?\.md\) ", "", asked["content"], count=1))
             transcript.extend(replay)
+            said = str(turn.get("text") or "").lstrip()
+            if said.startswith(EARLIER_EDIT):
+                # What became of the run's changes since (the plugin counts what was undone or
+                # restored): its calls' "ok:" results alone say they stand.
+                transcript.append({"role": "user",
+                                   "content": f"(What became of that edit since: {said.splitlines()[0]})"})
             continue
         message = {
             "role": "user" if turn["role"] == "you" else "assistant",
@@ -375,8 +409,8 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
             cited = [doc_["path"] for doc_ in pack.docs if doc_["role"] not in ("open", "selection")]
             inputs = context.pack_inputs(pack)
             tools, step_tools = list(lookup.NAMES), ()
-            asked = (f"Notes in view:\n\n{pack_docs(pack) or '(none)'}\n\n---\n\n"
-                     f"{skills_mod.render_prompt(skill, args)}")
+            prompt = skills_mod.render_prompt(skill, args)
+            asked = f"Notes in view:\n\n{pack_docs(pack) or '(none)'}{ATTACHED}{prompt}"
         elif source is not None:
             try:
                 text = doc if doc is not None else edits_mod._read(vault / path)
@@ -386,11 +420,11 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
             # the plugin sent no editor text for (over MAX_EDIT_CHARS), is still asked about: it
             # rides as plain text, and the edit tools refuse.
             if "\r" in text or text.startswith("\ufeff") or (doc is None and len(text) > edits_mod.MAX_EDIT_CHARS):
-                asked, no_edit = f"{plain_note_message(path, text)}\n\n---\n\n{question}", PLAIN_NOTE
+                asked, no_edit = f"{plain_note_message(path, text)}{ATTACHED}{question}", PLAIN_NOTE
                 entry["plain_note"] = True
             else:
                 note = blocks.Note(text)
-                asked = f"{open_note_message(path, note)}\n\n---\n\n{question}"
+                asked = f"{open_note_message(path, note)}{ATTACHED}{question}"
         else:
             asked, no_edit = question, NO_NOTE
         reader = lookup.Reader(con, vault, default_folder=scope, pinned=(*held, *left),
@@ -410,7 +444,7 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
         fixed = [system_turn, *pinned_turns, *embedded, current]
         if sum(map(_tokens, fixed)) + room > llm.RESIDENT_CTX:
             raise CopilotError("the open note and the pins are too long for one request; unpin something")
-        recent = fit_window(transcript, fixed, room)
+        recent = fit_window(transcript, fixed, room + TURN_RESERVE)
         messages = [system_turn, *pinned_turns, *recent, *embedded, current]
 
         def fits(sent: list[dict], results: list[str]) -> bool:
@@ -471,11 +505,11 @@ def _loop(con, vault: Path, source: dict | None, question: str, history: list[di
         "edit_run": run,
         "looked_up": out["looked_up"],
         "tools": out["tools"],
-        # This turn as the model had it, for the turns after it (`_conversation`): the question as
-        # sent and every message the run added. Image bytes stay out (the question's attachments
-        # carry them).
-        "transcript": [{"role": "user", "content": asked},
-                       *({key: value for key, value in message.items() if key != "images"}
+        # This turn for the turns after it (`_conversation`): the question as sent and every message
+        # the run added. Image bytes stay out (the question's attachments carry them), and so do the
+        # notes that rode with the question (`without_attachment`) and the thinking (`clean_transcript`).
+        "transcript": [{"role": "user", "content": without_attachment(asked, prompt if skill else question)},
+                       *({key: value for key, value in message.items() if key not in ("images", "thinking")}
                          for message in convo[len(messages):])],
     }
     if inputs is not None:

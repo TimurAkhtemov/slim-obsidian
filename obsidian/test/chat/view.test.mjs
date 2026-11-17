@@ -344,20 +344,13 @@ test("activation syncs a new note once, however many callers race to it", async 
   assert.equal(view.context.source.id, "s1");
 });
 
-test("send re-syncs the open note first, without the nearby-notes search", async () => {
-  // The index must reflect what they typed since the note was opened; the sidebar no longer
-  // re-syncs on every focus change, so the question itself does it — cheaply.
+test("send saves the open note first and leaves its sync to the server", async () => {
+  // The server syncs the open note before each question, guarded; a second sync from here cost
+  // each question two passes and could race the server's.
   const calls = [];
   const view = makeView({
     saveActiveNote: async () => { calls.push("save"); },
-    postJSON: async (route, body) => {
-      calls.push(route.split("/").pop());
-      if (route.endsWith("context")) {
-        assert.equal(body.related, false);
-        return { source: { id: "s1", path: "Notes/one.md", title: "Fresh" }, related: [] };
-      }
-      return {};
-    },
+    postJSON: async (route) => { calls.push(route.split("/").pop()); return {}; },
     streamCopilot: async (body, handlers) => {
       calls.push("stream");
       assert.equal(body.path, "Notes/one.md");
@@ -367,10 +360,10 @@ test("send re-syncs the open note first, without the nearby-notes search", async
   view.render = () => {};
   view.app.workspace.getActiveFile = () => ({ path: "Notes/one.md", extension: "md" });
   view.openNote = { path: "Notes/one.md", id: "s1" };
-  view.context = { source: { id: "s1", path: "Notes/one.md", title: "Stale" }, related: [{ path: "Notes/two.md" }] };
+  view.context = { source: { id: "s1", path: "Notes/one.md", title: "Open" }, related: [{ path: "Notes/two.md" }] };
   await view.send("What changed?");
-  assert.deepEqual(calls, ["save", "context", "stream", "save"]);
-  assert.equal(view.context.source.title, "Fresh");
+  assert.deepEqual(calls.slice(0, 2), ["save", "stream"]);
+  assert.ok(!calls.includes("context"));
   assert.equal(view.context.related.length, 1);     // nearby notes kept from the open
 });
 
@@ -950,12 +943,17 @@ test("a note the server does not index still sends its path, with no error", asy
   assert.equal(view.turns.at(-1).text, "ok");
 });
 
-test("a server failure while syncing the note surfaces in the server's sentence", async () => {
-  const view = makeView({ postJSON: refusing(500, "index is busy") });
+test("an index that is down does not stop the question", async () => {
+  let streamed = false;
+  const view = makeView({
+    postJSON: refusing(500, "index is busy"),
+    streamCopilot: async (_body, handlers) => { streamed = true; handlers.turn({ answer: "ok", citations: [] }); },
+  });
   view.render = () => {};
   view.openNote = { path: "A.md", id: null };
   await view.send("Q");
-  assert.equal(view.error, "index is busy");
+  assert.ok(streamed);
+  assert.equal(view.error, "");
 });
 
 test("opening the sidebar reopens the most recently updated chat and navigates nowhere", async () => {

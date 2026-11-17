@@ -94,8 +94,25 @@ def test_read_note_long_gives_outline_and_head(vault):
     path = write(vault, "Notes/big.md", body)
     out = lookup.Reader(None, vault).call("read_note", {"path": path})
     assert out.startswith(f"=== {path} ===\n# Big\n## Part\n")
-    assert out.endswith("[… the rest: read_note(path, section) for one section]")
+    assert out.endswith(f'[Next page: read_note("{path}", "#2"); or one section by its heading]')
     assert len(out) > lookup.READ_MAX_CHARS
+
+
+def test_a_long_section_of_a_closed_note_reads_to_its_end_by_page(vault):
+    lines = "".join(f"line {i} of the transcript\n" for i in range(4000))     # ~100k, no headings inside
+    path = write(vault, "Notes/call.md", "# Call\n\n## Transcript\n\n" + lines + "THE END\n")
+    r = lookup.Reader(None, vault)
+    first = r.call("read_note", {"path": path, "section": "Transcript"})
+    assert "THE END" not in first and first.rstrip().endswith('"Transcript#2")]')
+    pages, n, out = [first], 2, first
+    while "[Next page" in out:
+        out = r.call("read_note", {"path": path, "section": f"Transcript#{n}"})
+        pages.append(out)
+        n += 1
+    assert "THE END" in pages[-1] and len(pages) == 3
+    assert "line 3999 of the transcript" in pages[-1]
+    assert lookup.Reader(None, vault).call("read_note", {"path": path, "section": "Transcript#9"}).startswith(
+        "refused: that has 3 pages")
 
 
 def test_read_note_open_note_section_has_handles(vault):

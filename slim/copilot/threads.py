@@ -174,6 +174,34 @@ def load(thread_id: str) -> dict | None:
             f"thread {tid} exists but could not be read ({type(exc).__name__})") from None
 
 
+# Each thread file's summary and the casefolded text search looks through, by (mtime, size): a
+# thread holds every answer's transcript, and the history list and its search box (200 ms after
+# each keystroke) would otherwise parse every file whole on every request.
+_LISTED: dict[str, tuple[tuple[int, int], ThreadSummary, list[str]]] = {}
+
+
+def _listed(path) -> tuple[ThreadSummary, list[str]]:
+    stat = path.stat()
+    key = (stat.st_mtime_ns, stat.st_size)
+    hit = _LISTED.get(str(path))
+    if hit and hit[0] == key:
+        return hit[1], hit[2]
+    data = json.loads(path.read_text(encoding="utf-8"))
+    title = str(data.get("title") or "Conversation")
+    turns = data.get("turns") or []
+    summary = ThreadSummary(
+        id=str(data.get("id") or path.stem), title=title,
+        updated_at=str(data.get("updated_at") or ""),
+        turns=len(turns),
+        source_id=data.get("source_id") or None,
+        source_path=data.get("source_path") or None,
+        pins=tuple(data.get("pins") or ()))
+    texts = [title.casefold(), *(t["text"].casefold() for t in turns
+                                 if isinstance(t, dict) and isinstance(t.get("text"), str))]
+    _LISTED[str(path)] = (key, summary, texts)
+    return summary, texts
+
+
 def list_copilot_threads(query: str = "") -> list[ThreadSummary]:
     """Every readable thread, newest first. With `query`, only those whose title or any turn's
     text contains it, case-insensitively."""
@@ -186,22 +214,12 @@ def list_copilot_threads(query: str = "") -> list[ThreadSummary]:
         # is valid but whose shape is not (`turns` a string, say) raises in `len()`, and one
         # bad file on disk would then brick the whole sidebar listing.
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            title = str(data.get("title") or "Conversation")
-            turns = data.get("turns") or []
-            if needle and needle not in title.casefold() and not any(
-                    needle in t["text"].casefold() for t in turns
-                    if isinstance(t, dict) and isinstance(t.get("text"), str)):
-                continue
-            summaries.append(ThreadSummary(
-                id=str(data.get("id") or path.stem), title=title,
-                updated_at=str(data.get("updated_at") or ""),
-                turns=len(turns),
-                source_id=data.get("source_id") or None,
-                source_path=data.get("source_path") or None,
-                pins=tuple(data.get("pins") or ())))
+            summary, texts = _listed(path)
         except (OSError, json.JSONDecodeError, ValueError, AttributeError, TypeError):
             continue                          # an unreadable thread hides, never bricks
+        if needle and not any(needle in text for text in texts):
+            continue
+        summaries.append(summary)
     summaries.sort(key=lambda s: s.updated_at, reverse=True)
     return summaries
 

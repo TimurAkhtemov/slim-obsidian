@@ -340,9 +340,9 @@ class CopilotView extends ItemView {
     this.threadSearch.unref?.();
   }
 
-  // The note as it is NOW: save the editor, re-sync the row (ingest_note is hash-keyed, so an
-  // unchanged note costs one stat), skip the nearby-notes search. Called by send(), so every
-  // question is answered from what they have typed, not from the version indexed at open.
+  // The note as it is NOW on disk: every pane showing it writes its buffer, so the server, which
+  // syncs the open note before each question (guarded: the embedder down never costs the answer),
+  // reads what they typed. Called by send(); the index call at open gave the note its id.
   async refreshNote() {
     if (!this.openNote) return;
     const path = this.openNote.path;
@@ -351,18 +351,6 @@ class CopilotView extends ItemView {
       await this.plugin.saveActiveNote(file);
     }
     await this.saveOpenCopies(path);
-    let fresh;
-    try {
-      fresh = await this.plugin.postJSON("/api/copilot/context", { path, related: false });
-    } catch (error) {
-      // 400: the server does not index this note; it reads it from disk. Anything else surfaces,
-      // in the server's own sentence where it gave one.
-      if (error.status === 400) return;
-      if (error.detail) throw new Error(error.detail);
-      throw error;
-    }
-    if (this.openNote?.path === path) this.openNote = { path, id: fresh.source?.id ?? this.openNote.id };
-    if (this.context?.source?.path === path) this.context = { ...this.context, source: fresh.source };
   }
 
   // A new chat's record, on no disk yet: it is saved with its first answer.

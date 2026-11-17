@@ -140,6 +140,14 @@ def test_list_query_matches_title_and_text():
     assert len(threads.list_copilot_threads()) == 3
 
 
+def test_the_listing_reads_a_chat_again_once_it_is_saved_again():
+    threads.save_copilot("t1", "Chat", [{"role": "you", "text": "legs"}])
+    assert threads.list_copilot_threads("zebra") == []
+    threads.save_copilot("t1", "Chat", [{"role": "you", "text": "legs"}, {"role": "slim", "text": "zebra"}])
+    listed = threads.list_copilot_threads("zebra")
+    assert [t.id for t in listed] == ["t1"] and listed[0].turns == 2
+
+
 def test_you_turn_keeps_note():
     kept = threads._clean_turns([{"role": "you", "text": "q", "note": "Notes/a.md"}])
     assert kept[0]["note"] == "Notes/a.md"

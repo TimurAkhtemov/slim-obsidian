@@ -24,6 +24,7 @@ _TOP_CF = {name.casefold() for name in EXCLUDED_TOP}
 _DIRS_CF = {name.casefold() for name in EXCLUDED_DIRS}
 _HANDLE = re.compile(r"[bs]\d+(?:\s*[-–]\s*[bs]\d+)?")     # a block, a section, or a range
 _PAGE = re.compile(r"(b\d+)(?:#(\d+))?")                    # a locked block, or one page of it
+_PAGED = re.compile(r"(.*?)#(\d+)", re.S)                  # a page of a closed note's section, or of it all
 _WORD = re.compile(r"\w+")
 
 TOOLS: dict[str, dict] = {
@@ -182,14 +183,18 @@ class Reader:
             body = self._open(section)
         else:
             text = edits._read(self.vault / path)
-            if section:
+            # "<section>#2", or "#2" for the whole note: one page of what is too long to read whole.
+            paged = _PAGED.fullmatch(section)
+            part, page = (paged[1].strip(), int(paged[2])) if paged else (section, 0)
+            if part:
                 from . import context          # lazy: context imports edits, which lists these tools
-                found = context.section_of(text, section)
+                found = context.section_of(text, part)
                 if found is None:
                     heads = "\n".join(blocks.headings(text)) or "(none)"
-                    raise _Refused(f"'{path}' has no section '{section}'; its headings:\n{heads}")
+                    raise _Refused(f"'{path}' has no section '{part}'; its headings:\n{heads}")
                 text = found
-            body = self._cap(text, blocks.headings(text) if not section else [])
+            body = (self._page(path, part, text, page) if page else
+                    self._cap(path, part, text, blocks.headings(text) if not part else []))
         if path not in self.read:
             self.read.append(path)
         self.seen.append(path)
@@ -216,12 +221,25 @@ class Reader:
         raise _Refused(f"there is no note '{raw}'; search or list_folder to find it")
 
     @staticmethod
-    def _cap(text: str, heads: list[str]) -> str:
+    def _cap(path: str, part: str, text: str, heads: list[str]) -> str:
+        """A note that is not open, or one section of it: whole when it fits, else its headings and
+        its first page, with the call for the next. Cut at 40k with only "one section" offered, the
+        end of a long section or a heading-less note could never be read."""
         if len(text) <= READ_MAX_CHARS:
             return text
         outline = "\n".join(heads)
-        return (f"{outline}\n\n" if outline else "") + text[:READ_MAX_CHARS] + \
-            "\n[… the rest: read_note(path, section) for one section]"
+        return (f"{outline}\n\n" if outline else "") + Reader._page(path, part, text, 1)
+
+    @staticmethod
+    def _page(path: str, part: str, text: str, n: int) -> str:
+        pages = _split_pages(text)
+        if not 1 <= n <= len(pages):
+            raise _Refused(f"that has {len(pages)} page{'s' if len(pages) > 1 else ''}")
+        said = f"[page {n} of {len(pages)}]\n{pages[n - 1].rstrip()}" if len(pages) > 1 else pages[0]
+        if n < len(pages):
+            said += f'\n[Next page: read_note("{path}", "{part}#{n + 1}")'
+            said += "; or one section by its heading]" if not part else "]"
+        return said
 
     def _open(self, section: str) -> str:
         """The open note as the editor holds it, with handles; what it renders is `.shown`."""
@@ -281,14 +299,7 @@ class Reader:
         """A recording's locked block (a long transcript), or a block too long to read whole,
         read-only, a page of READ_MAX_CHARS at a time, each cut at a line where one is near. It never
         joins `.shown`: no tool may change it."""
-        pages, rest = [], block.text
-        while len(rest) > READ_MAX_CHARS:
-            cut = rest.rfind("\n", 0, READ_MAX_CHARS) + 1
-            if cut <= READ_MAX_CHARS // 2:
-                cut = READ_MAX_CHARS
-            pages.append(rest[:cut])
-            rest = rest[cut:]
-        pages.append(rest)
+        pages = _split_pages(block.text)
         h = block.handle
         if not 1 <= n <= len(pages):
             raise _Refused(f"{h} has {len(pages)} page{'s' if len(pages) > 1 else ''}")
@@ -307,6 +318,19 @@ class Reader:
         if path and not (edits._exact(self.vault, path) and (self.vault / path).is_dir()):
             raise _Refused(f"there is no folder '{raw}'")
         return listing(self.vault / path, root=not path)
+
+
+def _split_pages(text: str) -> list[str]:
+    """Pages of READ_MAX_CHARS, each cut at a line where one is near."""
+    pages, rest = [], text
+    while len(rest) > READ_MAX_CHARS:
+        cut = rest.rfind("\n", 0, READ_MAX_CHARS) + 1
+        if cut <= READ_MAX_CHARS // 2:
+            cut = READ_MAX_CHARS
+        pages.append(rest[:cut])
+        rest = rest[cut:]
+    pages.append(rest)
+    return pages
 
 
 def _passage(text: str, query: str, named: str) -> str:

@@ -75,7 +75,8 @@ def test_the_server_keeps_an_answers_transcript_and_drops_a_malformed_one(con, v
     raw = [{"role": "you", "text": "q1"}, {"role": "slim", "text": "A1", "transcript": script},
            {"role": "you", "text": "q2"}, {"role": "slim", "text": "A2", "transcript": [{"role": "system", "content": "x"}]}]
     history = server.clean_history(raw)
-    assert history[1]["transcript"][1] == {"role": "assistant", "content": "", "thinking": "look it up",
+    # An earlier turn's thinking is dropped: the template shows it only after the newest question.
+    assert history[1]["transcript"][1] == {"role": "assistant", "content": "",
                                            "tool_calls": [{"function": {"name": "search", "arguments": {"query": "q"}}}]}
     assert "transcript" not in history[3]
     seen = scripted(monkeypatch, ("Done.", []))
@@ -101,12 +102,38 @@ def test_a_conversation_too_long_for_the_window_loses_its_oldest_turns_whole(con
     assert [m["content"] for m in kept] == [turn["text"] for turn in history[-len(kept):]]
     assert got["history_dropped"] == len(history) - len(kept)
     chars = sum(len(m["content"]) for m in seen[0]["messages"])
-    room = copilot_turn.ANSWER_NUM_PREDICT + edit_run.THINK_BUDGETS["high"]
+    room = copilot_turn.ANSWER_NUM_PREDICT + edit_run.THINK_BUDGETS["high"] + copilot_turn.TURN_RESERVE
     assert chars / copilot_turn.CHARS_PER_TOKEN + room <= copilot_turn.llm.RESIDENT_CTX
 
 
+def test_an_old_turns_copy_of_the_open_note_is_named_not_replayed(con, vault, monkeypatch):
+    """A chat saved before the store dropped them: the old copy, with its old handles, goes."""
+    sent = "=== Notes/a.md · the open note ===\n[b1] # A\n[b2] Old text.\n\n---\n\nshorten it"
+    history = [{"role": "you", "text": "(on Notes/a.md) shorten it"},
+               {"role": "slim", "text": "Done.", "transcript": [{"role": "user", "content": sent},
+                                                                {"role": "assistant", "content": "Done."}]}]
+    seen = scripted(monkeypatch, ("Ok.", []))
+    copilot_turn.run_turn(con, None, "next", server.clean_history(history), "medium", vault=vault)
+    replayed = seen[0]["messages"][1]["content"]
+    assert replayed == "[Shown with this question then, not repeated here: Notes/a.md]\n\n---\n\nshorten it"
+
+
+def test_what_became_of_an_earlier_edit_follows_its_replay(con, vault, monkeypatch):
+    script = [{"role": "user", "content": "shorten it"},
+              {"role": "assistant", "content": "", "tool_calls": [
+                  {"function": {"name": "edit_text", "arguments": {"target": "b2", "old": "x", "new": "y"}}}]},
+              {"role": "tool", "content": "ok: changed b2"}]
+    said = "[Changed the note: Shorter.; 1 change, 1 undone]\nedited: Notes/a.md (1 change)"
+    history = [{"role": "you", "text": "shorten it"}, {"role": "slim", "text": said, "transcript": script}]
+    seen = scripted(monkeypatch, ("Ok.", []))
+    copilot_turn.run_turn(con, None, "next", server.clean_history(history), "medium", vault=vault)
+    messages = seen[0]["messages"]
+    assert messages[4] == {"role": "user", "content":
+                           "(What became of that edit since: [Changed the note: Shorter.; 1 change, 1 undone])"}
+
+
 def test_images_count_against_the_window(con, vault, monkeypatch):
-    room = copilot_turn.ANSWER_NUM_PREDICT + edit_run.THINK_BUDGET
+    room = copilot_turn.ANSWER_NUM_PREDICT + edit_run.THINK_BUDGET + copilot_turn.TURN_RESERVE
     left = (copilot_turn.llm.RESIDENT_CTX - room - copilot_turn._tokens({"content": copilot_turn.loop_system()})
             - copilot_turn._tokens({"content": "look"}) - 10)
     text = "w" * int((left - 2 * copilot_turn.IMAGE_TOKENS) * copilot_turn.CHARS_PER_TOKEN)

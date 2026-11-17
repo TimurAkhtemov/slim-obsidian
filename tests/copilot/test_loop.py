@@ -1048,7 +1048,7 @@ def test_a_step_that_would_not_fit_the_window_is_not_called(ask, monkeypatch):
 
 # --- the conversation is the transcript, as Pi keeps it ------------------------------------------
 
-def test_a_turn_returns_its_transcript_with_thinking_calls_and_results(ask, con, vault, monkeypatch):
+def test_a_turn_returns_its_transcript_with_calls_and_results(ask, con, vault, monkeypatch):
     put(con, vault, "Notes/school/cs-201/zebra.md", "# Zebras\n\nZebras have stripes.\n")
     seen = scripted(monkeypatch,
                     ("", [("read_note", {"path": "Notes/school/cs-201/zebra.md"})], "Read the zebra note."),
@@ -1058,12 +1058,13 @@ def test_a_turn_returns_its_transcript_with_thinking_calls_and_results(ask, con,
     assert sent[-2]["thinking"] == "Read the zebra note."          # the thinking goes back with the call
     script = got["transcript"]
     assert [m["role"] for m in script] == ["user", "assistant", "tool", "assistant"]
-    assert script[0]["content"].startswith(f"=== {OPEN} · the open note ===")   # the question as sent
-    assert script[0]["content"].endswith("what did I write about zebras?")
+    # The question as sent, its open note named, not copied: the open note rides with every question.
+    assert script[0]["content"] == (f"[Shown with this question then, not repeated here: {OPEN}]"
+                                    "\n\n---\n\nwhat did I write about zebras?")
     assert script[1]["tool_calls"] == [{"function": {"name": "read_note",
                                                      "arguments": {"path": "Notes/school/cs-201/zebra.md"}}}]
     assert "Zebras have stripes." in script[2]["content"]
-    assert script[3] == {"role": "assistant", "content": "They have stripes.", "thinking": "It says stripes."}
+    assert script[3] == {"role": "assistant", "content": "They have stripes."}    # its thinking is not kept
 
 
 def test_an_edit_turns_transcript_ends_with_its_last_calls_results(ask, monkeypatch):
