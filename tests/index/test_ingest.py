@@ -112,7 +112,7 @@ def test_managed_recorder_drafts_are_not_ingested(tmp_path):
 
     vault = tmp_path / "draft-vault"
     journal = vault / "Journal" / "2026-08-23--recording--abc.slim-draft.md"
-    capture = vault / "Capture" / "_unfiled" / "2026-08-23--recording--def.slim-draft.md"
+    capture = vault / "Notes" / "_unfiled" / "2026-08-23--recording--def.slim-draft.md"
     journal.parent.mkdir(parents=True)
     capture.parent.mkdir(parents=True)
     journal.write_text("private words still being typed\n")
@@ -128,7 +128,7 @@ def test_draft_exclusion_is_narrow_to_the_two_managed_locations(tmp_path):
 
     vault = tmp_path / "draft-vault"
     ordinary = vault / "Notes" / "work" / "idea.slim-draft.md"
-    completed = vault / "Capture" / "_unfiled" / "completed.md"
+    completed = vault / "Notes" / "_unfiled" / "completed.md"
     nested_journal = vault / "Journal" / "nested" / "idea.slim-draft.md"
     for path in (ordinary, completed, nested_journal):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -136,8 +136,8 @@ def test_draft_exclusion_is_narrow_to_the_two_managed_locations(tmp_path):
 
     got = [p.relative_to(vault).as_posix() for p in ingest_mod.eligible_files(vault)]
     assert got == [
-        "Capture/_unfiled/completed.md",
         "Journal/nested/idea.slim-draft.md",
+        "Notes/_unfiled/completed.md",
         "Notes/work/idea.slim-draft.md",
     ]
 
@@ -219,18 +219,18 @@ def test_ingest_note_claims_a_moved_vault_note_like_the_sweep(tmp_path):
 def test_sweep_skips_managed_recorder_drafts_like_the_single_note_path(tmp_path):
     from slim.index.ingest import ingest_note, IngestError
     vault = tmp_path / "vault"
-    for rel in ["Journal/2026-08-25.slim-draft.md", "Capture/_unfiled/x.slim-draft.md",
-                "Notes/own.slim-draft.md", "Notes/kept.md"]:
+    for rel in ["Journal/2026-08-25.slim-draft.md", "Notes/_unfiled/x.slim-draft.md",
+                "Capture/_unfiled/old.slim-draft.md", "Notes/own.slim-draft.md", "Notes/kept.md"]:
         target = vault / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(f"# {rel}\n\nbody\n")
     con = db.connect(tmp_path / "t.db")
     ingest(con, vault)
     indexed = {row[0] for row in con.execute("SELECT path FROM sources WHERE deleted=0")}
-    # The recorder's working copy under Journal/ or Capture/_unfiled/ becomes a real note
+    # The recorder's working copy under Journal/ or Notes/_unfiled/ becomes a real note
     # when filed; indexing the draft gives that note a same-content rival. A `.slim-draft.md`
     # anywhere else is the user's own file.
-    assert indexed == {"Notes/own.slim-draft.md", "Notes/kept.md"}
+    assert indexed == {"Capture/_unfiled/old.slim-draft.md", "Notes/own.slim-draft.md", "Notes/kept.md"}
     with pytest.raises(IngestError, match="does not index this note"):
         ingest_note(con, vault, "Journal/2026-08-25.slim-draft.md")
 

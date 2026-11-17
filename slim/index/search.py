@@ -101,7 +101,7 @@ def _rows_to_hits(rows) -> list[Hit]:
 
 
 def _like(p: str) -> str:
-    """Escape the LIKE wildcards in a literal path. `Capture/_unfiled` is a real folder."""
+    """Escape the LIKE wildcards in a literal path. `Notes/_unfiled` is a real folder."""
     return p.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 

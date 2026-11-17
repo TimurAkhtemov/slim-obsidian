@@ -170,7 +170,7 @@ def test_audio_src_is_deleted_after_archiving(tmp_path):
 
 def test_draft_cleanup_precedes_staged_audio_cleanup(tmp_path, monkeypatch):
     audio_src = tmp_path / "Attachments/_incoming/paired.webm"
-    draft_src = tmp_path / "Capture/_unfiled/paired.slim-draft.md"
+    draft_src = tmp_path / "Notes/_unfiled/paired.slim-draft.md"
     audio_src.parent.mkdir(parents=True)
     draft_src.parent.mkdir(parents=True)
     audio_src.write_bytes(b"paired audio")
@@ -190,7 +190,7 @@ def test_draft_cleanup_precedes_staged_audio_cleanup(tmp_path, monkeypatch):
 
 def test_a_late_draft_cleanup_failure_does_not_unfile_the_safe_note(tmp_path, monkeypatch):
     audio_src = tmp_path / "Attachments/_incoming/paired.webm"
-    draft_src = tmp_path / "Capture/_unfiled/paired.slim-draft.md"
+    draft_src = tmp_path / "Notes/_unfiled/paired.slim-draft.md"
     audio_src.parent.mkdir(parents=True)
     draft_src.parent.mkdir(parents=True)
     audio_src.write_bytes(b"paired audio")
@@ -210,7 +210,7 @@ def test_a_late_draft_cleanup_failure_does_not_unfile_the_safe_note(tmp_path, mo
 
 def test_a_late_audio_cleanup_failure_does_not_unfile_the_safe_note(tmp_path, monkeypatch):
     audio_src = tmp_path / "Attachments/_incoming/paired.webm"
-    draft_src = tmp_path / "Capture/_unfiled/paired.slim-draft.md"
+    draft_src = tmp_path / "Notes/_unfiled/paired.slim-draft.md"
     audio_src.parent.mkdir(parents=True)
     draft_src.parent.mkdir(parents=True)
     audio_src.write_bytes(b"paired audio")

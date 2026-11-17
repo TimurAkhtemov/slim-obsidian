@@ -72,9 +72,12 @@ def test_a_newly_created_empty_folder_is_offered(tmp_path):
     assert got["Notes/school"] == 0
 
 
-def test_an_empty_folder_under_capture_is_offered_too(tmp_path):
-    (tmp_path / "Capture" / "job-search").mkdir(parents=True)
-    assert "Capture/job-search" in {f.path for f in suggest.folder_tree(tmp_path)}
+def test_the_card_offers_notes_only_even_when_capture_is_on_disk(tmp_path):
+    (tmp_path / "Capture" / "side-project").mkdir(parents=True)
+    (tmp_path / "Notes" / "side-project").mkdir(parents=True)
+    paths = {f.path for f in suggest.folder_tree(tmp_path)}
+    assert "Notes/side-project" in paths
+    assert not any(p.split("/")[0] == "Capture" for p in paths)
 
 
 def test_an_empty_folder_sorts_beside_populated_ones_with_a_zero_count(tmp_path):
@@ -173,6 +176,14 @@ def test_a_destination_the_model_invented_is_rejected(tmp_path, monkeypatch):
     _fake_model(monkeypatch, _payload(dest_dir="Notes/school/CS9999 Imaginary"))
     card = suggest.build_card("...", vault=tmp_path)
     assert card.dest_dir in {f.path for f in suggest.folder_tree(tmp_path)}
+
+
+def test_a_destination_under_capture_collapses_to_notes_unfiled(tmp_path, monkeypatch):
+    """The old recordings tree may still be on disk; it is no longer somewhere to file."""
+    (tmp_path / "Capture" / "work").mkdir(parents=True)
+    (tmp_path / "Notes").mkdir()
+    _fake_model(monkeypatch, _payload(dest_dir="Capture/work"))
+    assert suggest.build_card("...", vault=tmp_path).dest_dir == "Notes/_unfiled"
 
 
 def test_an_invented_leaf_falls_back_to_its_real_ancestor(tmp_path, monkeypatch):

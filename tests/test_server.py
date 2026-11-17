@@ -200,7 +200,7 @@ def test_a_spoofed_host_header_is_refused_before_routing(server_url):
     arrive with THEIR Host. Refused on GET and POST alike, before any handler runs."""
     assert _status(server_url, "/api/health") == 200
     assert _status(server_url, "/api/health", headers={"Host": "evil.example.com"}) == 403
-    body = json.dumps({"note": "Capture/_unfiled/x.md", "notes_md": "x"}).encode()
+    body = json.dumps({"note": "Notes/_unfiled/x.md", "notes_md": "x"}).encode()
     assert _status(server_url, "/api/record/notes", method="POST", body=body, headers={
         "Host": "evil.example.com", "Content-Type": "application/json"}) == 403
 
@@ -260,8 +260,8 @@ def test_extract_finds_a_pasted_screenshot_by_name_the_way_obsidian_does(tmp_pat
     note away from it. Matching only `Attachments/Recorder/…` sent no image to any summary,
     ever: 43 recorded notes had screenshots and every trace said `n_images: 0`."""
     from slim.recorder.pipeline import _extract_note_images
-    _make_test_image(tmp_path / "Capture/_unfiled/Attachements/Screenshot 2026-09-17 at 7.59.13 AM.png")
-    _make_test_image(tmp_path / "Capture/_unfiled/Attachements/Screenshot 2026-09-17 at 7.03.34 AM.png")
+    _make_test_image(tmp_path / "Notes/_unfiled/Attachements/Screenshot 2026-09-17 at 7.59.13 AM.png")
+    _make_test_image(tmp_path / "Notes/_unfiled/Attachements/Screenshot 2026-09-17 at 7.03.34 AM.png")
     notes = ("## Attention\n![[Screenshot 2026-09-17 at 7.59.13 AM.png|444]]\nsoftmax over scores\n"
              "![[Screenshot 2026-09-17 at 7.03.34 AM.png]]")
     cleaned, images = _extract_note_images(notes, tmp_path)

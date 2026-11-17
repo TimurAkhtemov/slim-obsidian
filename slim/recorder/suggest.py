@@ -21,11 +21,10 @@ from ..capture import voicetags
 # Derived or binary; never a filing destination and never a source of tags or counts.
 _NEVER = {"_reflections", "profile", "attachments"}
 
-# The trees a recording may be filed INTO, walked as directories so a folder they just created
+# The tree a recording may be filed INTO, walked as directories so a folder they just created
 # is offered before it holds anything. `Journal/` is handled separately in `folder_tree` —
-# it is a destination but a FLAT one, so it must not be walked. `Inbox/` is staging, not a
-# home, and is deliberately absent.
-FILING_ROOTS = (voicetags.NAMESPACE, "Notes")
+# it is a destination but a FLAT one, so it must not be walked.
+FILING_ROOTS = (voicetags.NAMESPACE,)
 
 
 @dataclass

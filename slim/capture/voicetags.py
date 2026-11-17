@@ -16,19 +16,20 @@ JOURNAL, MEETING, LECTURE, IDEA, NOTE = (
 # type the code knows.
 ROUTING_TYPES = (JOURNAL, MEETING, LECTURE, IDEA, NOTE)
 
-# --- WHERE IT LANDS: `Capture/<subject>/<note>.md`, or the flat floor ----------------------
+# --- WHERE IT LANDS: `Notes/<subject>/<note>.md`, or the flat journal folder ---------------
 # SUBJECT is the ONLY axis, and that is not a taste call. A path is a single ordered sequence,
 # so encoding N independent facts in it forces a Cartesian product: the previous scheme crossed
 # type × subject × year and produced 11 folders for 116 recordings, with `school` in 6 of them
 # (measured 2026-08-03). Type, year and course live in frontmatter, where they are queryable.
-NAMESPACE = "Capture"
+# A recording lands beside the owner's own writing (the owner's ruling, 2026-11-14): a separate
+# recordings tree put every subject in two places, and they were moving recordings by hand.
+NAMESPACE = "Notes"
 
-# The floor is its own top-level, a SIBLING of Capture/ rather than a hole punched inside it:
-# a journal is filed there flat, and no route carries a note out of it (test-enforced).
+# The journal folder is its own top-level, a SIBLING of Notes/ rather than a hole punched
+# inside it: a journal is filed there flat, and no route carries a note out of it (test-enforced).
 JOURNAL_FOLDER = "Journal"
 
-# An unknown subject gets the sentinel, never a bare `Capture/note.md`. This is what makes the
-# invariant EXACTLY two owned segments instead of "at most two".
+# An unknown subject gets the sentinel, never a bare `Notes/note.md`.
 # The leading underscore sorts it out of the way in Obsidian.
 UNFILED = "_unfiled"
 

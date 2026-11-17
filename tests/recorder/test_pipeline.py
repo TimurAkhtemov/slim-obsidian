@@ -98,7 +98,7 @@ def test_a_failed_draft_transcript_keeps_both_sources_for_retry(tmp_path, monkey
 
 @pytest.mark.parametrize(
     ("type_tag", "draft_type", "message"),
-    [("journal", "lecture", "Journal"), ("lecture", "journal", "Capture/_unfiled")],
+    [("journal", "lecture", "Journal"), ("lecture", "journal", "Notes/_unfiled")],
 )
 def test_a_draft_cannot_cross_the_journal_floor(tmp_path, monkeypatch,
                                                 type_tag, draft_type, message):
@@ -109,6 +109,21 @@ def test_a_draft_cannot_cross_the_journal_floor(tmp_path, monkeypatch,
         pipeline.handle_record(audio_rel=_staged(tmp_path),
                                draft_rel=_draft(tmp_path, type_tag=draft_type),
                                notes_md=None, declared_type=type_tag, title="T", when=NOW,
+                               vault=tmp_path)
+
+
+def test_a_draft_in_the_old_recordings_folder_is_refused(tmp_path, monkeypatch):
+    from slim.recorder import pipeline
+
+    _fakes(monkeypatch)
+    staged = _staged(tmp_path)
+    new = tmp_path / _draft(tmp_path)
+    old = tmp_path / "Capture" / "_unfiled" / new.name
+    old.parent.mkdir(parents=True)
+    new.rename(old)
+    with pytest.raises(ValueError, match="Notes/_unfiled"):
+        pipeline.handle_record(audio_rel=staged, draft_rel=old.relative_to(tmp_path).as_posix(),
+                               notes_md=None, declared_type="lecture", title="T", when=NOW,
                                vault=tmp_path)
 
 
@@ -372,7 +387,7 @@ def test_the_note_gets_the_whole_summary_not_just_the_overview(tmp_path, monkeyp
         action_items=[{"task": "Send the tables"}],
         open_questions=["How leadership is classified"]))
     monkeypatch.setattr(suggest, "build_card", lambda *a, **k: suggest.Card(
-        dest_dir="Capture/work", confident_depth=1, candidates=[], type_tag="meeting-note",
+        dest_dir="Notes/work", confident_depth=1, candidates=[], type_tag="meeting-note",
         topics=[]))
 
     out = pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="",
@@ -620,7 +635,7 @@ def test_summary_title_and_card_all_use_the_resident_model(tmp_path, monkeypatch
         seen.update({"enrich": k}), ({"title": "Kernel methods", "type_tag": "lecture",
                                       "topics": [], "project": ""}, {}))[1])
     monkeypatch.setattr(suggest, "build_card", lambda *a, **k: (
-        seen.update({"card": k}), suggest.Card(dest_dir="Capture/school", confident_depth=1,
+        seen.update({"card": k}), suggest.Card(dest_dir="Notes/school", confident_depth=1,
                                                candidates=[], type_tag="lecture",
                                                topics=[]))[1])
     pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="", declared_type="lecture",
@@ -663,7 +678,7 @@ def test_a_lecture_carries_no_open_questions_section(tmp_path, monkeypatch):
                      "points": ["Non-natural languages are planned"]}],
         open_questions=["Does a three-year-old know English?"]))
     monkeypatch.setattr(suggest, "build_card", lambda *a, **k: suggest.Card(
-        dest_dir="Capture/school", confident_depth=1, candidates=[], type_tag="lecture",
+        dest_dir="Notes/school", confident_depth=1, candidates=[], type_tag="lecture",
         topics=[]))
     out = pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="",
                                  declared_type="lecture", title="T", when=NOW,

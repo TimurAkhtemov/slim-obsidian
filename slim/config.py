@@ -30,7 +30,7 @@ EXCLUDED_TOP = {"Attachments", "Profile", "Skills", "_Reflections"}
 
 def _load() -> dict:
     # The file is the user's own vocabulary and is gitignored; a fresh clone has none until
-    # `config/projects.example.yaml` is copied. Absent, every recording files as `_unfiled`.
+    # `config/projects.example.yaml` is copied. Absent, every recording files into `Notes/_unfiled`.
     if not PROJECTS_YAML.exists():
         return {}
     return yaml.safe_load(PROJECTS_YAML.read_text()) or {}

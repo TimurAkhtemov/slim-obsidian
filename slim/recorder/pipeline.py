@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .. import config, llm, trace
 from . import state
+from ..capture import voicetags
 from ..vault import note_images
 
 _DRAFT_SUFFIX = ".slim-draft.md"
@@ -27,9 +28,9 @@ def _draft_source(*, vault: Path, draft_rel: str, audio_rel: str | list[str],
 
     rel = draft.relative_to(vault)
     parent = tuple(part.casefold() for part in rel.parts[:-1])
-    expected = ("journal",) if declared_type == "journal" else ("capture", "_unfiled")
-    if parent != expected:
-        wanted = "Journal" if declared_type == "journal" else "Capture/_unfiled"
+    wanted = (voicetags.JOURNAL_FOLDER if declared_type == "journal"
+              else f"{voicetags.NAMESPACE}/{voicetags.UNFILED}")
+    if parent != tuple(part.casefold() for part in wanted.split("/")):
         raise ValueError(f"a {declared_type or 'non-journal'} draft must be directly under {wanted}")
 
     base = draft.name[:-len(_DRAFT_SUFFIX)]

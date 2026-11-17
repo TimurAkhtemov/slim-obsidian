@@ -133,7 +133,7 @@ def sha256(path: Path) -> str:
 
 
 def archive_audio(source: Path, digest: str) -> Path:
-    """Copy raw source bytes into the synced vault before the Inbox copy may be removed.
+    """Copy raw source bytes into the synced vault before the staged copy may be removed.
 
     The temporary file and hash verification make a partial copy distinguishable from a
     preserved source. An existing content-addressed path is trusted only after re-hashing it.

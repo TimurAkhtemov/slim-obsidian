@@ -25,7 +25,7 @@ def _staged(tmp_path: Path, name: str = "t.webm") -> str:
 
 def _draft(tmp_path: Path, *, recording_id: str = "t", type_tag: str = "lecture",
            text: str = "- a draft note\n") -> str:
-    parent = tmp_path / ("Journal" if type_tag == "journal" else "Capture/_unfiled")
+    parent = tmp_path / ("Journal" if type_tag == "journal" else "Notes/_unfiled")
     p = parent / f"2026-08-23--recording--{recording_id}.slim-draft.md"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(text, encoding="utf-8")
@@ -56,7 +56,7 @@ def _fakes(monkeypatch, *, transcript="the kernel trick", summary="Derived the k
         type_tag=k.get("declared_type") or "lecture", topics=["school"]))
 
 
-def _existing(tmp_path, monkeypatch, dest="Capture/_unfiled"):
+def _existing(tmp_path, monkeypatch, dest="Notes/_unfiled"):
     from slim.recorder import note
     src = tmp_path / "Attachments" / "_incoming" / "a.webm"
     src.parent.mkdir(parents=True, exist_ok=True)

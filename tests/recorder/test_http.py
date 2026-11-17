@@ -205,7 +205,7 @@ def test_append_errors_are_400_and_a_full_queue_503(server_url, tmp_path, monkey
                 {"note": "x.md", "audio": "a.webm", "job_id": "bad id"}) == \
         (400, {"error": "job_id is invalid"})
     status, body = post(server_url, "/api/record/append", {
-        "note": "Capture/_unfiled/missing.md", "audio": "Attachments/_incoming/a.webm",
+        "note": "Notes/_unfiled/missing.md", "audio": "Attachments/_incoming/a.webm",
         "job_id": "app-400"})
     assert status == 400
     _, job = progress(server_url, "app-400")
@@ -267,9 +267,9 @@ def test_the_small_record_routes_answer(server_url, tmp_path, monkeypatch):
     assert post(server_url, "/api/record/cancel", {"job_id": "nobody"}) == \
         (200, {"cancelling": False})
     status, body = post(server_url, "/api/record/apply", {
-        "note": note, "dest_dir": "Capture/school", "type_tag": "lecture", "topics": [],
+        "note": note, "dest_dir": "Notes/school", "type_tag": "lecture", "topics": [],
         "summary_md": "s"})
-    assert status == 200 and body["note"].startswith("Capture/school/")
+    assert status == 200 and body["note"].startswith("Notes/school/")
     for path in ("/api/record/notes", "/api/record/review", "/api/record/apply"):
         assert post(server_url, path, {}) == (400, {"error": "note is required"})
     assert post(server_url, "/api/record/transcript", {})[0] == 400

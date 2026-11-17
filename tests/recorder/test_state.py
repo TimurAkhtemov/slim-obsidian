@@ -182,9 +182,9 @@ def test_two_writers_on_one_note_take_turns(tmp_path, monkeypatch):
 
 def test_the_lock_is_per_note_not_global(tmp_path, monkeypatch):
     from slim.recorder import state
-    a = state.note_lock(tmp_path, "Capture/a.md")
-    b = state.note_lock(tmp_path, "Capture/b.md")
-    again = state.note_lock(tmp_path, "Capture/a.md")
+    a = state.note_lock(tmp_path, "Notes/a.md")
+    b = state.note_lock(tmp_path, "Notes/b.md")
+    again = state.note_lock(tmp_path, "Notes/a.md")
     assert a is again and a is not b
 
 
