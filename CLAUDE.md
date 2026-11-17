@@ -1,20 +1,13 @@
 # SLIM — Sparse Local Intelligence & Memory
 
 A private local assistant that lives in an Obsidian vault. The owner speaks; it transcribes,
-labels, files, indexes and reflects, and a copilot talks with them about their notes, the one
-they have open first. Everything runs on one Mac; cloud is a separate future project
-(`BACKLOG.md`).
+labels, files, indexes and reflects, and a copilot talks with them about their notes. Everything
+runs on one Mac. **The owner's own words: "I record and forget."** SLIM is the pipeline that
+makes spoken audio filable and findable.
 
-**The owner's own words: "I record and forget."** SLIM is the PIPELINE that makes spoken audio
-filable and findable. It replaces the Notion failure: "I click record, it sits somewhere, and
-I can never find it again."
-
-This file is what SLIM is and the rules that bind, **each with its reason beside it.** A rule
-whose reason no longer holds is deleted, not obeyed; a rule without a reason is not a rule.
-Rules marked **(owner)** are the owner's value calls: they change only on the owner's word. The
-maintainer's vault (`Notes/personal-intelligence/slim-docs/`) keeps the older decision log and
-the measured experiments as history; it stopped at 2026-09-09 and is no longer where reasons
-live. The queue is `BACKLOG.md`; the README is for outsiders.
+Each rule here carries its reason. A rule whose reason no longer holds is deleted, not obeyed.
+Rules marked **(owner)** change only on the owner's word. The queue is `BACKLOG.md`; the README
+is for outsiders.
 
 ## Commands
 
@@ -23,15 +16,13 @@ uv run pytest -q                        # ~1000 tests; `uv` always — the syste
 node --test "obsidian/test/**/*.test.mjs"   # plugin tests; they load obsidian/src/ directly
 (cd obsidian && npm install && npm run build)   # src/ -> the committed main.js; bundle.test.mjs fails if stale
 uv run slim chat --reload               # dev server; respawns on any slim/**/*.py save (not .yaml)
-uv run slim ingest                      # index the vault; embeds at the end; exits non-zero if vectors are missing
+uv run slim ingest                      # index the vault, embedding included
 uv run slim status                      # counts, including `unembedded`
+uv run slim trace -n 5                  # what the last silent failures did
 cp obsidian/{main.js,manifest.json,styles.css} \
    "$SLIM_VAULT/.obsidian/plugins/slim-recorder/"   # a COPY; reload the plugin after
 lsof -tiTCP:7546 -sTCP:LISTEN | xargs kill   # free the port; the plugin respawns the server on demand
 ```
-
-A hook runs at the start of every Claude Code session here: `.claude/hooks/stale-server-check.sh`
-warns if the server on 7546 is older than the code.
 
 ## The pipeline
 
@@ -39,399 +30,149 @@ warns if the server on 7546 is older than the code.
 audio  ->  transcript  ->  LABEL  ->  FILE  ->  INDEX  ->  (REFLECT, TALK)
 ```
 
-After a change to notes, `slim ingest`; embedding is part of it, and `slim status` reports
-`unembedded`. Ingest recognizes a rename by content hash, so **a hand edit plus a hand move
-between two ingests reads as delete + create and the note loses its id** (and a chat started
-on it loses its link to it). The server's own edit-and-move passes the old path, so only hand
-moves can hit this.
+1. **Capture** — the Obsidian plugin (`obsidian/src/`, bundled into the committed `main.js`).
+   The plugin owns the UI and writes files through the Vault API; every judgement (transcribe,
+   summarize, suggest a path) is the Python server's, where the tests are.
+   - The meeting is a `slim-meeting` fenced block in a standard `MarkdownView`: a custom view
+     was built and rejected.
+   - The file is stereo on purpose: mic left, system audio right, so `capture/speakers.py`
+     labels words Me/Them by channel, with no model. Words already on disk are never relabelled.
+   - Audio lands in `Attachments/_incoming` in 5 s chunks, so a crash costs seconds. A `.webm`
+     left there is a recording that never finished filing.
+   - **The note is filed before the card shows; nothing waits for approval**: confirmations
+     were abandoned and the recordings lost.
+   - **A failed or silent transcript is refused, not filed** (empty transcripts lost three
+     recordings). The audio stays staged and the card offers Try again.
+   - `recorder/note.py` is the sole writer of a recording's frontmatter and managed sections.
+2. **Label** — type and subject, written once at capture; `tagged_by`/`subject_by` record
+   which layer decided. A wrong label is the owner's edit.
+3. **File** — `suggest` proposes `Notes/<subject>/`; an invented folder collapses to its
+   deepest existing ancestor, else `Notes/_unfiled`. A journal goes flat to `Journal/`
+   (test-enforced). The card offers folders under `Notes/` only (`suggest.FILING_ROOTS`): a
+   separate `Capture/` tree put every subject in two places and gave lookups two trees.
+4. **Reflect** — `slim reflect` writes one synthesis note into `_Reflections/` nightly. This is
+   the part the owner reads: judge changes by whether that note is worth reading.
+5. **Talk** — the copilot sidebar, served by `slim chat` on 127.0.0.1:7546.
 
-1. **Capture.** The Obsidian recorder plugin (`obsidian/src/`, bundled by esbuild into the
-   committed `obsidian/main.js`, the one file Obsidian loads) is the one capture lane and the
-   reason the project exists. How the recorder works, and why:
-   - The meeting object is a `slim-meeting` fenced block inside a standard `MarkdownView`,
-     never a custom view, private editor internals or an overlay: a custom view was built,
-     tested live and rejected (2026-08-23). The draft note exists from the first click; states
-     are setup → recording → processing → review → finished.
-   - **(owner)** ONE CLICK, no settings: system audio comes from macOS's Core Audio tap via
-     `audio: "loopback"`. No BlackHole, no Multi-Output, no device pickers.
-   - The file is STEREO ON PURPOSE: microphone left, system audio right, so `capture/speakers.py`
-     labels each word Me or Them by which side was making sound — a measurement, no model — and
-     writes `speakers_by: channels`. One speaker (a lecture, a video) or a mono file stays
-     unlabelled. `speakers.label_tokens` is the seam a voice-clustering model would replace.
-     Labels are decided per segment; once anything is labelled, a one-sided segment carries
-     its one label (`recorder.pipeline._join_segments`). A transcript already filed unlabelled
-     stays so when a resume brings a second speaker: the words on disk are never relabelled.
-     Live, the card raises an alarm when BOTH sides are digital zeros (`captureSilence`); one
-     side alone never warns, because a zero mic beside playing audio is echo cancellation working.
-   - The plugin owns the UI and writes files through the Vault API; every judgement —
-     transcribe, summarize, suggest a path — is the Python server's, where the tests are. Audio
-     is appended to `Attachments/_incoming` in 5 s chunks as `<id>-NNN.webm`, so a crash costs
-     seconds, not the meeting; a `.webm` left there is a recording that never finished filing.
-     `recorder/note.py` is the sole writer of the note's frontmatter and managed sections.
-   - **The note is filed before the card is shown; nothing waits for approval.** A confirmation
-     is an action, and actions die (2026-08-03/04); the card adjusts a note that is already on
-     disk and findable.
-   - **A failed or silent transcript is REFUSED, not filed.** Three recordings were lost by
-     filing empty transcripts (2026-08-05, 08-22). The transcript IS the note; the audio stays
-     staged and the card offers Try again.
-   - Cancel writes and deletes nothing. Delete, offered in every state behind a second click
-     (`recorder/delete.js`), trashes the whole recording — draft, staged or archived audio no
-     other note names, pasted images — and `/api/record/forget` sweeps it from the index; on a
-     resumed take it discards only the take. Resume records a new segment, also on a finished
-     note, and leaves the summary alone until Retry summary (which takes a one-line steer).
-   - Pending review is durable (`review_status: pending`). `My notes` saves on blur, and on
-     close or quit, where no blur fires.
-   - Meeting state is per recording; only capture and the heavy model jobs are global (one
-     bounded 32-slot FIFO). Live and batch Parakeet are separate instances. Two recordings
-     at once is a supported case.
-   - The plugin spawns `slim chat` if port 7546 is free and reuses whatever is listening
-     otherwise (that keeps `--reload` usable, and is the stale-server trap below); it kills the
-     process GROUP on unload because `uv run` wraps the real python.
-   - The server moves a note by create + unlink, which Obsidian reports as `delete`. The
-     session names the path it is moving (`filingFrom`) and treats that delete as its own.
-2. **Label** — what a recording IS (type) and what it is ABOUT (subject). The owner picks the
-   type before recording, else the filing card (`suggest`) proposes one; `enrich` supplies the
-   title; `voicetags` holds the type list, the folder names and `registered_project`.
+After any change to notes, `slim ingest`. Ingest detects renames by content hash, so a hand
+edit plus a hand move between two ingests reads as delete + create and the note loses its id.
 
-   Labels are written once, at capture, with `tagged_by`/`subject_by` recording which layer
-   decided. A wrong one is the owner's edit, on the card or in the frontmatter.
-3. **File** — the card: `suggest` proposes `Notes/<subject>/`; an invented destination
-   collapses to its deepest existing ancestor, else `Notes/_unfiled`, and a journal is
-   forced flat to `Journal/`. The owner can edit it, and `/api/record/apply` moves the note.
-   A later move is a drag in Obsidian. **(owner)** The card offers folders under `Notes/`
-   only (`recorder.suggest.FILING_ROOTS`), and derived folders never: a separate `Capture/` tree
-   for recordings put every subject in two places, the owner was moving recordings into `Notes/`
-   by hand, and the copilot's lookups had two trees to search (2026-11-14).
-4. **Reflect** — `slim reflect` writes ONE journal-synthesis note into `_Reflections/`,
-   nightly. **This is the part the owner reads.** Judge changes by whether the note is worth
-   reading, nothing else.
-5. **Talk** — the copilot sidebar, backed by `slim chat` on 127.0.0.1:7546: a vault assistant
-   shaped like the Pi coding agent, which runs on the same model and server. **(owner)** It
-   answers from the whole vault (2026-11-13): the old vault-wide stack and the Ask path were too
-   restrictive and over-cited; an assistant, not a citation engine. **(owner)** No profile
-   injection (it pandered under two wordings, measured 2026-09-01); pinning `Profile/` is the
-   owner's own act.
-   - **Chats stand on their own** (`copilot/threads.py`, outside the vault with their pasted
-     images, never evidence): one history list, newest first, with a search box. Switching notes
-     never ends or swaps a chat, and the sidebar reopens the latest: chats bound to a note were
-     hard to find again (the owner, 2026-11-13).
-   - **The conversation is the transcript, as Pi keeps a session** (2026-11-14): each loop turn
-     returns its messages (`transcript`: the question as sent, each reply with its tool calls, each
-     tool result) and the plugin saves them with the answer and sends them back; later turns replay
-     them whole. History that kept only the answer text, with a line naming the notes searches had
-     found, made a follow-up take that answer for all it knew: it skipped the lookup and invented a
-     fact (live, 2026-11-14). An answer saved without a transcript (older chats, edit and new-note
-     skills) is its text and that line. What a replay leaves out (2026-11-17): the thinking, which
-     the GGUF's template shows only after the newest question (no `preserve_thinking`), so it was
-     counted and stored, never seen; and the notes that rode with the question, named by a marker
-     (`turn.without_attachment`), because an old copy's handles point at other blocks after edits.
-     An edit turn's replay is followed by what became of its changes (undone, restored), which its
-     "ok:" results alone hide. The window drops the oldest whole turns, and keeps `TURN_RESERVE`
-     for the turn's own lookups and steps.
-   - **One loop, no gate** (`turn._loop` over `run._turn`): every call is offered the lookups, the
-     edit tools and `create_note`, and the model decides whether to answer, look or edit. The
-     one loop tried on 2026-10-13 was replaced that day by an intent gate, on Ollama: every
-     question paid the edit prefill, answers stopped streaming, and Ollama's renderer broke the
-     think-then-call shape. On llama-server (10-23) the raw call streams, the cached prefix is
-     reused, and Pi runs that shape cleanly. Measured 2026-11-14, 20 cases side by side: the gate
-     and its Ask path said "no record" on 5 of 7 questions whose answers were in other notes, and
-     invented one date; the loop answered them. It is 1.5–6× slower on questions about the open
-     note, because it thinks on every turn: the owner accepted that trade.
-   - **One system message and one tool list for every turn** (`turn.loop_system`, `LOOP_TOOLS`);
-     **the open note rides with the question**, as Cursor attaches the current file. The tools
-     render at the prompt's start, so anything there that followed the note would re-read the
-     pins and the history every turn; fixed, it stays llama-server's cached prefix. With no note
-     it may change (none, the chip's ✕, a note the tools cannot take, one over the plugin's 400k
-     edit limit, which rides as plain text), an edit call is refused with a reason the model
-     reads. A note over `context.ATTACH_MAX_CHARS` (40k) rides as its sections map and the head
-     that fits: a long transcript is not prefilled every turn, `read_note` shows the rest by
-     section with its handles, and a part the turn has not been shown cannot be edited. A block
-     too long to show whole (a pasted article with no blank lines) is named where it stands, as a
-     transcript is, and the head goes on after it: shown only whole, it and everything after it
-     were unreachable.
-   - **`@` pins** a note or a folder: one message before the history, which changes only when the
-     pins do (`context.pinned_message`). A pinned note is read from disk whatever its folder, and
-     `read_note` and `list_folder` open what is under a pin even in an excluded folder: any note
-     the owner points at is fair game (2026-11-13). A pinned folder is where search looks by
-     default, if search can see it.
-   - **Lookups** (`copilot/lookup.py`, read-only): `search` returns the passage where the query
-     matched; `read_note` reads a note whole or by section (a long one shows its outline and the
-     head that fits, the rest by section), pages a transcript or a block too long to show,
-     read-only, and finds the one note a shortened path names; `list_folder`. They see only what
-     the index sees (`EXCLUDED_TOP` closed, except the open note and the pins), so SLIM never
-     finds its own reflections as evidence. At most 6 before the first answer or edit
-     (`run.MAX_LOOKUPS`); one whose result would overflow the window is refused. A call to a tool
-     not offered (a misspelt lookup) is refused with the tools there are and counts toward the
-     refusals: told to make a plan instead, a plain question could become an edit nobody asked
-     for (found in review, 2026-11-14). Each is a line in the chat, live as it runs.
-   - **Effort is Pi's thinking levels** (2026-11-14, replacing Quick and Deep), the ones the Pi
-     coding agent cycles through on the same model: Off, Low 4096 thinking tokens, Medium 8192
-     (the default), High 16384 (`run.THINK_BUDGETS`). Every call but a plan step's thinks within
-     its level's budget, each call its own allowance, and samples as Qwen recommends (thinking:
-     1.0, top_p 0.95, top_k 20, presence 1.5; Off: 0.7, top_p 0.8). At most 8 calls a turn think
-     (`run.MAX_THINKING_CALLS`), which bounds a turn's output (the arithmetic is in `run.py`); the
-     calls after them run with thinking off, at the level's sampling and cap still. Off is fastest
-     but looks things up less reliably: the live answer that invented the owner's numbers with no
-     lookup ran with thinking off (2026-11-13). The selector keeps the last level chosen (the
-     plugin's settings); each answer names its own, and a turn saved as Quick or Deep reads as
-     Medium or High. A skill keeps its measured setup, thinking only at High; its frontmatter may
-     name an effort, which wins (`mode: quick|deep` still reads). The loop's prompt is Pi-shaped
-     and vault-first: the tutor persona's "use your general knowledge freely" made a question
-     about the owner's own numbers a guess with no lookup (2026-11-13).
-   - **Sources are what code saw**: a chat skill's own notes first, then the notes a turn read or
-     its searches found (at most `turn.SOURCES_MAX`), then the pins; the open note only when a
-     tool read it. Code knows what the turn looked at, so no model call decides them, and no
-     prompt asks for citations: [n] markers made a citation bot (2026-09-01).
-   - The open note's embedded images ride with every turn, at most 6
-     (`copilot.context.MAX_NOTE_IMAGES`), in note order: what an image says is not searchable.
-     Nearby notes, under the note's chip, are its neighbours by PATH (folder → course → subject,
-     `context.related_notes`), ranked by similarity alone, with no threshold, by design.
-   - **Skills** are `/commands`: prompt templates in `slim/skills/` and the vault's `Skills/`
-     (same name wins; `copilot/skills.py`). A skill reads WHOLE notes chosen by code
-     (`copilot.context.gather`: the open note, the selection, the folder filtered by frontmatter
-     and cut to one section, `[[links]]`), inside a fixed budget, and names what it left out; it
-     needs a note open. A chat skill runs in the loop on its own prompt (the persona), with the
-     lookups only; an edit or new-note skill runs the editing run on its own (`turn._skill_run`).
-   - **Edits** go through tools (`copilot.edits.TOOLS`: `replace`, `edit_text`, `insert`, `move`,
-     `plan`) that point at block handles — [b12] a block, s7 the section under heading b7,
-     b11-b15 a range. A small change is one call; a larger one is a plan carried out one call
-     per step, a step at temperature 0.0 with no thinking (retyping at 0.7 drifted), and nothing
-     after the steps (fix-ups for the plan's outline were cut: every time they fired they wasted
-     calls or undid work). Code holds the plan and the limits (`copilot/run.py`: 8 steps, 30
-     calls, 3 refusals in a row, 12k output tokens beside the thinking allowances; a step whose
-     prompt would no longer fit the window is not called, as the server would refuse it) and
-     refuses what a call must not do, with a reason the model reads back: among them, a later step
-     rewriting what an earlier step wrote, and new HTML blocks, which Obsidian renders no
-     Markdown inside (a new `<details>` is written as a folded callout instead,
-     `copilot.edits.fold`). A change that reworks only the run's own text is `part_of` the
-     change it grew from, so the owner never sees SLIM's drafts as removals. What the owner
-     reads (steps, labels, summary) names text, never a handle (`copilot.blocks.Note.plain`,
-     `copilot.blocks.quote`). `llm.hold()` keeps the model lock for the turn. An `edit` skill
-     sees the note whole, at 0.0 (tidy: the selection's blocks only); `create_note` makes a new
-     note in an existing folder, and is all a `new-note` skill may do.
-     **The server never writes the note** (2026-10-12): the note is open in the owner's editor, and
-     writing the file behind it would fight their typing and the editor's undo.
-     It works on the editor's text (`doc` + its hash) and streams each change as UTF-16 splices;
-     the plugin applies them through the editor as they land (`live/editor.js`,
-     `makeLiveEditor`). While a call writes an insert or a replace, its text shows where it will
-     go as a draft, never the note's text (`copilot.run._Drafts`), and the change that lands
-     takes its place; the chat counts each call's seconds. The plugin skips a change whose text
-     the owner typed into meanwhile, draws the marks, then syncs and embeds the note. ↺ undoes a
-     change and those built on it; Undo all and Redo; Cmd-Z is the editor's own. The note as it
-     was before the run is kept beside the chat, outside the vault
-     (`copilot.threads.save_before`), so See before and Restore work after the note is closed;
-     Restore warns when the note has changed since, and is refused when a recording's own parts
-     have (`/api/copilot/restore`). A recording's frontmatter, `slim-meeting` block and
-     transcript are [locked] blocks no call may touch, and no change's splices may reach them.
-     New text put above a plain note's properties goes right after them.
-   - **A claimed edit is checked by code**: a reply with no tool call that says it changed the
-     note (`run.claims_edit`, a narrow English matcher: "I've replaced…", "Let me … now", "Done")
-     while the note is editable and nothing landed is told so once, in one more call, which asks
-     for the change only if the owner asked for it (a false match told to make it could edit the
-     note unasked); a reply that claims it again keeps "No change was made to the note." under it
-     (traced as `claimed_edit`). One run in 5 of one edit request wrote the new text in the chat
-     and said "I've replaced…" with nothing changed (2026-11-14), and a prompt rule alone is not a
-     fix. It is off once the chat holds an earlier SLIM edit (`turn.edited_before`): "I replaced
-     the intro…" is then as likely a recap, and the change marks still show what landed.
+## Talk: the decisions
+
+The copilot is a vault assistant shaped like the Pi coding agent, on the same model and server.
+
+- **(owner) It answers from the whole vault**: the earlier scoped stack over-cited and was too
+  restrictive. An assistant, not a citation engine; no prompt asks for citations, and sources
+  are what code saw the turn read.
+- **One loop, no intent gate** (`turn._loop`): every call gets the lookups, the edit tools and
+  `create_note`, and the model decides. A gate measured worse: it said "no record" on 5 of 7
+  questions answered elsewhere in the vault. The loop is slower; the owner accepted that.
+- **The conversation is the transcript, as Pi keeps a session**: replaying only the answer
+  text made follow-ups skip lookups and invent facts. Replays leave out thinking and the
+  attached notes (`turn.without_attachment`); the window drops the oldest whole turns.
+- **One system message and tool list for every turn**, the open note riding with the question,
+  so llama-server reuses the cached prefix.
+- **Chats stand on their own** (`copilot/threads.py`, outside the vault): switching notes never
+  ends a chat.
+- **Edits are tool calls on block handles** (`copilot/edits.py`, `copilot/run.py`, which holds
+  the limits). **The server never writes the open note**: it streams splices the plugin applies
+  through the editor, so it never fights the owner's typing or undo. A recording's frontmatter,
+  `slim-meeting` block and transcript are locked blocks.
+- **A claimed edit is checked by code** (`run.claims_edit`): the model sometimes says "I've
+  replaced…" with nothing changed, and a prompt rule alone did not stop it.
+- Lookups see only what the index sees, plus the open note and `@` pins, so SLIM never finds
+  its own reflections as evidence.
 
 ## Where things live
 
 ```
 Journal/            flat · never routes out
 Notes/<subject>/    recordings and the owner's writing; `_unfiled` when no subject is known;
-                    any depth below level 2 is the owner's
-Profile/            the owner's self-description; not indexed or injected; open or @-pin it
-Attachments/        binaries; the plugin hides it from Obsidian's file explorer
+                    depth below level 2 is the owner's
+Profile/            the owner's self-description; not indexed
+Attachments/        binaries; hidden from Obsidian's file explorer by the plugin
 _Reflections/       derived, excluded from ingest
 Skills/             the owner's copilot /commands; not indexed
 ```
 
-Subjects are the ids in `config/projects.yaml` (gitignored; copy `config/projects.example.yaml`).
-The file also carries `owner`, the name the prompts address; nothing else reads it.
+Subjects are the ids in `config/projects.yaml` (gitignored; copy the example). Subject is the
+only folder axis: type, course and status are frontmatter, where they can be queried.
 
-**Subject is the only folder axis SLIM uses:** a path encodes one fact; type, course and status
-are frontmatter, where they can be queried. The only folder SLIM invents is `Notes/_unfiled`
-(the card files into folders that exist), so folders don't multiply across every axis; depth the owner creates is theirs, and the card files into it.
+Imports run one way: `vault <- index <- copilot`, `vault <- capture <- recorder` (which also
+uses `index`); `server` joins `recorder` and `copilot`; the seams (config, db, trace, llm)
+import no package. The plugin's `obsidian/src/` mirrors this with `recorder/`, `chat/` and
+`live/`; tests mirror both trees.
 
-**`Journal/` is flat, a top-level sibling of `Notes/`:** the card files a journal there, and no
-route carries a note out of it (test-enforced). `reflect` reads `type = 'journal'` notes under
-`Journal/` only, so one placed elsewhere by hand is not in the nightly synthesis. These are
-filing rules, not privacy: the privacy gates are gone (the owner's rulings, below).
+## Traps
 
-The code, `slim/`: subpackages are feature folders. Imports run one way:
-`vault <- index <- copilot`, `vault <- capture <- recorder` (which also uses
-`index`); `server` joins `recorder` and `copilot`; the seams (config, db, trace, llm) import no package.
+- **A stale server or plugin.** The plugin reuses any `slim chat` already on 7546, and
+  `uv run` never reloads, so a terminal-started server can serve days-old code. The vault holds
+  a COPY of `main.js`, and `main.js` is only what `npm run build` made of `src/`. When in doubt,
+  kill the port, rebuild and copy. Obsidian's loader cannot resolve a relative `require`,
+  which is why `src/` is bundled.
+- **One model job at a time, across every session on this Mac.** Parallel model loads once
+  drove the 48 GB machine to a hard reset: GPU-wired memory can't swap. Before any model job,
+  check `ps`, `ollama ps` and llama-server's log. Never load the generative weights in Ollama
+  beside llama-server.
+- **Never call the model server directly; go through `slim/llm.py`.** It handles: explicit
+  `enable_thinking` on every call (unset, thinking eats the cap and returns ""); capped
+  `num_predict` and `maxLength` under a JSON grammar (greedy decoding loops forever);
+  LaTeX backslashes, which JSON mangles (`capture.summarize._repair`); tool calls sent raw to
+  `/completion` and read by `llm_render._Reader`. An overlong prompt is refused (HTTP 400),
+  never cut. Runs differ even at temperature 0: compare evals case by case.
+- **A filed note can be unreachable.** The copilot and `reflect` read SQLite, so anything that
+  writes a note must ingest and embed, or say plainly that it did not.
+- **A prompt rule alone is not a fix.** On this model a banned verb finds another verb. Back
+  a prompt rule with a mechanism and measure it.
+- **Obsidian sees the server's file moves as deletions** (create + unlink, never rename), and
+  the leaf lets go of the file. Anything reacting to a vault `delete` must first ask whether
+  the server caused it (`filingFrom`, `isEmptiedLeaf`).
 
-```
-slim/            entry points and seams: cli, server (`slim chat`'s HTTP), config, db, trace,
-                 llm, llm_render, reflect, devserver; vaultpath (stdlib only, loaded BY PATH)
-slim/vault/      reading and writing notes: frontmatter, notefile, note_images, identity (the pin)
-slim/capture/    audio to labelled text: audio, transcribe, speakers, summarize, enrich,
-                 voicetags
-slim/recorder/   the capture lane: routes, pipeline, review, state, note (the note's sole writer),
-                 suggest (the filing card)
-slim/index/      ingest, chunk, embed, search
-slim/copilot/    Talk: turn (the loop's turn, `_loop`; a skill's run, `_skill_run`), lookup (search,
-                 read_note, list_folder), context, run (the run of model calls), edits, blocks
-                 (the note as handled blocks), threads, images, skills; the built-in skill
-                 templates are `slim/skills/`
-```
+## Rules
 
-The plugin, `obsidian/src/`, has the same shape: `recorder/`, `chat/` and `live/` feature folders;
-the entry, `plugin.js`, `server.js`, `settings-tab.js` and `sse.js` at the top. The live editor
-(drafts, change marks, ↺) is `live/editor.js` (`makeLiveEditor`). Tests mirror both trees.
-
-## What was cut (owner)
-
-Five cuts (2026-07-31, 08-27, 09-01, 09-03, 11-05) removed roughly 60k lines of code nobody used:
-curated memory, context packs, an evidence rail, MCP tools and server, policy tiers, a
-vault-wide ask stack, the desktop app and its chat lane, a tool loop for search, re-filing and
-re-labelling passes, the phone's Voice Memos sweep and its spoken-opening router (`slim memos`,
-2026-11-05: the owner had stopped recording memos), and the schema columns and prose that
-described them. The vault-wide ask and the search loop came back on 2026-11-13, in the form
-Talk describes (the owner's call); the intent gate, the Ask path and its sources call, which
-the loop replaced, went on 2026-11-14. **Restoring any of these is the owner's call: stop and
-ask.** The maintainer's archive holds them. Model evaluations run from harnesses kept outside
-the repo.
-
-## Traps that will bite you, and what they cost when they did
-
-**A terminal-started server can serve days-old code.** The plugin reuses any `slim chat` on
-7546; `uv run` imports from disk at spawn and never reloads. Plugin-started servers exit with
-Obsidian's PID. `GET /api/health` reports staleness and the SessionStart hook calls it — but
-a server whose `uv` parent was adopted by PID 1 reports fresh and still fails; when in doubt,
-kill the port. The vault holds a COPY of `main.js`: the same trap. And `main.js` is built from
-`obsidian/src/`: an edit there without `npm run build` is not in it (`bundle.test.mjs` catches
-that). Obsidian's loader cannot resolve a relative `require` (it broke the plugin on 2026-08-25
-while node's tests stayed green), which is why src/ is bundled.
-
-**Memory is the binding constraint, and macOS kills silently.** On a 48 GB machine
-`qwen3.6:35b` (MoE) is ~32 GB in `llama-server` with two slots of `RESIDENT_CTX = 262144` (one for
-SLIM, one for the Pi coding agent), ~16 MB of KV per 1k tokens. Never load the same weights in
-Ollama beside it: that is a second ~23 GB copy. A long pass must stream its results. The big
-window costs weak recall of a prompt's middle; an overlong prompt is refused (HTTP 400), never
-cut.
-
-**One model job at a time, across every session on this Mac.** On 2026-09-29 parallel jobs
-loading models (Ollama plus MLX benches) drove the machine to ~70 GB and it had to be
-hard-reset: GPU-wired memory can't swap, so macOS hangs instead of killing. Before a model job
-(regress, an eval, a live server run), check `ps`, `ollama ps` and `llama-server`'s log for
-another one.
-
-**Model-server traps — all handled in `slim/llm.py`; never call the server directly.** The
-generative model is served by llama.cpp's `llama-server`, not Ollama (2026-10-23): Ollama renders
-qwen3.6's prompt with its own Go renderer, whose open bugs hit the thinking-then-tool-call shape
-(ollama#14493, #16383), and the Pi coding agent on it looped until killed in 2 of 8 replays where
-llama-server finished 8 of 8. Ollama keeps the embedder. `qwen3.6` thinks
-by default and thinking tokens count against the output cap, so an unset `think` returns
-`content=""`; every call sets `enable_thinking` explicitly (`think=True` for the recorder's summary, every
-copilot loop call but a plan step's at any effort but Off, and a skill's at High), and turns off the server's
-thinking budget, which is the coding agent's. Greedy decoding into a JSON grammar loops forever on an unbounded
-string: cap `num_predict`, put `maxLength` on short fields (Ollama could not compile one above
-~1500; llama.cpp's limit is unmeasured). LaTeX does not survive JSON — `\b \f \n \r \t` collide
-with `\beta \frac \nabla \rho \text` — so the summarizer bans backslashes and
-`capture.summarize._repair` reverses the decode.
-`llm.py` serializes live calls; temperature 0.0 for structured work, 0.7 for prose a person
-reads, and the copilot loop's calls Qwen's recommended sampling (1.0 thinking, 0.7 at Off). A call with tools goes RAW: its prompt rendered by the server (`/apply-template`, the
-GGUF's own chat template) and completed by `/completion`, streamed, its reply read by
-`llm_render._Reader` — the chat endpoint would parse the call into JSON arguments, and the draft
-shows a parameter's text as it decodes. A model with another tool-call format needs its own
-reader. A tool call's text is XML, taken as written: the JSON trap above never touches it, and
-`_Reader` keeps a text parameter written `null` as the word. Messages are built in Ollama's
-shape (`images`, `thinking`, object `arguments`) and converted once, by `llm._wire`. Even at
-temperature 0, a run can differ between two identical calls (seen 2026-10-14 on unchanged code,
-under Ollama): compare regress results case by case, not by a single run.
-
-**A note can be filed and still be unreachable.** Filing is a markdown file; the copilot and
-`reflect` read SQLite. Anything that writes a note must ingest AND embed, or say plainly
-that it did not (2,802 fragments once sat without vectors, 2026-08-04). A machine transcript has
-no blank lines; `index.chunk._split_prose` splits at sentences as a last resort so a 37-minute
-meeting is not one fragment.
-
-**A prompt rule alone is not a fix.** On this model a banned verb finds another verb and a
-rider often has no measurable effect (the Restraint Rule suppressed key points, 2026-08-05; the
-profile pandered under two wordings, 09-01). Back a prompt rule with a mechanism, as the
-summarizer's backslash ban is backed by `_repair`, and measure it. A green test gate is
-verification of what you thought to check.
-
-**Obsidian's plugin sees the server's file moves as deletions.** An external rename is
-`delete` + `create`, never `rename`, and the leaf lets go of the deleted file: Obsidian goes
-back in its history, or empties it, or closes it beside sibling tabs. An emptied leaf is still
-the session's to reuse (`isEmptiedLeaf`), or filing opens a second pane (2026-09-30). Anything
-that reacts to a vault `delete` must first ask whether the server caused it (2026-09-04/09).
-
-## Rules, with their reasons
-
-- **Deterministic truth in code** (hashes, ids, timestamps, filters, paths); LLMs only for
-  interpretation, classification, synthesis, language. A model guessing a fact the machine
-  already knows is a bug that varies run to run.
-- **Raw sources are never rewritten.** Derived state is rebuildable — but a rebuild mints new
-  source ids, and a saved chat then finds the note it started on only by the path saved with it,
-  which a later move makes stale; so schema changes are migrations.
-- **Derived artifacts are excluded from ingestion** — `_Reflections/`, `Profile/` and
-  `Skills/` (`config.EXCLUDED_TOP`); the recorder's summary is fenced and blanked before
-  chunking — so the brain never retrieves its own opinions as evidence.
-- **Failures are traced.** `trace.record` writes machine facts (never prose, never
-  chain-of-thought) for every recorder stage, copilot turn, reflect run and refusal; quiet
-  sweeps write nothing. `slim trace -n 5` is how a session finds out what a silent failure did.
-- **The index is PINNED to the vault it was built from** (`SLIM_DATA_DIR/vault_pin`,
-  `vault/identity.py`): ingest's removal sweep deletes every source it cannot find under the
-  current vault, and discovery can change that path with nobody asking. Every command that can
-  write to the vault checks the pin first. A real move, or an index made before the pin, is
+- **Deterministic truth in code** (hashes, ids, timestamps, paths); LLMs only for
+  interpretation and language. A model guessing a fact the machine knows varies run to run.
+- **SLIM never rewrites a transcript on its own**; a change the owner asks for (masking, an
+  edit) is fine. Derived state is rebuildable, but a rebuild mints new source ids and strands
+  saved chats, so schema changes are migrations.
+- **Derived artifacts are excluded from ingest** (`config.EXCLUDED_TOP`; the recorder's summary
+  is blanked before chunking), so SLIM never retrieves its own opinions as evidence.
+- **Failures are traced** with `trace.record`: machine facts, never prose or chain-of-thought.
+- **The index is pinned to its vault** (`vault/identity.py`): ingest's sweep deletes every
+  source it cannot find, and vault discovery can change with nobody asking. A real move is
   `slim ingest --vault-moved`.
-- **`slim/vaultpath.py` stays where it is, stdlib-only and 3.9-safe:** the backup script and
-  `scripts/pdf2md.py` load it BY PATH with the system python (3.9).
-- **Full Disk Access goes to `restic` only, never `/bin/bash` or an interpreter:** that would
-  hand the whole disk to anything that interpreter runs.
-- **A public repo: nothing user-specific in code, comments or commit messages.** Vocabulary and
-  the owner's name are config; `config/projects.yaml` is gitignored.
-- **Question a rule when it blocks something useful** — say what it protected against and
-  whether that risk is real here — rather than citing it as settled.
-
-## The owner's rulings
-
-These are value calls, not technical constraints; they change only on the owner's word.
-
-- **No privacy gates on `Journal/`** (2026-11-13): "don't worry about journal anymore … we can
-  expel with the privacy gates now". The voice-memo pipeline that fed it was scrapped. This
-  supersedes the 2026-08-01 ruling (journal transcripts not to be read by agents) and the
-  2026-08-31 one (`Journal/` the only privacy rule). Filing into `Journal/` is unchanged and
-  test-enforced.
-- **Autonomous writes are fine** (2026-07-31): enrichment, reflection and the recorder write
-  without confirmation; provenance stays in frontmatter.
-- **ONE generative model, `qwen3.6:35b` (`llm.MODEL`), for everything** (2026-09-01) — chosen
-  against the summarization experiment's evidence (best at grounding, worst at summarization;
-  do not call it "the model the bake-off chose"). Embedder `embeddinggemma`: its task prefixes
-  are load-bearing (`index/embed.py`); changing it means deleting the brain DB and re-ingesting.
-- Also marked **(owner)** above: one click with no settings, the card's filing roots, a copilot
-  that answers from the whole vault (2026-11-13) and no profile injection, and the cut list.
+- **`slim/vaultpath.py` stays stdlib-only and 3.9-safe**: `scripts/backup.sh` and
+  `scripts/pdf2md.py` load it by path with the system python.
+- **Full Disk Access goes to `restic` only**, never a shell or interpreter, which would hand the
+  whole disk to anything it runs.
+- **Public repo**: nothing user-specific in code, comments or commits; names and vocabulary
+  are config.
+- **(owner) One generative model, `qwen3.6:35b` (`llm.MODEL`)**, served by llama-server;
+  Ollama keeps the embedder `embeddinggemma`, whose task prefixes are load-bearing. Changing
+  the embedder means deleting the brain DB and re-ingesting.
+- **(owner) Autonomous writes are fine**: enrichment, reflection and the recorder write without
+  confirmation; provenance stays in frontmatter.
+- **(owner) No privacy gates**, `Journal/` included; don't cite privacy to block a change. A
+  privacy feature the owner asks for (PII masking) is their call.
+- Question a rule when it blocks something useful: say what it protected against and whether
+  that risk is real here.
 
 ## Environment
 
-- Apple Silicon Mac with llama.cpp's `llama-server` (the generative model, README "Requirements")
-  and Ollama (the embedder); 48 GB of memory fits the default model. macOS only: MLX
-  (Parakeet) and the Core Audio tap need it.
-- Vault: `SLIM_VAULT`, else DISCOVERED (`vaultpath.py`): Obsidian's own registry, then
-  iCloud's Obsidian container, then `~/Documents/Obsidian Vault` (iCloud-synced is fine). Brain
-  DB outside any synced folder: `SLIM_DATA_DIR`, default `~/Library/Application Support/slim/`
-  (SQLite + FTS5 + vectors, rebuildable — see above).
-- launchd: `com.slim.reflect` nightly, `com.slim.backup` daily (`scripts/backup.sh`, vault → restic).
+Apple Silicon Mac, 48 GB, macOS only (MLX Parakeet and the Core Audio tap). llama-server runs
+the generative model; Ollama runs the embedder. Vault: `SLIM_VAULT`, else discovered by
+`vaultpath.py`. Brain DB: `SLIM_DATA_DIR`, default `~/Library/Application Support/slim/`.
+launchd: `com.slim.reflect` nightly, `com.slim.backup` daily (`scripts/backup.sh`, restic).
 
 ## Conventions
 
-- `uv` for everything (the system python is 3.9); pytest.
-- Plain, explicit flows: no indirection (manager, factory, engine, wrapper) without a second
-  caller that needs it. Folders and files are not indirection: group code by feature, one job
-  per file.
-- **Prefer deleting a leash to adding a belt.** When code holds the fact, let code state it
-  once. Deleting is free — git holds it forever. Keeping costs this file's context, test
-  runtime, and the attention of every agent that reads the repo.
-- Judge a feature by "would the owner miss it if it were gone," not "is it well-built."
-- Documentation files, each with one job: this file (what, and why), `BACKLOG.md` (open items
-  only, one line each, finished items deleted), the README (for outsiders). A reason goes beside
-  its rule here, not in another file.
-- Tests check behaviour, not spelling: a test that reads source text only for something no
-  behaviour test can reach (the bundle's requires, one helper for one rule).
-- The maintainer stays on master. Work in a worktree on a branch, commit there, and they
-  fast-forward on their word. Use `git -C <path>` for every git command. Commit messages are
-  concise, not STE.
+- `uv` for everything; pytest.
+- Plain, explicit flows: no manager, factory or wrapper without a second caller. Group code by
+  feature, one job per file.
+- Prefer deleting a leash to adding a belt; git keeps what is deleted.
+- Judge a feature by "would the owner miss it if it were gone".
+- Tests check behaviour, not spelling.
+- Docs each have one job: this file (what and why), `BACKLOG.md` (open items, one line each),
+  the README (outsiders).
+- The maintainer stays on master. Work in a worktree on a branch, commit there; they
+  fast-forward on their word. Use `git -C <path>`. Commit messages are concise.
