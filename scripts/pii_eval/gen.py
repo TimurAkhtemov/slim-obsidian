@@ -290,6 +290,75 @@ DISTRACTORS = {
                                                       "forty one to thirty"))),
 }
 
+SSN_TRIPLE = "ssn_triple"
+
+
+def _digits(r, n: int) -> str:
+    return str(r.randint(1, 9)) + _rand_digits(r, n - 1)
+
+
+def _iso(r) -> str:
+    return f"{r.randint(2019, 2026)}-{r.randint(1, 12):02d}-{r.randint(1, 28):02d}"
+
+
+def _fake_phone(r) -> str:
+    return f"({r.randint(2, 9)}{r.randint(0, 9)}{r.randint(1, 9)}) 555-01{r.randint(0, 99):02d}"
+
+
+_SITES = ("shopwell", "gadgetry", "brightmart", "deskhub", "tinkerbay", "parcelly")
+
+# Cue words in their ORDINARY senses, next to numbers: the damage a detector does when it reads
+# "social", "card", "account", "email" or "password" as a cue where nothing secret is said.
+# Each script draws one or two families; every line is synthetic, its numbers drawn per script.
+# family -> [(kind, line maker)]; the whole line is the distractor's text.
+CUE_FAMILIES = {
+    "social": [
+        ("social_check", lambda r: f"My social security check came on {_iso(r)}."),
+        ("social_office", lambda r: f"The Social Security office is open 9 to 5, call {_fake_phone(r)}."),
+        ("social_views", lambda r: f"Our social media post got {_digits(r, 8)} views."),
+        ("social_followers", lambda r: f"Social media followers: {_digits(r, 4)}, {_digits(r, 3)}, "
+                                       f"{_digits(r, 3)}."),
+    ],
+    "card": [
+        ("card_union", lambda r: "Credit union members: " + ", ".join(_digits(r, 4) for _ in range(4)) + "."),
+        ("card_order", lambda r: f"I paid by card, order {_digits(r, 3)}-{_rand_digits(r, 7)}-"
+                                 f"{_rand_digits(r, 7)}."),
+        ("card_visa_case", lambda r: f"Visa appointment on {r.randint(1, 12)}/{r.randint(1, 28)}/"
+                                     f"{r.randint(2019, 2026)}, case {_digits(r, 16)}."),
+        ("card_score", lambda r: f"My credit score is {r.randint(300, 850)}."),
+        ("card_dealt", lambda r: "We dealt " + ", ".join(str(r.randint(1, 9999)) for _ in range(4))
+                                 + " cards."),
+    ],
+    "account": [
+        ("account_fine", lambda r: f"Your account number is fine, the order was {_digits(r, 10)}."),
+        ("account_changed", lambda r: f"The account number changed on {_iso(r)}."),
+        ("account_routing_table", lambda r: f"The routing table has {_digits(r, 3)} entries and "
+                                            f"{_digits(r, 7)} lookups."),
+        ("account_call", lambda r: f"Call {_fake_phone(r)} about the account number."),
+    ],
+    "email_web": [
+        ("web_email_found", lambda r: f"I'll email you what I found at {r.choice(_SITES)}.com."),
+        ("web_email_yesterday", lambda r: f"Email me the stuff from yesterday at {r.choice(_SITES)}.com."),
+        ("web_bought_uk", lambda r: f"I bought {r.choice(('4k', 'v2', 'iPhone15', 'Model3'))} at "
+                                    f"{r.choice(_SITES)}.co.uk."),
+        ("web_bought_email", lambda r: f"I bought it at {r.choice(_SITES)}.com. Is the email working now?"),
+    ],
+    "password_words": [
+        ("pw_policy", lambda r: "The password policy changed last week."),
+        ("pw_reset", lambda r: "I need to reset my password again."),
+        ("pw_pin_tab", lambda r: "Pin the tab so we don't lose it."),
+        ("pw_passcode_office", lambda r: "What's the passcode situation for the new office?"),
+    ],
+    "plain_numbers": [
+        ("plain_order", lambda r: f"Order {_digits(r, 9)}, thanks."),
+        ("plain_scores", lambda r: f"Scores {_digits(r, 3)} {_digits(r, 3)} {_digits(r, 3)}."),
+        ("plain_counts", lambda r: "The counts were " + ", ".join(_digits(r, 4) for _ in range(4)) + "."),
+        # The known trade-off shape (3-2-4 like an SSN): reported on its own, not gated.
+        (SSN_TRIPLE, lambda r: f"We had {_digits(r, 3)} {_rand_digits(r, 2)} {_rand_digits(r, 4)} users."),
+    ],
+}
+
+
 SMALL_TALK = (
     "Hey, how's it going?", "Not bad, thanks. You?", "Pretty good. Busy week.",
     "Did you catch the game last night?", "No, I missed it.", "How was the trip?",
@@ -374,6 +443,16 @@ def _script(k: int, seed: int) -> Script:
         before, after = template.split("{p}")
         blocks.append([(rng.choice(("Me", "Them")), before + phrase + after,
                         (len(before), len(before) + len(phrase), d))])
+    # One or two cue-word families per script, walked in order so the default 30 scripts meet
+    # every family and every line in it.
+    names = sorted(CUE_FAMILIES)
+    picks = [names[k % len(names)]] + ([names[(k + 3) % len(names)]] if k % 2 else [])
+    for f, fam in enumerate(picks):
+        kind, make = CUE_FAMILIES[fam][(k // len(names) + f) % len(CUE_FAMILIES[fam])]
+        line = make(rng)
+        d = Distractor(kind, line)
+        distractors.append(d)
+        blocks.append([(rng.choice(("Me", "Them")), line, (0, len(line), d))])
     rng.shuffle(blocks)
     talk = list(SMALL_TALK)
     rng.shuffle(talk)

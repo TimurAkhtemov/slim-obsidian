@@ -82,12 +82,24 @@ def test_scripts_shape():
     cells = {(i.cls, i.cue) for s in scripts for i in s.items}
     assert cells == {(c, q) for c in ev_gen.CLASSES for q in ev_gen.CUES}      # every class meets every cue
     for s in scripts:
-        assert 0 <= len(s.items) <= 3 and 2 <= len(s.distractors) <= 4
+        assert 0 <= len(s.items) <= 3 and 3 <= len(s.distractors) <= 6
         assert {sp for sp, _ in s.lines} == {"Me", "Them"}
         t = s.transcript
         assert t.startswith("**") and "**Me:**" in t and "**Them:**" in t
         for x in [*s.items, *s.distractors]:
             assert t[x.start:x.end] == (x.spoken if hasattr(x, "spoken") else x.text)
+
+
+def test_every_cue_word_family_and_line_appears_in_the_default_scripts():
+    scripts = ev_gen.generate(30, seed=7)
+    kinds = {d.kind for s in scripts for d in s.distractors}
+    for family, lines in ev_gen.CUE_FAMILIES.items():
+        assert {k for k, _ in lines} <= kinds, family
+    assert ev_gen.SSN_TRIPLE in kinds
+    per_script = [sum(d.kind in {k for f in ev_gen.CUE_FAMILIES.values() for k, _ in f}
+                      for d in s.distractors) for s in scripts]
+    assert set(per_script) == {1, 2}
+    assert [s.transcript for s in scripts] == [s.transcript for s in ev_gen.generate(30, seed=7)]
 
 
 def test_tokens_are_distinctive():
@@ -244,6 +256,30 @@ def test_score_text_without_model_leaves_password_out_of_the_gate():
     got = ev_score.score_text(SCRIPTS, masked, classes, model=False)
     assert got["by_class"]["password"]["masked"] == 0
     assert got["gate"]["ok"] and "password" not in got["gate"]["secret_classes"]
+
+
+def test_text_gate_is_on_cued_items_only():
+    # every secret said with no cue left unmasked: reported in its own row, the gate holds
+    masked = {}
+    for s in SCRIPTS:
+        masked[s.sid] = _mask_spans(s.transcript, [(i.start, i.end, i.cls) for i in s.items
+                                                   if not (i.cls in pii.SECRET and i.cue == "none")])
+    got = ev_score.score_text(SCRIPTS, masked, ev_gen.CLASSES, model=True)
+    assert got["shape_only"]["n"] > 0 and got["shape_only"]["masked"] == 0
+    assert got["gate"]["ok"] and got["gate"]["secret_recall"] == 1.0
+    assert "CUED" in got["gate"]["rule"]
+
+
+def test_text_ssn_shaped_triple_damage_is_reported_not_gated():
+    s = next(x for x in SCRIPTS if any(d.kind == ev_gen.SSN_TRIPLE for d in x.distractors))
+    d = next(d for d in s.distractors if d.kind == ev_gen.SSN_TRIPLE)
+    num = re.search(r"\d+ \d+ \d+", d.text)
+    masked = {x.sid: _perfect(x) for x in SCRIPTS}
+    masked[s.sid] = _mask_spans(s.transcript, [(i.start, i.end, i.cls) for i in s.items]
+                                + [(d.start + num.start(), d.start + num.end(), "ssn")])
+    got = ev_score.score_text(SCRIPTS, masked, ev_gen.CLASSES, model=True)
+    assert got["ssn_shaped_triples"] == 1 and got["distractors_damaged"] == 0
+    assert got["gate"]["ok"] and got["gate"]["false_positives"] == 0
 
 
 def test_text_gate_needs_evidence():
@@ -621,6 +657,41 @@ def test_calls_false_positive_off_any_distractor_is_not_damage(tmp_path, capsys)
     assert report["gate"]["false_positives"] == 1 and report["distractors_damaged"] == 0
     ev_score.print_calls_report(report)
     assert "false positives: 1; distractors damaged: 0" in capsys.readouterr().out
+
+
+def _result(items, fps=()):
+    return {"script": "m01", "items": items, "false_positives": list(fps), "audio_failures": [],
+            "renderings": [], "reasons": [], "garbled_masked": []}
+
+
+def _it(cls, cue, masked, transcribed=True):
+    return {"class": cls, "kind": cls, "style": "digits", "cue": cue, "transcribed": transcribed,
+            "masked": masked, "result": "masked" if masked else "missed", "remnant": None,
+            "spoken": "x", "heard": "x", "in_classes": True}
+
+
+def test_calls_gate_is_on_cued_items_only():
+    items = [_it("ssn", "same_sentence", True), _it("card", "previous_turn", True),
+             _it("account", "none", False), _it("card", "none", False)]
+    got = ev_score.aggregate_calls([_result(items)], ev_gen.CLASSES)
+    assert got["gate"]["ok"] and got["shape_only"] == {"n": 2, "masked": 0, "recall": 0.0}
+    got = ev_score.aggregate_calls([_result(items + [_it("ssn", "after_value", False)])],
+                                   ev_gen.CLASSES)
+    assert not got["gate"]["ok"]
+    only_none = ev_score.aggregate_calls([_result([_it("ssn", "none", True)])], ev_gen.CLASSES)
+    assert not only_none["gate"]["ok"] and only_none["gate"]["no_evidence"]
+
+
+def test_calls_ssn_shaped_triple_damage_is_reported_not_gated(tmp_path):
+    s = _mini([("Me", "We had 123 45 6789 users."), ("Them", f"My social is {SSN_219[3]}.")],
+              SSN_219, distractor=(ev_gen.SSN_TRIPLE, "We had 123 45 6789 users."))
+    raw = "**Me:** We had 123 45 6789 users.\n\n**Them:** My social is 219-09-9999."
+    masked = "**Me:** We had [SSN] users.\n\n**Them:** My social is [SSN]."
+    res = _call(s, raw, masked, masked, tmp_path)
+    assert res["false_positives"][0]["distractor"] == ev_gen.SSN_TRIPLE
+    got = ev_score.aggregate_calls([res], ev_gen.CLASSES)
+    assert got["ssn_shaped_triples"] == 1 and got["gate"]["false_positives"] == 0
+    assert got["gate"]["ok"], got["gate"]
 
 
 def test_check_full_and_full_runner_with_fakes(tmp_path):

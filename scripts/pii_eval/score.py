@@ -9,7 +9,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from .gen import CUES, Item, SECRET, Script
+from .gen import CUES, Item, SECRET, SSN_TRIPLE, Script
 
 
 PLACEHOLDERS = re.compile(r"\[(SSN|CARD|ACCOUNT|PASSWORD|EMAIL|ADDRESS|PHONE)\]")
@@ -103,6 +103,27 @@ def _ratio(d):
     return round(d["masked"] / d["n"], 3) if d["n"] else None
 
 
+GATE_RULE = (f"gate rule: secret-class recall >= {RECALL_GATE} over CUED items (same_sentence, "
+             "previous_turn, after_value); items with no cue are shape-only, reported, not gated; "
+             "zero false positives, except damage to ssn-shaped triples (a known trade-off), "
+             "reported apart and not gated")
+
+
+def _cued_recall(records, gate_cls) -> tuple[float | None, int, dict]:
+    """(recall over cued secret items, how many, the shape-only row) from (cls, cue, masked)."""
+    cued = [m for c, q, m in records if c in gate_cls and q != "none"]
+    shape = [m for c, q, m in records if c in gate_cls and q == "none"]
+    row = {"n": len(shape), "masked": sum(shape)}
+    row["recall"] = _ratio(row)
+    return (sum(cued) / len(cued) if cued else None), len(cued), row
+
+
+def _tradeoff(fp: dict) -> bool:
+    """A false positive whose only damage is to an ssn-shaped triple: reported, not gated."""
+    kinds = fp.get("distractors") or ([fp["distractor"]] if fp.get("distractor") else [])
+    return bool(kinds) and all(k == SSN_TRIPLE for k in kinds)
+
+
 def _gate_classes(classes, model: bool) -> list[str]:
     return [c for c in SECRET if c in classes and (model or c != "password")]
 
@@ -189,7 +210,8 @@ def score_text(scripts: list[Script], masked: dict[str, str], classes, *, model:
     classes = tuple(classes)
     by_class, by_cue = _empty(classes), _empty(CUES)
     misses, fps, placeholders, expected = [], [], Counter(), Counter()
-    damaged = 0
+    damaged = triples = 0
+    records = []
     for s in scripts:
         t, m = s.transcript, masked[s.sid]
         reps3 = _replaced(t, m)
@@ -203,6 +225,7 @@ def score_text(scripts: list[Script], masked: dict[str, str], classes, *, model:
             for d in (by_class[i.cls], by_cue[i.cue]):
                 d["n"] += 1
                 d["masked"] += gone
+            records.append((i.cls, i.cue, gone))
             if not gone:
                 misses.append({"script": s.sid, "class": i.cls, "kind": i.kind, "style": i.style,
                                "cue": i.cue, "result": "missed" if readable else "partial",
@@ -213,17 +236,18 @@ def score_text(scripts: list[Script], masked: dict[str, str], classes, *, model:
             left = _leftover(a, b, t, own)
             if not left:
                 continue
-            hit = [d for d in s.distractors if any(d.start <= k < d.end for k in left)]
-            damaged += len(hit)
+            hit = [d.kind for d in s.distractors if any(d.start <= k < d.end for k in left)]
+            damaged += sum(k != SSN_TRIPLE for k in hit)
+            triples += sum(k == SSN_TRIPLE for k in hit)
             fps.append({"script": s.sid, "text": t[a:b], "context": _line_at(t, a),
                         "kind": "over-wide mask" if own else "false positive",
                         "leftover": "".join(t[k] for k in left),
-                        "distractor": hit[0].kind if hit else None, "class": cls})
+                        "distractor": hit[0] if hit else None, "distractors": hit, "class": cls})
     gate_cls = _gate_classes(classes, model)
-    n = sum(by_class[c]["n"] for c in gate_cls)
-    secret_recall = sum(by_class[c]["masked"] for c in gate_cls) / n if n else None
+    secret_recall, n, shape = _cued_recall(records, gate_cls)
+    gated = [f for f in fps if not _tradeoff(f)]
     total = sum(d["n"] for d in by_class.values())
-    no_evidence = [] if n else [f"no secret-class item ({','.join(gate_cls)}) in these scripts"]
+    no_evidence = [] if n else [f"no cued secret-class item ({','.join(gate_cls)}) in these scripts"]
     return {
         "mode": "text", "model": model, "classes": list(classes), "scripts": len(scripts),
         "items": total,
@@ -231,15 +255,15 @@ def score_text(scripts: list[Script], masked: dict[str, str], classes, *, model:
         "by_class": {c: {**d, "recall": _ratio(d)} for c, d in by_class.items()},
         "by_cue": {c: {**d, "recall": _ratio(d)} for c, d in by_cue.items()},
         "distractors": sum(len(s.distractors) for s in scripts),
-        "distractors_damaged": damaged,
+        "distractors_damaged": damaged, "ssn_shaped_triples": triples,
+        "shape_only": shape,
         "placeholders": {c: {"found": placeholders[c], "expected": expected[c]} for c in classes},
         "misses": misses, "false_positives": fps,
-        "gate": {"ok": not no_evidence and damaged == 0 and not fps
-                 and secret_recall >= RECALL_GATE,
-                 "secret_classes": gate_cls,
+        "gate": {"ok": not no_evidence and not gated and secret_recall >= RECALL_GATE,
+                 "rule": GATE_RULE, "secret_classes": gate_cls,
                  "secret_recall": None if secret_recall is None else round(secret_recall, 3),
-                 "distractors_damaged": damaged, "false_positives": len(fps),
-                 "no_evidence": no_evidence},
+                 "distractors_damaged": damaged, "false_positives": len(gated),
+                 "ssn_shaped_triples": triples, "no_evidence": no_evidence},
     }
 
 
@@ -254,20 +278,24 @@ def _table(title: str, rows: dict) -> list[str]:
 def _gate_line(g: dict, extra: str = "") -> str:
     rec = "-" if g["secret_recall"] is None else f"{g['secret_recall']:.3f}"
     why = f"; NO EVIDENCE: {'; '.join(g['no_evidence'])}" if g["no_evidence"] else ""
-    return (f"gate: {'ok' if g['ok'] else 'FAIL'} — secret recall {rec} over "
+    return (f"gate: {'ok' if g['ok'] else 'FAIL'} — cued secret recall {rec} over "
             f"{','.join(g['secret_classes'])} (needs >= {RECALL_GATE}), distractors damaged "
-            f"{g['distractors_damaged']}, false positives {g['false_positives']} (need 0){extra}{why}")
+            f"{g['distractors_damaged']}, false positives {g['false_positives']} (need 0; "
+            f"ssn-shaped triples damaged {g['ssn_shaped_triples']}, not gated){extra}{why}")
 
 
 def print_text_report(r: dict) -> None:
     print(f"\n== text: {r['scripts']} scripts, {r['items']} items, model={'yes' if r['model'] else 'no'}, "
           f"classes={','.join(r['classes'])}")
+    print(GATE_RULE)
     print("An item counts as masked only when every letter and digit of it is under a placeholder.")
     print("\n".join(_table("class", r["by_class"])))
     print("\n".join(_table("cue placement", r["by_cue"])))
+    print("\n".join(_table("secret, no cue", {"no cue — shape only": r["shape_only"]})))
     ph = ", ".join(f"[{c.upper()}] {d['found']}/{d['expected']}" for c, d in r["placeholders"].items())
     print(f"placeholders found/expected: {ph}")
     print(f"distractors damaged: {r['distractors_damaged']} of {r['distractors']}")
+    print(f"ssn-shaped triples damaged: {r['ssn_shaped_triples']} (known trade-off, not gated)")
     for m in r["misses"]:
         print(f"  MISS {m['script']} {m['class']}/{m['kind']} cue={m['cue']} style={m['style']} "
               f"({m['result']}): {m['context']}")
@@ -537,6 +565,7 @@ def aggregate_calls(results: list[dict], classes, *, model: bool = True) -> dict
     gate_cls = _gate_classes(classes, model)
     secret_total = secret_untranscribed = 0
     untranscribed_secrets = []
+    records, garbled_records = [], []
     for res in results:
         for i in res["items"]:
             if i["class"] not in classes:
@@ -548,6 +577,7 @@ def aggregate_calls(results: list[dict], classes, *, model: bool = True) -> dict
                 row = garbled_rows[i["class"]]
                 row["n"] += 1
                 row["masked"] += bool(i["masked"])
+                garbled_records.append((i["class"], i["cue"], bool(i["masked"])))
                 if i["class"] in gate_cls:
                     secret_untranscribed += 1
                     untranscribed_secrets.append(f"{res['script']}:{i['class']}")
@@ -558,24 +588,25 @@ def aggregate_calls(results: list[dict], classes, *, model: bool = True) -> dict
             for d in (by_class[i["class"]], by_cue[i["cue"]]):
                 d["n"] += 1
                 d["masked"] += bool(i["masked"])
+            records.append((i["class"], i["cue"], bool(i["masked"])))
             if not i["masked"]:
                 misses.append({"script": res["script"], **{k: i[k] for k in
                                ("class", "kind", "style", "cue", "spoken", "heard", "result")}})
     fps = [f for r in results for f in r["false_positives"]]
-    damaged = [f for f in fps if f.get("distractor")]
+    triples = [f for f in fps if _tradeoff(f)]
+    gated = [f for f in fps if not _tradeoff(f)]
+    damaged = [f for f in gated if f.get("distractor")]
     audio_fail = [f for r in results for f in r["audio_failures"]]
     fulls = [r["full"] for r in results if "full" in r]
-    n = sum(by_class[c]["n"] for c in gate_cls)
-    secret_recall = sum(by_class[c]["masked"] for c in gate_cls) / n if n else None
-    gn = sum(garbled_rows[c]["n"] for c in gate_cls)
-    garbled_recall = sum(garbled_rows[c]["masked"] for c in gate_cls) / gn if gn else None
+    secret_recall, n, shape = _cued_recall(records, gate_cls)
+    garbled_recall, _, garbled_shape = _cued_recall(garbled_records, gate_cls)
     no_evidence = []
     if not n:
-        no_evidence.append("no secret-class item was transcribed")
+        no_evidence.append("no cued secret-class item was transcribed")
     if secret_total and secret_untranscribed > secret_total / 2:
         no_evidence.append(f"{secret_untranscribed} of {secret_total} secret items not transcribed: "
                            + ", ".join(untranscribed_secrets))
-    ok = (not no_evidence and not fps and secret_recall >= RECALL_GATE
+    ok = (not no_evidence and not gated and secret_recall >= RECALL_GATE
           and (garbled_recall is None or garbled_recall >= GARBLED_GATE)
           and not audio_fail and all(f["ok"] for f in fulls))
     return {
@@ -585,16 +616,18 @@ def aggregate_calls(results: list[dict], classes, *, model: bool = True) -> dict
         "garbled": {c: {**d, "recall": _ratio(d)} for c, d in garbled_rows.items()},
         "not_transcribed": not_transcribed, "misses": misses, "remnants": remnants,
         "false_positives": fps, "distractors_damaged": len(damaged),
+        "ssn_shaped_triples": len(triples), "shape_only": shape, "garbled_shape_only": garbled_shape,
         "garbled_masked": [g for r in results for g in r.get("garbled_masked", [])],
         "audio_failures": audio_fail,
         "renderings": [x for r in results for x in r["renderings"]],
         "full": fulls,
         "partial": {r["script"]: r["reasons"] for r in results if r.get("reasons")},
         "seconds": round(sum(r.get("seconds", 0) for r in results), 1),
-        "gate": {"ok": ok, "secret_classes": gate_cls,
+        "gate": {"ok": ok, "rule": GATE_RULE, "secret_classes": gate_cls,
                  "secret_recall": None if secret_recall is None else round(secret_recall, 3),
                  "garbled_secret_recall": None if garbled_recall is None else round(garbled_recall, 3),
-                 "distractors_damaged": len(damaged), "false_positives": len(fps),
+                 "distractors_damaged": len(damaged), "false_positives": len(gated),
+                 "ssn_shaped_triples": len(triples),
                  "audio_failures": len(audio_fail),
                  "full_failures": sum(not f["ok"] for f in fulls), "no_evidence": no_evidence},
     }
@@ -603,6 +636,7 @@ def aggregate_calls(results: list[dict], classes, *, model: bool = True) -> dict
 def print_calls_report(r: dict) -> None:
     print(f"\n== calls: {r['scripts']} scripts, model={'yes' if r['model'] else 'no'}, "
           f"classes={','.join(r['classes'])}, {r['seconds']}s of work")
+    print(GATE_RULE)
     print("How Parakeet wrote each spoken form:")
     print(f"  {'script':<7}{'class':<9}{'style':<12}{'form':<8}spoken -> heard")
     for x in r["renderings"]:
@@ -615,6 +649,8 @@ def print_calls_report(r: dict) -> None:
     print(f"Not transcribed verbatim ({r['not_transcribed']}); masked = no readable remnant "
           f"(>= 4 digits, >= 5 letters, or a fuzzy match >= 0.6) left in the masked text:")
     print("\n".join(_table("garbled", r["garbled"])))
+    print("\n".join(_table("secret, no cue", {"no cue — shape only": r["shape_only"],
+                                               "garbled, no cue": r["garbled_shape_only"]})))
     for m in r["misses"]:
         print(f"  MISS {m['script']} {m['class']}/{m['kind']} cue={m['cue']} ({m['result']}): "
               f"heard {m['heard']!r}")
@@ -626,7 +662,8 @@ def print_calls_report(r: dict) -> None:
         print(f"  FALSE POSITIVE {f['script']} [{f['class'].upper()}] {f['kind']} over {where}: "
               f"{f['text']!r} (unexplained: {f['leftover']!r}) in {f['context']}")
     print(f"false positives: {len(r['false_positives'])}; distractors damaged: "
-          f"{r['distractors_damaged']}")
+          f"{r['distractors_damaged']}; ssn-shaped triples damaged: {r['ssn_shaped_triples']} "
+          "(known trade-off, not gated)")
     for g in r["garbled_masked"]:
         print(f"  masked a garbled value {g['script']}: {g['text']!r}")
     for f in r["audio_failures"]:
