@@ -18,3 +18,4 @@ are the history. Past ~20 items is a signal about scope, not a reason for headin
 - [ ] Masking leaves alone the titles and file names of recordings filed before it, and live captions (on screen only, never saved).
 - [ ] Owner to decide after living with it: keep or switch off the cue-free spaced 3-2-4 SSN shape (`pii_detect.SSN_SPACED_CUE_FREE`).
 - [ ] `slim mask` does not reach saved chats or the copilot's pre-edit copies under the data dir; mask or purge them.
+- [ ] A listed answer given in another order than asked binds by position: "zip and account number?" ⏎ "48213377 and 10001" masks the zip and leaves the account.
