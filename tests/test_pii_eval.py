@@ -975,6 +975,58 @@ def test_audio_is_checked_in_the_items_own_turn_and_gated_on_cued_items(tmp_path
     assert not report["gate"]["ok"] and report["headline"]["audio"] == [0, 1]
 
 
+S26 = next(x for x in SCRIPTS if x.sid == "s26")
+S26_RAW = ("**Me:** Okay.\n\n**Them:** Vandrel.corvainat example.org. That's my email.\n\n"
+           "**Me:** I saw it on example.org.")
+
+
+def _s26(tmp_path, masked):
+    email = next(i for i in S26.items if i.cls == "email")
+    mini = ev_gen.Script("s26", [("Me", "Okay."), ("Them", f"{email.spoken}, that's my email."),
+                                 ("Me", "I saw it on example.org.")], [email], [], S26.transcript)
+    return _call(mini, S26_RAW, masked, masked, tmp_path)
+
+
+def test_an_emails_own_value_includes_its_domain(tmp_path):
+    # s26 as the transcriber wrote it: " at " glued into the local part; the whole address masked
+    res = _s26(tmp_path, S26_RAW.replace("Vandrel.corvainat example.org", "[EMAIL]"))
+    assert res["items"][0]["result"] == "masked" and not res["false_positives"]
+
+
+def test_an_email_mask_past_its_sentence_is_still_over_wide(tmp_path):
+    res = _s26(tmp_path, S26_RAW.replace("Vandrel.corvainat example.org. That's my email", "[EMAIL]"))
+    fp = res["false_positives"]
+    assert fp and fp[0]["kind"] == "over-wide mask" and fp[0]["leftover"] == "Thatsmyemail"
+
+
+def test_another_lines_domain_is_still_a_false_positive(tmp_path):
+    masked = S26_RAW.replace("Vandrel.corvainat example.org", "[EMAIL]").replace(
+        "on example.org", "on [EMAIL]")
+    res = _s26(tmp_path, masked)
+    assert [f["leftover"] for f in res["false_positives"]] == ["exampleorg"]
+
+
+@pytest.mark.parametrize("value", ["email", "address"])
+def test_own_value_spans_the_whole_address(value):
+    if value == "email":
+        item = next(i for i in S26.items if i.cls == "email")
+        for raw, whole in [("It's vandrel@example.org. Thanks.", "vandrel@example.org"),
+                           ("It's vandrel at example dot org, thanks.", "vandrel at example dot org"),
+                           ("It's vandrelat example.org, thanks.", "vandrelat example.org"),
+                           ("It's vandrelatexample.org, thanks.", "vandrelatexample.org")]:
+            a = raw.lower().index("vandrel")
+            x, y = ev_score.rendered_span(item, raw, (a, a + 7))
+            assert raw[x:y].rstrip(".,") == whole, raw         # punctuation never counts
+    else:
+        addr = ev_gen.Item("address", "address", "9938 Varnholt Road, 54092",
+                           "ninety nine thirty eight Varnholt Road, five four oh nine two",
+                           "Varnholt", "grouped", "same_sentence", "Them", 0, 0)
+        raw = "**Them:** I live at 9938 Varnholt Road. 54092. Thanks."
+        a = raw.index("Varnholt")
+        x, y = ev_score.rendered_span(addr, raw, (a, a + 8))
+        assert raw[x:y].rstrip(".") == "9938 Varnholt Road. 54092"
+
+
 def test_check_full_and_full_runner_with_fakes(tmp_path):
     import sqlite3
     from types import SimpleNamespace

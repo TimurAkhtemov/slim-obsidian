@@ -413,7 +413,40 @@ def rendered_span(item: Item, raw: str, span: tuple[int, int]) -> tuple[int, int
             if lo - k >= 0 and joinable(lo - k, lo) and reads(lo - k, hi):
                 lo, grown = lo - k, True
                 break
-    return min(a, words[lo][0]), max(b, words[hi][1])
+    return own_value(item, raw, (min(a, words[lo][0]), max(b, words[hi][1])))
+
+
+_TLD = r"(?:com|org|net|edu|gov|io|co|uk|de|ca|me|info)"
+# The rest of an address after the part already found: the glued or separate "at"/"@", and the
+# domain with its TLD, written ("example.org") or spoken ("example dot org").
+_EMAIL_TAIL = re.compile(rf"[\w.+-]*?(?:[ \t]*@[ \t]*|[ \t]+at[ \t]+|[ \t]+)?"
+                         rf"(?:[A-Za-z0-9-]+(?:\.|[ \t]+dot[ \t]+))+{_TLD}\b", re.I)
+_STREET = r"(?:Street|St|Avenue|Ave|Road|Rd|Lane|Ln|Drive|Dr|Court|Ct|Boulevard|Blvd|Way|Place|Pl)"
+_ADDRESS_HEAD = re.compile(r"\d[\d ]*\s+$")
+_ADDRESS_TAIL = re.compile(rf"(?:[ \t]+{_STREET}\b\.?)?(?:,?[ \t]*(?:apartment|apt|suite|unit)\.?"
+                           rf"[ \t]+\w+)?(?:[,.]?[ \t]*\d{{5}}\b)?", re.I)
+
+
+def own_value(item: Item, raw: str, span: tuple[int, int]) -> tuple[int, int]:
+    """One notion of an item's own value, for emails and addresses: an email is the whole
+    address (local part, "at" or "@", domain and TLD, in written, spoken or glued renderings:
+    "x@example.org", "x at example dot org", "Vandrel.corvainat example.org"); an address runs
+    from its house number through street, apartment and ZIP, a period inside it included.
+    Never across a turn, and an email never past the end of its sentence."""
+    a, b = span
+    line_start = max(raw.rfind("\n\n", 0, a) + 2, raw.rfind(":**", 0, a) + 3, 0)
+    if item.cls == "email" and raw[b - 1:b] not in (".", "?", "!"):
+        m = _EMAIL_TAIL.match(raw, b)
+        if m and "\n" not in m.group():
+            b = m.end()
+    elif item.cls == "address":
+        head = _ADDRESS_HEAD.search(raw, line_start, a)
+        if head:
+            a = head.start()
+        m = _ADDRESS_TAIL.match(raw, b)
+        if m and m.group() and "\n" not in m.group():
+            b = m.end()
+    return a, b
 
 
 _PIECE_CUT = re.compile(r"(?<=[.?!])\s|\n\n|\*\*[^*\n]+:\*\*")
