@@ -1,3 +1,5 @@
+import pytest
+
 from slim.capture import pii
 
 
@@ -544,7 +546,7 @@ def test_cued_account_digits():
               "number.").text == "**Them:** [ACCOUNT], that's the account number."
     assert _m("My routing number is 011000028.").text == "My routing number is [ACCOUNT]."
     assert _m("acct no. 1234-5678-900").counts == {"account": 1}
-    _same("acct no. 1234-5678-90")                    # a 2-digit group never binds as an account
+    assert _m("acct no. 1234-5678-90").counts == {"account": 1}   # one short end group, dash-read
     _same("account number " + "x" * 60 + " 865047")
     _same("account number is 12345")                                      # under 6 digits
 
@@ -843,6 +845,11 @@ def test_phone_bound_shapes():
         assert _m(t, PHONE).counts == {}, t
 
 
+@pytest.mark.xfail(strict=True, reason="pending a ruling: an earlier ruling keeps this bound, Q2(a) does not")
+def test_cue_under_a_preposition_directly_before_the_number():
+    assert _m("on my account 80608689949").text == "on my account [ACCOUNT]"
+
+
 def test_bound_account_shapes():
     # ruling on fix-1: "was" is not filler; bound accounts are contiguous, 2-5 groups of 3+
     # digits, or the 2-2-2 sort code
@@ -856,7 +863,6 @@ def test_bound_account_shapes():
                     ("sort code 12-34-56", "sort code [ACCOUNT]"),
                     ("sort code 12 34 56", "sort code [ACCOUNT]"),
                     ("account number 1234 5678", "account number [ACCOUNT]"),
-                    ("on my account 80608689949", "on my account [ACCOUNT]"),
                     ("80608689949, was the account number", "[ACCOUNT], was the account number")):
         assert _m(t).text == want, t
 
@@ -1027,3 +1033,175 @@ def test_best_or_good_asks_only_for_a_phone():
     _same(t)                                                  # phone off: left, never [ACCOUNT]
     assert _answer(_q("Is this a good cell to reach you?", "Yes, 4155550134."), PHONE) == "**Me:** Yes, [PHONE]."
     _same(_q("What's the best account to use?", "Okay. 12345678."))
+
+
+# --- fix round 3 -------------------------------------------------------------------------------
+
+def test_a_bound_value_stops_when_it_is_complete():
+    for t, want in (
+        ("My account number is 4952859575, 891 dollars was charged.",
+         "My account number is [ACCOUNT], 891 dollars was charged."),
+        ("The routing number is 011000028, 766 dollars went to the wrong place.",
+         "The routing number is [ACCOUNT], 766 dollars went to the wrong place."),
+        ("Account number 2363263423, 1992 is the year I opened it.",
+         "Account number [ACCOUNT], 1992 is the year I opened it."),
+        ("My account number is 12345678, 2024 was when I opened it.",
+         "My account number is [ACCOUNT], 2024 was when I opened it."),
+        ("My card is 4111 1111 1111 1112, 123", "My card is [CARD], 123"),
+        ("My account number is 12345678, 300 people use it.", "My account number is [ACCOUNT], 300 people use it."),
+        ("card number 4242, 7844, 6476, 8778", "card number [CARD]"),
+        ("card number 3782, 332494, 74751", "card number [CARD]"),
+        ("my social is 692, 87, 1253", "my social is [SSN]"),
+        ("account number 1234, 5678", "account number [ACCOUNT]"),
+    ):
+        assert _m(t).text == want, t
+    _same("My account number is 12345678 dollars.")
+
+
+def test_a_cue_under_a_preposition_is_not_the_subject():
+    for t in ("The phone number on the account is 4155550134.", "My cell on my account is 4155550134.",
+              "Your claim number on the account is 20417733.", "The policy number for the account is 88213345.",
+              "The tracking number they sent to my account is 1Z999AA10123456784.",
+              _q("Can I get your employee ID for the account?", "It's 20417733."),
+              "My claim account number is 20417733."):
+        _same(t)
+    assert _m("Put it on my visa, 4111 1111 1111 1112.").counts == {"card": 1}     # cards are exempt
+    assert _answer(_q("What's the number on your card?", "5425 2334 3010 9904.")) == "**Me:** [CARD]."
+    assert _m("My account number on file is 12345678, can you check it?").counts == {"account": 1}
+
+
+def test_two_cue_nouns_of_different_classes_bind_in_order():
+    t = _q("Can I get a callback number and your account number?", "4155550134 and 12345678.")
+    assert _answer(t) == "**Me:** 4155550134 and [ACCOUNT]."
+    assert _answer(t, PHONE) == "**Me:** [PHONE] and [ACCOUNT]."
+
+
+def test_ssn_last_four_asked_as_a_question():
+    assert _answer(_q("Can I get the last four of your social to verify?", "Yeah, it's 4471.")) \
+        == "**Me:** Yeah, it's [SSN]."
+    assert _answer(_q("Last four of your social?", "6789.")) == "**Me:** [SSN]."
+    for t in (_q("Last four of your social?", "4471 dollars."), _q("Last four of your social?", "44712."),
+              _q("Last four of your card?", "4471."), _q("Last four of your social?", "Hm.\n\n**Them:** 4471.")):
+        _same(t)
+
+
+def test_account_with_one_short_edge_group():
+    for t in ("the account number is 7731 2209 54.", "Okay so the account number is, um, let me look, 66 2049 1183.",
+              "account number 66-2049-1183"):
+        assert _m(t).counts == {"account": 1}, t
+    for t in ("account number 12 2049 11", "account number 7731 22 2209", "Routing was 675, 86, 415, 4, 643 packets"):
+        _same(t)
+
+
+def test_only_a_dashed_zip4_is_vetoed():
+    assert _m("My account number is 12345 6789.").text == "My account number is [ACCOUNT]."
+    _same("My account number is 12345-6789.")
+
+
+def test_money_phrases_are_units():
+    for t in ("My IBAN is well, 935 891 in the red.", "My account number is 12345678 overdrawn.",
+              "My account is 12345678 over the limit.", "My social is 12345678 in the black."):
+        _same(t)
+
+
+# Realistic two-speaker service-call exchanges (synthetic). `secrets` must be gone, `ordinary`
+# must survive; a password secret is named by a stub that returns it when its window holds it.
+
+def _call(*turns):
+    return "\n\n".join(f"{'**Me:**' if who == 'M' else '**Them:**'} {say}" for who, say in turns)
+
+
+_REAL_SECRET = [
+ ("s01", "bank", _call(("T", "Can I get the last four of your social to verify?"), ("M", "Yeah, it's 4471.")), ["4471"], []),
+ ("s02", "bank", _call(("T", "For verification, what's your social security number?"), ("M", "Sure, it's 512-44-8270.")), ["512-44-8270"], []),
+ ("s03", "bank", _call(("T", "And your social?"), ("M", "Um, 512 44 8270.")), ["512 44 8270"], []),
+ ("s04", "bank", _call(("M", "Hi, I want to check a deposit. My account number is 004417726315."), ("T", "Thanks, one moment.")), ["004417726315"], []),
+ ("s05", "bank", _call(("T", "What's the account number?"), ("M", "Okay, let me find it. It's 3 3 0 1 9 8 4 4 2.")), ["3 3 0 1 9 8 4 4 2"], []),
+ ("s06", "bank", _call(("T", "Can you read me the routing number and the account number?"), ("M", "Routing is 021000021, and the account is 483920175.")), ["021000021", "483920175"], []),
+ ("s07", "bank", _call(("M", "I'm setting up direct deposit. The routing number is 121000358 and the account number is 7731 2209 54.")), ["121000358", "7731 2209 54"], []),
+ ("s08", "online order", _call(("T", "Which card would you like to use?"), ("M", "The Visa. 4532 7153 3790 4122.")), ["4532 7153 3790 4122"], []),
+ ("s09", "online order", _call(("T", "Go ahead with the card number when you're ready."), ("M", "4024 0071 5336 0887, expiration 08 27, and the code on the back is 319.")), ["4024 0071 5336 0887"], []),
+ ("s10", "insurer", _call(("T", "How would you like to pay the premium?"), ("M", "Credit card. The number is 5425 2334 3010 9903.")), ["5425 2334 3010 9903"], []),
+ ("s11", "insurer", _call(("M", "My card number is 3782 822463 10005, it's an Amex."),), ["3782 822463 10005"], []),
+ ("s12", "IT help desk", _call(("T", "What's the temporary password I gave you?"), ("M", "It's Bluefin42.")), ["Bluefin42"], []),
+ ("s13", "colleague login", _call(("M", "Can you send me the login for the analytics dashboard?"), ("T", "Sure, username is reports, password is Harbor2024!")), ["Harbor2024!"], []),
+ ("s14", "colleague login", _call(("T", "The wifi password is greenteapot77."), ("M", "Got it, thanks.")), ["greenteapot77"], []),
+ ("s15", "bank", _call(("M", "My social is 078-05-1120, and my date of birth is 03/14/1985.")), ["078-05-1120"], ["03/14/1985"]),
+ ("s16", "doctor's office", _call(("T", "Can I have your social security number for the file?"), ("M", "Yeah. 219 09 9999.")), ["219 09 9999"], []),
+ ("s17", "bank", _call(("T", "And what's the card number on the account?"), ("M", "5105 1051 0510 5100.")), ["5105 1051 0510 5100"], []),
+ ("s18", "landlord", _call(("T", "For the rent, just send it to my account. The sort code is 20-32-06 and the account number is 73849201.")), ["20-32-06", "73849201"], []),
+ ("s19", "bank", _call(("T", "Can you confirm your full account number?"), ("M", "Yes, so it's 9876543210.")), ["9876543210"], []),
+ ("s20", "online order", _call(("M", "I'll pay with my debit card, 4111 1111 1111 1111, the expiry is 12 26.")), ["4111 1111 1111 1111"], ["12 26"]),
+ ("s21", "IT help desk", _call(("T", "I've reset it. Your new password is Tango-Lima-88."), ("M", "Okay.")), ["Tango-Lima-88"], []),
+ ("s22", "bank", _call(("T", "What's your SSN?"), ("M", "It's 123456789.")), ["123456789"], []),
+ ("s23", "bank", _call(("M", "My account number is 12345678, 300 dollars came out of it yesterday that I didn't authorize.")), ["12345678"], ["300"]),
+ ("s24", "insurer", _call(("T", "Can I get the card number?"), ("M", "Yeah, hold on. Okay, 4916 3385 0608 2832.")), ["4916 3385 0608 2832"], []),
+ ("s25", "bank", _call(("T", "What's the IBAN?"), ("M", "GB29 NWBK 6016 1331 9268 19.")), ["GB29 NWBK 6016 1331 9268 19"], []),
+ ("s26", "bank", _call(("M", "I need to update the direct deposit. New account, 556677889900.")), ["556677889900"], []),
+ ("s27", "doctor's office", _call(("T", "Last four of your social?"), ("M", "6789.")), ["6789"], []),
+ ("s28", "bank", _call(("M", "Okay so the account number is, um, let me look, 66 2049 1183.")), ["66 2049 1183"], []),
+ ("s29", "online order", _call(("T", "And the security code?"), ("M", "It's 742.")), ["742"], []),
+ ("s31", "online order", _call(("T", "Go ahead with the card number when you're ready."), ("M", "4024 0071 5336 0885.")), ["4024 0071 5336 0885"], []),
+ ("s32", "bank", _call(("T", "What's the number on your card?"), ("M", "5425 2334 3010 9904.")), ["5425 2334 3010 9904"], []),
+ ("s33", "bank", _call(("M", "My account number on file is 12345678, can you check it?")), ["12345678"], []),
+ ("s34", "bank", _call(("T", "What's the account number for the savings?"), ("M", "It's 40021887.")), ["40021887"], []),
+ ("s35", "bank", _call(("T", "Can I get your social, please?"), ("M", "Yes. It's 512 44 8270.")), ["512 44 8270"], []),
+ ("s30", "bank", _call(("T", "Please read the card number."), ("M", "Sure, 4532015112830366, expiration 09/29.")), ["4532015112830366"], ["09/29"]),
+]
+
+# ---- exchanges with ORDINARY numbers only ----
+_REAL_ORDINARY = [
+ ("o01", "bank", _call(("T", "Can I get your date of birth for the account?"), ("M", "Sure, 04 12 1979.")), [], ["04 12 1979"]),
+ ("o02", "bank", _call(("T", "What's the phone number on the account?"), ("M", "It's 4155550134.")), [], ["4155550134"]),
+ ("o03", "bank", _call(("M", "The phone number on my account is 4155550134, but that's my old cell.")), [], ["4155550134"]),
+ ("o04", "bank", _call(("T", "Your account balance is 2,450.17 as of today."), ("M", "Okay.")), [], ["2,450.17"]),
+ ("o05", "bank", _call(("T", "Your account ending in 4471 was charged 129.99 on the 14th."), ("M", "Right.")), [], ["4471", "129.99"]),
+ ("o06", "insurer", _call(("T", "Your claim number on the account is 2024118833."), ("M", "Got it.")), [], ["2024118833"]),
+ ("o07", "insurer", _call(("T", "What's your policy number?"), ("M", "It's 44718293.")), [], ["44718293"]),
+ ("o08", "insurer", _call(("T", "The policy number for the account is 88210043."), ("M", "Okay, thank you.")), [], ["88210043"]),
+ ("o09", "doctor's office", _call(("T", "We have you for Tuesday at 2 30. Can I confirm your date of birth?"), ("M", "Yes, 11/02/1990.")), [], ["2 30", "11/02/1990"]),
+ ("o10", "doctor's office", _call(("T", "What's the best number to reach you?"), ("M", "6175550192.")), [], ["6175550192"]),
+ ("o11", "doctor's office", _call(("T", "Your copay is 35 dollars and the account is all set."), ("M", "Great.")), [], ["35"]),
+ ("o12", "online order", _call(("T", "What's the order number?"), ("M", "It's 113-4827756-2290318.")), [], ["113-4827756-2290318"]),
+ ("o13", "online order", _call(("T", "I see the card on file was charged 84.50. Your order number is 30041177."), ("M", "Okay.")), [], ["84.50", "30041177"]),
+ ("o14", "online order", _call(("T", "What's the zip code on the card?"), ("M", "02139.")), [], ["02139"]),
+ ("o15", "online order", _call(("T", "Can I get the billing zip for the card?"), ("M", "Yeah, 94110-2203.")), [], ["94110-2203"]),
+ ("o16", "online order", _call(("M", "The tracking number they sent to my account is 1Z999AA10123456784.")), [], ["1Z999AA10123456784"]),
+ ("o17", "IT help desk", _call(("T", "What's your ticket number?"), ("M", "It's 4471023.")), [], ["4471023"]),
+ ("o18", "IT help desk", _call(("T", "Your account is locked. I'll call you back at extension 4417."), ("M", "Sure.")), [], ["4417"]),
+ ("o19", "IT help desk", _call(("T", "Which account is it?"), ("M", "My work one, the one I've had since 2019.")), [], ["2019"]),
+ ("o20", "landlord", _call(("T", "Rent is 1850 a month, due on the 1st. The account stays the same."), ("M", "Okay.")), [], ["1850"]),
+ ("o21", "landlord", _call(("M", "I'm at 42 Elm Court, unit 3B. My account with the building is under my wife's name.")), [], []),
+ ("o22", "bank", _call(("T", "Your social security deposit of 1,847 came in on 11/03."), ("M", "Good.")), [], ["1,847", "11/03"]),
+ ("o23", "bank", _call(("T", "What's the best phone number for the account?"), ("M", "415 555 0134.")), [], ["415 555 0134"]),
+ ("o24", "bank", _call(("M", "My cell on the account is 6175550192.")), [], ["6175550192"]),
+ ("o25", "insurer", _call(("T", "What's the case number on the account?"), ("M", "It's 5512908.")), [], ["5512908"]),
+ ("o26", "bank", _call(("T", "When did you open the account?"), ("M", "Back in 2014, March 2014.")), [], ["2014"]),
+ ("o27", "bank", _call(("T", "How much was the card charge?"), ("M", "It was 1,240 dollars, on the 9th.")), [], ["1,240"]),
+ ("o28", "doctor's office", _call(("T", "The office number is 6175550100, extension 22. Bring your insurance card."), ("M", "Okay.")), [], ["6175550100"]),
+ ("o29", "bank", _call(("T", "Your account number? Actually, never mind, I have it. Your callback number is 6175550192?"), ("M", "Yes.")), [], ["6175550192"]),
+ ("o30", "IT help desk", _call(("T", "Can I get your employee ID for the account?"), ("M", "It's 20417733.")), [], ["20417733"]),
+ ("o31", "bank", _call(("T", "What's the reference number for the transfer to your account?"), ("M", "It's 77120045.")), [], ["77120045"]),
+ ("o32", "bank", _call(("M", "My account was opened 03 2015, and the reference for the dispute is 99012345.")), [], ["99012345"]),
+]
+
+# Accepted misses: no question binds them and no shape is free.
+_REAL_ACCEPTED = {
+    "s05": "read digit by digit: nine one-digit groups are no account shape",
+    "s31": "\"Go ahead with the card number\" is not a question, and the number fails Luhn",
+}
+_REAL_PASSWORDS = ["Bluefin42", "Harbor2024!", "greenteapot77", "Tango-Lima-88", "742"]
+
+
+@pytest.mark.parametrize("cid,text,secrets,ordinary", [
+    pytest.param(cid, text, secrets, ordinary, id=cid,
+                 marks=[pytest.mark.xfail(strict=True, reason=_REAL_ACCEPTED[cid])] if cid in _REAL_ACCEPTED else [])
+    for cid, _, text, secrets, ordinary in _REAL_SECRET + _REAL_ORDINARY
+])
+def test_realistic_exchange(cid, text, secrets, ordinary):
+    stub = lambda w: next((p for p in _REAL_PASSWORDS if p in w), None)   # noqa: E731
+    m = pii.mask(text, classes=CLS, find_password=stub)
+    assert [s for s in secrets if s in m.text] == []
+    assert [o for o in ordinary if o not in m.text] == []
+    if not secrets:
+        assert [h for h in pii.find(text, CLS) if h.cls != "address"] == []

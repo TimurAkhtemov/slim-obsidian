@@ -28,13 +28,16 @@ _TURN_START = re.compile(r"\*\*[^*\n]+:\*\*")
 # P6). A value bound to a phone cue is a phone number and never another class (P2).
 
 # Cue nouns per class, longest first, matched word-bounded on the whole text.
+_CARD_NAMES = "credit card|debit card|card|visa|mastercard|amex|american express"
+# "the number on your card" asks for the card number, not a phone number
+_NUMBER_ON_CARD = rf"number on (?:my|your|his|her|their|our|the) (?:{_CARD_NAMES})"
 _CUE_NOUNS = {
     "ssn": "social security number|social security|social|ssn",
-    "card": "credit card number|debit card number|card number|credit card|debit card|card|visa|mastercard|"
-            "amex|american express",
+    "card": f"{_NUMBER_ON_CARD}|credit card number|debit card number|card number|{_CARD_NAMES}",
     "account": "routing number|routing|account number|account no|account|acct|iban|bban|sort code",
     "iban": "iban",
-    "phone": "phone number|phone|cell|mobile|callback|call back|best number|good number|number for|number on",
+    "phone": f"phone number|phone|cell|mobile|callback|call back|best number|good number|number for|"
+             f"number on(?! (?:my|your|his|her|their|our|the) (?:{_CARD_NAMES})\\b)",
 }
 _CUE = {c: re.compile(rf"\b(?:{nouns})\b", re.I) for c, nouns in _CUE_NOUNS.items()}
 _POSSESSIVE = "my|your|his|her|their|our|the"
@@ -54,7 +57,7 @@ _FILLER = frozenset(
 # matched on the ORIGINAL text, so "one moment" is not read as a number (m2)
 _FILLER_PHRASES = re.compile(
     r"\b(?:let me see|let me check|let me look|let me find it|hold on|just a second|just a sec|just a moment|"
-    r"give me a second|bear with me|one second|one moment)\b", re.I)
+    r"give me a second|bear with me|one second|one moment|on file)\b", re.I)
 
 
 def _gap_ok(gap: str) -> bool:
@@ -80,14 +83,34 @@ _ASK_LEAD = {
     for c in _CUE_NOUNS
 }   # "the best phone number": best|good only before a phone cue (ruling on P2b vs P6(i))
 _COORDINATED = re.compile(r"\s*(?:,|and|or|, and|, or)\s*")
-_OTHER_THINGS = (
-    "order|confirmation|tracking|ticket|invoice|reference|ref|claim|case|policy|zip|postal|amount|balance|"
-    "total|price|cost|date|year|years|birthday|born|expiry|expiration|how much|how many|when"
-)
-_PHONE_THINGS = "phone|cell|mobile|callback|best number|good number|number for|number on"
-_OTHER = {
-    c: re.compile(rf"\b(?:{_OTHER_THINGS}{'' if c == 'phone' else '|' + _PHONE_THINGS})\b", re.I) for c in _CUE
-}
+# Another thing named before the cue noun in its sentence: "the order number on the account",
+# "your claim account number". Cue nouns themselves are blanked out first, so "a callback number
+# and your account number" still asks for the account.
+_OTHER = re.compile(
+    r"\b(?:order|confirmation|tracking|ticket|invoice|reference|ref|claim|case|policy|zip|postal|amount|"
+    r"balance|total|price|cost|date|year|years|birthday|born|expiry|expiration|how much|how many|when|"
+    r"employee id|member id|customer id|order id|id number|code)\b", re.I)
+# A cue noun that is the object of a preposition is a modifier, not the thing being given: "the
+# phone number on the account", "your employee ID for the account". Cards are exempt: "put it on
+# my visa, …" is how a card number is introduced.
+_UNDER_PREPOSITION = re.compile(
+    r"\b(?:on|for|to|with|from|in|at|about|into|onto|regarding|under|against)\s+"
+    r"(?:(?:your|the|my|his|her|their|our|that|this|a|an)\s+)?"
+    rf"(?:(?:{_ASK_ADJECTIVES})\s+)?$", re.I)
+_PREPOSITION_CLASSES = {"ssn", "account", "iban"}   # the classes a same-sentence cue is checked for
+
+
+def _subject(norm: str, s: int, a: int, cls: str) -> bool:
+    """The cue noun of `cls` at `a`, in the sentence starting at `s`, names the thing being given."""
+    pre = norm[s:a]
+    tail = pre if len(pre) <= 60 else pre[-60:].split(" ", 1)[-1]   # the phrase is short; whole words
+    if cls in _PREPOSITION_CLASSES and _UNDER_PREPOSITION.search(tail):
+        return False
+    if not _OTHER.search(pre):
+        return True
+    for rx in _CUE.values():
+        pre = rx.sub(lambda m: " " * len(m.group()), pre)
+    return not _OTHER.search(pre)
 _SENTENCE_END = re.compile(r"[.?!]+(?=\s|$)")
 
 
@@ -101,7 +124,7 @@ def _asked_cues(norm: str, s: int, e: int) -> list[tuple[int, int, set[str]]]:
     for (a, b), classes in sorted(found.items()):
         pre = norm[s:a]
         coordinated = valid and _COORDINATED.fullmatch(norm[valid[-1][1]:a])
-        asks = {c for c in classes if not _OTHER[c].search(pre)
+        asks = {c for c in classes if _subject(norm, s, a, c)
                 and (not pre.strip() or coordinated or _ASK_LEAD[c].search(pre))}
         if asks:
             valid.append((a, b, asks))
@@ -173,7 +196,7 @@ def _aba_ok(d: str) -> bool:
 
 # --- what a bound value is never (P2, P4) ---
 
-_ZIP4 = re.compile(r"\d{5}[- ]\d{4}")
+_ZIP4 = re.compile(r"\d{5}-\d{4}")   # dashed only: a spaced 5-4 is also how an account is read
 # written as a phone number, with separators: never an SSN or an account number
 _PHONE_SHAPED = re.compile(r"(?:1[ .-]?)?(?:[2-9]\d{2}([ .-])[2-9]\d{2}\1\d{4}|[2-9]\d{2} [2-9]\d{6})")
 
@@ -207,7 +230,15 @@ _LABEL_AFTER = re.compile(
     r"\s*,?\s*(?:is|was|are|were)\s+(?:the|my|a|an|our|your|his|her|their)\s+([^.,!?;\n]*)", re.I)
 _UNIT_AFTER = re.compile(
     r"\s*(?:dollars|bucks|cents|points|percent|years|people|times|views|followers|entries|lookups|packets|"
-    r"users|months|days|hours|minutes|miles|items|units|of them|each|short|strong)\b", re.I)
+    r"users|months|days|hours|minutes|miles|items|units|of them|each|short|strong|in the red|in the black|"
+    r"over the limit|overdrawn)\b", re.I)
+
+
+# The digits that make a complete value of each class: a comma-joined value stops growing there.
+# A card is complete at 15 (an Amex), so "4242, 7844, 6476, 8778" is read whole.
+CARD_COMPLETE = 15
+_SENTENCE_REACH = 300
+_COMPLETE = {"ssn": 7, "card": CARD_COMPLETE, "account": 6, "iban": 6, "phone": 10}
 
 
 class _Scene:
@@ -226,6 +257,7 @@ class _Scene:
         self.labels = [m.span() for m in _TURN_START.finditer(norm)]
         self.label_starts = [a for a, _ in self.labels]
         self._questions: dict[int, list[tuple[int, int, set[str]]]] = {}
+        self._asking: dict[int, list[tuple[int, int]]] = {}
         self.phone_bound = self.bound("phone", _phone_fits)
 
     def orig(self, a: int, b: int) -> str:
@@ -238,27 +270,40 @@ class _Scene:
     def turn_end(self, k: int) -> int:
         return self.labels[k + 1][0] if k + 1 < len(self.labels) else len(self.norm)
 
+    def questions(self, k: int) -> list[tuple[int, int]]:
+        """The sentences of turn k that may ask: its last sentence, or the one before a single
+        trailing sentence, when it ends with "?"."""
+        if k not in self._asking:
+            sents = _sentences(self.norm, max(self.labels[k][1], self.turn_end(k) - 2 * _SENTENCE_REACH),
+                               self.turn_end(k))
+            self._asking[k] = [(s, e) for s, e in sents[-1:] + sents[-2:-1]
+                               if self.norm[s:e].rstrip().endswith("?")]
+        return self._asking[k]
+
     def question(self, k: int) -> list[tuple[int, int, set[str]]]:
-        """The cues that turn k asks for: its last sentence, or the one before it, ends with "?"."""
+        """The cues that turn k asks for."""
         if k not in self._questions:
-            sents = _sentences(self.norm, self.labels[k][1], self.turn_end(k))
-            asked: list[tuple[int, int, set[str]]] = []
-            for s, e in sents[-1:] + sents[-2:-1]:
-                if self.norm[s:e].rstrip().endswith("?"):
-                    asked = _asked_cues(self.norm, s, e)
-                    if asked:
-                        break
-            self._questions[k] = asked
+            self._questions[k] = next(
+                (asked for s, e in self.questions(k) if (asked := _asked_cues(self.norm, s, e))), [])
         return self._questions[k]
 
+    def sentence_of(self, p: int) -> tuple[int, int]:
+        """The sentence holding p, looked for no further than _SENTENCE_REACH either way (a text
+        with no punctuation must not make every lookup read all of it)."""
+        k = self.turn(p)
+        lo = max(self.labels[k][1] if k >= 0 else 0, p - _SENTENCE_REACH)
+        hi = min(self.turn_end(k), p + _SENTENCE_REACH)
+        start = lo
+        for m in _SENTENCE_END.finditer(self.norm, lo, p):
+            start = m.end()
+        end = _SENTENCE_END.search(self.norm, p, hi)
+        start += len(self.norm[start:p]) - len(self.norm[start:p].lstrip())
+        return start, end.end() if end else hi
+
     def asks_for(self, cls: str, cue: tuple[int, int]) -> bool:
-        """The cue at `cue` asks for its thing in its own sentence (P6)."""
-        k = self.turn(cue[0])
-        start = self.labels[k][1] if k >= 0 else 0
-        for a, b in _sentences(self.norm, start, self.turn_end(k)):
-            if a <= cue[0] < b:
-                return any((x, y) == cue and cls in cs for x, y, cs in _asked_cues(self.norm, a, b))
-        return False
+        """The cue at `cue` asks for its thing in its own sentence."""
+        a, b = self.sentence_of(cue[0])
+        return any((x, y) == cue and cls in cs for x, y, cs in _asked_cues(self.norm, a, b))
 
     def before(self, cls: str, a: int) -> bool:
         """Bound by a cue before the value, or by the question the value answers."""
@@ -267,7 +312,11 @@ class _Scene:
             end = ends[j]
             if not _gap_ok(self.orig(end, a)):
                 continue
-            if _TURN_START.search(self.norm, end, a) and not self.asks_for(cls, self.cues[cls][j]):
+            cue = self.cues[cls][j]
+            if _TURN_START.search(self.norm, end, a):
+                if not self.asks_for(cls, cue):
+                    continue
+            elif cls in _PREPOSITION_CLASSES and not _subject(self.norm, self.sentence_of(cue[0])[0], cue[0], cls):
                 continue
             return True
         return self.asked(cls, a)
@@ -297,22 +346,27 @@ class _Scene:
         return bool(m and not _CUE[cls].search(m.group(1))) or bool(_UNIT_AFTER.match(self.norm, b))
 
     def bound(self, cls: str, fits: Callable[[str], bool]) -> list[tuple[int, int]]:
-        """Values bound to a `cls` cue: the longest prefix of a run's segments that fits after a
-        cue before it (unless the speaker labels it as something else), the longest suffix that
-        fits before a cue after it."""
+        """Values bound to a `cls` cue. A value read in comma-separated pieces takes the next piece
+        only while it is not yet a complete value of its class, so "12345678, 300 dollars" stops
+        at the account number; after a cue before it, it is dropped when the speaker labels it as
+        something else."""
+        need = _COMPLETE[cls]
         spans = []
         for a0, b0, segs in self.runs:
             if self.before(cls, a0):
-                for _, b in reversed(segs):
-                    if fits(self.norm[a0:b]):
-                        if not self.labelled(cls, b):
-                            spans.append((a0, b))
-                        break
+                k = 0
+                while k + 1 < len(segs) and len(_digits(self.norm[a0:segs[k][1]])) < need:
+                    k += 1
+                b = segs[k][1]
+                if fits(self.norm[a0:b]) and not self.labelled(cls, b):
+                    spans.append((a0, b))
             if self.after(cls, b0):
-                for a, _ in segs:
-                    if fits(self.norm[a:b0]):
-                        spans.append((a, b0))
-                        break
+                k = len(segs) - 1
+                while k > 0 and len(_digits(self.norm[segs[k][0]:b0])) < need:
+                    k -= 1
+                a = segs[k][0]
+                if fits(self.norm[a:b0]):
+                    spans.append((a, b0))
         return spans
 
     def segments(self):
@@ -338,6 +392,23 @@ def _ssn_fits(s: str) -> bool:
     return 7 <= len(_digits(s)) <= 9 and len(_shape(s)) <= 3 and not _not_a_value(s) and not _PHONE_SHAPED.fullmatch(s)
 
 
+_LAST_FOUR_ASKED = re.compile(
+    rf"\blast 4(?: digits)? of (?:your|the|his|her|their|my) (?:{_CUE_NOUNS['ssn']})\b", re.I)
+
+
+def _last_four_answers(scene: _Scene) -> list[tuple[int, int]]:
+    """"Last four of your social?" ⏎ "Yeah, it's 4471.": exactly four digits, first in the answer."""
+    spans = []
+    for a, b, segs in scene.runs:
+        k = scene.turn(a)
+        if len(segs) != 1 or len(_digits(scene.norm[a:b])) != 4 or k <= 0 or b - a != 4:
+            continue
+        asked = any(_LAST_FOUR_ASKED.search(scene.norm, s, e) for s, e in scene.questions(k - 1))
+        if asked and _gap_ok(scene.orig(scene.labels[k][1], a)) and not scene.labelled("ssn", b):
+            spans.append((a, b))
+    return spans
+
+
 def _ssns(scene: _Scene) -> list[tuple[int, int]]:
     spans = []
     for a, b, s in scene.segments():
@@ -347,7 +418,7 @@ def _ssns(scene: _Scene) -> list[tuple[int, int]]:
     for m in _SSN_LAST_FOUR.finditer(scene.norm):
         if _alone(scene.norm, *m.span(1)):
             spans.append(m.span(1))
-    return spans + scene.bound("ssn", _ssn_fits)
+    return spans + _last_four_answers(scene) + scene.bound("ssn", _ssn_fits)
 
 
 # --- card ---
@@ -432,7 +503,10 @@ def _account_fits(s: str) -> bool:
     groups = len(shape) == 1 or (len(shape) <= 5 and min(shape) >= 3)
     if _not_a_value(s) or _all_years(s) or _PHONE_SHAPED.fullmatch(s):
         return False
-    return (groups and 6 <= sum(shape) <= 17) or bool(_SORT_CODE.fullmatch(s))
+    # "7731 2209 54": one short group at either end of a space- or dash-read number (not a list)
+    edge = (", " not in s and 2 <= len(shape) <= 5 and 8 <= sum(shape) <= 17
+            and ((shape[0] <= 2 and min(shape[1:]) >= 3) or (shape[-1] <= 2 and min(shape[:-1]) >= 3)))
+    return (groups and 6 <= sum(shape) <= 17) or edge or bool(_SORT_CODE.fullmatch(s))
 
 
 def _accounts(scene: _Scene) -> list[tuple[int, int]]:
