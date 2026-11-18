@@ -97,6 +97,29 @@ def _after_summary(body: str) -> str:
     return body[at + len(SUMMARY_CLOSE):] if at >= 0 else body
 
 
+_TRANSCRIPT_LINE = re.compile(rf"(?m)^{re.escape(TRANSCRIPT_MARKER)}[ \t]*\r?$")
+
+
+def _transcript_at(scope: str, fm_end: int = 0) -> int:
+    """THE transcript locator: where the last line that is exactly `## Transcript` begins in
+    `scope`, at or after `fm_end`, or -1.
+
+    One for every reader and writer here. The two-and-a-half copies there were took any
+    `\n## Transcript` prefix, so an owner heading `## Transcript notes` below the real one moved
+    the transcript, and a block that OPENS with the heading (a note filed with no summary and
+    no notes) read as having no transcript at all."""
+    found = -1
+    for m in _TRANSCRIPT_LINE.finditer(scope, fm_end):   # `^` holds at fm_end only after a newline
+        found = m.start()
+    return found
+
+
+def _before_transcript(scope: str, at: int) -> int:
+    """The boundary the section writers splice at: the newline before the heading, or the
+    heading itself when it opens the scope."""
+    return at - 1 if at > 0 else at
+
+
 def read_review_sections(text: str) -> dict:
     """The inverse of `replace_review_sections`: summary, notes and transcript as they stand.
 
@@ -109,9 +132,9 @@ def read_review_sections(text: str) -> dict:
     if block is None and text.startswith("---\n"):
         fm_end = scope.find("\n---", 4)
         fm_end = fm_end + 4 if fm_end >= 0 else 0
-    transcript_at = scope.rfind(f"\n{TRANSCRIPT_MARKER}")
-    head = scope[fm_end:transcript_at] if transcript_at >= fm_end else scope[fm_end:]
-    transcript = scope[transcript_at + len(TRANSCRIPT_MARKER) + 1:] if transcript_at >= fm_end else ""
+    at = _transcript_at(scope, fm_end)
+    head = scope[fm_end:_before_transcript(scope, at)] if at >= 0 else scope[fm_end:]
+    transcript = scope[at + len(TRANSCRIPT_MARKER):] if at >= 0 else ""
 
     summary = re.search(
         rf"^<!-- slim:summary[^\n]*-->\n## Summary\n+([\s\S]*?)\n{re.escape(SUMMARY_CLOSE)}",
@@ -146,9 +169,10 @@ def replace_review_sections(text: str, *, summary_md: str | None,
         if fm_end < 0:
             raise ValueError("recorded note has unterminated frontmatter")
         fm_end += 4
-    transcript_at = scope.rfind(f"\n{TRANSCRIPT_MARKER}")
-    if transcript_at < fm_end:
+    at = _transcript_at(scope, fm_end)
+    if at < 0:
         raise ValueError("recorded note has no transcript section")
+    transcript_at = _before_transcript(scope, at)
 
     if notes_md is None:
         existing = re.search(_NOTES_RE, _after_summary(scope[fm_end:]))
@@ -171,8 +195,10 @@ def replace_review_sections(text: str, *, summary_md: str | None,
     if notes_md.strip():
         body += f"\n\n## Notes\n\n{notes_md}"
     # `scope[transcript_at:]` begins at the newline before ## Transcript. It is the raw source
-    # boundary and is concatenated, not rendered or normalized.
-    replaced = scope[:fm_end] + body + scope[transcript_at:]
+    # boundary and is concatenated, not rendered or normalized. A block that opens with the
+    # heading has no newline before it, so one is supplied.
+    tail = scope[transcript_at:] if at > 0 else "\n" + scope[at:]
+    replaced = scope[:fm_end] + body + tail
     if block is None:
         return replaced
     # ⚠ RE-FENCED, not reopened. Edited notes or a summary can contain a backtick run as long
@@ -323,8 +349,7 @@ def _drop_frontmatter_key(text: str, key: str) -> str:
 def _transcript_bounds(text: str) -> tuple[int, int]:
     """Where the transcript's words sit: just past `## Transcript` to the end of the meeting
     block's body, or of the file for a note filed before the block existed. One reader for
-    both shapes, matching `read_review_sections`, plus a block that STARTS with the marker
-    (a note filed with no summary and no notes)."""
+    both shapes, through the one locator `read_review_sections` uses."""
     block = split_meeting_block(text)
     if block is None:
         if not text.startswith("---\n"):
@@ -335,14 +360,10 @@ def _transcript_bounds(text: str) -> tuple[int, int]:
         scope, offset, fm_end = text, 0, fm_end + 4
     else:
         scope, offset, fm_end = block.body, len(block.before) + len(block.opener), 0
-    at = scope.rfind(f"\n{TRANSCRIPT_MARKER}")
-    if at >= fm_end:
-        start = at + 1 + len(TRANSCRIPT_MARKER)
-    elif block is not None and re.match(rf"{re.escape(TRANSCRIPT_MARKER)}[ \t]*(?:\n|$)", scope):
-        start = len(TRANSCRIPT_MARKER)
-    else:
+    at = _transcript_at(scope, fm_end)
+    if at < 0:
         raise ValueError("recorded note has no transcript section")
-    return offset + start, offset + len(scope)
+    return offset + at + len(TRANSCRIPT_MARKER), offset + len(scope)
 
 
 def read_transcript(text: str) -> str:
@@ -406,7 +427,11 @@ def append_transcript(text: str, addition: str) -> str:
         return text
     block = split_meeting_block(text)
     scope = block.body if block is not None else text
-    if f"\n{TRANSCRIPT_MARKER}" not in scope:
+    fm_end = 0
+    if block is None and text.startswith("---\n"):
+        fm_end = scope.find("\n---", 4)
+        fm_end = fm_end + 4 if fm_end >= 0 else 0
+    if _transcript_at(scope, fm_end) < 0:
         raise ValueError("recorded note has no transcript section")
     grown = scope.rstrip() + "\n\n" + addition.strip() + "\n"
     if block is None:

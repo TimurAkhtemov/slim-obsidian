@@ -585,3 +585,44 @@ def test_pii_frontmatter_drops_a_finished_reason_and_nothing_else():
     kept = note_writer.set_pii_frontmatter(text, {"ssn": 2}, ["audio"])
     fm, _ = parse_frontmatter(kept)
     assert fm["pii_partial"] == ["audio"] and fm["pii_masked"] == ["ssn:2"]
+
+
+# --- one transcript locator -----------------------------------------------------------------
+
+def _bare_note():
+    """Filed with no summary and no notes: the meeting block OPENS with `## Transcript`."""
+    return note_writer.render_note(title="t", when=NOW, type_tag="meeting", transcript="said it",
+                                   notes_md="", summary_md="", topics=[], audio_rel="a.webm",
+                                   filed_by_slim=True)
+
+
+def test_a_block_that_opens_with_the_transcript_has_one():
+    text = _bare_note()
+    assert note_writer.read_review_sections(text)["transcript"] == "said it"
+    out = note_writer.replace_review_sections(text, summary_md="a summary")
+    sections = note_writer.read_review_sections(out)
+    assert sections["summary"] == "a summary" and sections["transcript"] == "said it"
+    assert out.index("a summary") < out.index("## Transcript")
+    grown = note_writer.append_transcript(text, "and more")
+    assert note_writer.read_review_sections(grown)["transcript"] == "said it\n\nand more"
+
+
+@pytest.mark.parametrize("text", [_transcript_note(), LEGACY])
+def test_a_heading_that_only_starts_like_the_marker_is_not_it(text):
+    """An owner heading `## Transcript notes` below the real one must not move the transcript."""
+    grown = note_writer.append_transcript(text, "## Transcript notes\n\nlater words")
+    sections = note_writer.read_review_sections(grown)
+    assert sections["transcript"].startswith("**Me:** words one.")
+    assert sections["transcript"].endswith("## Transcript notes\n\nlater words")
+    assert note_writer.read_transcript(grown).strip() == sections["transcript"]
+    out = note_writer.replace_review_sections(grown, summary_md="new")
+    assert note_writer.read_review_sections(out)["transcript"] == sections["transcript"]
+
+
+def test_a_note_whose_only_heading_merely_starts_like_the_marker_has_no_transcript():
+    text = "---\norigin: recorded\n---\n\n## Transcripts\n\nwords\n"
+    assert note_writer.read_review_sections(text)["transcript"] == ""
+    with pytest.raises(ValueError, match="no transcript"):
+        note_writer.append_transcript(text, "more")
+    with pytest.raises(ValueError, match="no transcript"):
+        note_writer.replace_review_sections(text, summary_md="s")
