@@ -518,11 +518,13 @@ def test_pasted_notes_cannot_close_the_meeting_block_early(tmp_path):
 
 def test_pii_provenance_sits_after_speakers_by(tmp_path):
     r = _write(tmp_path, asr_model="parakeet", speakers_by="channels",
-               pii={"pii_masked": ["email:2", "ssn:1"], "pii_by": "pii-1", "pii_partial": "true"})
+               pii={"pii_masked": ["email:2", "ssn:1"], "pii_by": "pii-1",
+                    "pii_partial": ["audio", "password"]})
     text = r.note.read_text(encoding="utf-8")
-    assert "speakers_by: channels\npii_masked: [email:2, ssn:1]\npii_by: pii-1\npii_partial: true\naudio:" in text
+    assert "speakers_by: channels\npii_masked: [email:2, ssn:1]\npii_by: pii-1\npii_partial: [audio, password]\naudio:" in text
     fm, _ = parse_frontmatter(text)
     assert fm["pii_masked"] == ["email:2", "ssn:1"]
+    assert fm["pii_partial"] == ["audio", "password"]
 
 
 def test_nothing_found_still_reads_as_checked(tmp_path):

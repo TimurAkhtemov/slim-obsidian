@@ -122,6 +122,10 @@ def normalise(text: str) -> tuple[str, list[int]]:
 
 VERSION = "pii-1"
 SECRET = frozenset({"ssn", "card", "account", "password"})
+# Why masking is unfinished, as `pii_partial` names it. `password`: the password pass did not
+# complete, which `slim mask` can redo from the text. `audio`: a secret may still be audible
+# (a mute failed, or a secret could not be placed in token times), which a text rerun cannot fix.
+PARTIAL_REASONS = ("audio", "password")
 DEFAULT_CLASSES = config.PII_DEFAULT
 PLACEHOLDER = {c: f"[{c.upper()}]" for c in ("ssn", "card", "account", "password", "email", "address", "phone")}
 
@@ -138,7 +142,7 @@ class Masked:
     text: str
     counts: dict[str, int]
     secrets: list[str]  # originals of secret-class hits, in text order; never persisted
-    partial: bool = False
+    partial: bool = False  # the password pass did not complete
 
 
 _SSN = re.compile(r"\b\d{3}[-\s,]+\d{2}[-\s,]+\d{4}\b")
@@ -413,10 +417,12 @@ def mask(
     return Masked(masked, counts, secrets, partial)
 
 
-def frontmatter(m: Masked) -> dict[str, object]:
-    fm: dict[str, object] = {"pii_masked": [f"{c}:{n}" for c, n in sorted(m.counts.items())], "pii_by": VERSION}
-    if m.partial:
-        fm["pii_partial"] = "true"
+def frontmatter(counts: dict[str, int], reasons: Iterable[str] = ()) -> dict[str, object]:
+    """Flat keys for a recording: counts, version, and `pii_partial` only when unfinished."""
+    fm: dict[str, object] = {"pii_masked": [f"{c}:{n}" for c, n in sorted(counts.items())], "pii_by": VERSION}
+    unfinished = sorted(set(reasons) & set(PARTIAL_REASONS))
+    if unfinished:
+        fm["pii_partial"] = unfinished
     return fm
 
 

@@ -249,17 +249,18 @@ function hintTexts(root, out = []) {
 
 test("the card says what was masked, and when masking ran only partly", () => {
   const v = view();
-  v.result = cardResult({ masked: { email: 2, ssn: 1 }, partial: true });
+  v.result = cardResult({ masked: { email: 2, ssn: 1 }, partial: ["audio", "password"] });
   v.noteParts = { summary: "", notes: "", transcript: "" };
   const root = fakeContentEl();
   v.renderCard(root);
   const hints = hintTexts(root).join("\n");
   assert.match(hints, /Masked 1 SSN, 2 emails\./);
-  assert.match(hints, /The password check didn't run\. Run `slim mask` on this note later\./);
+  assert.match(hints, /The password check didn't run\. Run `slim mask` on this note\./);
+  assert.match(hints, /Some secrets could not be silenced in the audio\./);
 });
 
 test("the card says nothing about masking when nothing was masked", () => {
-  for (const pii of [{ masked: {}, partial: false }, undefined]) {
+  for (const pii of [{ masked: {}, partial: [] }, undefined]) {
     const v = view();
     v.result = cardResult(pii);
     v.noteParts = { summary: "", notes: "", transcript: "" };
@@ -274,21 +275,22 @@ test("a reopened card keeps its masking line from the note's frontmatter", async
   const { v, files, editorLeaf } = fileBackedView();
   const file = { path, basename: "pending", text: [
     "---", "origin: recorded", "review_status: pending", "pii_masked: [email:2, ssn:1]",
-    "pii_by: pii-1", "pii_partial: true", "---", "", "````slim-meeting",
+    "pii_by: pii-1", "pii_partial: [audio]", "---", "", "````slim-meeting",
     "## Transcript", "", "words", "````", "",
   ].join("\n") };
   files.set(path, file);
   await editorLeaf.openFile(file);
   v.app.metadataCache = { getFileCache: () => ({ frontmatter: {
-    origin: "recorded", pii_masked: ["email:2", "ssn:1"], pii_by: "pii-1", pii_partial: true } }) };
+    origin: "recorded", pii_masked: ["email:2", "ssn:1"], pii_by: "pii-1", pii_partial: ["audio"] } }) };
   v.plugin.getJSON = async () => ({ folders: [], tag_counts: {} });
   assert.equal(await v.openExisting(file, editorLeaf), true);
-  assert.deepEqual(v.result.pii, { masked: { email: 2, ssn: 1 }, partial: true });
+  assert.deepEqual(v.result.pii, { masked: { email: 2, ssn: 1 }, partial: ["audio"] });
   const root = fakeContentEl();
   v.renderCard(root);
   const hints = hintTexts(root).join("\n");
   assert.match(hints, /Masked 1 SSN, 2 emails\./);
-  assert.match(hints, /The password check didn't run/);
+  assert.match(hints, /Some secrets could not be silenced in the audio\./);
+  assert.doesNotMatch(hints, /password check/, "only the reason the note names");
 });
 
 test("the masking stage shows its label like its neighbours", () => {

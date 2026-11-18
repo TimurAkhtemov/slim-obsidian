@@ -232,33 +232,38 @@ def append_audio_frontmatter(text: str, *, rels: list[str], digests: list[str],
     return set_frontmatter(text, updates)
 
 
-def merge_pii_frontmatter(text: str, masked) -> str:
-    """Add a resumed segment's masking (`pii.Masked`) to the note's: counts add, partial sticks.
+def merge_pii_frontmatter(text: str, counts: dict[str, int], reasons) -> str:
+    """Add a resumed segment's masking to the note's: counts add, and `pii_partial` is the
+    union of the note's reasons and the new ones (a legacy `pii_partial: true` was the password
+    pass, so it reads as `password`).
 
     ⚠ `pii_by` is never ADDED here. It says the whole transcript was checked, and a note filed
     before masking existed was not: only the new words were, and `slim mask` finds the note by
-    the missing key. Such a note gets its counts and partial flag, and nothing at all when the
-    new words held nothing. A note that has it is brought to the current version."""
+    the missing key. Such a note gets its counts and reasons, and nothing at all when the new
+    words held nothing. A note that has it is brought to the current version."""
     from ..capture import pii
     from ..vault.frontmatter import parse_frontmatter, set_frontmatter
 
     fm, _ = parse_frontmatter(text)
     checked = bool(fm.get("pii_by"))
-    if not checked and not masked.counts and not masked.partial:
+    if not checked and not counts and not reasons:
         return text
     prior = fm.get("pii_masked") or []
-    counts: dict[str, int] = {}
+    total: dict[str, int] = {}
     for item in prior if isinstance(prior, list) else [prior]:
         cls, _, n = str(item).partition(":")
         if cls.strip() and n.strip().isdigit():
-            counts[cls.strip()] = counts.get(cls.strip(), 0) + int(n)
-    for cls, n in masked.counts.items():
-        counts[cls] = counts.get(cls, 0) + n
-    updates: dict[str, object] = {"pii_masked": [f"{c}:{n}" for c, n in sorted(counts.items())]}
+            total[cls.strip()] = total.get(cls.strip(), 0) + int(n)
+    for cls, n in counts.items():
+        total[cls] = total.get(cls, 0) + n
+    was = fm.get("pii_partial")
+    had = set(was) if isinstance(was, list) else {"password"} if was == "true" else set()
+    unfinished = sorted((had | set(reasons)) & set(pii.PARTIAL_REASONS))
+    updates: dict[str, object] = {"pii_masked": [f"{c}:{n}" for c, n in sorted(total.items())]}
     if checked:
         updates["pii_by"] = pii.VERSION
-    if masked.partial:
-        updates["pii_partial"] = "true"
+    if unfinished:
+        updates["pii_partial"] = unfinished
     return set_frontmatter(text, updates)
 
 

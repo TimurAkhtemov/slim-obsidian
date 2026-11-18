@@ -4287,20 +4287,31 @@ var require_pii = __commonJS({
       ["phone", "phone"]
     ];
     var KNOWN = new Set(PII_LABELS.map(([cls]) => cls));
+    var PARTIAL_LINES = [
+      ["password", "The password check didn't run. Run `slim mask` on this note."],
+      ["audio", "Some secrets could not be silenced in the audio."]
+    ];
+    var REASONS = new Set(PARTIAL_LINES.map(([reason]) => reason));
+    function partialReasons(value) {
+      if (Array.isArray(value)) return [...new Set(value.filter((r) => REASONS.has(r)))].sort();
+      if (value === true || String(value).trim() === "true") return ["password"];
+      return [];
+    }
     function piiHint(pii) {
       if (!pii) return "";
       const counts = pii.masked || {};
       const parts = PII_LABELS.filter(([cls]) => counts[cls] > 0).map(([cls, label]) => `${counts[cls]} ${label}${counts[cls] === 1 || cls === "ssn" ? "" : "s"}`);
       const lines = [];
       if (parts.length) lines.push(`Masked ${parts.join(", ")}.`);
-      if (pii.partial) lines.push("The password check didn't run. Run `slim mask` on this note later.");
+      const unfinished = partialReasons(pii.partial);
+      for (const [reason, line] of PARTIAL_LINES) if (unfinished.includes(reason)) lines.push(line);
       return lines.join(" ");
     }
     function piiFromFrontmatter(fm) {
       if (!fm || typeof fm !== "object") return null;
       const list = fm.pii_masked;
-      const partial = fm.pii_partial === true || String(fm.pii_partial).trim() === "true";
-      if (!Array.isArray(list) && !partial) return null;
+      const partial = partialReasons(fm.pii_partial);
+      if (!Array.isArray(list) && !partial.length) return null;
       const masked = {};
       for (const item of Array.isArray(list) ? list : []) {
         const m = /^\s*([a-z]+)\s*:\s*(\d+)\s*$/.exec(String(item));

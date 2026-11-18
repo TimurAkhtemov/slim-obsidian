@@ -814,7 +814,7 @@ def test_models_never_see_the_raw_value(tmp_path, monkeypatch):
     fm, _ = parse_frontmatter(body)
     assert fm["pii_masked"] == ["ssn:1"] and fm["pii_by"] == "pii-1"
     assert "pii_partial" not in fm
-    assert out["pii"] == {"masked": {"ssn": 1}, "partial": False}
+    assert out["pii"] == {"masked": {"ssn": 1}, "partial": []}
 
 
 def test_a_clean_recording_says_it_was_checked(tmp_path, monkeypatch):
@@ -824,8 +824,8 @@ def test_a_clean_recording_says_it_was_checked(tmp_path, monkeypatch):
     out = pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="",
                                  declared_type="lecture", title="SVMs", when=NOW, vault=tmp_path)
     fm, _ = parse_frontmatter((tmp_path / out["note"]).read_text(encoding="utf-8"))
-    assert fm["pii_masked"] == [] and fm["pii_by"] == "pii-1"
-    assert out["pii"] == {"masked": {}, "partial": False}
+    assert fm["pii_masked"] == [] and fm["pii_by"] == "pii-1" and "pii_partial" not in fm
+    assert out["pii"] == {"masked": {}, "partial": []}
 
 
 def test_password_failure_still_files_partial(tmp_path, monkeypatch):
@@ -838,8 +838,8 @@ def test_password_failure_still_files_partial(tmp_path, monkeypatch):
     out = pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="",
                                  declared_type="meeting", title="T", when=NOW, vault=tmp_path)
     fm, _ = parse_frontmatter((tmp_path / out["note"]).read_text(encoding="utf-8"))
-    assert fm["pii_partial"] == "true"
-    assert out["pii"]["partial"] is True
+    assert fm["pii_partial"] == ["password"]
+    assert out["pii"]["partial"] == ["password"], "the audio was fine: no secret to place"
 
 
 def test_secret_spans_silenced_before_archive(tmp_path, monkeypatch):
@@ -891,7 +891,7 @@ def test_a_failed_silence_still_files_partial(tmp_path, monkeypatch):
     out = pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="",
                                  declared_type="meeting", title="T", when=NOW, vault=tmp_path)
     fm, _ = parse_frontmatter((tmp_path / out["note"]).read_text(encoding="utf-8"))
-    assert fm["pii_partial"] == "true" and out["pii"]["partial"] is True
+    assert fm["pii_partial"] == ["audio"] and out["pii"]["partial"] == ["audio"]
     logged = "".join(p.read_text() for p in trace.TRACE_DIR.rglob("*") if p.is_file())
     assert "silence_failed" in logged and "219-09-9999" not in logged
 
@@ -902,7 +902,7 @@ def test_a_secret_with_no_token_times_is_partial(tmp_path, monkeypatch):
     _fakes(monkeypatch, transcript=SSN_TEXT)            # no tokens
     out = pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="",
                                  declared_type="meeting", title="T", when=NOW, vault=tmp_path)
-    assert out["pii"]["partial"] is True
+    assert out["pii"]["partial"] == ["audio"]
 
 
 def test_notes_section_never_masked(tmp_path, monkeypatch):
@@ -951,7 +951,7 @@ def test_appended_counts_add_to_the_notes_own(tmp_path, monkeypatch):
                                   audio_rel=[_staged(tmp_path, "a-002.webm")], vault=tmp_path)
     fm, _ = parse_frontmatter(r.note.read_text(encoding="utf-8"))
     assert fm["pii_masked"] == ["email:3", "ssn:1"]
-    assert fm["pii_by"] == "pii-1" and fm["pii_partial"] == "true"
+    assert fm["pii_by"] == "pii-1" and fm["pii_partial"] == ["password"]
 
 
 def test_appended_audio_is_silenced_before_it_is_archived(tmp_path, monkeypatch):
@@ -1004,7 +1004,7 @@ def test_masking_off_files_verbatim_and_claims_nothing(tmp_path, monkeypatch):
     assert "my ssn is 219-09-9999" in body
     fm, _ = parse_frontmatter(body)
     assert not [k for k in fm if k.startswith("pii_")]
-    assert out["pii"] == {"masked": {}, "partial": False}
+    assert out["pii"] == {"masked": {}, "partial": []}
     assert "masking" not in stages
 
 
@@ -1050,7 +1050,7 @@ def test_an_append_onto_a_never_masked_note_never_claims_the_old_words(tmp_path,
     pipeline.handle_record_append(note=str(r.note.relative_to(tmp_path)),
                                   audio_rel=[_staged(tmp_path, "a-002.webm")], vault=tmp_path)
     fm, _ = parse_frontmatter(r.note.read_text(encoding="utf-8"))
-    assert fm["pii_masked"] == ["email:1"] and fm["pii_partial"] == "true"
+    assert fm["pii_masked"] == ["email:1"] and fm["pii_partial"] == ["password"]
     assert "pii_by" not in fm
 
 
@@ -1061,7 +1061,7 @@ def test_an_append_onto_a_masked_note_keeps_it_current_and_partial(tmp_path, mon
     from tests.recorder.fakes import _existing
     r = _existing(tmp_path, monkeypatch)
     r.note.write_text(set_frontmatter(r.note.read_text(encoding="utf-8"), {
-        "pii_masked": ["ssn:1"], "pii_by": "pii-0", "pii_partial": "true"}), encoding="utf-8")
+        "pii_masked": ["ssn:1"], "pii_by": "pii-0", "pii_partial": ["audio"]}), encoding="utf-8")
     monkeypatch.setattr(pii, "ask_model", lambda window: None)
     monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
         text="nothing to hide here", model="fake", audio_seconds=9.0, wall_seconds=1.0))
@@ -1069,4 +1069,42 @@ def test_an_append_onto_a_masked_note_keeps_it_current_and_partial(tmp_path, mon
                                   audio_rel=[_staged(tmp_path, "a-002.webm")], vault=tmp_path)
     fm, _ = parse_frontmatter(r.note.read_text(encoding="utf-8"))
     assert fm["pii_masked"] == ["ssn:1"] and fm["pii_by"] == pii.VERSION
-    assert fm["pii_partial"] == "true", "the note's own partial survives a clean append"
+    assert fm["pii_partial"] == ["audio"], "the note's own reason survives a clean append"
+
+
+def test_an_append_unions_its_reasons_with_the_notes(tmp_path, monkeypatch):
+    """A legacy `pii_partial: true` was the password pass; a new audio failure joins it."""
+    from slim.capture import pii, transcribe
+    from slim.recorder import pipeline
+    from slim.vault.frontmatter import parse_frontmatter, set_frontmatter
+    from tests.recorder.fakes import _existing
+    r = _existing(tmp_path, monkeypatch)
+    r.note.write_text(set_frontmatter(r.note.read_text(encoding="utf-8"), {
+        "pii_masked": ["ssn:1"], "pii_by": "pii-1", "pii_partial": "true"}), encoding="utf-8")
+    monkeypatch.setattr(pii, "ask_model", lambda window: None)
+    monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
+        text=SSN_TEXT, model="fake", audio_seconds=9.0, wall_seconds=1.0))   # no token times
+    out = pipeline.handle_record_append(note=str(r.note.relative_to(tmp_path)),
+                                        audio_rel=[_staged(tmp_path, "a-002.webm")],
+                                        vault=tmp_path)
+    fm, _ = parse_frontmatter(r.note.read_text(encoding="utf-8"))
+    assert fm["pii_partial"] == ["audio", "password"] and fm["pii_masked"] == ["ssn:2"]
+    assert out["pii"] == {"masked": {"ssn": 1}, "partial": ["audio"]}
+
+
+def test_both_reasons_are_named_and_traced_without_values(tmp_path, monkeypatch):
+    from slim import trace
+    from slim.recorder import pipeline
+    from slim.vault.frontmatter import parse_frontmatter
+
+    def down(window):
+        raise RuntimeError("model is down")
+    _fakes(monkeypatch, transcript=SSN_TEXT + ". the door code is 4471", ask_model=down)
+    out = pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="",
+                                 declared_type="meeting", title="T", when=NOW, vault=tmp_path)
+    fm, _ = parse_frontmatter((tmp_path / out["note"]).read_text(encoding="utf-8"))
+    assert fm["pii_partial"] == ["audio", "password"]
+    assert out["pii"]["partial"] == ["audio", "password"]
+    logged = "".join(p.read_text() for p in trace.TRACE_DIR.rglob("*") if p.is_file())
+    assert '"partial": ["audio", "password"]' in logged
+    assert "219-09-9999" not in logged and "4471" not in logged

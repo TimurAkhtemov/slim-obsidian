@@ -8,8 +8,24 @@ const PII_LABELS = [["ssn", "SSN"], ["card", "card"], ["account", "account"],
                     ["phone", "phone"]];
 const KNOWN = new Set(PII_LABELS.map(([cls]) => cls));
 
-/* The card's line: "Masked 1 SSN, 2 emails." and, when masking did not finish, how to finish
- * it. "" when there is nothing to say. */
+// Why masking is unfinished (`pii_partial`), and what each leaves them to do. `password` is
+// fixable from the text; `audio` is not, so it never tells them to rerun.
+const PARTIAL_LINES = [
+  ["password", "The password check didn't run. Run `slim mask` on this note."],
+  ["audio", "Some secrets could not be silenced in the audio."],
+];
+const REASONS = new Set(PARTIAL_LINES.map(([reason]) => reason));
+
+/* `pii_partial` as a list of known reasons: a list is filtered, a legacy `true` was the
+ * password pass, anything else is none. */
+function partialReasons(value) {
+  if (Array.isArray(value)) return [...new Set(value.filter((r) => REASONS.has(r)))].sort();
+  if (value === true || String(value).trim() === "true") return ["password"];
+  return [];
+}
+
+/* The card's line: "Masked 1 SSN, 2 emails." and, per unfinished reason, what is left. "" when
+ * there is nothing to say. */
 function piiHint(pii) {
   if (!pii) return "";
   const counts = pii.masked || {};
@@ -17,18 +33,19 @@ function piiHint(pii) {
     `${counts[cls]} ${label}${counts[cls] === 1 || cls === "ssn" ? "" : "s"}`);
   const lines = [];
   if (parts.length) lines.push(`Masked ${parts.join(", ")}.`);
-  if (pii.partial) lines.push("The password check didn't run. Run `slim mask` on this note later.");
+  const unfinished = partialReasons(pii.partial);
+  for (const [reason, line] of PARTIAL_LINES) if (unfinished.includes(reason)) lines.push(line);
   return lines.join(" ");
 }
 
 /* A reopened note's `pii`, from the frontmatter Obsidian parsed: `pii_masked: [email:2]` and
- * `pii_partial: true`. null when the note carries neither, so no line shows. A malformed item is
- * skipped, never thrown on: the frontmatter is theirs to edit. */
+ * `pii_partial: [audio, password]`. null when the note carries neither, so no line shows. A
+ * malformed item is skipped, never thrown on: the frontmatter is theirs to edit. */
 function piiFromFrontmatter(fm) {
   if (!fm || typeof fm !== "object") return null;
   const list = fm.pii_masked;
-  const partial = fm.pii_partial === true || String(fm.pii_partial).trim() === "true";
-  if (!Array.isArray(list) && !partial) return null;
+  const partial = partialReasons(fm.pii_partial);
+  if (!Array.isArray(list) && !partial.length) return null;
   const masked = {};
   for (const item of Array.isArray(list) ? list : []) {
     const m = /^\s*([a-z]+)\s*:\s*(\d+)\s*$/.exec(String(item));

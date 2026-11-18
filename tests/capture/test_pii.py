@@ -161,9 +161,14 @@ def test_classes_none_reads_config(monkeypatch):
 
 
 def test_frontmatter_shape():
-    m = pii.Masked(text="", counts={"ssn": 1, "email": 2}, secrets=[], partial=True)
-    assert pii.frontmatter(m) == {"pii_masked": ["email:2", "ssn:1"], "pii_by": "pii-1",
-                                  "pii_partial": "true"}
+    assert pii.frontmatter({"ssn": 1, "email": 2}, ["password", "audio"]) == {
+        "pii_masked": ["email:2", "ssn:1"], "pii_by": "pii-1", "pii_partial": ["audio", "password"]}
+
+
+def test_frontmatter_complete_has_no_partial_and_names_only_known_reasons():
+    assert pii.frontmatter({}) == {"pii_masked": [], "pii_by": "pii-1"}
+    assert pii.frontmatter({"ssn": 1}, ["audio", "audio", "bogus"]) == {
+        "pii_masked": ["ssn:1"], "pii_by": "pii-1", "pii_partial": ["audio"]}
 
 
 def _same(t):

@@ -114,32 +114,38 @@ def _join_segments(gots: list[dict], labelled: bool = False) -> str:
 def _mask_segments(gots: list[dict], *, model: bool):
     """Each segment's words with personal data replaced, before any model reads them.
 
-    Returns (masked copies of `gots`, one `pii.Masked` holding the summed counts, the audio
-    spans of each segment's secrets). Partial when the password pass failed, or a secret could
-    not be placed in its segment's audio: a cache written before token times has none, and a
-    secret left audible is the leak. `model=False` is the paused preview, which never waits.
+    Returns (masked copies of `gots`, summed class counts, the reasons masking is unfinished,
+    the audio spans of each segment's secrets). `password` when a password pass failed; `audio`
+    when a secret could not be placed in its segment's audio — a cache written before token
+    times has none, and a secret left audible is the leak. `model=False` is the paused preview,
+    which never waits.
 
     `config.PII_MASK` empty is masking OFF: the words come back as they were, with no spans."""
     from ..capture import pii
 
+    counts: dict[str, int] = {}
+    reasons: set[str] = set()
     if not config.PII_MASK:
-        return list(gots), pii.Masked(text="", counts={}, secrets=[]), [[] for _ in gots]
+        return list(gots), counts, reasons, [[] for _ in gots]
     find = (lambda window: pii.ask_model(window)) if model else None
-    masked, seg_spans, counts, partial = [], [], {}, False
+    masked, seg_spans = [], []
     for got in gots:
         m = pii.mask(str(got.get("text") or ""), find_password=find)
         for cls, n in m.counts.items():
             counts[cls] = counts.get(cls, 0) + n
         found, missed = pii.spans(got.get("tokens") or [], m.secrets)
-        partial = partial or m.partial or bool(missed)
+        if m.partial:
+            reasons.add("password")
+        if missed:
+            reasons.add("audio")
         masked.append({**got, "text": m.text})
         seg_spans.append(found)
-    return masked, pii.Masked(text="", counts=counts, secrets=[], partial=partial), seg_spans
+    return masked, counts, reasons, seg_spans
 
 
 def _silence_segments(segments: list[Path], seg_spans: list) -> bool:
     """Mute each segment's secrets in place. False when a mute failed: filing never waits on
-    masking, so the note is still written, marked partial."""
+    masking, so the note is still written, its audio named unfinished."""
     from ..capture import audio
 
     ok = True
@@ -282,7 +288,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
         if config.PII_MASK:
             progress("masking", "Masking sensitive details",
                      "Replacing identifiers before any model reads the transcript")
-        gots, masked, seg_spans = _mask_segments(gots, model=True)
+        gots, counts, reasons, seg_spans = _mask_segments(gots, model=True)
         text = _join_segments(gots)
         audio_seconds = seconds or None
         transcribed_at = datetime.now(timezone.utc)
@@ -382,10 +388,9 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
     # Past the last cancel, so a cancelled pass leaves the audio as it found it; before the
     # archive, so the archived copy is the muted one.
     if not _silence_segments(segments, seg_spans):
-        masked.partial = True
+        reasons.add("audio")
     if config.PII_MASK:
-        trace.record("record", {"stage": "pii", "counts": masked.counts,
-                                "partial": masked.partial})
+        trace.record("record", {"stage": "pii", "counts": counts, "partial": sorted(reasons)})
     r = note_writer.write_recording(
         audio_src=segments, title=title, when=when, type_tag=card.type_tag, transcript=text,
         notes_md=notes_md, summary_md=summary_md,
@@ -393,7 +398,8 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
         speakers_by=speakers_by,
         audio_seconds=audio_seconds, transcribed_at=transcribed_at,
         # Masking off writes no `pii_` key: a note never checked must not say it was.
-        pii=pii.frontmatter(masked) if config.PII_MASK else None, draft_src=draft, vault=vault)
+        pii=pii.frontmatter(counts, reasons) if config.PII_MASK else None, draft_src=draft,
+        vault=vault)
 
     # The note is committed, so the per-segment transcript caches have nothing left to save.
     for seg in segments:
@@ -414,7 +420,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
         "audio": str(r.audio.relative_to(vault)),
         "title": title,
         "summary": summary_md,
-        "pii": {"masked": masked.counts, "partial": masked.partial},
+        "pii": {"masked": counts, "partial": sorted(reasons)},
         "card": {"dest_dir": card.dest_dir, "confident_depth": card.confident_depth,
                  "type_tag": card.type_tag,
                  "topics": card.topics, **_card_lists(vault, tags)},
@@ -504,7 +510,7 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
         seconds += got.get("audio_seconds") or 0.0
         asr_model = got.get("model") or asr_model
         speakers_by = got.get("speakers_by") or speakers_by
-    gots, masked, seg_spans = _mask_segments(gots, model=True)
+    gots, counts, reasons, seg_spans = _mask_segments(gots, model=True)
     fm, _ = parse_frontmatter(text)
     addition = _join_segments(gots, labelled=bool(fm.get("speakers_by")))
     if not addition:
@@ -517,10 +523,9 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
     # it left orphan copies. This is the last boundary; nothing durable happens before it.
     state.check_cancel(job_id)
     if not _silence_segments(segments, seg_spans):
-        masked.partial = True
+        reasons.add("audio")
     if config.PII_MASK:
-        trace.record("record", {"stage": "pii", "counts": masked.counts,
-                                "partial": masked.partial})
+        trace.record("record", {"stage": "pii", "counts": counts, "partial": sorted(reasons)})
     with state.note_lock(vault, note):
         text = state.reread_for_write(src, note)
 
@@ -539,7 +544,7 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
                                                     seconds=seconds, asr_model=asr_model,
                                                     speakers_by=speakers_by)
         if config.PII_MASK:
-            text = note_writer.merge_pii_frontmatter(text, masked)
+            text = note_writer.merge_pii_frontmatter(text, counts, reasons)
         note_writer.write_note_text(src, note_writer.append_transcript(text, addition))
 
     archived_paths = {state.vault_path(vault, rel).resolve() for rel in archived_rels}
@@ -557,7 +562,7 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
     trace.record("record", {"stage": "append", "note": str(src), "segments": len(segments),
                             "words": len(addition.split())})
     return {"note": str(src.relative_to(vault)), "words": len(addition.split()),
-            "audio_seconds": seconds}
+            "audio_seconds": seconds, "pii": {"masked": counts, "partial": sorted(reasons)}}
 
 
 def handle_record_transcript(*, audio_rel: str | list[str],
@@ -582,7 +587,7 @@ def handle_record_transcript(*, audio_rel: str | list[str],
         except (OSError, json.JSONDecodeError):
             pending += 1
     # No password pass: this screen is meant to be instant, and nothing here is filed.
-    gots, _masked, _spans = _mask_segments(gots, model=False)
+    gots, _counts, _reasons, _spans = _mask_segments(gots, model=False)
     text = _join_segments(gots)
     return {"text": text, "pending": pending, "segments": len(rels),
             "words": len(text.split())}
