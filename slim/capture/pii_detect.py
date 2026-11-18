@@ -309,8 +309,14 @@ _THING_SHAPES = (("=zip", re.compile(r"\b(?:zip|postal code)\b", re.I)),
                  ("=expiry", re.compile(r"\b(?:expiry|expiration|exp date)\b", re.I)))
 # A card's expiry is a month and a year: "0928", "09/28", "09 2028"
 _EXPIRY = re.compile(r"(?:0?[1-9]|1[0-2])[/ -]?(?:\d{2}|20\d{2})")
-# Between two numbers of a listed answer: "10001 and 48213377", "10001, and then …", "10001. 4821…"
+# Between two numbers of a listed answer: "10001 and 48213377", "10001, and then …", "10001. 4821…",
+# with filler words beside the separator or instead of it ("10001, uh, 48213377").
 _LIST_GAP = re.compile(r"\s*,?\s*(?:and(?:\s+then)?|[.?!]+(?:\s+and(?:\s+then)?)?)\s*", re.I)
+_AND_THEN = re.compile(r"\band\s+then\b", re.I)
+
+
+def _list_gap_ok(gap: str) -> bool:
+    return bool(_LIST_GAP.fullmatch(gap)) or _gap_ok(_AND_THEN.sub(" ", gap))
 _COMPLETE = {"ssn": 9, "card": CARD_COMPLETE, "account": None, "iban": None, "phone": 10}
 # The most digits a value of each class has: a bound value longer than this masks its longest
 # leading part that is one (leaking a tail is better than leaving the whole).
@@ -461,15 +467,14 @@ class _Scene:
 
     def _answer_numbers(self, k: int, units, starts, most: int):
         """(start, end) of the numbers turn k's answer gives, at most `most` + 1: the first after
-        filler only, the next after "and", a sentence end, or inside one run. `units` are
-        (start, end, joined) and `starts` their starts."""
+        filler only, the next after a separator ("and", a comma inside or between runs, a
+        sentence end) or filler. `units` start with (start, end) and `starts` are their starts."""
         body, end = self.labels[k][1], self.turn_end(k)
         out, prev = [], None
         i = bisect.bisect_left(starts, body)
         while i < len(units) and units[i][0] < end and len(out) <= most:
-            a0, b0, joined = units[i][0], units[i][1], units[i][-1]
-            if not (_gap_ok(self.orig(body, a0)) if prev is None
-                    else joined or _LIST_GAP.fullmatch(self.orig(prev, a0))):
+            a0, b0 = units[i][0], units[i][1]
+            if not (_gap_ok(self.orig(body, a0)) if prev is None else _list_gap_ok(self.orig(prev, a0))):
                 break
             out.append((a0, b0))
             prev, i = b0, i + 1

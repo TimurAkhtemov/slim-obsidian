@@ -1704,3 +1704,20 @@ def test_every_secret_mask_returns_can_be_placed_in_the_audio():
         assert _placed(text, m.secrets)[1] == 0, (m.secrets, text)
         checked += len(m.secrets)
     assert checked > 90
+
+
+def test_filler_between_the_numbers_of_a_listed_answer():
+    for q, a, want in (
+        ("Your zip and account number?", "10001, uh, 48213377.", "**Me:** 10001, uh, [ACCOUNT]."),
+        ("Your zip and account number?", "Um, 10001, uh, 48213377.", "**Me:** Um, 10001, uh, [ACCOUNT]."),
+        ("Your zip and account number?", "10001. Uh, 48213377.", "**Me:** 10001. Uh, [ACCOUNT]."),
+        ("Your zip and account number?", "10001 and um 48213377.", "**Me:** 10001 and um [ACCOUNT]."),
+        ("Your zip and account number?", "10001, and, um, 48213377.", "**Me:** 10001, and, um, [ACCOUNT]."),
+        ("Your zip and account number?", "10001, and then, um, 48213377.", "**Me:** 10001, and then, um, [ACCOUNT]."),
+        ("Your zip and social?", "10001, uh, 219099999.", "**Me:** 10001, uh, [SSN]."),
+        ("Date of birth and social?", "1/2/1980, um, 219099999.", "**Me:** 1/2/1980, um, [SSN]."),
+        ("Your zip and the last four of your social?", "10001, uh, 4471.", "**Me:** 10001, uh, [SSN]."),
+    ):
+        assert _answer(_q(q, a)) == want, (q, a)
+    # a word that is no filler still ends the list
+    _same(_q("Your zip and account number?", "10001, and my cousin's is 48213377."))
