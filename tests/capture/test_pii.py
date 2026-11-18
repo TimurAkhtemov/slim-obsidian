@@ -525,7 +525,11 @@ def test_bank_strings_and_timestamps_are_not_cards():
 # account
 
 def test_iban_glued_to_its_cue_and_spaced():
-    assert _m("**Them:** Sure. IBANGB73 HWEC 4532 6581 9231 44.").text == "**Them:** Sure. IBAN[ACCOUNT]."
+    # the glued word goes with the value, so the audio mute can place it on whole words
+    m = _m("**Them:** Sure. IBANGB73 HWEC 4532 6581 9231 44.")
+    assert m.text == "**Them:** Sure. [ACCOUNT]." and m.secrets == ["IBANGB73 HWEC 4532 6581 9231 44"]
+    words = "Sure. IBANGB73 HWEC 4532 6581 9231 44.".split()
+    assert pii.spans([(" " + w, k, k + 0.5) for k, w in enumerate(words)], m.secrets) == ([(1.0, 6.5)], 0)
     assert _m("**Me:** It's GB66GHJW13441818266639.").text == "**Me:** It's [ACCOUNT]."
     assert _m("IBAN GB82 WEST 1234 5698 7654 32 ok").text == "IBAN [ACCOUNT] ok"
 
@@ -1022,7 +1026,9 @@ def test_pathological_inputs_stay_fast():
     for t in ("1" * 50_000, "a" * 50_000, "**Me:** 1234567\n\n" * 20_000, "account 1234567 " * 20_000,
               "**Them:** What's your social?\n\n**Me:** It's 1234567.\n\n" * 10_000,
               "**Them:** Okay, and your account number?\n\n**Me:** " + "12, " * 40_000,
-              "12, " * 40_000 + "is my account number.", "my account number is " + "1 " * 40_000):
+              "12, " * 40_000 + "is my account number.", "my account number is " + "1 " * 40_000,
+              "**Them:** Your zip code and your account number?\n\n**Me:** 10001 and 48213377.\n\n" * 5000,
+              "**Them:** Date of birth and the last four of your social?\n\n**Me:** 1/2/1980 and 4471.\n\n" * 5000):
         t0 = time.perf_counter()
         pii.mask(t, classes=CLS)
         assert time.perf_counter() - t0 < 3.0, t[:30]
@@ -1331,6 +1337,9 @@ def test_a_listed_question_binds_in_order():
         == "**Me:** 10001, 1/2/1980 and [ACCOUNT]."
     assert _answer(_q("Your date of birth, zip code and account number?", "1-2-1980, 10001 and 48213377.")) \
         == "**Me:** 1-2-1980, 10001 and [ACCOUNT]."
+    # a piece that fits no thing (1234 is no zip): read by runs, and the date still cuts the run
+    assert _answer(_q("Your zip code, date of birth and account number?", "1234, 1/2/1980 and 48213377.")) \
+        == "**Me:** 1234, 1/2/1980 and [ACCOUNT]."
     assert _answer(_q("Social and date of birth?", "317 41 4878, 04/06/1966.")) == "**Me:** [SSN], 04/06/1966."
     # counts differ: the first cue thing binds the first number
     assert _answer(_q("Can I get your zip code and your account number?", "48213377.")) == "**Me:** [ACCOUNT]."
@@ -1393,8 +1402,12 @@ def test_a_comma_read_value_is_one_number_of_a_list():
     assert _answer(_q("Can I get the routing number and your zip?", "Sure, 3267, 333943.")) \
         == "**Me:** Sure, [ACCOUNT]."
     assert _answer(_q("Can I get your social security number and your zip?", "6379, 65709.")) == "**Me:** [SSN]."
-    # one number for two things: no list, and the account cue binds the whole run
-    assert _answer(_q("Can I get your zip code and your account number?", "10001, 48213377.")) == "**Me:** [ACCOUNT]."
+    # more comma pieces than things: read by runs, the comma-read account first
+    assert _answer(_q("Your account number and your social?", "4821, 3377 and 219099999.")) \
+        == "**Me:** [ACCOUNT] and [SSN]."
+    # read by its commas when every piece fits its thing: the zip is a zip
+    assert _answer(_q("Can I get your zip code and your account number?", "10001, 48213377.")) \
+        == "**Me:** 10001, [ACCOUNT]."
     # "and" (or "and then") and a sentence end separate the numbers of a listed answer
     assert _answer(_q("Can I get your zip code and your account number?", "10001, and then 48213377.")) \
         == "**Me:** 10001, and then [ACCOUNT]."
@@ -1582,3 +1595,96 @@ def test_a_comma_read_account_answer_with_one_short_group():
               _q("What's your account number?", "123, 4, 56, 67890."),   # two short groups
               _q("How many did you sell each week?", "123, 45, 67890.")):  # no account asked
         _same(t)
+
+
+# --- identifiers as noun phrases; the comma reading of a listed answer; the local part; secrets
+# the audio mute can place ------------------------------------------------------------------------
+
+def test_an_identifier_blocks_only_as_a_noun_phrase():
+    for q, a, want in (
+        ("In order to verify your identity, can I get your social security number?", "Sure, 219099999.",
+         "**Me:** Sure, [SSN]."),
+        ("In order to verify your identity, can I get your social security number?", "Sure, 219, 09, 9999.",
+         "**Me:** Sure, [SSN]."),
+        ("In order to verify your identity, can I get your account number?", "Sure, it's 4821 3377.",
+         "**Me:** Sure, it's [ACCOUNT]."),
+        ("In order to verify, what's your social?", "It's 219099999.", "**Me:** It's [SSN]."),
+        ("In order to help you, I need the account number.", "48213377.", "**Me:** [ACCOUNT]."),
+        ("Just in case, can I get your account number?", "48213377.", "**Me:** [ACCOUNT]."),
+        ("For your reference, what's your account number?", "48213377.", "**Me:** [ACCOUNT]."),
+        ("Per our policy, can I get the account number?", "48213377.", "**Me:** [ACCOUNT]."),
+        ("For the refund on that order, what's your account number?", "48213377.", "**Me:** [ACCOUNT]."),
+        ("To process the claim, can I get your social security number?", "219099999.", "**Me:** [SSN]."),
+        ("I'm looking at the case now, can I get your social?", "219099999.", "**Me:** [SSN]."),
+        ("How many items did you order, and what's your account number?", "3, 48213377.",
+         "**Me:** 3, [ACCOUNT]."),
+        ("Can I get the security code and card number?", "123 and 4111 1111 1111 1112.",
+         "**Me:** 123 and [CARD]."),
+    ):
+        assert _answer(_q(q, a)) == want, q
+    # a named identifier still blocks from anywhere in the question
+    for q, a in (("Can I get the claim number, and then we'll pull up the account?", "7437291."),
+                 ("What's the order number and which account was it charged to?", "5512334."),
+                 ("Can I get the order number and the account number?", "5512334."),
+                 ("Can I get your member ID, and then your account?", "5512334.")):
+        _same(_q(q, a))
+
+
+def test_a_listed_answer_is_read_by_its_commas_when_every_piece_fits():
+    for q, a, want in (
+        ("Your zip and social?", "10001, 219099999.", "**Me:** 10001, [SSN]."),
+        ("Your zip and social?", "10001, 219 099 999.", "**Me:** 10001, [SSN]."),
+        ("Your zip and account number?", "10001, 4821 3377 9012.", "**Me:** 10001, [ACCOUNT]."),
+        ("What's your phone number and account number?", "415 555 0134, 48213377.",
+         "**Me:** 415 555 0134, [ACCOUNT]."),
+        ("Your zip and card number?", "10001, 4111 1111 1111 1112.", "**Me:** 10001, [CARD]."),
+        ("Your zip and the last four of your social?", "10001, 4471.", "**Me:** 10001, [SSN]."),
+        ("Can I get the account number and the amount?", "48213377, 250.", "**Me:** [ACCOUNT], 250."),
+        ("Which account, and how many transfers?", "48213377, 12.", "**Me:** [ACCOUNT], 12."),
+        ("Your account number and zip?", "48213377, 10001.", "**Me:** [ACCOUNT], 10001."),
+        ("Can I get your zip code and your account number?", "Sure, 10001, 48213377.",
+         "**Me:** Sure, 10001, [ACCOUNT]."),
+        ("Can I get the expiration date, security code and card number?", "0928 and 123 and 4111 1111 1111 1112.",
+         "**Me:** 0928 and 123 and [CARD]."),
+        ("Can I get the expiration date, the zip, and card number?", "0928, 10001 and 4111 1111 1111 1112.",
+         "**Me:** 0928, 10001 and [CARD]."),
+        ("Card number and expiry?", "4111 1111 1111 1111, 02 28.", "**Me:** [CARD], 02 28."),
+        # a piece that does not fit its thing: D2's reading, the run is one number
+        ("Can I get the routing number and your zip?", "Sure, 3267, 333943.", "**Me:** Sure, [ACCOUNT]."),
+        ("Can I get your social security number and your zip?", "6379, 65709.", "**Me:** [SSN]."),
+    ):
+        assert _answer(_q(q, a)) == want, (q, a)
+
+
+def test_the_local_part_starts_after_a_copula_or_preposition():
+    assert _m("Okay so it is jsmith at gmail.com, that's my email.").text \
+        == "Okay so it is [EMAIL], that's my email."
+    assert _m("You can reach me at jsmith at gmail.com, that's my email.").text \
+        == "You can reach me at [EMAIL], that's my email."
+    assert _m("Mine is in jsmith at gmail.com, that's my email.").text == "Mine is in [EMAIL], that's my email."
+
+
+def _placed(text, secrets):
+    """`pii.spans` over one token per word: (spans, secrets it could not place)."""
+    import re
+    tokens = [(m.group(), k, k + 0.5) for k, m in enumerate(re.finditer(r"\s*\S+", text))]
+    return pii.spans(tokens, secrets)
+
+
+def test_every_secret_mask_returns_can_be_placed_in_the_audio():
+    """A secret glued to a letter or digit cannot be muted on whole words: none may be returned."""
+    from scripts.pii_eval import gen as ev_gen
+    texts = [(t, lambda w: next((p for p in _REAL_PASSWORDS if p in w), None))
+             for _, _, t, _, _ in _REAL_SECRET + _REAL_ORDINARY]
+    # how the transcriber writes a value glued to its cue word (from a real eval run)
+    texts += [(t, None) for t in ("**Them:** Sure. IBANGB73 HWEC 4532 6581 9231 44.",
+                                  "**Me:** Sure. IBANGB82WEST12345698765432 okay.")]
+    for sc in ev_gen.generate(30) + ev_gen.generate(30, seed=8, phone=True):
+        said = [i.spoken for i in sc.items if i.cls == "password"]
+        texts.append((sc.transcript, lambda w, said=said: next((p for p in said if p in w), None)))
+    checked = 0
+    for text, stub in texts:
+        m = pii.mask(text, classes=(*CLS, "phone"), find_password=stub)
+        assert _placed(text, m.secrets)[1] == 0, (m.secrets, text)
+        checked += len(m.secrets)
+    assert checked > 90

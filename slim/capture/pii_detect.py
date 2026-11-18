@@ -89,13 +89,16 @@ _ASK_LEAD = {
 }   # "the best phone number", "a good cell": best and good only ever describe a phone
 _COORDINATED = re.compile(r"\s*(?:,|and|or|, and|, or)\s*")
 # Another thing named in the cue's own clause: "your claim account number", "the order number on
-# the account". Cue nouns themselves are blanked out first. An identifier is read like an account
-# number, so a question naming one anywhere ("Can I get the order number and the account number?")
-# may be answered with it; a zip, a date or an amount has a shape of its own and blocks only in
-# the cue's clause ("Can I get your zip and your account number?" ⏎ "3744644286").
+# the account". Cue nouns themselves are blanked out first.
 _IDENTIFIER = (r"order|confirmation|tracking|ticket|invoice|reference|ref|claim|case|policy|"
                r"employee id|member id|customer id|order id|id number|(?<!zip )(?<!postal )(?<!area )code")
-_OTHER_ID = re.compile(rf"\b(?:{_IDENTIFIER})\b", re.I)
+# An identifier named anywhere in a question: its value is read like an account number, so the
+# question may be asking for it ("Can I get the order number and the account number?"). Only as a
+# noun phrase: "in order to verify", "just in case", "per our policy" name nothing. A zip, a date
+# or an amount has a shape of its own and blocks only in the cue's clause.
+_OTHER_ID = re.compile(
+    r"\b(?:(?:order|confirmation|tracking|ticket|invoice|reference|ref|claim|case|policy|booking|reservation)"
+    r" (?:number|no|id|code|#)|(?:employee|member|customer|order|user|patient) id|id number)(?!\w)", re.I)
 _OTHER = re.compile(
     rf"\b(?:{_IDENTIFIER}|zip|postal|amount|balance|total|price|cost|date|year|years|birthday|born|expiry|"
     r"expiration|how much|how many|when)\b", re.I)
@@ -296,8 +299,16 @@ _LIST_SPLIT = re.compile(r"\s*,\s*(?:and\s+)?|\s+and\s+", re.I)
 _LISTED_THING = re.compile(
     r"\b(?:zip|zip code|postal code|date of birth|birthday|dob|name|address|email|order number|claim number|"
     r"policy number|reference number|confirmation number|member id|employee id|customer id|amount|balance|"
-    r"how much|how many)\b",
+    r"how much|how many|security code|cvv|cvc|expiry|expiration|exp date)\b",
     re.I)
+# The listed things that take a shape of their own, as markers in a thing's set: a piece of a
+# comma-read answer must fit the thing it falls on.
+_THING_SHAPES = (("=zip", re.compile(r"\b(?:zip|postal code)\b", re.I)),
+                 ("=date", re.compile(r"\b(?:date of birth|birthday|dob)\b", re.I)),
+                 ("=code", re.compile(r"\b(?:security code|cvv|cvc)\b", re.I)),
+                 ("=expiry", re.compile(r"\b(?:expiry|expiration|exp date)\b", re.I)))
+# A card's expiry is a month and a year: "0928", "09/28", "09 2028"
+_EXPIRY = re.compile(r"(?:0?[1-9]|1[0-2])[/ -]?(?:\d{2}|20\d{2})")
 # Between two numbers of a listed answer: "10001 and 48213377", "10001, and then …", "10001. 4821…"
 _LIST_GAP = re.compile(r"\s*,?\s*(?:and(?:\s+then)?|[.?!]+(?:\s+and(?:\s+then)?)?)\s*", re.I)
 _COMPLETE = {"ssn": 9, "card": CARD_COMPLETE, "account": None, "iban": None, "phone": 10}
@@ -328,6 +339,9 @@ class _Scene:
             for n, (i, j) in enumerate(zip(edges, edges[1:])):
                 self.pieces.append((segs[i][0], segs[j - 1][1], segs[i:j], n > 0))
         self.piece_starts = [p[0] for p in self.pieces]
+        # every comma piece, for the comma reading of a listed answer: (start, end, inside a run)
+        self.commas = [(x, y, n > 0) for _, _, ss in self.runs for n, (x, y) in enumerate(ss)]
+        self.comma_starts = [c[0] for c in self.commas]
         self.cues = {c: [m.span() for m in rx.finditer(norm)] for c, rx in _CUE.items()}
         self.cue_ends = {c: [b for _, b in spans] for c, spans in self.cues.items()}
         self.labels = [m.span() for m in _TURN_START.finditer(norm)]
@@ -335,6 +349,7 @@ class _Scene:
         self._questions: dict[int, list[tuple[int, int, set[str]]]] = {}
         self._asking: dict[int, list[tuple[int, int]]] = {}
         self._orders: dict[int, dict[int, set[str]]] = {}
+        self.comma_read: set[int] = set()
         self.phone_bound = self.bound("phone", _phone_fits)
 
     def orig(self, a: int, b: int) -> str:
@@ -405,8 +420,10 @@ class _Scene:
     def listed(self, k: int) -> list[set[str]] | None:
         """The two or three things turn k's question lists ("your zip code and your account
         number?"), in order: the classes each names ("last4" for the last four of a social, an
-        empty set for a named thing that is no cue noun); None when it does not list. A part that
-        names nothing ("Okay, and your social?") is no listed thing."""
+        markers for a named thing that is no cue noun: "=zip", "=date", "=expiry", "=code" or
+        "=any"); None
+        when it does not list. A part that names nothing ("Okay, and your social?") is no listed
+        thing."""
         for s, e in self.questions(k):
             things = []
             for part in _LIST_SPLIT.split(self.norm[s:e].rstrip().rstrip("?")):
@@ -415,15 +432,17 @@ class _Scene:
                 elif cues := {c for c, rx in _CUE.items() if rx.search(part)}:
                     things.append(cues)
                 elif _LISTED_THING.search(part):
-                    things.append(set())
+                    things.append({next((m for m, rx in _THING_SHAPES if rx.search(part)), "=any")})
             if 2 <= len(things) <= 3:
                 return things
         return None
 
     def ordinal(self, a: int) -> set[str] | None:
         """The listed thing the number starting at `a` answers, when the answer gives exactly as
-        many numbers as the question listed. The numbers are runs: "3267, 333943" is one number
-        read in pieces, and only "and" ("and then"), a sentence end or a date ("10001, 1/2/1980")
+        many numbers as the question listed. The comma reading comes first: every comma, "and"
+        or sentence end separates numbers ("10001, 219099999"), taken only when each piece fits
+        the thing it falls on. Otherwise the numbers are runs: "3267, 333943" is one number read
+        in pieces, and only "and" ("and then"), a sentence end or a date ("10001, 1/2/1980")
         separates two."""
         k = self.turn(a)
         if k <= 0:
@@ -432,20 +451,52 @@ class _Scene:
             order: dict[int, set[str]] = {}
             things = self.listed(k - 1)
             if things:
-                body, end = self.labels[k][1], self.turn_end(k)
-                numbers, prev = [], None
-                i = bisect.bisect_left(self.piece_starts, body)
-                while i < len(self.pieces) and self.pieces[i][0] < end and len(numbers) <= len(things):
-                    a0, b0, _, joined = self.pieces[i]
-                    if not (_gap_ok(self.orig(body, a0)) if prev is None
-                            else joined or _LIST_GAP.fullmatch(self.orig(prev, a0))):
-                        break
-                    numbers.append(a0)
-                    prev, i = b0, i + 1
-                if len(numbers) == len(things):
-                    order = dict(zip(numbers, things))
+                order = self._comma_reading(k, things)
+                if order:
+                    self.comma_read.add(k)
+                else:
+                    order = self._run_reading(k, things)
             self._orders[k] = order
         return self._orders[k].get(a)
+
+    def _answer_numbers(self, k: int, units, starts, most: int):
+        """(start, end) of the numbers turn k's answer gives, at most `most` + 1: the first after
+        filler only, the next after "and", a sentence end, or inside one run. `units` are
+        (start, end, joined) and `starts` their starts."""
+        body, end = self.labels[k][1], self.turn_end(k)
+        out, prev = [], None
+        i = bisect.bisect_left(starts, body)
+        while i < len(units) and units[i][0] < end and len(out) <= most:
+            a0, b0, joined = units[i][0], units[i][1], units[i][-1]
+            if not (_gap_ok(self.orig(body, a0)) if prev is None
+                    else joined or _LIST_GAP.fullmatch(self.orig(prev, a0))):
+                break
+            out.append((a0, b0))
+            prev, i = b0, i + 1
+        return out
+
+    def _comma_reading(self, k: int, things: list[set[str]]) -> dict[int, set[str]]:
+        numbers = self._answer_numbers(k, self.commas, self.comma_starts, len(things))
+        if len(numbers) != len(things) or not all(
+                _fits_thing(thing, self.norm[x:y]) for (x, y), thing in zip(numbers, things)):
+            return {}
+        return {x: thing for (x, _), thing in zip(numbers, things)}
+
+    def _run_reading(self, k: int, things: list[set[str]]) -> dict[int, set[str]]:
+        numbers = self._answer_numbers(k, self.pieces, self.piece_starts, len(things))
+        return {x: thing for (x, _), thing in zip(numbers, things)} if len(numbers) == len(things) else {}
+
+    def units(self):
+        """The numbers as bound: pieces, or each comma piece of an answer read by its commas."""
+        for p in self.pieces:
+            k = self.turn(p[0])
+            if k > 0:
+                self.ordinal(p[0])                         # decides how turn k is read
+            if k in self.comma_read:
+                for n, (x, y) in enumerate(p[2]):
+                    yield x, y, [(x, y)], p[3] or n > 0
+            else:
+                yield p
 
     def asked(self, cls: str, a: int) -> bool:
         """The previous turn asked for `cls`, and this is the first number of the answer with only
@@ -512,7 +563,7 @@ class _Scene:
             return b if b is not None and not self.labelled(cls, b) else None
 
         spans = []
-        for a0, b0, segs, _ in self.pieces:
+        for a0, b0, segs, _ in self.units():
             # a listed answer is bound only by its place in the list
             if self.asked(cls, a0) if self.ordinal(a0) is not None else self.before(cls, a0):
                 b = leading(a0, segs)
@@ -545,6 +596,19 @@ _LAST_FOUR_OF = rf"\blast 4(?: digits)? of (?:{_THE}) (?:{_CUE_NOUNS['ssn']})"
 _SSN_LAST_FOUR = re.compile(rf"{_LAST_FOUR_OF}(?: is| are|:)? (\d{{4}})\b", re.I)
 
 
+def _fits_thing(thing: set[str], s: str) -> bool:
+    """A comma piece fits the listed thing it falls on: a complete value of a cue's class, a zip,
+    a date, a 3-4 digit code; any piece for any other named thing."""
+    fits = {
+        "ssn": lambda: len(_digits(s)) == 9 and _ssn_fits(s), "card": lambda: _card_fits(s),
+        "account": lambda: _account_fits(s), "iban": lambda: _account_fits(s),
+        "phone": lambda: bool(_PHONE_SHAPED.fullmatch(s) or _PHONE_DIGITS.fullmatch(s)),
+        "last4": lambda: bool(re.fullmatch(r"\d{4}", s)), "=zip": lambda: bool(re.fullmatch(r"\d{5}(?:-\d{4})?", s)),
+        "=date": lambda: _date(s), "=expiry": lambda: _date(s) or bool(_EXPIRY.fullmatch(s)), "=code": lambda: bool(re.fullmatch(r"\d{3,4}", s)), "=any": lambda: True,
+    }
+    return any(fits[t]() for t in thing)
+
+
 def _ssn_fits(s: str) -> bool:
     """Bound: 7-9 digits in up to 3 groups, whatever the range check says (a misheard digit)."""
     return 7 <= len(_digits(s)) <= 9 and len(_shape(s)) <= 3 and not _not_a_value(s) and not _PHONE_SHAPED.fullmatch(s)
@@ -556,7 +620,7 @@ _LAST_FOUR_ASKED = re.compile(rf"{_LAST_FOUR_OF}\b", re.I)
 def _last_four_answers(scene: _Scene) -> list[tuple[int, int]]:
     """"Last four of your social?" ⏎ "Yeah, it's 4471.": exactly four digits, first in the answer."""
     spans = []
-    for a, b, segs, _ in scene.pieces:
+    for a, b, segs, _ in scene.units():
         thing = scene.ordinal(a)                             # a listed answer: "1/2/1980 and 4471"
         if thing is not None:
             if "last4" in thing and b - a == 4 and not scene.labelled("ssn", b):
@@ -738,6 +802,15 @@ def _iban(norm: str, m: re.Match) -> tuple[int, int] | None:
     return None
 
 
+def _with_glued_cue(norm: str, span: tuple[int, int]) -> tuple[int, int]:
+    """"IBANGB73 …": the transcriber glued the cue word on. The mask takes it too, so the secret
+    stands on whole words and the audio mute can place it."""
+    a, b = span
+    if a >= 4 and norm[a - 4:a].upper() == "IBAN" and (a == 4 or not norm[a - 5].isalnum()):
+        return a - 4, b
+    return a, b
+
+
 def _account_fits(s: str) -> bool:
     """Bound: contiguous, 2-5 groups of 3+ digits, or a sort code: a list holding a 1- or 2-digit
     group ("Routing was 675, 86, 415, 4, 643 packets") is not an account number."""
@@ -775,7 +848,7 @@ def _comma_read_answers(scene: _Scene) -> list[tuple[int, int]]:
 
 def _accounts(scene: _Scene) -> list[tuple[int, int]]:
     norm = scene.norm
-    spans = [span for m in _IBAN.finditer(norm) if (span := _iban(norm, m))]
+    spans = [_with_glued_cue(norm, span) for m in _IBAN.finditer(norm) if (span := _iban(norm, m))]
     spans += scene.bound("account", _account_fits) + _comma_read_answers(scene)
     for m in _ACCOUNT_TOKEN.finditer(norm):
         token = m.group()
@@ -816,7 +889,8 @@ _EMAIL_AFTER = re.compile(
 _SENTENCE_START = re.compile(r".*(?:[.?!]\s+|\n|\*\*[^*\n]+:\*\*\s*)", re.S)   # ends where one starts
 # Words that never make a local part on their own: "it at amazon.com", "me at Starbucks.com".
 _NOT_LOCAL = frozenset(
-    "it me us them him her you that this there here up out in on over back look looked to".split()
+    "it me us them him her you that this there here up out in on over back look looked "
+    "is are was were be am it's that's at to for by with of from into about as".split()
 )
 
 
