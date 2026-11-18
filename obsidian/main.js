@@ -4288,7 +4288,7 @@ var require_pii = __commonJS({
     ];
     var KNOWN = new Set(PII_LABELS.map(([cls]) => cls));
     var PARTIAL_LINES = [
-      ["password", "The password check didn't run. Run `slim mask` on this note."],
+      ["password", "The password check didn't run. Run slim mask on this note."],
       ["audio", "Some secrets could not be silenced in the audio."]
     ];
     var REASONS = new Set(PARTIAL_LINES.map(([reason]) => reason));

@@ -25,7 +25,8 @@ test("every class reads right at one and at two", () => {
 });
 
 test("each unfinished reason says what is left, and only that", () => {
-  const password = "The password check didn't run. Run `slim mask` on this note.";
+  // set as text, so no backticks: they would show literally
+  const password = "The password check didn't run. Run slim mask on this note.";
   const audio = "Some secrets could not be silenced in the audio.";
   assert.equal(piiHint({ masked: {}, partial: ["password"] }), password);
   assert.equal(piiHint({ masked: {}, partial: ["audio"] }), audio);
@@ -58,7 +59,7 @@ test("a note with no masking keys gets no line", () => {
 
 test("malformed items are skipped, never thrown on", () => {
   assert.deepEqual(
-    piiFromFrontmatter({ pii_masked: ["email", "email:x", "ssn:1", 7, null, { a: 1 }, "__proto__:3"] }),
+    piiFromFrontmatter({ pii_masked: ["email", "email:x", "ssn:1", 7, null, { a: 1 }, "__proto__:3", "foo:2"] }),
     { masked: { ssn: 1 }, partial: [] });
   assert.equal(piiFromFrontmatter({ pii_masked: "email:2" }), null, "not an array: nothing to read");
   assert.deepEqual(piiFromFrontmatter({ pii_masked: "email:2", pii_partial: true }),

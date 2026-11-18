@@ -255,7 +255,7 @@ test("the card says what was masked, and when masking ran only partly", () => {
   v.renderCard(root);
   const hints = hintTexts(root).join("\n");
   assert.match(hints, /Masked 1 SSN, 2 emails\./);
-  assert.match(hints, /The password check didn't run\. Run `slim mask` on this note\./);
+  assert.match(hints, /The password check didn't run\. Run slim mask on this note\./);
   assert.match(hints, /Some secrets could not be silenced in the audio\./);
 });
 

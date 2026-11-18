@@ -11,9 +11,10 @@ const PII_LABELS = [["ssn", "SSN", "SSN"], ["card", "card", "cards"],
 const KNOWN = new Set(PII_LABELS.map(([cls]) => cls));
 
 // Why masking is unfinished (`pii_partial`), and what each leaves them to do. `password` is
-// fixable from the text; `audio` is not, so it never tells them to rerun.
+// fixable from the text; `audio` is not, so it never tells them to rerun. The card sets these as
+// text, so they carry no markdown.
 const PARTIAL_LINES = [
-  ["password", "The password check didn't run. Run `slim mask` on this note."],
+  ["password", "The password check didn't run. Run slim mask on this note."],
   ["audio", "Some secrets could not be silenced in the audio."],
 ];
 const REASONS = new Set(PARTIAL_LINES.map(([reason]) => reason));
