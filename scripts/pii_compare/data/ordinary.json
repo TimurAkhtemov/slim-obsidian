@@ -1,0 +1,1838 @@
+[
+ {
+  "id": "o000",
+  "family": "fp:prices",
+  "split": "test",
+  "text": "**Them:** It came to $4,451.19 with tax."
+ },
+ {
+  "id": "o001",
+  "family": "fp:prices",
+  "split": "test",
+  "text": "**Them:** They're 2 for 37.76 at the store."
+ },
+ {
+  "id": "o002",
+  "family": "fp:prices",
+  "split": "test",
+  "text": "**Them:** The total was 5962.17, then 18 off."
+ },
+ {
+  "id": "o003",
+  "family": "fp:prices",
+  "split": "test",
+  "text": "**Them:** I paid 492 dollars and 90 cents."
+ },
+ {
+  "id": "o004",
+  "family": "fp:prices",
+  "split": "test",
+  "text": "**Them:** Rent is 3810, utilities 358, internet 80."
+ },
+ {
+  "id": "o005",
+  "family": "fp:prices",
+  "split": "test",
+  "text": "**Them:** The total was 780.71, then 17 off."
+ },
+ {
+  "id": "o006",
+  "family": "fp:prices",
+  "split": "test",
+  "text": "**Them:** I paid 683 dollars and 82 cents."
+ },
+ {
+  "id": "o007",
+  "family": "fp:prices",
+  "split": "test",
+  "text": "**Them:** It was 74248 for the car and 947 for the insurance."
+ },
+ {
+  "id": "o008",
+  "family": "fp:prices",
+  "split": "test",
+  "text": "**Them:** It came to $4,485.49 with tax."
+ },
+ {
+  "id": "o009",
+  "family": "fp:prices",
+  "split": "test",
+  "text": "**Them:** We spent 5,279 on flights and 494 on hotels."
+ },
+ {
+  "id": "o010",
+  "family": "fp:dates_times",
+  "split": "test",
+  "text": "**Them:** I worked there from 2025 to 2031."
+ },
+ {
+  "id": "o011",
+  "family": "fp:dates_times",
+  "split": "test",
+  "text": "**Them:** On 1/6 we shipped 445 units."
+ },
+ {
+  "id": "o012",
+  "family": "fp:dates_times",
+  "split": "test",
+  "text": "**Them:** I worked there from 2008 to 2011."
+ },
+ {
+  "id": "o013",
+  "family": "fp:dates_times",
+  "split": "test",
+  "text": "**Them:** From 1998 through 1999 and 2000 we grew."
+ },
+ {
+  "id": "o014",
+  "family": "fp:dates_times",
+  "split": "test",
+  "text": "**Them:** It was due 1997-09-06, then pushed."
+ },
+ {
+  "id": "o015",
+  "family": "fp:dates_times",
+  "split": "test",
+  "text": "**Them:** I worked there from 2028 to 2031."
+ },
+ {
+  "id": "o016",
+  "family": "fp:dates_times",
+  "split": "test",
+  "text": "**Them:** Between 8 59 and 8 46 works for me."
+ },
+ {
+  "id": "o017",
+  "family": "fp:dates_times",
+  "split": "test",
+  "text": "**Them:** Born 3 3 2006."
+ },
+ {
+  "id": "o018",
+  "family": "fp:dates_times",
+  "split": "test",
+  "text": "**Them:** The meeting is on 6/15/2010 at 12:17."
+ },
+ {
+  "id": "o019",
+  "family": "fp:dates_times",
+  "split": "test",
+  "text": "**Them:** See you at 10:44, or 1:53 at the latest."
+ },
+ {
+  "id": "o020",
+  "family": "fp:phones_off",
+  "split": "test",
+  "text": "**Me:** Try 9044927065 or 1 890 827 7581."
+ },
+ {
+  "id": "o021",
+  "family": "fp:phones_off",
+  "split": "test",
+  "text": "**Them:** You can reach the office on 314, 274, 6798."
+ },
+ {
+  "id": "o022",
+  "family": "fp:phones_off",
+  "split": "test",
+  "text": "**Them:** Call me at 1 703 686 6241."
+ },
+ {
+  "id": "o023",
+  "family": "fp:phones_off",
+  "split": "test",
+  "text": "**Them:** The pharmacy line is 1-817-856-0221, extension 431."
+ },
+ {
+  "id": "o024",
+  "family": "fp:phones_off",
+  "split": "test",
+  "text": "**Me:** My number is 417 429 8896."
+ },
+ {
+  "id": "o025",
+  "family": "fp:phones_off",
+  "split": "test",
+  "text": "**Me:** Try 6753348099 or 420-704-5425."
+ },
+ {
+  "id": "o026",
+  "family": "fp:phones_off",
+  "split": "test",
+  "text": "**Them:** The pharmacy line is (485) 419-9995, extension 810."
+ },
+ {
+  "id": "o027",
+  "family": "fp:phones_off",
+  "split": "test",
+  "text": "**Them:** My number is 731.889.9317."
+ },
+ {
+  "id": "o028",
+  "family": "fp:phones_off",
+  "split": "test",
+  "text": "**Them:** Try 469 6661 or +1 644 559 3435."
+ },
+ {
+  "id": "o029",
+  "family": "fp:phones_off",
+  "split": "test",
+  "text": "**Them:** Call me at 1-256-868-3354."
+ },
+ {
+  "id": "o030",
+  "family": "fp:order_numbers",
+  "split": "test",
+  "text": "**Me:** Ticket 1348-1482-2369-4000-4631, can you check it?"
+ },
+ {
+  "id": "o031",
+  "family": "fp:order_numbers",
+  "split": "test",
+  "text": "**Them:** Your confirmation number is 796435294153935."
+ },
+ {
+  "id": "o032",
+  "family": "fp:order_numbers",
+  "split": "test",
+  "text": "**Them:** It's 418 470."
+ },
+ {
+  "id": "o033",
+  "family": "fp:order_numbers",
+  "split": "test",
+  "text": "**Them:** It's 43375128."
+ },
+ {
+  "id": "o034",
+  "family": "fp:order_numbers",
+  "split": "test",
+  "text": "**Me:** Reference 8417 7432 3 on the receipt."
+ },
+ {
+  "id": "o035",
+  "family": "fp:order_numbers",
+  "split": "test",
+  "text": "**Me:** Here it is. 596-5741246-5091557."
+ },
+ {
+  "id": "o036",
+  "family": "fp:order_numbers",
+  "split": "test",
+  "text": "**Them:** Your confirmation number is 682-8167008-7302817."
+ },
+ {
+  "id": "o037",
+  "family": "fp:order_numbers",
+  "split": "test",
+  "text": "**Me:** It's 452923174728."
+ },
+ {
+  "id": "o038",
+  "family": "fp:order_numbers",
+  "split": "test",
+  "text": "**Me:** Ticket 103-2071653-1381596, can you check it?"
+ },
+ {
+  "id": "o039",
+  "family": "fp:order_numbers",
+  "split": "test",
+  "text": "**Me:** It's 6727 58."
+ },
+ {
+  "id": "o040",
+  "family": "fp:zip",
+  "split": "test",
+  "text": "**Them:** It's 49049-8595."
+ },
+ {
+  "id": "o041",
+  "family": "fp:zip",
+  "split": "test",
+  "text": "**Them:** Zip code 54903, not 53559."
+ },
+ {
+  "id": "o042",
+  "family": "fp:zip",
+  "split": "test",
+  "text": "**Them:** Zip code 48355, not 67621."
+ },
+ {
+  "id": "o043",
+  "family": "fp:zip",
+  "split": "test",
+  "text": "**Them:** ZIP 99928 6148."
+ },
+ {
+  "id": "o044",
+  "family": "fp:zip",
+  "split": "test",
+  "text": "**Them:** Zip code 12494, not 96499."
+ },
+ {
+  "id": "o045",
+  "family": "fp:zip",
+  "split": "test",
+  "text": "**Them:** Zip code 17113, not 21308."
+ },
+ {
+  "id": "o046",
+  "family": "fp:zip",
+  "split": "test",
+  "text": "**Them:** Ship to 495625573."
+ },
+ {
+  "id": "o047",
+  "family": "fp:zip",
+  "split": "test",
+  "text": "**Them:** ZIP 08814 1595."
+ },
+ {
+  "id": "o048",
+  "family": "fp:zip",
+  "split": "test",
+  "text": "**Them:** ZIP 70598 6540."
+ },
+ {
+  "id": "o049",
+  "family": "fp:zip",
+  "split": "test",
+  "text": "**Them:** It's 34177-4283."
+ },
+ {
+  "id": "o050",
+  "family": "fp:measurements",
+  "split": "test",
+  "text": "**Them:** The room is 473 square feet, 8 foot ceilings."
+ },
+ {
+  "id": "o051",
+  "family": "fp:measurements",
+  "split": "test",
+  "text": "**Them:** It's 119 by 238 by 226 centimeters."
+ },
+ {
+  "id": "o052",
+  "family": "fp:measurements",
+  "split": "test",
+  "text": "**Them:** It weighs 964 grams, 44 ounces."
+ },
+ {
+  "id": "o053",
+  "family": "fp:measurements",
+  "split": "test",
+  "text": "**Them:** I ran 13.6 kilometers in 57 minutes."
+ },
+ {
+  "id": "o054",
+  "family": "fp:measurements",
+  "split": "test",
+  "text": "**Them:** The room is 364 square feet, 8 foot ceilings."
+ },
+ {
+  "id": "o055",
+  "family": "fp:measurements",
+  "split": "test",
+  "text": "**Them:** It weighs 723 grams, 33 ounces."
+ },
+ {
+  "id": "o056",
+  "family": "fp:measurements",
+  "split": "test",
+  "text": "**Them:** It weighs 786 grams, 47 ounces."
+ },
+ {
+  "id": "o057",
+  "family": "fp:measurements",
+  "split": "test",
+  "text": "**Them:** The room is 646 square feet, 9 foot ceilings."
+ },
+ {
+  "id": "o058",
+  "family": "fp:measurements",
+  "split": "test",
+  "text": "**Them:** It's 38 by 96 by 201 centimeters."
+ },
+ {
+  "id": "o059",
+  "family": "fp:measurements",
+  "split": "test",
+  "text": "**Them:** The room is 966 square feet, 12 foot ceilings."
+ },
+ {
+  "id": "o060",
+  "family": "fp:percentages",
+  "split": "test",
+  "text": "**Them:** Up 75% from 20%."
+ },
+ {
+  "id": "o061",
+  "family": "fp:percentages",
+  "split": "test",
+  "text": "**Them:** Up 9% from 27%."
+ },
+ {
+  "id": "o062",
+  "family": "fp:percentages",
+  "split": "test",
+  "text": "**Them:** We hit 78%, 10%, 97% and 80%."
+ },
+ {
+  "id": "o063",
+  "family": "fp:percentages",
+  "split": "test",
+  "text": "**Them:** Up 65% from 23%."
+ },
+ {
+  "id": "o064",
+  "family": "fp:percentages",
+  "split": "test",
+  "text": "**Them:** Up 43% from 57%."
+ },
+ {
+  "id": "o065",
+  "family": "fp:percentages",
+  "split": "test",
+  "text": "**Them:** We hit 25%, 15%, 94% and 16%."
+ },
+ {
+  "id": "o066",
+  "family": "fp:percentages",
+  "split": "test",
+  "text": "**Them:** It's 11.2 percent, 16 percent last year."
+ },
+ {
+  "id": "o067",
+  "family": "fp:percentages",
+  "split": "test",
+  "text": "**Them:** We hit 99%, 17%, 69% and 72%."
+ },
+ {
+  "id": "o068",
+  "family": "fp:percentages",
+  "split": "test",
+  "text": "**Them:** Up 86% from 47%."
+ },
+ {
+  "id": "o069",
+  "family": "fp:percentages",
+  "split": "test",
+  "text": "**Them:** We hit 89%, 27%, 34% and 34%."
+ },
+ {
+  "id": "o070",
+  "family": "fp:votes_scores",
+  "split": "test",
+  "text": "**Them:** The vote was 701 to 477."
+ },
+ {
+  "id": "o071",
+  "family": "fp:votes_scores",
+  "split": "test",
+  "text": "**Them:** The counts were 374 94 9151."
+ },
+ {
+  "id": "o072",
+  "family": "fp:votes_scores",
+  "split": "test",
+  "text": "**Them:** The vote was 16 to 889."
+ },
+ {
+  "id": "o073",
+  "family": "fp:votes_scores",
+  "split": "test",
+  "text": "**Them:** Results: 2022, 4008, 5619."
+ },
+ {
+  "id": "o074",
+  "family": "fp:votes_scores",
+  "split": "test",
+  "text": "**Them:** The counts were 853 92 1847."
+ },
+ {
+  "id": "o075",
+  "family": "fp:votes_scores",
+  "split": "test",
+  "text": "**Them:** Final score 0 112."
+ },
+ {
+  "id": "o076",
+  "family": "fp:votes_scores",
+  "split": "test",
+  "text": "**Them:** The counts were 755 34 6168."
+ },
+ {
+  "id": "o077",
+  "family": "fp:votes_scores",
+  "split": "test",
+  "text": "**Them:** The counts were 982 35 1416."
+ },
+ {
+  "id": "o078",
+  "family": "fp:votes_scores",
+  "split": "test",
+  "text": "**Them:** We got 7374 votes, they got 6350."
+ },
+ {
+  "id": "o079",
+  "family": "fp:votes_scores",
+  "split": "test",
+  "text": "**Them:** Results: 6357, 4940, 1965."
+ },
+ {
+  "id": "o080",
+  "family": "fp:number_lists_space",
+  "split": "test",
+  "text": "**Them:** Okay. 867 7746 43 5979."
+ },
+ {
+  "id": "o081",
+  "family": "fp:number_lists_space",
+  "split": "test",
+  "text": "**Them:** The counts were 9 3 72 8438 9 1 7."
+ },
+ {
+  "id": "o082",
+  "family": "fp:number_lists_space",
+  "split": "test",
+  "text": "**Them:** The counts were 8 5383 0 8884."
+ },
+ {
+  "id": "o083",
+  "family": "fp:number_lists_space",
+  "split": "test",
+  "text": "**Them:** Okay. 4144 851 5960 55 5108 3."
+ },
+ {
+  "id": "o084",
+  "family": "fp:number_lists_space",
+  "split": "test",
+  "text": "**Them:** We had 1489 301 people."
+ },
+ {
+  "id": "o085",
+  "family": "fp:number_lists_space",
+  "split": "test",
+  "text": "**Them:** The counts were 3638 7 0 11 6 366."
+ },
+ {
+  "id": "o086",
+  "family": "fp:number_lists_space",
+  "split": "test",
+  "text": "**Them:** The counts were 29 3 2 393 41 9 91."
+ },
+ {
+  "id": "o087",
+  "family": "fp:number_lists_space",
+  "split": "test",
+  "text": "**Them:** We had 7 99 5 37 3765 0 1 22 people."
+ },
+ {
+  "id": "o088",
+  "family": "fp:number_lists_space",
+  "split": "test",
+  "text": "**Them:** We had 53 65 2216 6 0 people."
+ },
+ {
+  "id": "o089",
+  "family": "fp:number_lists_space",
+  "split": "test",
+  "text": "**Them:** Okay. 9 0 2741."
+ },
+ {
+  "id": "o090",
+  "family": "fp:number_lists_comma",
+  "split": "test",
+  "text": "**Them:** The counts were 62, 56, 40, 608, 4, 918."
+ },
+ {
+  "id": "o091",
+  "family": "fp:number_lists_comma",
+  "split": "test",
+  "text": "**Them:** The counts were 4, 40, 61, 526, 925, 4."
+ },
+ {
+  "id": "o092",
+  "family": "fp:number_lists_comma",
+  "split": "test",
+  "text": "**Them:** We had 1, 866, 6 people."
+ },
+ {
+  "id": "o093",
+  "family": "fp:number_lists_comma",
+  "split": "test",
+  "text": "**Them:** Okay. 322, 21, 2483, 97, 2."
+ },
+ {
+  "id": "o094",
+  "family": "fp:number_lists_comma",
+  "split": "test",
+  "text": "**Them:** We had 3, 876, 638, 3325, 7, 301, 803 people."
+ },
+ {
+  "id": "o095",
+  "family": "fp:number_lists_comma",
+  "split": "test",
+  "text": "**Them:** We had 837, 8, 7 people."
+ },
+ {
+  "id": "o096",
+  "family": "fp:number_lists_comma",
+  "split": "test",
+  "text": "**Them:** The counts were 77, 12, 91, 2, 68, 59, 3, 6086."
+ },
+ {
+  "id": "o097",
+  "family": "fp:number_lists_comma",
+  "split": "test",
+  "text": "**Them:** Okay. 39, 3482, 2."
+ },
+ {
+  "id": "o098",
+  "family": "fp:number_lists_comma",
+  "split": "test",
+  "text": "**Them:** We had 178, 4370, 678, 825 people."
+ },
+ {
+  "id": "o099",
+  "family": "fp:number_lists_comma",
+  "split": "test",
+  "text": "**Them:** We had 1177, 512, 3, 4 people."
+ },
+ {
+  "id": "o100",
+  "family": "fp:ip_versions",
+  "split": "test",
+  "text": "**Them:** Upgrade to 17.16.25."
+ },
+ {
+  "id": "o101",
+  "family": "fp:ip_versions",
+  "split": "test",
+  "text": "**Them:** Upgrade to 17.2.50."
+ },
+ {
+  "id": "o102",
+  "family": "fp:ip_versions",
+  "split": "test",
+  "text": "**Them:** Upgrade to 5.7.60."
+ },
+ {
+  "id": "o103",
+  "family": "fp:ip_versions",
+  "split": "test",
+  "text": "**Them:** Upgrade to 14.19.87."
+ },
+ {
+  "id": "o104",
+  "family": "fp:ip_versions",
+  "split": "test",
+  "text": "**Them:** Build 73213.243."
+ },
+ {
+  "id": "o105",
+  "family": "fp:ip_versions",
+  "split": "test",
+  "text": "**Them:** Build 85162.177."
+ },
+ {
+  "id": "o106",
+  "family": "fp:ip_versions",
+  "split": "test",
+  "text": "**Them:** Upgrade to 3.8.10."
+ },
+ {
+  "id": "o107",
+  "family": "fp:ip_versions",
+  "split": "test",
+  "text": "**Them:** Build 71367.733."
+ },
+ {
+  "id": "o108",
+  "family": "fp:ip_versions",
+  "split": "test",
+  "text": "**Them:** The server is 150.66.165.137."
+ },
+ {
+  "id": "o109",
+  "family": "fp:ip_versions",
+  "split": "test",
+  "text": "**Them:** Version 7 7 62 is out."
+ },
+ {
+  "id": "o110",
+  "family": "fp:flights_rooms_ext",
+  "split": "test",
+  "text": "**Them:** Bus 61 then 424, platform 5."
+ },
+ {
+  "id": "o111",
+  "family": "fp:flights_rooms_ext",
+  "split": "test",
+  "text": "**Them:** I'm in room 622, extension 1162."
+ },
+ {
+  "id": "o112",
+  "family": "fp:flights_rooms_ext",
+  "split": "test",
+  "text": "**Them:** Flight UA 1321 leaves from gate D31."
+ },
+ {
+  "id": "o113",
+  "family": "fp:flights_rooms_ext",
+  "split": "test",
+  "text": "**Them:** Flight 5359, seat 10E, room 419."
+ },
+ {
+  "id": "o114",
+  "family": "fp:flights_rooms_ext",
+  "split": "test",
+  "text": "**Them:** Flight UA 5128 leaves from gate B39."
+ },
+ {
+  "id": "o115",
+  "family": "fp:flights_rooms_ext",
+  "split": "test",
+  "text": "**Them:** Bus 65 then 293, platform 3."
+ },
+ {
+  "id": "o116",
+  "family": "fp:flights_rooms_ext",
+  "split": "test",
+  "text": "**Them:** Flight 9683, seat 13E, room 372."
+ },
+ {
+  "id": "o117",
+  "family": "fp:flights_rooms_ext",
+  "split": "test",
+  "text": "**Them:** Bus 93 then 253, platform 8."
+ },
+ {
+  "id": "o118",
+  "family": "fp:flights_rooms_ext",
+  "split": "test",
+  "text": "**Them:** Flight AA 9833 leaves from gate A1."
+ },
+ {
+  "id": "o119",
+  "family": "fp:flights_rooms_ext",
+  "split": "test",
+  "text": "**Them:** Bus 97 then 179, platform 9."
+ },
+ {
+  "id": "o120",
+  "family": "fp:triples_324_333",
+  "split": "test",
+  "text": "**Them:** Okay. 225 75 9279."
+ },
+ {
+  "id": "o121",
+  "family": "fp:triples_324_333",
+  "split": "test",
+  "text": "**Them:** The rooms were 792 43 4808."
+ },
+ {
+  "id": "o122",
+  "family": "fp:triples_324_333",
+  "split": "test",
+  "text": "**Me:** It's 252355202."
+ },
+ {
+  "id": "o123",
+  "family": "fp:triples_324_333",
+  "split": "test",
+  "text": "**Me:** Scores 417 222 829."
+ },
+ {
+  "id": "o124",
+  "family": "fp:triples_324_333",
+  "split": "test",
+  "text": "**Me:** Order 982806668, thanks."
+ },
+ {
+  "id": "o125",
+  "family": "fp:triples_324_333",
+  "split": "test",
+  "text": "**Me:** The rooms were 324 85 6965."
+ },
+ {
+  "id": "o126",
+  "family": "fp:triples_324_333",
+  "split": "test",
+  "text": "**Me:** Scores 596 876 544."
+ },
+ {
+  "id": "o127",
+  "family": "fp:triples_324_333",
+  "split": "test",
+  "text": "**Me:** It's 348742364."
+ },
+ {
+  "id": "o128",
+  "family": "fp:triples_324_333",
+  "split": "test",
+  "text": "**Them:** Scores 965 437 426."
+ },
+ {
+  "id": "o129",
+  "family": "fp:triples_324_333",
+  "split": "test",
+  "text": "**Them:** Order 359725781, thanks."
+ },
+ {
+  "id": "o130",
+  "family": "fp:cue_social",
+  "split": "test",
+  "text": "**Them:** Social club dues went from 552 to 154 in 2025."
+ },
+ {
+  "id": "o131",
+  "family": "fp:cue_social",
+  "split": "test",
+  "text": "**Them:** The social had 605, 57, 1521 people over three nights."
+ },
+ {
+  "id": "o132",
+  "family": "fp:cue_social",
+  "split": "test",
+  "text": "**Me:** The social worker visited 2/17, order 3213495987."
+ },
+ {
+  "id": "o133",
+  "family": "fp:cue_social",
+  "split": "test",
+  "text": "**Me:** Social club dues went from 305 to 327 in 2013."
+ },
+ {
+  "id": "o134",
+  "family": "fp:cue_social",
+  "split": "test",
+  "text": "**Them:** Social media followers: 919, 268, 3, 7, 4, 763."
+ },
+ {
+  "id": "o135",
+  "family": "fp:cue_social",
+  "split": "test",
+  "text": "**Me:** Social media followers: 3983, 5, 594, 608, 5581, 8, 809, 506."
+ },
+ {
+  "id": "o136",
+  "family": "fp:cue_social",
+  "split": "test",
+  "text": "**Them:** The Social Security office is open 9 to 5, call 471 3311246."
+ },
+ {
+  "id": "o137",
+  "family": "fp:cue_social",
+  "split": "test",
+  "text": "**Me:** Our social media post got 29610062 views."
+ },
+ {
+  "id": "o138",
+  "family": "fp:cue_social",
+  "split": "test",
+  "text": "**Me:** Our social media post got 74279190 views."
+ },
+ {
+  "id": "o139",
+  "family": "fp:cue_social",
+  "split": "test",
+  "text": "**Them:** Social media followers: 70, 4, 20, 526, 0, 275, 1630."
+ },
+ {
+  "id": "o140",
+  "family": "fp:cue_card",
+  "split": "test",
+  "text": "**Me:** My credit score is 680."
+ },
+ {
+  "id": "o141",
+  "family": "fp:cue_card",
+  "split": "test",
+  "text": "**Them:** Credit hours were 3, 4, 2, 4, 4, 2, 2, 1, 1, 1, 1, 3, 3, 2."
+ },
+ {
+  "id": "o142",
+  "family": "fp:cue_card",
+  "split": "test",
+  "text": "**Them:** Card game at 7, 8 or 9."
+ },
+ {
+  "id": "o143",
+  "family": "fp:cue_card",
+  "split": "test",
+  "text": "**Me:** Extra credit: 7492 9 1325 points."
+ },
+ {
+  "id": "o144",
+  "family": "fp:cue_card",
+  "split": "test",
+  "text": "**Them:** Card 40 of 52, 2021 9482 1282."
+ },
+ {
+  "id": "o145",
+  "family": "fp:cue_card",
+  "split": "test",
+  "text": "**Me:** Credit hours were 1, 3, 4, 3, 1, 1, 2, 1, 1."
+ },
+ {
+  "id": "o146",
+  "family": "fp:cue_card",
+  "split": "test",
+  "text": "**Them:** We dealt 4227, 3739, 4427, 208, 4, 43, 347 cards."
+ },
+ {
+  "id": "o147",
+  "family": "fp:cue_card",
+  "split": "test",
+  "text": "**Me:** Card game at 7, 8 or 9."
+ },
+ {
+  "id": "o148",
+  "family": "fp:cue_card",
+  "split": "test",
+  "text": "**Me:** The gift card order number is 884-2613808-1024692."
+ },
+ {
+  "id": "o149",
+  "family": "fp:cue_card",
+  "split": "test",
+  "text": "**Them:** I paid by card, order 8378 7588 1162 6."
+ },
+ {
+  "id": "o150",
+  "family": "fp:cue_account",
+  "split": "test",
+  "text": "**Me:** Account numbers 565, 0 were flagged."
+ },
+ {
+  "id": "o151",
+  "family": "fp:cue_account",
+  "split": "test",
+  "text": "**Them:** Your account number is fine, the order was 5466 4620 071."
+ },
+ {
+  "id": "o152",
+  "family": "fp:cue_account",
+  "split": "test",
+  "text": "**Them:** Sort code questions? Ticket INC205653800."
+ },
+ {
+  "id": "o153",
+  "family": "fp:cue_account",
+  "split": "test",
+  "text": "**Them:** Account numbers 309, 564 were flagged."
+ },
+ {
+  "id": "o154",
+  "family": "fp:cue_account",
+  "split": "test",
+  "text": "**Me:** Routing was 37, 8437, 54, 85, 855 packets per second."
+ },
+ {
+  "id": "o155",
+  "family": "fp:cue_account",
+  "split": "test",
+  "text": "**Them:** The routing table has 593 entries."
+ },
+ {
+  "id": "o156",
+  "family": "fp:cue_account",
+  "split": "test",
+  "text": "**Them:** The routing table has 337 entries."
+ },
+ {
+  "id": "o157",
+  "family": "fp:cue_account",
+  "split": "test",
+  "text": "**Me:** Your account number is fine, the order was 867 252 277 510 956 35."
+ },
+ {
+  "id": "o158",
+  "family": "fp:cue_account",
+  "split": "test",
+  "text": "**Me:** Sort code questions? Ticket INC651029035."
+ },
+ {
+  "id": "o159",
+  "family": "fp:cue_account",
+  "split": "test",
+  "text": "**Them:** Account for 75 of the 3577411 errors."
+ },
+ {
+  "id": "o160",
+  "family": "fp:password_cue_words",
+  "split": "test",
+  "text": "**Them:** Pin the tab with the 2026 numbers.\n\n**Me:** Sure, room 936 it is."
+ },
+ {
+  "id": "o161",
+  "family": "fp:password_cue_words",
+  "split": "test",
+  "text": "**Me:** Your login is fine, the server was down from 11 to 1.\n\n**Me:** Sure, room 917 it is."
+ },
+ {
+  "id": "o162",
+  "family": "fp:password_cue_words",
+  "split": "test",
+  "text": "**Me:** The password policy changed in 2022, now it's 14 characters.\n\n**Them:** Okay, sounds good."
+ },
+ {
+  "id": "o163",
+  "family": "fp:password_cue_words",
+  "split": "test",
+  "text": "**Them:** Pin the tab with the 2022 numbers.\n\n**Me:** Great, thanks Dave."
+ },
+ {
+  "id": "o164",
+  "family": "fp:password_cue_words",
+  "split": "test",
+  "text": "**Me:** The door code thing is broken again, Dave said call facilities.\n\n**Them:** Okay, sounds good."
+ },
+ {
+  "id": "o165",
+  "family": "fp:password_cue_words",
+  "split": "test",
+  "text": "**Them:** Your login is fine, the server was down from 1 to 8.\n\n**Me:** Great, thanks Dave."
+ },
+ {
+  "id": "o166",
+  "family": "fp:password_cue_words",
+  "split": "test",
+  "text": "**Them:** Bowling pins cost 97 dollars each, we bought 9.\n\n**Them:** Great, thanks Dave."
+ },
+ {
+  "id": "o167",
+  "family": "fp:password_cue_words",
+  "split": "test",
+  "text": "**Me:** Bowling pins cost 95 dollars each, we bought 6.\n\n**Them:** Okay, sounds good."
+ },
+ {
+  "id": "o168",
+  "family": "fp:password_cue_words",
+  "split": "test",
+  "text": "**Me:** The password policy changed in 2024, now it's 16 characters.\n\n**Them:** Sure, room 115 it is."
+ },
+ {
+  "id": "o169",
+  "family": "fp:password_cue_words",
+  "split": "test",
+  "text": "**Me:** The password policy changed in 2020, now it's 8 characters.\n\n**Me:** Sure, room 540 it is."
+ },
+ {
+  "id": "o170",
+  "family": "fp2:ss office + phone",
+  "split": "test",
+  "text": "**Them:** The Social Security office is open 9 to 5, call 373.401.1217."
+ },
+ {
+  "id": "o171",
+  "family": "fp2:ss office + phone",
+  "split": "test",
+  "text": "**Them:** The Social Security office is open 9 to 5, call 1-952-774-4347."
+ },
+ {
+  "id": "o172",
+  "family": "fp2:ss office + phone",
+  "split": "test",
+  "text": "**Them:** The Social Security office is open 9 to 5, call 879-3930."
+ },
+ {
+  "id": "o173",
+  "family": "fp2:ss office + phone",
+  "split": "test",
+  "text": "**Them:** The Social Security office is open 9 to 5, call 1-564-284-5030."
+ },
+ {
+  "id": "o174",
+  "family": "fp2:social media views (contig)",
+  "split": "test",
+  "text": "**Them:** Our social media post got 24447810 views."
+ },
+ {
+  "id": "o175",
+  "family": "fp2:social media views (contig)",
+  "split": "test",
+  "text": "**Them:** Our social media post got 80590561 views."
+ },
+ {
+  "id": "o176",
+  "family": "fp2:social media views (contig)",
+  "split": "test",
+  "text": "**Them:** Our social media post got 53272577 views."
+ },
+ {
+  "id": "o177",
+  "family": "fp2:social media views (contig)",
+  "split": "test",
+  "text": "**Them:** Our social media post got 23764039 views."
+ },
+ {
+  "id": "o178",
+  "family": "fp2:social + comma triple",
+  "split": "test",
+  "text": "**Them:** The social had 667, 72, 5353 people over three nights."
+ },
+ {
+  "id": "o179",
+  "family": "fp2:social + comma triple",
+  "split": "test",
+  "text": "**Them:** The social had 477, 24, 4695 people over three nights."
+ },
+ {
+  "id": "o180",
+  "family": "fp2:social + comma triple",
+  "split": "test",
+  "text": "**Them:** The social had 240, 56, 9349 people over three nights."
+ },
+ {
+  "id": "o181",
+  "family": "fp2:social + comma triple",
+  "split": "test",
+  "text": "**Them:** The social had 595, 75, 2127 people over three nights."
+ },
+ {
+  "id": "o182",
+  "family": "fp2:social + comma list",
+  "split": "test",
+  "text": "**Them:** Social media followers: 3, 7398, 0."
+ },
+ {
+  "id": "o183",
+  "family": "fp2:social + comma list",
+  "split": "test",
+  "text": "**Them:** Social media followers: 232, 9036, 630, 809, 60, 985."
+ },
+ {
+  "id": "o184",
+  "family": "fp2:social + comma list",
+  "split": "test",
+  "text": "**Them:** Social media followers: 639, 24, 4513, 51."
+ },
+ {
+  "id": "o185",
+  "family": "fp2:social + comma list",
+  "split": "test",
+  "text": "**Them:** Social media followers: 2952, 4, 6, 58."
+ },
+ {
+  "id": "o186",
+  "family": "fp2:social + ISO date",
+  "split": "test",
+  "text": "**Them:** My social security check came on 2025-08-27."
+ },
+ {
+  "id": "o187",
+  "family": "fp2:social + ISO date",
+  "split": "test",
+  "text": "**Them:** My social security check came on 2024-02-16."
+ },
+ {
+  "id": "o188",
+  "family": "fp2:social + ISO date",
+  "split": "test",
+  "text": "**Them:** My social security check came on 2020-05-13."
+ },
+ {
+  "id": "o189",
+  "family": "fp2:social + ISO date",
+  "split": "test",
+  "text": "**Them:** My social security check came on 2022-02-14."
+ },
+ {
+  "id": "o190",
+  "family": "fp2:social + order 7-11",
+  "split": "test",
+  "text": "**Them:** The social worker visited on Monday, order 522709337."
+ },
+ {
+  "id": "o191",
+  "family": "fp2:social + order 7-11",
+  "split": "test",
+  "text": "**Them:** The social worker visited on Monday, order 243713083."
+ },
+ {
+  "id": "o192",
+  "family": "fp2:social + order 7-11",
+  "split": "test",
+  "text": "**Them:** The social worker visited on Monday, order 974013501."
+ },
+ {
+  "id": "o193",
+  "family": "fp2:social + order 7-11",
+  "split": "test",
+  "text": "**Them:** The social worker visited on Monday, order 2424732402."
+ },
+ {
+  "id": "o194",
+  "family": "fp2:phone, 'social' 50 chars before",
+  "split": "test",
+  "text": "**Them:** I left social stuff aside for now. Anyway, call 838-5550."
+ },
+ {
+  "id": "o195",
+  "family": "fp2:phone, 'social' 50 chars before",
+  "split": "test",
+  "text": "**Them:** I left social stuff aside for now. Anyway, call 368-472-6896."
+ },
+ {
+  "id": "o196",
+  "family": "fp2:phone, 'social' 50 chars before",
+  "split": "test",
+  "text": "**Them:** I left social stuff aside for now. Anyway, call 548, 284, 1392."
+ },
+ {
+  "id": "o197",
+  "family": "fp2:phone, 'social' 50 chars before",
+  "split": "test",
+  "text": "**Them:** I left social stuff aside for now. Anyway, call 4682686985."
+ },
+ {
+  "id": "o198",
+  "family": "fp2:credit score",
+  "split": "test",
+  "text": "**Them:** My credit score is 505."
+ },
+ {
+  "id": "o199",
+  "family": "fp2:credit score",
+  "split": "test",
+  "text": "**Them:** My credit score is 830."
+ },
+ {
+  "id": "o200",
+  "family": "fp2:credit score",
+  "split": "test",
+  "text": "**Them:** My credit score is 837."
+ },
+ {
+  "id": "o201",
+  "family": "fp2:credit score",
+  "split": "test",
+  "text": "**Them:** My credit score is 387."
+ },
+ {
+  "id": "o202",
+  "family": "fp2:card game 7,8,9",
+  "split": "test",
+  "text": "**Them:** Card game at 7, 8 or 9."
+ },
+ {
+  "id": "o203",
+  "family": "fp2:card game 7,8,9",
+  "split": "test",
+  "text": "**Them:** Card game at 7, 8 or 9."
+ },
+ {
+  "id": "o204",
+  "family": "fp2:card game 7,8,9",
+  "split": "test",
+  "text": "**Them:** Card game at 7, 8 or 9."
+ },
+ {
+  "id": "o205",
+  "family": "fp2:card game 7,8,9",
+  "split": "test",
+  "text": "**Them:** Card game at 7, 8 or 9."
+ },
+ {
+  "id": "o206",
+  "family": "fp2:card + amazon order 3-7-7",
+  "split": "test",
+  "text": "**Them:** I paid by card, order 470-2575053-7547519."
+ },
+ {
+  "id": "o207",
+  "family": "fp2:card + amazon order 3-7-7",
+  "split": "test",
+  "text": "**Them:** I paid by card, order 251-1125113-5700936."
+ },
+ {
+  "id": "o208",
+  "family": "fp2:card + amazon order 3-7-7",
+  "split": "test",
+  "text": "**Them:** I paid by card, order 106-5668013-1469628."
+ },
+ {
+  "id": "o209",
+  "family": "fp2:card + amazon order 3-7-7",
+  "split": "test",
+  "text": "**Them:** I paid by card, order 840-2005131-3010721."
+ },
+ {
+  "id": "o210",
+  "family": "fp2:card + order 12-19",
+  "split": "test",
+  "text": "**Them:** I paid by card, the order number is 664444099092587."
+ },
+ {
+  "id": "o211",
+  "family": "fp2:card + order 12-19",
+  "split": "test",
+  "text": "**Them:** I paid by card, the order number is 612595865621109."
+ },
+ {
+  "id": "o212",
+  "family": "fp2:card + order 12-19",
+  "split": "test",
+  "text": "**Them:** I paid by card, the order number is 542610154958."
+ },
+ {
+  "id": "o213",
+  "family": "fp2:card + order 12-19",
+  "split": "test",
+  "text": "**Them:** I paid by card, the order number is 512480323411823."
+ },
+ {
+  "id": "o214",
+  "family": "fp2:credit hours 1-digit list",
+  "split": "test",
+  "text": "**Them:** Credit hours were 3, 3, 4, 1, 1, 1, 1, 3, 1, 1, 4."
+ },
+ {
+  "id": "o215",
+  "family": "fp2:credit hours 1-digit list",
+  "split": "test",
+  "text": "**Them:** Credit hours were 1, 1, 4, 4, 2, 4, 3, 4, 2, 4, 4, 1, 1."
+ },
+ {
+  "id": "o216",
+  "family": "fp2:credit hours 1-digit list",
+  "split": "test",
+  "text": "**Them:** Credit hours were 2, 2, 1, 1, 1, 2, 3, 2, 1, 3, 4, 3, 4."
+ },
+ {
+  "id": "o217",
+  "family": "fp2:credit hours 1-digit list",
+  "split": "test",
+  "text": "**Them:** Credit hours were 1, 1, 2, 2, 1, 3, 3, 2, 4, 4, 2, 3."
+ },
+ {
+  "id": "o218",
+  "family": "fp2:cards dealt list",
+  "split": "test",
+  "text": "**Them:** We dealt 444, 63, 4, 70, 0, 5480 cards."
+ },
+ {
+  "id": "o219",
+  "family": "fp2:cards dealt list",
+  "split": "test",
+  "text": "**Them:** We dealt 43, 9, 8997, 905, 117 cards."
+ },
+ {
+  "id": "o220",
+  "family": "fp2:cards dealt list",
+  "split": "test",
+  "text": "**Them:** We dealt 49, 9799, 866, 509, 652, 928, 7951 cards."
+ },
+ {
+  "id": "o221",
+  "family": "fp2:cards dealt list",
+  "split": "test",
+  "text": "**Them:** We dealt 1, 0, 1670, 3, 97, 80, 31, 7 cards."
+ },
+ {
+  "id": "o222",
+  "family": "fp2:credit union 4x4-digit",
+  "split": "test",
+  "text": "**Them:** Credit union members: 9504, 7485, 3959, 7159."
+ },
+ {
+  "id": "o223",
+  "family": "fp2:credit union 4x4-digit",
+  "split": "test",
+  "text": "**Them:** Credit union members: 8896, 1741, 9270, 3458."
+ },
+ {
+  "id": "o224",
+  "family": "fp2:credit union 4x4-digit",
+  "split": "test",
+  "text": "**Them:** Credit union members: 4564, 6896, 9428, 3249."
+ },
+ {
+  "id": "o225",
+  "family": "fp2:credit union 4x4-digit",
+  "split": "test",
+  "text": "**Them:** Credit union members: 3242, 1742, 4665, 5258."
+ },
+ {
+  "id": "o226",
+  "family": "fp2:debit + confirmation",
+  "split": "test",
+  "text": "**Them:** The debit went through, confirmation 5199113113100511."
+ },
+ {
+  "id": "o227",
+  "family": "fp2:debit + confirmation",
+  "split": "test",
+  "text": "**Them:** The debit went through, confirmation 9601 9589 9199 2131 2."
+ },
+ {
+  "id": "o228",
+  "family": "fp2:debit + confirmation",
+  "split": "test",
+  "text": "**Them:** The debit went through, confirmation 947886650560."
+ },
+ {
+  "id": "o229",
+  "family": "fp2:debit + confirmation",
+  "split": "test",
+  "text": "**Them:** The debit went through, confirmation 9346 1275 7620 3231."
+ },
+ {
+  "id": "o230",
+  "family": "fp2:visa appt + case 12-16",
+  "split": "test",
+  "text": "**Them:** Visa appointment on 1/18/2025, case 24922696433172."
+ },
+ {
+  "id": "o231",
+  "family": "fp2:visa appt + case 12-16",
+  "split": "test",
+  "text": "**Them:** Visa appointment on 4/13/2025, case 259130465838219."
+ },
+ {
+  "id": "o232",
+  "family": "fp2:visa appt + case 12-16",
+  "split": "test",
+  "text": "**Them:** Visa appointment on 7/8/2025, case 692675795601."
+ },
+ {
+  "id": "o233",
+  "family": "fp2:visa appt + case 12-16",
+  "split": "test",
+  "text": "**Them:** Visa appointment on 4/23/2026, case 82421361893443."
+ },
+ {
+  "id": "o234",
+  "family": "fp2:credit + two phones",
+  "split": "test",
+  "text": "**Them:** The credit desk is 299 744 8061 or 321 410 7362."
+ },
+ {
+  "id": "o235",
+  "family": "fp2:credit + two phones",
+  "split": "test",
+  "text": "**Them:** The credit desk is 720 986 3319 or 874 447 1678."
+ },
+ {
+  "id": "o236",
+  "family": "fp2:credit + two phones",
+  "split": "test",
+  "text": "**Them:** The credit desk is 807 214 7830 or 230 701 7721."
+ },
+ {
+  "id": "o237",
+  "family": "fp2:credit + two phones",
+  "split": "test",
+  "text": "**Them:** The credit desk is 593 449 2910 or 887 548 1277."
+ },
+ {
+  "id": "o238",
+  "family": "fp2:account for N of M errors",
+  "split": "test",
+  "text": "**Them:** Account for 38 of the 184613 errors."
+ },
+ {
+  "id": "o239",
+  "family": "fp2:account for N of M errors",
+  "split": "test",
+  "text": "**Them:** Account for 78 of the 5147578 errors."
+ },
+ {
+  "id": "o240",
+  "family": "fp2:account for N of M errors",
+  "split": "test",
+  "text": "**Them:** Account for 66 of the 4686483 errors."
+ },
+ {
+  "id": "o241",
+  "family": "fp2:account for N of M errors",
+  "split": "test",
+  "text": "**Them:** Account for 52 of the 639497 errors."
+ },
+ {
+  "id": "o242",
+  "family": "fp2:routing table entries",
+  "split": "test",
+  "text": "**Them:** The routing table has 144 entries."
+ },
+ {
+  "id": "o243",
+  "family": "fp2:routing table entries",
+  "split": "test",
+  "text": "**Them:** The routing table has 699 entries."
+ },
+ {
+  "id": "o244",
+  "family": "fp2:routing table entries",
+  "split": "test",
+  "text": "**Them:** The routing table has 611 entries."
+ },
+ {
+  "id": "o245",
+  "family": "fp2:routing table entries",
+  "split": "test",
+  "text": "**Them:** The routing table has 630 entries."
+ },
+ {
+  "id": "o246",
+  "family": "fp2:routing + lookups",
+  "split": "test",
+  "text": "**Them:** The routing table has 715 entries and 402892 lookups."
+ },
+ {
+  "id": "o247",
+  "family": "fp2:routing + lookups",
+  "split": "test",
+  "text": "**Them:** The routing table has 466 entries and 7154329 lookups."
+ },
+ {
+  "id": "o248",
+  "family": "fp2:routing + lookups",
+  "split": "test",
+  "text": "**Them:** The routing table has 805 entries and 9177654 lookups."
+ },
+ {
+  "id": "o249",
+  "family": "fp2:routing + lookups",
+  "split": "test",
+  "text": "**Them:** The routing table has 118 entries and 7319787 lookups."
+ },
+ {
+  "id": "o250",
+  "family": "fp2:account number + order",
+  "split": "test",
+  "text": "**Them:** Your account number is fine, the order was 6612 6715 8916 337."
+ },
+ {
+  "id": "o251",
+  "family": "fp2:account number + order",
+  "split": "test",
+  "text": "**Them:** Your account number is fine, the order was 2733 5309 7317."
+ },
+ {
+  "id": "o252",
+  "family": "fp2:account number + order",
+  "split": "test",
+  "text": "**Them:** Your account number is fine, the order was 9959-6928-1503-4354-48."
+ },
+ {
+  "id": "o253",
+  "family": "fp2:account number + order",
+  "split": "test",
+  "text": "**Them:** Your account number is fine, the order was 991686981582113."
+ },
+ {
+  "id": "o254",
+  "family": "fp2:account number + ISO date",
+  "split": "test",
+  "text": "**Them:** The account number changed on 2025-11-09."
+ },
+ {
+  "id": "o255",
+  "family": "fp2:account number + ISO date",
+  "split": "test",
+  "text": "**Them:** The account number changed on 2022-06-05."
+ },
+ {
+  "id": "o256",
+  "family": "fp2:account number + ISO date",
+  "split": "test",
+  "text": "**Them:** The account number changed on 2026-09-18."
+ },
+ {
+  "id": "o257",
+  "family": "fp2:account number + ISO date",
+  "split": "test",
+  "text": "**Them:** The account number changed on 2020-01-23."
+ },
+ {
+  "id": "o258",
+  "family": "fp2:phone + account number",
+  "split": "test",
+  "text": "**Them:** Call 244 495 7414 about the account number."
+ },
+ {
+  "id": "o259",
+  "family": "fp2:phone + account number",
+  "split": "test",
+  "text": "**Them:** Call 237 9240761 about the account number."
+ },
+ {
+  "id": "o260",
+  "family": "fp2:phone + account number",
+  "split": "test",
+  "text": "**Them:** Call 452 3249171 about the account number."
+ },
+ {
+  "id": "o261",
+  "family": "fp2:phone + account number",
+  "split": "test",
+  "text": "**Them:** Call 371 2386 about the account number."
+ },
+ {
+  "id": "o262",
+  "family": "fp2:routing + comma list",
+  "split": "test",
+  "text": "**Them:** Routing was 963, 8470, 230, 47, 6596 packets per second."
+ },
+ {
+  "id": "o263",
+  "family": "fp2:routing + comma list",
+  "split": "test",
+  "text": "**Them:** Routing was 8, 7496, 384, 130, 15, 42 packets per second."
+ },
+ {
+  "id": "o264",
+  "family": "fp2:routing + comma list",
+  "split": "test",
+  "text": "**Them:** Routing was 2648, 2, 5, 565, 504 packets per second."
+ },
+ {
+  "id": "o265",
+  "family": "fp2:routing + comma list",
+  "split": "test",
+  "text": "**Them:** Routing was 664, 2384, 17, 1908, 16, 866 packets per second."
+ },
+ {
+  "id": "o266",
+  "family": "fp2:sort code + ticket",
+  "split": "test",
+  "text": "**Them:** Sort code questions? Ticket INC66516076."
+ },
+ {
+  "id": "o267",
+  "family": "fp2:sort code + ticket",
+  "split": "test",
+  "text": "**Them:** Sort code questions? Ticket INC8918782."
+ },
+ {
+  "id": "o268",
+  "family": "fp2:sort code + ticket",
+  "split": "test",
+  "text": "**Them:** Sort code questions? Ticket INC3865905."
+ },
+ {
+  "id": "o269",
+  "family": "fp2:sort code + ticket",
+  "split": "test",
+  "text": "**Them:** Sort code questions? Ticket INC73442958."
+ },
+ {
+  "id": "o270",
+  "family": "fp2:counts 3-2-4 spaced (no cue)",
+  "split": "test",
+  "text": "**Them:** The counts were 622 93 5421."
+ },
+ {
+  "id": "o271",
+  "family": "fp2:counts 3-2-4 spaced (no cue)",
+  "split": "test",
+  "text": "**Them:** The counts were 190 89 7539."
+ },
+ {
+  "id": "o272",
+  "family": "fp2:counts 3-2-4 spaced (no cue)",
+  "split": "test",
+  "text": "**Them:** The counts were 577 83 8614."
+ },
+ {
+  "id": "o273",
+  "family": "fp2:counts 3-2-4 spaced (no cue)",
+  "split": "test",
+  "text": "**Them:** The counts were 502 73 7612."
+ },
+ {
+  "id": "o274",
+  "family": "fp2:scores 3-3-3 spaced (no cue)",
+  "split": "test",
+  "text": "**Them:** Scores 567 475 216."
+ },
+ {
+  "id": "o275",
+  "family": "fp2:scores 3-3-3 spaced (no cue)",
+  "split": "test",
+  "text": "**Them:** Scores 371 452 732."
+ },
+ {
+  "id": "o276",
+  "family": "fp2:scores 3-3-3 spaced (no cue)",
+  "split": "test",
+  "text": "**Them:** Scores 213 149 905."
+ },
+ {
+  "id": "o277",
+  "family": "fp2:scores 3-3-3 spaced (no cue)",
+  "split": "test",
+  "text": "**Them:** Scores 769 130 919."
+ },
+ {
+  "id": "o278",
+  "family": "fp2:9-digit order contig (no cue)",
+  "split": "test",
+  "text": "**Them:** Order 370600171, thanks."
+ },
+ {
+  "id": "o279",
+  "family": "fp2:9-digit order contig (no cue)",
+  "split": "test",
+  "text": "**Them:** Order 272259309, thanks."
+ },
+ {
+  "id": "o280",
+  "family": "fp2:9-digit order contig (no cue)",
+  "split": "test",
+  "text": "**Them:** Order 545405809, thanks."
+ },
+ {
+  "id": "o281",
+  "family": "fp2:9-digit order contig (no cue)",
+  "split": "test",
+  "text": "**Them:** Order 930431383, thanks."
+ },
+ {
+  "id": "o282",
+  "family": "fp2:9-digit leading 0 (no cue)",
+  "split": "test",
+  "text": "**Them:** It's 029714508."
+ },
+ {
+  "id": "o283",
+  "family": "fp2:9-digit leading 0 (no cue)",
+  "split": "test",
+  "text": "**Them:** It's 035587018."
+ },
+ {
+  "id": "o284",
+  "family": "fp2:9-digit leading 0 (no cue)",
+  "split": "test",
+  "text": "**Them:** It's 073719001."
+ },
+ {
+  "id": "o285",
+  "family": "fp2:9-digit leading 0 (no cue)",
+  "split": "test",
+  "text": "**Them:** It's 058272805."
+ },
+ {
+  "id": "o286",
+  "family": "fp2:ZIP+4 glued (no cue)",
+  "split": "test",
+  "text": "**Them:** Ship to 472385456."
+ },
+ {
+  "id": "o287",
+  "family": "fp2:ZIP+4 glued (no cue)",
+  "split": "test",
+  "text": "**Them:** Ship to 737091589."
+ },
+ {
+  "id": "o288",
+  "family": "fp2:ZIP+4 glued (no cue)",
+  "split": "test",
+  "text": "**Them:** Ship to 430112284."
+ },
+ {
+  "id": "o289",
+  "family": "fp2:ZIP+4 glued (no cue)",
+  "split": "test",
+  "text": "**Them:** Ship to 184929550."
+ },
+ {
+  "id": "o290",
+  "family": "fp2:16-digit tracking (no cue)",
+  "split": "test",
+  "text": "**Them:** Tracking is 4411989654626542."
+ },
+ {
+  "id": "o291",
+  "family": "fp2:16-digit tracking (no cue)",
+  "split": "test",
+  "text": "**Them:** Tracking is 6797309420731432."
+ },
+ {
+  "id": "o292",
+  "family": "fp2:16-digit tracking (no cue)",
+  "split": "test",
+  "text": "**Them:** Tracking is 4431669842788121."
+ },
+ {
+  "id": "o293",
+  "family": "fp2:16-digit tracking (no cue)",
+  "split": "test",
+  "text": "**Them:** Tracking is 2592322953134385."
+ },
+ {
+  "id": "o294",
+  "family": "fp2:16-digit 4-4-4-4 ref (no cue)",
+  "split": "test",
+  "text": "**Them:** Reference 8649 9452 8776 5863."
+ },
+ {
+  "id": "o295",
+  "family": "fp2:16-digit 4-4-4-4 ref (no cue)",
+  "split": "test",
+  "text": "**Them:** Reference 3672 0609 7094 8721."
+ },
+ {
+  "id": "o296",
+  "family": "fp2:16-digit 4-4-4-4 ref (no cue)",
+  "split": "test",
+  "text": "**Them:** Reference 5035 7155 9595 6247."
+ },
+ {
+  "id": "o297",
+  "family": "fp2:16-digit 4-4-4-4 ref (no cue)",
+  "split": "test",
+  "text": "**Them:** Reference 2790 1739 5963 8575."
+ },
+ {
+  "id": "o298",
+  "family": "fp2:4x4-digit comma list starting 4 (no cue)",
+  "split": "test",
+  "text": "**Them:** The counts were 4505, 2881, 9812, 1990."
+ },
+ {
+  "id": "o299",
+  "family": "fp2:4x4-digit comma list starting 4 (no cue)",
+  "split": "test",
+  "text": "**Them:** The counts were 4268, 2881, 4268, 2557."
+ },
+ {
+  "id": "o300",
+  "family": "fp2:4x4-digit comma list starting 4 (no cue)",
+  "split": "test",
+  "text": "**Them:** The counts were 4390, 6965, 6606, 9641."
+ },
+ {
+  "id": "o301",
+  "family": "fp2:4x4-digit comma list starting 4 (no cue)",
+  "split": "test",
+  "text": "**Them:** The counts were 4416, 3529, 7164, 3071."
+ },
+ {
+  "id": "o302",
+  "family": "fp2:space list 13-19 digits total (no cue)",
+  "split": "test",
+  "text": "**Them:** Okay. 5284 406 7947 45 1175."
+ },
+ {
+  "id": "o303",
+  "family": "fp2:space list 13-19 digits total (no cue)",
+  "split": "test",
+  "text": "**Them:** Okay. 7053 970 8512 52 2675."
+ },
+ {
+  "id": "o304",
+  "family": "fp2:space list 13-19 digits total (no cue)",
+  "split": "test",
+  "text": "**Them:** Okay. 8784 247 4006 62 3312."
+ },
+ {
+  "id": "o305",
+  "family": "fp2:space list 13-19 digits total (no cue)",
+  "split": "test",
+  "text": "**Them:** Okay. 5309 145 2999 60 1977."
+ }
+]

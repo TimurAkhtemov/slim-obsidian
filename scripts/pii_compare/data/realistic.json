@@ -1,0 +1,985 @@
+[
+ {
+  "id": "s01",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Them:** Can I get the last four of your social to verify?\n\n**Me:** Yeah, it's 4471.",
+  "ambiguous": false,
+  "secrets": [
+   [
+    "4471",
+    "ssn"
+   ]
+  ],
+  "out_of_scope": [],
+  "ordinary": [],
+  "note": ""
+ },
+ {
+  "id": "s02",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Them:** For verification, what's your social security number?\n\n**Me:** Sure, it's 512-44-8270.",
+  "ambiguous": false,
+  "secrets": [
+   [
+    "512-44-8270",
+    "ssn"
+   ]
+  ],
+  "out_of_scope": [],
+  "ordinary": [],
+  "note": ""
+ },
+ {
+  "id": "s03",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Them:** And your social?\n\n**Me:** Um, 512 44 8270.",
+  "ambiguous": false,
+  "secrets": [
+   [
+    "512 44 8270",
+    "ssn"
+   ]
+  ],
+  "out_of_scope": [],
+  "ordinary": [],
+  "note": ""
+ },
+ {
+  "id": "s04",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Me:** Hi, I want to check a deposit. My account number is 004417726315.\n\n**Them:** Thanks, one moment.",
+  "ambiguous": false,
+  "secrets": [
+   [
+    "004417726315",
+    "account"
+   ]
+  ],
+  "out_of_scope": [],
+  "ordinary": [],
+  "note": ""
+ },
+ {
+  "id": "s05",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Them:** What's the account number?\n\n**Me:** Okay, let me find it. It's 3 3 0 1 9 8 4 4 2.",
+  "ambiguous": false,
+  "secrets": [
+   [
+    "3 3 0 1 9 8 4 4 2",
+    "account"
+   ]
+  ],
+  "out_of_scope": [],
+  "ordinary": [],
+  "note": ""
+ },
+ {
+  "id": "s06",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Them:** Can you read me the routing number and the account number?\n\n**Me:** Routing is 021000021, and the account is 483920175.",
+  "ambiguous": false,
+  "secrets": [
+   [
+    "021000021",
+    "account"
+   ],
+   [
+    "483920175",
+    "account"
+   ]
+  ],
+  "out_of_scope": [],
+  "ordinary": [],
+  "note": ""
+ },
+ {
+  "id": "s07",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Me:** I'm setting up direct deposit. The routing number is 121000358 and the account number is 7731 2209 54.",
+  "ambiguous": false,
+  "secrets": [
+   [
+    "121000358",
+    "account"
+   ],
+   [
+    "7731 2209 54",
+    "account"
+   ]
+  ],
+  "out_of_scope": [],
+  "ordinary": [],
+  "note": ""
+ },
+ {
+  "id": "s08",
+  "setting": "online order",
+  "split": "dev",
+  "text": "**Them:** Which card would you like to use?\n\n**Me:** The Visa. 4532 7153 3790 4122.",
+  "ambiguous": false,
+  "secrets": [
+   [
+    "4532 7153 3790 4122",
+    "card"
+   ]
+  ],
+  "out_of_scope": [],
+  "ordinary": [],
+  "note": ""
+ },
+ {
+  "id": "s09",
+  "setting": "online order",
+  "split": "dev",
+  "text": "**Them:** Go ahead with the card number when you're ready.\n\n**Me:** 4024 0071 5336 0887, expiration 08 27, and the code on the back is 319.",
+  "ambiguous": false,
+  "secrets": [
+   [
+    "4024 0071 5336 0887",
+    "card"
+   ]
+  ],
+  "out_of_scope": [],
+  "ordinary": [],
+  "note": ""
+ },
+ {
+  "id": "s10",
+  "setting": "insurer",
+  "split": "dev",
+  "text": "**Them:** How would you like to pay the premium?\n\n**Me:** Credit card. The number is 5425 2334 3010 9903.",
+  "ambiguous": false,
+  "secrets": [
+   [
+    "5425 2334 3010 9903",
+    "card"
+   ]
+  ],
+  "out_of_scope": [],
+  "ordinary": [],
+  "note": ""
+ },
+ {
+  "id": "s11",
+  "setting": "insurer",
+  "split": "dev",
+  "text": "**Me:** My card number is 3782 822463 10005, it's an Amex.",
+  "ambiguous": false,
+  "secrets": [
+   [
+    "3782 822463 10005",
+    "card"
+   ]
+  ],
+  "out_of_scope": [],
+  "ordinary": [],
+  "note": ""
+ },
+ {
+  "id": "s12",
+  "setting": "IT help desk",
+  "split": "dev",
+  "text": "**Them:** What's the temporary password I gave you?\n\n**Me:** It's Bluefin42.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [
+   "Bluefin42"
+  ],
+  "ordinary": [],
+  "note": "password or security code: out of scope"
+ },
+ {
+  "id": "s13",
+  "setting": "colleague login",
+  "split": "dev",
+  "text": "**Me:** Can you send me the login for the analytics dashboard?\n\n**Them:** Sure, username is reports, password is Harbor2024!",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [
+   "Harbor2024!"
+  ],
+  "ordinary": [],
+  "note": "password or security code: out of scope"
+ },
+ {
+  "id": "s14",
+  "setting": "colleague login",
+  "split": "dev",
+  "text": "**Them:** The wifi password is greenteapot77.\n\n**Me:** Got it, thanks.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [
+   "greenteapot77"
+  ],
+  "ordinary": [],
+  "note": "password or security code: out of scope"
+ },
+ {
+  "id": "s15",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Me:** My social is 078-05-1120, and my date of birth is 03/14/1985.",
+  "ambiguous": false,
+  "secrets": [
+   [
+    "078-05-1120",
+    "ssn"
+   ]
+  ],
+  "out_of_scope": [],
+  "ordinary": [
+   "03/14/1985"
+  ],
+  "note": ""
+ },
+ {
+  "id": "s16",
+  "setting": "doctor's office",
+  "split": "dev",
+  "text": "**Them:** Can I have your social security number for the file?\n\n**Me:** Yeah. 219 09 9999.",
+  "ambiguous": false,
+  "secrets": [
+   [
+    "219 09 9999",
+    "ssn"
+   ]
+  ],
+  "out_of_scope": [],
+  "ordinary": [],
+  "note": ""
+ },
+ {
+  "id": "s17",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Them:** And what's the card number on the account?\n\n**Me:** 5105 1051 0510 5100.",
+  "ambiguous": false,
+  "secrets": [
+   [
+    "5105 1051 0510 5100",
+    "card"
+   ]
+  ],
+  "out_of_scope": [],
+  "ordinary": [],
+  "note": ""
+ },
+ {
+  "id": "s18",
+  "setting": "landlord",
+  "split": "dev",
+  "text": "**Them:** For the rent, just send it to my account. The sort code is 20-32-06 and the account number is 73849201.",
+  "ambiguous": false,
+  "secrets": [
+   [
+    "20-32-06",
+    "account"
+   ],
+   [
+    "73849201",
+    "account"
+   ]
+  ],
+  "out_of_scope": [],
+  "ordinary": [],
+  "note": ""
+ },
+ {
+  "id": "s19",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Them:** Can you confirm your full account number?\n\n**Me:** Yes, so it's 9876543210.",
+  "ambiguous": false,
+  "secrets": [
+   [
+    "9876543210",
+    "account"
+   ]
+  ],
+  "out_of_scope": [],
+  "ordinary": [],
+  "note": ""
+ },
+ {
+  "id": "s20",
+  "setting": "online order",
+  "split": "dev",
+  "text": "**Me:** I'll pay with my debit card, 4111 1111 1111 1111, the expiry is 12 26.",
+  "ambiguous": false,
+  "secrets": [
+   [
+    "4111 1111 1111 1111",
+    "card"
+   ]
+  ],
+  "out_of_scope": [],
+  "ordinary": [
+   "12 26"
+  ],
+  "note": ""
+ },
+ {
+  "id": "s21",
+  "setting": "IT help desk",
+  "split": "dev",
+  "text": "**Them:** I've reset it. Your new password is Tango-Lima-88.\n\n**Me:** Okay.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [
+   "Tango-Lima-88"
+  ],
+  "ordinary": [],
+  "note": "password or security code: out of scope"
+ },
+ {
+  "id": "s22",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Them:** What's your SSN?\n\n**Me:** It's 123456789.",
+  "ambiguous": false,
+  "secrets": [
+   [
+    "123456789",
+    "ssn"
+   ]
+  ],
+  "out_of_scope": [],
+  "ordinary": [],
+  "note": ""
+ },
+ {
+  "id": "s23",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Me:** My account number is 12345678, 300 dollars came out of it yesterday that I didn't authorize.",
+  "ambiguous": false,
+  "secrets": [
+   [
+    "12345678",
+    "account"
+   ]
+  ],
+  "out_of_scope": [],
+  "ordinary": [
+   "300"
+  ],
+  "note": ""
+ },
+ {
+  "id": "s24",
+  "setting": "insurer",
+  "split": "dev",
+  "text": "**Them:** Can I get the card number?\n\n**Me:** Yeah, hold on. Okay, 4916 3385 0608 2832.",
+  "ambiguous": false,
+  "secrets": [
+   [
+    "4916 3385 0608 2832",
+    "card"
+   ]
+  ],
+  "out_of_scope": [],
+  "ordinary": [],
+  "note": ""
+ },
+ {
+  "id": "s25",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Them:** What's the IBAN?\n\n**Me:** GB29 NWBK 6016 1331 9268 19.",
+  "ambiguous": false,
+  "secrets": [
+   [
+    "GB29 NWBK 6016 1331 9268 19",
+    "account"
+   ]
+  ],
+  "out_of_scope": [],
+  "ordinary": [],
+  "note": ""
+ },
+ {
+  "id": "s26",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Me:** I need to update the direct deposit. New account, 556677889900.",
+  "ambiguous": false,
+  "secrets": [
+   [
+    "556677889900",
+    "account"
+   ]
+  ],
+  "out_of_scope": [],
+  "ordinary": [],
+  "note": ""
+ },
+ {
+  "id": "s27",
+  "setting": "doctor's office",
+  "split": "dev",
+  "text": "**Them:** Last four of your social?\n\n**Me:** 6789.",
+  "ambiguous": false,
+  "secrets": [
+   [
+    "6789",
+    "ssn"
+   ]
+  ],
+  "out_of_scope": [],
+  "ordinary": [],
+  "note": ""
+ },
+ {
+  "id": "s28",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Me:** Okay so the account number is, um, let me look, 66 2049 1183.",
+  "ambiguous": false,
+  "secrets": [
+   [
+    "66 2049 1183",
+    "account"
+   ]
+  ],
+  "out_of_scope": [],
+  "ordinary": [],
+  "note": ""
+ },
+ {
+  "id": "s29",
+  "setting": "online order",
+  "split": "dev",
+  "text": "**Them:** And the security code?\n\n**Me:** It's 742.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [
+   "742"
+  ],
+  "ordinary": [],
+  "note": "password or security code: out of scope"
+ },
+ {
+  "id": "s31",
+  "setting": "online order",
+  "split": "dev",
+  "text": "**Them:** Go ahead with the card number when you're ready.\n\n**Me:** 4024 0071 5336 0885.",
+  "ambiguous": false,
+  "secrets": [
+   [
+    "4024 0071 5336 0885",
+    "card"
+   ]
+  ],
+  "out_of_scope": [],
+  "ordinary": [],
+  "note": ""
+ },
+ {
+  "id": "s32",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Them:** What's the number on your card?\n\n**Me:** 5425 2334 3010 9904.",
+  "ambiguous": false,
+  "secrets": [
+   [
+    "5425 2334 3010 9904",
+    "card"
+   ]
+  ],
+  "out_of_scope": [],
+  "ordinary": [],
+  "note": ""
+ },
+ {
+  "id": "s33",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Me:** My account number on file is 12345678, can you check it?",
+  "ambiguous": false,
+  "secrets": [
+   [
+    "12345678",
+    "account"
+   ]
+  ],
+  "out_of_scope": [],
+  "ordinary": [],
+  "note": ""
+ },
+ {
+  "id": "s34",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Them:** What's the account number for the savings?\n\n**Me:** It's 40021887.",
+  "ambiguous": false,
+  "secrets": [
+   [
+    "40021887",
+    "account"
+   ]
+  ],
+  "out_of_scope": [],
+  "ordinary": [],
+  "note": ""
+ },
+ {
+  "id": "s35",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Them:** Can I get your social, please?\n\n**Me:** Yes. It's 512 44 8270.",
+  "ambiguous": false,
+  "secrets": [
+   [
+    "512 44 8270",
+    "ssn"
+   ]
+  ],
+  "out_of_scope": [],
+  "ordinary": [],
+  "note": ""
+ },
+ {
+  "id": "s30",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Them:** Please read the card number.\n\n**Me:** Sure, 4532015112830366, expiration 09/29.",
+  "ambiguous": false,
+  "secrets": [
+   [
+    "4532015112830366",
+    "card"
+   ]
+  ],
+  "out_of_scope": [],
+  "ordinary": [
+   "09/29"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o01",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Them:** Can I get your date of birth for the account?\n\n**Me:** Sure, 04 12 1979.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "04 12 1979"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o02",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Them:** What's the phone number on the account?\n\n**Me:** It's 4155550134.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "4155550134"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o03",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Me:** The phone number on my account is 4155550134, but that's my old cell.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "4155550134"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o04",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Them:** Your account balance is 2,450.17 as of today.\n\n**Me:** Okay.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "2,450.17"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o05",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Them:** Your account ending in 4471 was charged 129.99 on the 14th.\n\n**Me:** Right.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "4471",
+   "129.99"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o06",
+  "setting": "insurer",
+  "split": "dev",
+  "text": "**Them:** Your claim number on the account is 2024118833.\n\n**Me:** Got it.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "2024118833"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o07",
+  "setting": "insurer",
+  "split": "dev",
+  "text": "**Them:** What's your policy number?\n\n**Me:** It's 44718293.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "44718293"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o08",
+  "setting": "insurer",
+  "split": "dev",
+  "text": "**Them:** The policy number for the account is 88210043.\n\n**Me:** Okay, thank you.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "88210043"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o09",
+  "setting": "doctor's office",
+  "split": "dev",
+  "text": "**Them:** We have you for Tuesday at 2 30. Can I confirm your date of birth?\n\n**Me:** Yes, 11/02/1990.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "2 30",
+   "11/02/1990"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o10",
+  "setting": "doctor's office",
+  "split": "dev",
+  "text": "**Them:** What's the best number to reach you?\n\n**Me:** 6175550192.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "6175550192"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o11",
+  "setting": "doctor's office",
+  "split": "dev",
+  "text": "**Them:** Your copay is 35 dollars and the account is all set.\n\n**Me:** Great.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "35"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o12",
+  "setting": "online order",
+  "split": "dev",
+  "text": "**Them:** What's the order number?\n\n**Me:** It's 113-4827756-2290318.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "113-4827756-2290318"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o13",
+  "setting": "online order",
+  "split": "dev",
+  "text": "**Them:** I see the card on file was charged 84.50. Your order number is 30041177.\n\n**Me:** Okay.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "84.50",
+   "30041177"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o14",
+  "setting": "online order",
+  "split": "dev",
+  "text": "**Them:** What's the zip code on the card?\n\n**Me:** 02139.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "02139"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o15",
+  "setting": "online order",
+  "split": "dev",
+  "text": "**Them:** Can I get the billing zip for the card?\n\n**Me:** Yeah, 94110-2203.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "94110-2203"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o16",
+  "setting": "online order",
+  "split": "dev",
+  "text": "**Me:** The tracking number they sent to my account is 1Z999AA10123456784.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "1Z999AA10123456784"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o17",
+  "setting": "IT help desk",
+  "split": "dev",
+  "text": "**Them:** What's your ticket number?\n\n**Me:** It's 4471023.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "4471023"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o18",
+  "setting": "IT help desk",
+  "split": "dev",
+  "text": "**Them:** Your account is locked. I'll call you back at extension 4417.\n\n**Me:** Sure.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "4417"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o19",
+  "setting": "IT help desk",
+  "split": "dev",
+  "text": "**Them:** Which account is it?\n\n**Me:** My work one, the one I've had since 2019.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "2019"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o20",
+  "setting": "landlord",
+  "split": "dev",
+  "text": "**Them:** Rent is 1850 a month, due on the 1st. The account stays the same.\n\n**Me:** Okay.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "1850"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o21",
+  "setting": "landlord",
+  "split": "dev",
+  "text": "**Me:** I'm at 42 Elm Court, unit 3B. My account with the building is under my wife's name.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [],
+  "note": ""
+ },
+ {
+  "id": "o22",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Them:** Your social security deposit of 1,847 came in on 11/03.\n\n**Me:** Good.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "1,847",
+   "11/03"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o23",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Them:** What's the best phone number for the account?\n\n**Me:** 415 555 0134.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "415 555 0134"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o24",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Me:** My cell on the account is 6175550192.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "6175550192"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o25",
+  "setting": "insurer",
+  "split": "dev",
+  "text": "**Them:** What's the case number on the account?\n\n**Me:** It's 5512908.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "5512908"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o26",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Them:** When did you open the account?\n\n**Me:** Back in 2014, March 2014.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "2014"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o27",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Them:** How much was the card charge?\n\n**Me:** It was 1,240 dollars, on the 9th.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "1,240"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o28",
+  "setting": "doctor's office",
+  "split": "dev",
+  "text": "**Them:** The office number is 6175550100, extension 22. Bring your insurance card.\n\n**Me:** Okay.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "6175550100"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o29",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Them:** Your account number? Actually, never mind, I have it. Your callback number is 6175550192?\n\n**Me:** Yes.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "6175550192"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o30",
+  "setting": "IT help desk",
+  "split": "dev",
+  "text": "**Them:** Can I get your employee ID for the account?\n\n**Me:** It's 20417733.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "20417733"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o31",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Them:** What's the reference number for the transfer to your account?\n\n**Me:** It's 77120045.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "77120045"
+  ],
+  "note": ""
+ },
+ {
+  "id": "o32",
+  "setting": "bank",
+  "split": "dev",
+  "text": "**Me:** My account was opened 03 2015, and the reference for the dispute is 99012345.",
+  "ambiguous": false,
+  "secrets": [],
+  "out_of_scope": [],
+  "ordinary": [
+   "99012345"
+  ],
+  "note": ""
+ }
+]

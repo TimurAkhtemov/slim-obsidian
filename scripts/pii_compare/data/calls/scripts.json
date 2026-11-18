@@ -1,0 +1,3875 @@
+[
+ {
+  "sid": "s01",
+  "lines": [
+   [
+    "Me",
+    "Thanks so much."
+   ],
+   [
+    "Them",
+    "No, I missed it."
+   ],
+   [
+    "Me",
+    "The counts were one ninety four, thirty four, sixty seven thirty four."
+   ],
+   [
+    "Them",
+    "That was back in twenty nineteen."
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "Sure, IBAN G B seven three, H W E C, four five three two, six five eight one, nine two three one, four four."
+   ],
+   [
+    "Me",
+    "Okay."
+   ],
+   [
+    "Them",
+    "I know, finally some sun."
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "Put it on my visa, forty one eleven dash seventy nine sixty two dash seventy three ninety three dash eighty seventy seven."
+   ],
+   [
+    "Me",
+    "How was the trip?"
+   ],
+   [
+    "Them",
+    "Sure, my social is seven forty one dash zero five dash seventy twenty four."
+   ],
+   [
+    "Me",
+    "The weather has been lovely."
+   ],
+   [
+    "Them",
+    "Okay."
+   ],
+   [
+    "Me",
+    "Your account number is fine, the order was 8731132195."
+   ],
+   [
+    "Them",
+    "Okay, let's get started."
+   ],
+   [
+    "Me",
+    "I ordered it at amazon dot com."
+   ],
+   [
+    "Them",
+    "Hey, how's it going?"
+   ],
+   [
+    "Me",
+    "Mm-hm."
+   ],
+   [
+    "Them",
+    "Great, talk soon."
+   ]
+  ],
+  "items": [
+   {
+    "cls": "account",
+    "kind": "iban",
+    "written": "GB73 HWEC 4532 6581 9231 44",
+    "spoken": "G B seven three, H W E C, four five three two, six five eight one, nine two three one, four four",
+    "token": "GB73HWEC45326581923144",
+    "style": "spelled",
+    "cue": "same_sentence",
+    "speaker": "Them",
+    "start": 215,
+    "end": 311
+   },
+   {
+    "cls": "card",
+    "kind": "card",
+    "written": "4111 7962 7393 8077",
+    "spoken": "forty one eleven dash seventy nine sixty two dash seventy three ninety three dash eighty seventy seven",
+    "token": "4111796273938077",
+    "style": "grouped",
+    "cue": "same_sentence",
+    "speaker": "Them",
+    "start": 411,
+    "end": 513
+   },
+   {
+    "cls": "ssn",
+    "kind": "ssn",
+    "written": "741-05-7024",
+    "spoken": "seven forty one dash zero five dash seventy twenty four",
+    "token": "741057024",
+    "style": "grouped",
+    "cue": "same_sentence",
+    "speaker": "Them",
+    "start": 572,
+    "end": 627
+   }
+  ],
+  "distractors": [
+   {
+    "kind": "triple",
+    "text": "one ninety four, thirty four, sixty seven thirty four",
+    "start": 77,
+    "end": 130
+   },
+   {
+    "kind": "year",
+    "text": "twenty nineteen",
+    "start": 160,
+    "end": 175
+   },
+   {
+    "kind": "account_fine",
+    "text": "Your account number is fine, the order was 8731132195.",
+    "start": 693,
+    "end": 747
+   },
+   {
+    "kind": "website",
+    "text": "amazon dot com",
+    "start": 809,
+    "end": 823
+   }
+  ],
+  "transcript": "**Me:** Thanks so much.\n\n**Them:** No, I missed it.\n\n**Me:** The counts were one ninety four, thirty four, sixty seven thirty four.\n\n**Them:** That was back in twenty nineteen.\n\n**Me:** Right.\n\n**Them:** Sure, IBAN G B seven three, H W E C, four five three two, six five eight one, nine two three one, four four.\n\n**Me:** Okay.\n\n**Them:** I know, finally some sun.\n\n**Me:** Right.\n\n**Them:** Put it on my visa, forty one eleven dash seventy nine sixty two dash seventy three ninety three dash eighty seventy seven.\n\n**Me:** How was the trip?\n\n**Them:** Sure, my social is seven forty one dash zero five dash seventy twenty four.\n\n**Me:** The weather has been lovely.\n\n**Them:** Okay.\n\n**Me:** Your account number is fine, the order was 8731132195.\n\n**Them:** Okay, let's get started.\n\n**Me:** I ordered it at amazon dot com.\n\n**Them:** Hey, how's it going?\n\n**Me:** Mm-hm.\n\n**Them:** Great, talk soon."
+ },
+ {
+  "sid": "s02",
+  "lines": [
+   [
+    "Me",
+    "Perfect."
+   ],
+   [
+    "Them",
+    "No, I think that's everything."
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "It was only nineteen ninety five."
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "Credit union members: 8922, 9506, 3225, 5096."
+   ],
+   [
+    "Me",
+    "I ordered it at target dot com."
+   ],
+   [
+    "Them",
+    "Anything else?"
+   ],
+   [
+    "Me",
+    "Can you send me the link? I bought it at amazon dot com."
+   ],
+   [
+    "Them",
+    "Okay."
+   ],
+   [
+    "Me",
+    "Did you catch the game last night?"
+   ],
+   [
+    "Them",
+    "Scores 789 632 135."
+   ],
+   [
+    "Me",
+    "Okay."
+   ],
+   [
+    "Them",
+    "Great, talk soon."
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "The wifi passcode is faxmore three oh."
+   ],
+   [
+    "Me",
+    "Okay."
+   ],
+   [
+    "Them",
+    "Great, talk soon."
+   ]
+  ],
+  "items": [
+   {
+    "cls": "password",
+    "kind": "password",
+    "written": "faxmore30",
+    "spoken": "faxmore three oh",
+    "token": "faxmore30",
+    "style": "word_digits",
+    "cue": "same_sentence",
+    "speaker": "Them",
+    "start": 510,
+    "end": 526
+   }
+  ],
+  "distractors": [
+   {
+    "kind": "price",
+    "text": "nineteen ninety five",
+    "start": 98,
+    "end": 118
+   },
+   {
+    "kind": "card_union",
+    "text": "Credit union members: 8922, 9506, 3225, 5096.",
+    "start": 147,
+    "end": 192
+   },
+   {
+    "kind": "website",
+    "text": "target dot com",
+    "start": 218,
+    "end": 232
+   },
+   {
+    "kind": "website_send",
+    "text": "amazon dot com",
+    "start": 310,
+    "end": 324
+   },
+   {
+    "kind": "plain_scores",
+    "text": "Scores 789 632 135.",
+    "start": 398,
+    "end": 417
+   }
+  ],
+  "transcript": "**Me:** Perfect.\n\n**Them:** No, I think that's everything.\n\n**Me:** Right.\n\n**Them:** It was only nineteen ninety five.\n\n**Me:** Right.\n\n**Them:** Credit union members: 8922, 9506, 3225, 5096.\n\n**Me:** I ordered it at target dot com.\n\n**Them:** Anything else?\n\n**Me:** Can you send me the link? I bought it at amazon dot com.\n\n**Them:** Okay.\n\n**Me:** Did you catch the game last night?\n\n**Them:** Scores 789 632 135.\n\n**Me:** Okay.\n\n**Them:** Great, talk soon.\n\n**Me:** Right.\n\n**Them:** The wifi passcode is faxmore three oh.\n\n**Me:** Okay.\n\n**Them:** Great, talk soon."
+ },
+ {
+  "sid": "s03",
+  "lines": [
+   [
+    "Me",
+    "No, I missed it."
+   ],
+   [
+    "Them",
+    "I know, finally some sun."
+   ],
+   [
+    "Me",
+    "Mm-hm."
+   ],
+   [
+    "Them",
+    "My email is varnholt at example dot org."
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "It was great, really relaxing."
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "Okay, one, two, three, go."
+   ],
+   [
+    "Me",
+    "Okay."
+   ],
+   [
+    "Them",
+    "No, I think that's everything."
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "I'll email you what I found at brightmart.com."
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "I ordered it at target dot com."
+   ],
+   [
+    "Me",
+    "Mm-hm."
+   ],
+   [
+    "Them",
+    "I live at sixty eight sixty eight Vandrel Avenue."
+   ],
+   [
+    "Me",
+    "Not bad, thanks. You?"
+   ],
+   [
+    "Them",
+    "I almost called nine one one."
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "How was the trip?"
+   ],
+   [
+    "Me",
+    "Mm-hm."
+   ],
+   [
+    "Them",
+    "Great, talk soon."
+   ]
+  ],
+  "items": [
+   {
+    "cls": "email",
+    "kind": "email",
+    "written": "varnholt@example.org",
+    "spoken": "varnholt at example dot org",
+    "token": "varnholt",
+    "style": "plain",
+    "cue": "same_sentence",
+    "speaker": "Them",
+    "start": 101,
+    "end": 128
+   },
+   {
+    "cls": "address",
+    "kind": "address",
+    "written": "6868 Vandrel Avenue",
+    "spoken": "sixty eight sixty eight Vandrel Avenue",
+    "token": "Vandrel",
+    "style": "grouped",
+    "cue": "same_sentence",
+    "speaker": "Them",
+    "start": 469,
+    "end": 507
+   }
+  ],
+  "distractors": [
+   {
+    "kind": "count",
+    "text": "one, two, three",
+    "start": 221,
+    "end": 236
+   },
+   {
+    "kind": "web_email_found",
+    "text": "I'll email you what I found at brightmart.com.",
+    "start": 326,
+    "end": 372
+   },
+   {
+    "kind": "website",
+    "text": "target dot com",
+    "start": 416,
+    "end": 430
+   },
+   {
+    "kind": "nine_one_one",
+    "text": "nine one one",
+    "start": 567,
+    "end": 579
+   }
+  ],
+  "transcript": "**Me:** No, I missed it.\n\n**Them:** I know, finally some sun.\n\n**Me:** Mm-hm.\n\n**Them:** My email is varnholt at example dot org.\n\n**Me:** Right.\n\n**Them:** It was great, really relaxing.\n\n**Me:** Right.\n\n**Them:** Okay, one, two, three, go.\n\n**Me:** Okay.\n\n**Them:** No, I think that's everything.\n\n**Me:** Right.\n\n**Them:** I'll email you what I found at brightmart.com.\n\n**Me:** Right.\n\n**Them:** I ordered it at target dot com.\n\n**Me:** Mm-hm.\n\n**Them:** I live at sixty eight sixty eight Vandrel Avenue.\n\n**Me:** Not bad, thanks. You?\n\n**Them:** I almost called nine one one.\n\n**Me:** Right.\n\n**Them:** How was the trip?\n\n**Me:** Mm-hm.\n\n**Them:** Great, talk soon."
+ },
+ {
+  "sid": "s04",
+  "lines": [
+   [
+    "Me",
+    "No, I missed it."
+   ],
+   [
+    "Them",
+    "Sounds good."
+   ],
+   [
+    "Me",
+    "Can we do ten fifteen?"
+   ],
+   [
+    "Them",
+    "I know, finally some sun."
+   ],
+   [
+    "Me",
+    "The password policy changed last week."
+   ],
+   [
+    "Them",
+    "Mm-hm."
+   ],
+   [
+    "Me",
+    "Sorry, can you repeat that?"
+   ],
+   [
+    "Them",
+    "Can I get your social security number?"
+   ],
+   [
+    "Me",
+    "Yeah, it's double six oh, five nine, oh six four seven."
+   ],
+   [
+    "Them",
+    "Got it."
+   ],
+   [
+    "Me",
+    "Perfect."
+   ],
+   [
+    "Them",
+    "It's on page forty five."
+   ],
+   [
+    "Me",
+    "It was only three fifty."
+   ],
+   [
+    "Them",
+    "Call me on my cell, four oh three five five five oh one eight four."
+   ],
+   [
+    "Me",
+    "Okay."
+   ],
+   [
+    "Them",
+    "The counts were four eight eight, sixty three, twenty four seventy three."
+   ],
+   [
+    "Me",
+    "No, I think that's everything."
+   ],
+   [
+    "Them",
+    "The account number changed on 2019-06-14."
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "Great, talk soon."
+   ]
+  ],
+  "items": [
+   {
+    "cls": "ssn",
+    "kind": "ssn",
+    "written": "660-59-0647",
+    "spoken": "double six oh, five nine, oh six four seven",
+    "token": "660590647",
+    "style": "double",
+    "cue": "previous_turn",
+    "speaker": "Me",
+    "start": 291,
+    "end": 334
+   },
+   {
+    "cls": "phone",
+    "kind": "phone",
+    "written": "(403) 555-0184",
+    "spoken": "four oh three five five five oh one eight four",
+    "token": "4035550184",
+    "style": "digits",
+    "cue": "same_sentence",
+    "speaker": "Them",
+    "start": 474,
+    "end": 520
+   }
+  ],
+  "distractors": [
+   {
+    "kind": "time",
+    "text": "ten fifteen",
+    "start": 68,
+    "end": 79
+   },
+   {
+    "kind": "pw_policy",
+    "text": "The password policy changed last week.",
+    "start": 127,
+    "end": 165
+   },
+   {
+    "kind": "page",
+    "text": "page forty five",
+    "start": 392,
+    "end": 407
+   },
+   {
+    "kind": "price",
+    "text": "three fifty",
+    "start": 430,
+    "end": 441
+   },
+   {
+    "kind": "triple",
+    "text": "four eight eight, sixty three, twenty four seventy three",
+    "start": 564,
+    "end": 620
+   },
+   {
+    "kind": "account_changed",
+    "text": "The account number changed on 2019-06-14.",
+    "start": 673,
+    "end": 714
+   }
+  ],
+  "transcript": "**Me:** No, I missed it.\n\n**Them:** Sounds good.\n\n**Me:** Can we do ten fifteen?\n\n**Them:** I know, finally some sun.\n\n**Me:** The password policy changed last week.\n\n**Them:** Mm-hm.\n\n**Me:** Sorry, can you repeat that?\n\n**Them:** Can I get your social security number?\n\n**Me:** Yeah, it's double six oh, five nine, oh six four seven.\n\n**Them:** Got it.\n\n**Me:** Perfect.\n\n**Them:** It's on page forty five.\n\n**Me:** It was only three fifty.\n\n**Them:** Call me on my cell, four oh three five five five oh one eight four.\n\n**Me:** Okay.\n\n**Them:** The counts were four eight eight, sixty three, twenty four seventy three.\n\n**Me:** No, I think that's everything.\n\n**Them:** The account number changed on 2019-06-14.\n\n**Me:** Right.\n\n**Them:** Great, talk soon."
+ },
+ {
+  "sid": "s05",
+  "lines": [
+   [
+    "Me",
+    "The weather has been lovely."
+   ],
+   [
+    "Them",
+    "No, I think that's everything."
+   ],
+   [
+    "Me",
+    "Got it."
+   ],
+   [
+    "Them",
+    "It was only four ninety nine."
+   ],
+   [
+    "Me",
+    "Okay."
+   ],
+   [
+    "Them",
+    "I ordered it at target dot com."
+   ],
+   [
+    "Me",
+    "Got it."
+   ],
+   [
+    "Them",
+    "Sounds good."
+   ],
+   [
+    "Me",
+    "The counts were seven sixty one, twenty three, seven three seven two."
+   ],
+   [
+    "Them",
+    "Mm-hm."
+   ],
+   [
+    "Me",
+    "Thanks so much."
+   ],
+   [
+    "Them",
+    "Got it."
+   ],
+   [
+    "Me",
+    "Order 769951010, thanks."
+   ],
+   [
+    "Them",
+    "What's the IBAN?"
+   ],
+   [
+    "Me",
+    "It's G B six six G H J W one three four four one eight one eight two six six six three nine."
+   ],
+   [
+    "Them",
+    "Which card do you want to use?"
+   ],
+   [
+    "Me",
+    "Okay, forty two forty two, seventy eight forty four, sixty four seventy six, eighty seven seventy eight."
+   ],
+   [
+    "Them",
+    "It's on page forty five."
+   ],
+   [
+    "Me",
+    "Great, talk soon."
+   ]
+  ],
+  "items": [
+   {
+    "cls": "account",
+    "kind": "iban",
+    "written": "GB66 GHJW 1344 1818 2666 39",
+    "spoken": "G B six six G H J W one three four four one eight one eight two six six six three nine",
+    "token": "GB66GHJW13441818266639",
+    "style": "spelled",
+    "cue": "previous_turn",
+    "speaker": "Me",
+    "start": 453,
+    "end": 539
+   },
+   {
+    "cls": "card",
+    "kind": "card",
+    "written": "4242 7844 6476 8778",
+    "spoken": "forty two forty two, seventy eight forty four, sixty four seventy six, eighty seven seventy eight",
+    "token": "4242784464768778",
+    "style": "grouped",
+    "cue": "previous_turn",
+    "speaker": "Me",
+    "start": 598,
+    "end": 695
+   }
+  ],
+  "distractors": [
+   {
+    "kind": "price",
+    "text": "four ninety nine",
+    "start": 119,
+    "end": 135
+   },
+   {
+    "kind": "website",
+    "text": "target dot com",
+    "start": 179,
+    "end": 193
+   },
+   {
+    "kind": "triple",
+    "text": "seven sixty one, twenty three, seven three seven two",
+    "start": 261,
+    "end": 313
+   },
+   {
+    "kind": "plain_order",
+    "text": "Order 769951010, thanks.",
+    "start": 386,
+    "end": 410
+   },
+   {
+    "kind": "page",
+    "text": "page forty five",
+    "start": 716,
+    "end": 731
+   }
+  ],
+  "transcript": "**Me:** The weather has been lovely.\n\n**Them:** No, I think that's everything.\n\n**Me:** Got it.\n\n**Them:** It was only four ninety nine.\n\n**Me:** Okay.\n\n**Them:** I ordered it at target dot com.\n\n**Me:** Got it.\n\n**Them:** Sounds good.\n\n**Me:** The counts were seven sixty one, twenty three, seven three seven two.\n\n**Them:** Mm-hm.\n\n**Me:** Thanks so much.\n\n**Them:** Got it.\n\n**Me:** Order 769951010, thanks.\n\n**Them:** What's the IBAN?\n\n**Me:** It's G B six six G H J W one three four four one eight one eight two six six six three nine.\n\n**Them:** Which card do you want to use?\n\n**Me:** Okay, forty two forty two, seventy eight forty four, sixty four seventy six, eighty seven seventy eight.\n\n**Them:** It's on page forty five.\n\n**Me:** Great, talk soon."
+ },
+ {
+  "sid": "s06",
+  "lines": [
+   [
+    "Me",
+    "Did you catch the game last night?"
+   ],
+   [
+    "Them",
+    "Anything else?"
+   ],
+   [
+    "Me",
+    "Mm-hm."
+   ],
+   [
+    "Them",
+    "That was back in twenty nineteen."
+   ],
+   [
+    "Me",
+    "The weather has been lovely."
+   ],
+   [
+    "Them",
+    "Okay, one, two, three, go."
+   ],
+   [
+    "Me",
+    "Perfect."
+   ],
+   [
+    "Them",
+    "My social security check came on 2024-05-20."
+   ],
+   [
+    "Me",
+    "It was great, really relaxing."
+   ],
+   [
+    "Them",
+    "Got it."
+   ],
+   [
+    "Me",
+    "Email me the stuff from yesterday at tinkerbay.com."
+   ],
+   [
+    "Them",
+    "I know, finally some sun."
+   ],
+   [
+    "Me",
+    "Okay."
+   ],
+   [
+    "Them",
+    "Can you send me the link? I bought it at target dot com."
+   ],
+   [
+    "Me",
+    "The vote was forty one to thirty."
+   ],
+   [
+    "Them",
+    "Great, talk soon."
+   ]
+  ],
+  "items": [],
+  "distractors": [
+   {
+    "kind": "year",
+    "text": "twenty nineteen",
+    "start": 113,
+    "end": 128
+   },
+   {
+    "kind": "count",
+    "text": "one, two, three",
+    "start": 185,
+    "end": 200
+   },
+   {
+    "kind": "social_check",
+    "text": "My social security check came on 2024-05-20.",
+    "start": 235,
+    "end": 279
+   },
+   {
+    "kind": "web_email_yesterday",
+    "text": "Email me the stuff from yesterday at tinkerbay.com.",
+    "start": 348,
+    "end": 399
+   },
+   {
+    "kind": "website_send",
+    "text": "target dot com",
+    "start": 504,
+    "end": 518
+   },
+   {
+    "kind": "votes",
+    "text": "forty one to thirty",
+    "start": 542,
+    "end": 561
+   }
+  ],
+  "transcript": "**Me:** Did you catch the game last night?\n\n**Them:** Anything else?\n\n**Me:** Mm-hm.\n\n**Them:** That was back in twenty nineteen.\n\n**Me:** The weather has been lovely.\n\n**Them:** Okay, one, two, three, go.\n\n**Me:** Perfect.\n\n**Them:** My social security check came on 2024-05-20.\n\n**Me:** It was great, really relaxing.\n\n**Them:** Got it.\n\n**Me:** Email me the stuff from yesterday at tinkerbay.com.\n\n**Them:** I know, finally some sun.\n\n**Me:** Okay.\n\n**Them:** Can you send me the link? I bought it at target dot com.\n\n**Me:** The vote was forty one to thirty.\n\n**Them:** Great, talk soon."
+ },
+ {
+  "sid": "s07",
+  "lines": [
+   [
+    "Me",
+    "No, I think that's everything."
+   ],
+   [
+    "Them",
+    "Great, talk soon."
+   ],
+   [
+    "Me",
+    "Got it."
+   ],
+   [
+    "Them",
+    "Can we do nine o'clock?"
+   ],
+   [
+    "Me",
+    "Got it."
+   ],
+   [
+    "Them",
+    "Did you catch the game last night?"
+   ],
+   [
+    "Me",
+    "The account number changed on 2023-05-01."
+   ],
+   [
+    "Them",
+    "Okay."
+   ],
+   [
+    "Me",
+    "It was great, really relaxing."
+   ],
+   [
+    "Them",
+    "Okay."
+   ],
+   [
+    "Me",
+    "What's your email?"
+   ],
+   [
+    "Them",
+    "It's quorrel forty three at example dot org."
+   ],
+   [
+    "Me",
+    "What's the password for the wifi?"
+   ],
+   [
+    "Them",
+    "It's salvorn four six."
+   ],
+   [
+    "Me",
+    "Perfect."
+   ],
+   [
+    "Them",
+    "Where should we ship it?"
+   ],
+   [
+    "Me",
+    "Sure, five two seven seven Ostrane Avenue, apartment six."
+   ],
+   [
+    "Them",
+    "Can you send me the link? I bought it at amazon dot com."
+   ],
+   [
+    "Me",
+    "The order number is eight six five zero four seven."
+   ],
+   [
+    "Them",
+    "Okay."
+   ],
+   [
+    "Me",
+    "How was the trip?"
+   ],
+   [
+    "Them",
+    "Great, talk soon."
+   ]
+  ],
+  "items": [
+   {
+    "cls": "email",
+    "kind": "email",
+    "written": "quorrel43@example.org",
+    "spoken": "quorrel forty three at example dot org",
+    "token": "quorrel",
+    "style": "digits",
+    "cue": "previous_turn",
+    "speaker": "Them",
+    "start": 352,
+    "end": 390
+   },
+   {
+    "cls": "password",
+    "kind": "password",
+    "written": "salvorn46",
+    "spoken": "salvorn four six",
+    "token": "salvorn46",
+    "style": "word_digits",
+    "cue": "previous_turn",
+    "speaker": "Them",
+    "start": 451,
+    "end": 467
+   },
+   {
+    "cls": "address",
+    "kind": "address",
+    "written": "5277 Ostrane Avenue, apartment 6",
+    "spoken": "five two seven seven Ostrane Avenue, apartment six",
+    "token": "Ostrane",
+    "style": "digits",
+    "cue": "previous_turn",
+    "speaker": "Me",
+    "start": 538,
+    "end": 588
+   }
+  ],
+  "distractors": [
+   {
+    "kind": "time",
+    "text": "nine o'clock",
+    "start": 106,
+    "end": 118
+   },
+   {
+    "kind": "account_changed",
+    "text": "The account number changed on 2023-05-01.",
+    "start": 192,
+    "end": 233
+   },
+   {
+    "kind": "website_send",
+    "text": "amazon dot com",
+    "start": 642,
+    "end": 656
+   },
+   {
+    "kind": "order",
+    "text": "eight six five zero four seven",
+    "start": 687,
+    "end": 717
+   }
+  ],
+  "transcript": "**Me:** No, I think that's everything.\n\n**Them:** Great, talk soon.\n\n**Me:** Got it.\n\n**Them:** Can we do nine o'clock?\n\n**Me:** Got it.\n\n**Them:** Did you catch the game last night?\n\n**Me:** The account number changed on 2023-05-01.\n\n**Them:** Okay.\n\n**Me:** It was great, really relaxing.\n\n**Them:** Okay.\n\n**Me:** What's your email?\n\n**Them:** It's quorrel forty three at example dot org.\n\n**Me:** What's the password for the wifi?\n\n**Them:** It's salvorn four six.\n\n**Me:** Perfect.\n\n**Them:** Where should we ship it?\n\n**Me:** Sure, five two seven seven Ostrane Avenue, apartment six.\n\n**Them:** Can you send me the link? I bought it at amazon dot com.\n\n**Me:** The order number is eight six five zero four seven.\n\n**Them:** Okay.\n\n**Me:** How was the trip?\n\n**Them:** Great, talk soon."
+ },
+ {
+  "sid": "s08",
+  "lines": [
+   [
+    "Me",
+    "Hey, how's it going?"
+   ],
+   [
+    "Them",
+    "The weather has been lovely."
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "The counts were 5407, 1312, 7501, 1094."
+   ],
+   [
+    "Me",
+    "No, I think that's everything."
+   ],
+   [
+    "Them",
+    "Okay."
+   ],
+   [
+    "Me",
+    "That was back in twenty nineteen."
+   ],
+   [
+    "Them",
+    "It's on page three."
+   ],
+   [
+    "Me",
+    "What's a good number for you?"
+   ],
+   [
+    "Them",
+    "Sure, seven one nine five five five oh one two eight."
+   ],
+   [
+    "Me",
+    "Mm-hm."
+   ],
+   [
+    "Them",
+    "I paid by card, order 169-6926425-1133999."
+   ],
+   [
+    "Me",
+    "Great, talk soon."
+   ]
+  ],
+  "items": [
+   {
+    "cls": "phone",
+    "kind": "phone",
+    "written": "(719) 555-0128",
+    "spoken": "seven one nine five five five oh one two eight",
+    "token": "7195550128",
+    "style": "digits",
+    "cue": "previous_turn",
+    "speaker": "Them",
+    "start": 323,
+    "end": 369
+   }
+  ],
+  "distractors": [
+   {
+    "kind": "plain_counts",
+    "text": "The counts were 5407, 1312, 7501, 1094.",
+    "start": 96,
+    "end": 135
+   },
+   {
+    "kind": "year",
+    "text": "twenty nineteen",
+    "start": 219,
+    "end": 234
+   },
+   {
+    "kind": "page",
+    "text": "page three",
+    "start": 255,
+    "end": 265
+   },
+   {
+    "kind": "card_order",
+    "text": "I paid by card, order 169-6926425-1133999.",
+    "start": 398,
+    "end": 440
+   }
+  ],
+  "transcript": "**Me:** Hey, how's it going?\n\n**Them:** The weather has been lovely.\n\n**Me:** Right.\n\n**Them:** The counts were 5407, 1312, 7501, 1094.\n\n**Me:** No, I think that's everything.\n\n**Them:** Okay.\n\n**Me:** That was back in twenty nineteen.\n\n**Them:** It's on page three.\n\n**Me:** What's a good number for you?\n\n**Them:** Sure, seven one nine five five five oh one two eight.\n\n**Me:** Mm-hm.\n\n**Them:** I paid by card, order 169-6926425-1133999.\n\n**Me:** Great, talk soon."
+ },
+ {
+  "sid": "s09",
+  "lines": [
+   [
+    "Me",
+    "The weather has been lovely."
+   ],
+   [
+    "Them",
+    "Sorry, can you repeat that?"
+   ],
+   [
+    "Me",
+    "Email me the stuff from yesterday at parcelly.com."
+   ],
+   [
+    "Them",
+    "No, I missed it."
+   ],
+   [
+    "Me",
+    "Got it."
+   ],
+   [
+    "Them",
+    "three seven one four five zero nine four eight four eight one three eight five is the card."
+   ],
+   [
+    "Me",
+    "Not bad, thanks. You?"
+   ],
+   [
+    "Them",
+    "The counts were six seventy one, ninety nine, four six five three."
+   ],
+   [
+    "Me",
+    "Got it."
+   ],
+   [
+    "Them",
+    "six four four dash zero four dash eight nine zero one, that's my social."
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "eight zero six zero eight six eight nine nine four nine, that's the account number."
+   ],
+   [
+    "Me",
+    "Okay, one, two, three, go."
+   ],
+   [
+    "Them",
+    "Right."
+   ],
+   [
+    "Me",
+    "Pretty good. Busy week."
+   ],
+   [
+    "Them",
+    "Mm-hm."
+   ],
+   [
+    "Me",
+    "Great, talk soon."
+   ]
+  ],
+  "items": [
+   {
+    "cls": "card",
+    "kind": "amex",
+    "written": "3714 509484 81385",
+    "spoken": "three seven one four five zero nine four eight four eight one three eight five",
+    "token": "371450948481385",
+    "style": "double",
+    "cue": "after_value",
+    "speaker": "Them",
+    "start": 192,
+    "end": 270
+   },
+   {
+    "cls": "ssn",
+    "kind": "ssn",
+    "written": "644-04-8901",
+    "spoken": "six four four dash zero four dash eight nine zero one",
+    "token": "644048901",
+    "style": "digits",
+    "cue": "after_value",
+    "speaker": "Them",
+    "start": 421,
+    "end": 474
+   },
+   {
+    "cls": "account",
+    "kind": "account_number",
+    "written": "80608689949",
+    "spoken": "eight zero six zero eight six eight nine nine four nine",
+    "token": "80608689949",
+    "style": "double",
+    "cue": "after_value",
+    "speaker": "Them",
+    "start": 521,
+    "end": 576
+   }
+  ],
+  "distractors": [
+   {
+    "kind": "web_email_yesterday",
+    "text": "Email me the stuff from yesterday at parcelly.com.",
+    "start": 85,
+    "end": 135
+   },
+   {
+    "kind": "triple",
+    "text": "six seventy one, ninety nine, four six five three",
+    "start": 342,
+    "end": 391
+   },
+   {
+    "kind": "count",
+    "text": "one, two, three",
+    "start": 620,
+    "end": 635
+   }
+  ],
+  "transcript": "**Me:** The weather has been lovely.\n\n**Them:** Sorry, can you repeat that?\n\n**Me:** Email me the stuff from yesterday at parcelly.com.\n\n**Them:** No, I missed it.\n\n**Me:** Got it.\n\n**Them:** three seven one four five zero nine four eight four eight one three eight five is the card.\n\n**Me:** Not bad, thanks. You?\n\n**Them:** The counts were six seventy one, ninety nine, four six five three.\n\n**Me:** Got it.\n\n**Them:** six four four dash zero four dash eight nine zero one, that's my social.\n\n**Me:** Right.\n\n**Them:** eight zero six zero eight six eight nine nine four nine, that's the account number.\n\n**Me:** Okay, one, two, three, go.\n\n**Them:** Right.\n\n**Me:** Pretty good. Busy week.\n\n**Them:** Mm-hm.\n\n**Me:** Great, talk soon."
+ },
+ {
+  "sid": "s10",
+  "lines": [
+   [
+    "Me",
+    "Great, talk soon."
+   ],
+   [
+    "Them",
+    "No, I missed it."
+   ],
+   [
+    "Me",
+    "Got it."
+   ],
+   [
+    "Them",
+    "I almost called nine one one."
+   ],
+   [
+    "Me",
+    "Got it."
+   ],
+   [
+    "Them",
+    "The weather has been lovely."
+   ],
+   [
+    "Me",
+    "Can you send me the link? I bought it at target dot com."
+   ],
+   [
+    "Them",
+    "Okay."
+   ],
+   [
+    "Me",
+    "The routing table has 431 entries and 4426240 lookups."
+   ],
+   [
+    "Them",
+    "Right."
+   ],
+   [
+    "Me",
+    "Okay, one, two, three, go."
+   ],
+   [
+    "Them",
+    "It was great, really relaxing."
+   ],
+   [
+    "Me",
+    "I need to reset my password again."
+   ],
+   [
+    "Them",
+    "Right."
+   ],
+   [
+    "Me",
+    "gavrell six eight is my password."
+   ],
+   [
+    "Them",
+    "It's on page three."
+   ],
+   [
+    "Me",
+    "Great, talk soon."
+   ]
+  ],
+  "items": [
+   {
+    "cls": "password",
+    "kind": "password",
+    "written": "gavrell68",
+    "spoken": "gavrell six eight",
+    "token": "gavrell68",
+    "style": "word_digits",
+    "cue": "after_value",
+    "speaker": "Me",
+    "start": 483,
+    "end": 500
+   }
+  ],
+  "distractors": [
+   {
+    "kind": "nine_one_one",
+    "text": "nine one one",
+    "start": 98,
+    "end": 110
+   },
+   {
+    "kind": "website_send",
+    "text": "target dot com",
+    "start": 219,
+    "end": 233
+   },
+   {
+    "kind": "account_routing_table",
+    "text": "The routing table has 431 entries and 4426240 lookups.",
+    "start": 261,
+    "end": 315
+   },
+   {
+    "kind": "count",
+    "text": "one, two, three",
+    "start": 349,
+    "end": 364
+   },
+   {
+    "kind": "pw_reset",
+    "text": "I need to reset my password again.",
+    "start": 421,
+    "end": 455
+   },
+   {
+    "kind": "page",
+    "text": "page three",
+    "start": 536,
+    "end": 546
+   }
+  ],
+  "transcript": "**Me:** Great, talk soon.\n\n**Them:** No, I missed it.\n\n**Me:** Got it.\n\n**Them:** I almost called nine one one.\n\n**Me:** Got it.\n\n**Them:** The weather has been lovely.\n\n**Me:** Can you send me the link? I bought it at target dot com.\n\n**Them:** Okay.\n\n**Me:** The routing table has 431 entries and 4426240 lookups.\n\n**Them:** Right.\n\n**Me:** Okay, one, two, three, go.\n\n**Them:** It was great, really relaxing.\n\n**Me:** I need to reset my password again.\n\n**Them:** Right.\n\n**Me:** gavrell six eight is my password.\n\n**Them:** It's on page three.\n\n**Me:** Great, talk soon."
+ },
+ {
+  "sid": "s11",
+  "lines": [
+   [
+    "Me",
+    "Not bad, thanks. You?"
+   ],
+   [
+    "Them",
+    "Perfect."
+   ],
+   [
+    "Me",
+    "Okay."
+   ],
+   [
+    "Them",
+    "faxmore dot sterran at example dot com, that's my email."
+   ],
+   [
+    "Me",
+    "ninety nine thirty eight Varnholt Road, five four oh nine two, that's my address."
+   ],
+   [
+    "Them",
+    "Mm-hm."
+   ],
+   [
+    "Me",
+    "Sorry, can you repeat that?"
+   ],
+   [
+    "Them",
+    "Okay."
+   ],
+   [
+    "Me",
+    "The order number is three four eight four five five three."
+   ],
+   [
+    "Them",
+    "Scores 418 282 696."
+   ],
+   [
+    "Me",
+    "Pretty good. Busy week."
+   ],
+   [
+    "Them",
+    "Can you send me the link? I bought it at amazon dot com."
+   ],
+   [
+    "Me",
+    "Okay, let's get started."
+   ],
+   [
+    "Them",
+    "Great, talk soon."
+   ]
+  ],
+  "items": [
+   {
+    "cls": "email",
+    "kind": "email",
+    "written": "faxmore.sterran@example.com",
+    "spoken": "faxmore dot sterran at example dot com",
+    "token": "faxmore",
+    "style": "dotted",
+    "cue": "after_value",
+    "speaker": "Them",
+    "start": 76,
+    "end": 114
+   },
+   {
+    "cls": "address",
+    "kind": "address",
+    "written": "9938 Varnholt Road, 54092",
+    "spoken": "ninety nine thirty eight Varnholt Road, five four oh nine two",
+    "token": "Varnholt",
+    "style": "grouped",
+    "cue": "after_value",
+    "speaker": "Me",
+    "start": 142,
+    "end": 203
+   }
+  ],
+  "distractors": [
+   {
+    "kind": "order",
+    "text": "three four eight four five five three",
+    "start": 325,
+    "end": 362
+   },
+   {
+    "kind": "plain_scores",
+    "text": "Scores 418 282 696.",
+    "start": 375,
+    "end": 394
+   },
+   {
+    "kind": "website_send",
+    "text": "amazon dot com",
+    "start": 480,
+    "end": 494
+   }
+  ],
+  "transcript": "**Me:** Not bad, thanks. You?\n\n**Them:** Perfect.\n\n**Me:** Okay.\n\n**Them:** faxmore dot sterran at example dot com, that's my email.\n\n**Me:** ninety nine thirty eight Varnholt Road, five four oh nine two, that's my address.\n\n**Them:** Mm-hm.\n\n**Me:** Sorry, can you repeat that?\n\n**Them:** Okay.\n\n**Me:** The order number is three four eight four five five three.\n\n**Them:** Scores 418 282 696.\n\n**Me:** Pretty good. Busy week.\n\n**Them:** Can you send me the link? I bought it at amazon dot com.\n\n**Me:** Okay, let's get started.\n\n**Them:** Great, talk soon."
+ },
+ {
+  "sid": "s12",
+  "lines": [
+   [
+    "Me",
+    "Not bad, thanks. You?"
+   ],
+   [
+    "Them",
+    "How was the trip?"
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "Can we do ten fifteen?"
+   ],
+   [
+    "Me",
+    "Okay."
+   ],
+   [
+    "Them",
+    "The vote was twelve to seven, with three abstaining."
+   ],
+   [
+    "Me",
+    "I bought v2 at tinkerbay.co.uk."
+   ],
+   [
+    "Them",
+    "The Social Security office is open 9 to 5, call (521) 555-0157."
+   ],
+   [
+    "Me",
+    "It's on page two hundred and twelve."
+   ],
+   [
+    "Them",
+    "Okay."
+   ],
+   [
+    "Me",
+    "The order number is two eight eight eight seven nine."
+   ],
+   [
+    "Them",
+    "Pretty good. Busy week."
+   ],
+   [
+    "Me",
+    "Great, talk soon."
+   ]
+  ],
+  "items": [],
+  "distractors": [
+   {
+    "kind": "time",
+    "text": "ten fifteen",
+    "start": 96,
+    "end": 107
+   },
+   {
+    "kind": "votes",
+    "text": "twelve to seven, with three abstaining",
+    "start": 148,
+    "end": 186
+   },
+   {
+    "kind": "web_bought_uk",
+    "text": "I bought v2 at tinkerbay.co.uk.",
+    "start": 197,
+    "end": 228
+   },
+   {
+    "kind": "social_office",
+    "text": "The Social Security office is open 9 to 5, call (521) 555-0157.",
+    "start": 240,
+    "end": 303
+   },
+   {
+    "kind": "page",
+    "text": "page two hundred and twelve",
+    "start": 321,
+    "end": 348
+   },
+   {
+    "kind": "order",
+    "text": "two eight eight eight seven nine",
+    "start": 396,
+    "end": 428
+   }
+  ],
+  "transcript": "**Me:** Not bad, thanks. You?\n\n**Them:** How was the trip?\n\n**Me:** Right.\n\n**Them:** Can we do ten fifteen?\n\n**Me:** Okay.\n\n**Them:** The vote was twelve to seven, with three abstaining.\n\n**Me:** I bought v2 at tinkerbay.co.uk.\n\n**Them:** The Social Security office is open 9 to 5, call (521) 555-0157.\n\n**Me:** It's on page two hundred and twelve.\n\n**Them:** Okay.\n\n**Me:** The order number is two eight eight eight seven nine.\n\n**Them:** Pretty good. Busy week.\n\n**Me:** Great, talk soon."
+ },
+ {
+  "sid": "s13",
+  "lines": [
+   [
+    "Me",
+    "Okay, let's get started."
+   ],
+   [
+    "Them",
+    "The weather has been lovely."
+   ],
+   [
+    "Me",
+    "Okay."
+   ],
+   [
+    "Them",
+    "The routing table has 922 entries and 8070142 lookups."
+   ],
+   [
+    "Me",
+    "Got it."
+   ],
+   [
+    "Them",
+    "It was only four ninety nine."
+   ],
+   [
+    "Me",
+    "Great, talk soon."
+   ],
+   [
+    "Them",
+    "seven nine two dash triple five dash oh one oh four, that's my cell."
+   ],
+   [
+    "Me",
+    "Did you catch the game last night?"
+   ],
+   [
+    "Them",
+    "Okay."
+   ],
+   [
+    "Me",
+    "Take this down, four nine three dash two four dash two eight six two."
+   ],
+   [
+    "Them",
+    "Got it."
+   ],
+   [
+    "Me",
+    "The vote was forty one to thirty."
+   ],
+   [
+    "Them",
+    "Great, talk soon."
+   ]
+  ],
+  "items": [
+   {
+    "cls": "phone",
+    "kind": "phone",
+    "written": "(792) 555-0104",
+    "spoken": "seven nine two dash triple five dash oh one oh four",
+    "token": "7925550104",
+    "style": "double",
+    "cue": "after_value",
+    "speaker": "Them",
+    "start": 250,
+    "end": 301
+   },
+   {
+    "cls": "ssn",
+    "kind": "ssn",
+    "written": "493-24-2862",
+    "spoken": "four nine three dash two four dash two eight six two",
+    "token": "493242862",
+    "style": "double",
+    "cue": "none",
+    "speaker": "Me",
+    "start": 405,
+    "end": 457
+   }
+  ],
+  "distractors": [
+   {
+    "kind": "account_routing_table",
+    "text": "The routing table has 922 entries and 8070142 lookups.",
+    "start": 99,
+    "end": 153
+   },
+   {
+    "kind": "price",
+    "text": "four ninety nine",
+    "start": 194,
+    "end": 210
+   },
+   {
+    "kind": "votes",
+    "text": "forty one to thirty",
+    "start": 500,
+    "end": 519
+   }
+  ],
+  "transcript": "**Me:** Okay, let's get started.\n\n**Them:** The weather has been lovely.\n\n**Me:** Okay.\n\n**Them:** The routing table has 922 entries and 8070142 lookups.\n\n**Me:** Got it.\n\n**Them:** It was only four ninety nine.\n\n**Me:** Great, talk soon.\n\n**Them:** seven nine two dash triple five dash oh one oh four, that's my cell.\n\n**Me:** Did you catch the game last night?\n\n**Them:** Okay.\n\n**Me:** Take this down, four nine three dash two four dash two eight six two.\n\n**Them:** Got it.\n\n**Me:** The vote was forty one to thirty.\n\n**Them:** Great, talk soon."
+ },
+ {
+  "sid": "s14",
+  "lines": [
+   [
+    "Me",
+    "Great, talk soon."
+   ],
+   [
+    "Them",
+    "How was the trip?"
+   ],
+   [
+    "Me",
+    "I almost called nine one one."
+   ],
+   [
+    "Them",
+    "Thanks so much."
+   ],
+   [
+    "Me",
+    "The order number is four nine nine three seven."
+   ],
+   [
+    "Them",
+    "Sounds good."
+   ],
+   [
+    "Me",
+    "Okay."
+   ],
+   [
+    "Them",
+    "Visa appointment on 4/7/2022, case 1968695145748312."
+   ],
+   [
+    "Me",
+    "We had 899 17 4745 users."
+   ],
+   [
+    "Them",
+    "Okay."
+   ],
+   [
+    "Me",
+    "Here you go, three seven eight two four seven six two nine five one four eight nine five."
+   ],
+   [
+    "Them",
+    "Got it."
+   ],
+   [
+    "Me",
+    "Hey, how's it going?"
+   ],
+   [
+    "Them",
+    "Here it is, zero three five, six nine zero, two eight one."
+   ],
+   [
+    "Me",
+    "Try morrask eight one."
+   ],
+   [
+    "Them",
+    "Okay."
+   ],
+   [
+    "Me",
+    "Can you send me the link? I bought it at amazon dot com."
+   ],
+   [
+    "Them",
+    "Okay, one, two, three, go."
+   ],
+   [
+    "Me",
+    "Okay."
+   ],
+   [
+    "Them",
+    "Great, talk soon."
+   ]
+  ],
+  "items": [
+   {
+    "cls": "card",
+    "kind": "amex",
+    "written": "3782 476295 14895",
+    "spoken": "three seven eight two four seven six two nine five one four eight nine five",
+    "token": "378247629514895",
+    "style": "double",
+    "cue": "none",
+    "speaker": "Me",
+    "start": 355,
+    "end": 430
+   },
+   {
+    "cls": "account",
+    "kind": "routing",
+    "written": "035690281",
+    "spoken": "zero three five, six nine zero, two eight one",
+    "token": "035690281",
+    "style": "digits",
+    "cue": "none",
+    "speaker": "Them",
+    "start": 504,
+    "end": 549
+   },
+   {
+    "cls": "password",
+    "kind": "password",
+    "written": "morrask81",
+    "spoken": "morrask eight one",
+    "token": "morrask81",
+    "style": "word_digits",
+    "cue": "none",
+    "speaker": "Me",
+    "start": 564,
+    "end": 581
+   }
+  ],
+  "distractors": [
+   {
+    "kind": "nine_one_one",
+    "text": "nine one one",
+    "start": 80,
+    "end": 92
+   },
+   {
+    "kind": "order",
+    "text": "four nine nine three seven",
+    "start": 150,
+    "end": 176
+   },
+   {
+    "kind": "card_visa_case",
+    "text": "Visa appointment on 4/7/2022, case 1968695145748312.",
+    "start": 228,
+    "end": 280
+   },
+   {
+    "kind": "ssn_triple",
+    "text": "We had 899 17 4745 users.",
+    "start": 290,
+    "end": 315
+   },
+   {
+    "kind": "website_send",
+    "text": "amazon dot com",
+    "start": 650,
+    "end": 664
+   },
+   {
+    "kind": "count",
+    "text": "one, two, three",
+    "start": 683,
+    "end": 698
+   }
+  ],
+  "transcript": "**Me:** Great, talk soon.\n\n**Them:** How was the trip?\n\n**Me:** I almost called nine one one.\n\n**Them:** Thanks so much.\n\n**Me:** The order number is four nine nine three seven.\n\n**Them:** Sounds good.\n\n**Me:** Okay.\n\n**Them:** Visa appointment on 4/7/2022, case 1968695145748312.\n\n**Me:** We had 899 17 4745 users.\n\n**Them:** Okay.\n\n**Me:** Here you go, three seven eight two four seven six two nine five one four eight nine five.\n\n**Them:** Got it.\n\n**Me:** Hey, how's it going?\n\n**Them:** Here it is, zero three five, six nine zero, two eight one.\n\n**Me:** Try morrask eight one.\n\n**Them:** Okay.\n\n**Me:** Can you send me the link? I bought it at amazon dot com.\n\n**Them:** Okay, one, two, three, go.\n\n**Me:** Okay.\n\n**Them:** Great, talk soon."
+ },
+ {
+  "sid": "s15",
+  "lines": [
+   [
+    "Me",
+    "I know, finally some sun."
+   ],
+   [
+    "Them",
+    "Not bad, thanks. You?"
+   ],
+   [
+    "Me",
+    "I bought Model3 at parcelly.co.uk."
+   ],
+   [
+    "Them",
+    "How was the trip?"
+   ],
+   [
+    "Me",
+    "Got it."
+   ],
+   [
+    "Them",
+    "Okay, six five nine dash five five five dash zero one five eight."
+   ],
+   [
+    "Me",
+    "I ordered it at amazon dot com."
+   ],
+   [
+    "Them",
+    "It was great, really relaxing."
+   ],
+   [
+    "Me",
+    "Got it."
+   ],
+   [
+    "Them",
+    "That was back in twenty nineteen."
+   ],
+   [
+    "Me",
+    "Sorry, can you repeat that?"
+   ],
+   [
+    "Them",
+    "Okay."
+   ],
+   [
+    "Me",
+    "Can we do nine o'clock?"
+   ],
+   [
+    "Them",
+    "Can you send me the link? I bought it at target dot com."
+   ],
+   [
+    "Me",
+    "Got it."
+   ],
+   [
+    "Them",
+    "The weather has been lovely."
+   ],
+   [
+    "Me",
+    "Mm-hm."
+   ],
+   [
+    "Them",
+    "Meet me at six four six one Trevane Street, apartment four."
+   ],
+   [
+    "Me",
+    "Okay."
+   ],
+   [
+    "Them",
+    "Use quorrel ninety four at example dot org."
+   ],
+   [
+    "Me",
+    "Great, talk soon."
+   ]
+  ],
+  "items": [
+   {
+    "cls": "phone",
+    "kind": "phone",
+    "written": "(659) 555-0158",
+    "spoken": "six five nine dash five five five dash zero one five eight",
+    "token": "6595550158",
+    "style": "digits",
+    "cue": "none",
+    "speaker": "Them",
+    "start": 174,
+    "end": 232
+   },
+   {
+    "cls": "address",
+    "kind": "address",
+    "written": "6461 Trevane Street, apartment 4",
+    "spoken": "six four six one Trevane Street, apartment four",
+    "token": "Trevane",
+    "style": "digits",
+    "cue": "none",
+    "speaker": "Them",
+    "start": 629,
+    "end": 676
+   },
+   {
+    "cls": "email",
+    "kind": "email",
+    "written": "quorrel94@example.org",
+    "spoken": "quorrel ninety four at example dot org",
+    "token": "quorrel",
+    "style": "digits",
+    "cue": "none",
+    "speaker": "Them",
+    "start": 708,
+    "end": 746
+   }
+  ],
+  "distractors": [
+   {
+    "kind": "web_bought_uk",
+    "text": "I bought Model3 at parcelly.co.uk.",
+    "start": 76,
+    "end": 110
+   },
+   {
+    "kind": "website",
+    "text": "amazon dot com",
+    "start": 259,
+    "end": 273
+   },
+   {
+    "kind": "year",
+    "text": "twenty nineteen",
+    "start": 362,
+    "end": 377
+   },
+   {
+    "kind": "time",
+    "text": "nine o'clock",
+    "start": 452,
+    "end": 464
+   },
+   {
+    "kind": "website_send",
+    "text": "target dot com",
+    "start": 518,
+    "end": 532
+   }
+  ],
+  "transcript": "**Me:** I know, finally some sun.\n\n**Them:** Not bad, thanks. You?\n\n**Me:** I bought Model3 at parcelly.co.uk.\n\n**Them:** How was the trip?\n\n**Me:** Got it.\n\n**Them:** Okay, six five nine dash five five five dash zero one five eight.\n\n**Me:** I ordered it at amazon dot com.\n\n**Them:** It was great, really relaxing.\n\n**Me:** Got it.\n\n**Them:** That was back in twenty nineteen.\n\n**Me:** Sorry, can you repeat that?\n\n**Them:** Okay.\n\n**Me:** Can we do nine o'clock?\n\n**Them:** Can you send me the link? I bought it at target dot com.\n\n**Me:** Got it.\n\n**Them:** The weather has been lovely.\n\n**Me:** Mm-hm.\n\n**Them:** Meet me at six four six one Trevane Street, apartment four.\n\n**Me:** Okay.\n\n**Them:** Use quorrel ninety four at example dot org.\n\n**Me:** Great, talk soon."
+ },
+ {
+  "sid": "s16",
+  "lines": [
+   [
+    "Me",
+    "Sounds good."
+   ],
+   [
+    "Them",
+    "Did you catch the game last night?"
+   ],
+   [
+    "Me",
+    "Pin the tab so we don't lose it."
+   ],
+   [
+    "Them",
+    "Okay."
+   ],
+   [
+    "Me",
+    "No, I think that's everything."
+   ],
+   [
+    "Them",
+    "The vote was forty one to thirty."
+   ],
+   [
+    "Me",
+    "Mm-hm."
+   ],
+   [
+    "Them",
+    "Pretty good. Busy week."
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "It was only four ninety nine."
+   ],
+   [
+    "Me",
+    "Hey, how's it going?"
+   ],
+   [
+    "Them",
+    "Got it."
+   ],
+   [
+    "Me",
+    "Sure, my social is double six eight five eight one triple nine."
+   ],
+   [
+    "Them",
+    "Got it."
+   ],
+   [
+    "Me",
+    "I know, finally some sun."
+   ],
+   [
+    "Them",
+    "Put it on my visa, fifty five fifty five dash seventy four oh three dash sixty one eighty seven dash fifty five ninety three."
+   ],
+   [
+    "Me",
+    "Call (869) 555-0149 about the account number."
+   ],
+   [
+    "Them",
+    "Great, talk soon."
+   ]
+  ],
+  "items": [
+   {
+    "cls": "ssn",
+    "kind": "ssn",
+    "written": "668-58-1999",
+    "spoken": "double six eight five eight one triple nine",
+    "token": "668581999",
+    "style": "double",
+    "cue": "same_sentence",
+    "speaker": "Me",
+    "start": 396,
+    "end": 439
+   },
+   {
+    "cls": "card",
+    "kind": "card",
+    "written": "5555 7403 6187 5593",
+    "spoken": "fifty five fifty five dash seventy four oh three dash sixty one eighty seven dash fifty five ninety three",
+    "token": "5555740361875593",
+    "style": "grouped",
+    "cue": "same_sentence",
+    "speaker": "Them",
+    "start": 525,
+    "end": 630
+   }
+  ],
+  "distractors": [
+   {
+    "kind": "pw_pin_tab",
+    "text": "Pin the tab so we don't lose it.",
+    "start": 76,
+    "end": 108
+   },
+   {
+    "kind": "votes",
+    "text": "forty one to thirty",
+    "start": 190,
+    "end": 209
+   },
+   {
+    "kind": "price",
+    "text": "four ninety nine",
+    "start": 301,
+    "end": 317
+   },
+   {
+    "kind": "account_call",
+    "text": "Call (869) 555-0149 about the account number.",
+    "start": 641,
+    "end": 686
+   }
+  ],
+  "transcript": "**Me:** Sounds good.\n\n**Them:** Did you catch the game last night?\n\n**Me:** Pin the tab so we don't lose it.\n\n**Them:** Okay.\n\n**Me:** No, I think that's everything.\n\n**Them:** The vote was forty one to thirty.\n\n**Me:** Mm-hm.\n\n**Them:** Pretty good. Busy week.\n\n**Me:** Right.\n\n**Them:** It was only four ninety nine.\n\n**Me:** Hey, how's it going?\n\n**Them:** Got it.\n\n**Me:** Sure, my social is double six eight five eight one triple nine.\n\n**Them:** Got it.\n\n**Me:** I know, finally some sun.\n\n**Them:** Put it on my visa, fifty five fifty five dash seventy four oh three dash sixty one eighty seven dash fifty five ninety three.\n\n**Me:** Call (869) 555-0149 about the account number.\n\n**Them:** Great, talk soon."
+ },
+ {
+  "sid": "s17",
+  "lines": [
+   [
+    "Me",
+    "Hey, how's it going?"
+   ],
+   [
+    "Them",
+    "Sounds good."
+   ],
+   [
+    "Me",
+    "Can you send me the link? I bought it at amazon dot com."
+   ],
+   [
+    "Them",
+    "Right."
+   ],
+   [
+    "Me",
+    "I ordered it at target dot com."
+   ],
+   [
+    "Them",
+    "Mm-hm."
+   ],
+   [
+    "Me",
+    "The counts were 5299, 2561, 1032, 1754."
+   ],
+   [
+    "Them",
+    "My IBAN is G B eight seven K F L T one one oh nine one nine nine oh five two eight six four eight."
+   ],
+   [
+    "Me",
+    "Great, talk soon."
+   ]
+  ],
+  "items": [
+   {
+    "cls": "account",
+    "kind": "iban",
+    "written": "GB87 KFLT 1109 1990 5286 48",
+    "spoken": "G B eight seven K F L T one one oh nine one nine nine oh five two eight six four eight",
+    "token": "GB87KFLT11091990528648",
+    "style": "spelled",
+    "cue": "same_sentence",
+    "speaker": "Them",
+    "start": 267,
+    "end": 353
+   }
+  ],
+  "distractors": [
+   {
+    "kind": "website_send",
+    "text": "amazon dot com",
+    "start": 103,
+    "end": 117
+   },
+   {
+    "kind": "website",
+    "text": "target dot com",
+    "start": 162,
+    "end": 176
+   },
+   {
+    "kind": "plain_counts",
+    "text": "The counts were 5299, 2561, 1032, 1754.",
+    "start": 205,
+    "end": 244
+   }
+  ],
+  "transcript": "**Me:** Hey, how's it going?\n\n**Them:** Sounds good.\n\n**Me:** Can you send me the link? I bought it at amazon dot com.\n\n**Them:** Right.\n\n**Me:** I ordered it at target dot com.\n\n**Them:** Mm-hm.\n\n**Me:** The counts were 5299, 2561, 1032, 1754.\n\n**Them:** My IBAN is G B eight seven K F L T one one oh nine one nine nine oh five two eight six four eight.\n\n**Me:** Great, talk soon."
+ },
+ {
+  "sid": "s18",
+  "lines": [
+   [
+    "Me",
+    "The weather has been lovely."
+   ],
+   [
+    "Them",
+    "Sorry, can you repeat that?"
+   ],
+   [
+    "Me",
+    "I almost called nine one one."
+   ],
+   [
+    "Them",
+    "Got it."
+   ],
+   [
+    "Me",
+    "I know, finally some sun."
+   ],
+   [
+    "Them",
+    "That was back in twenty nineteen."
+   ],
+   [
+    "Me",
+    "I ordered it at amazon dot com."
+   ],
+   [
+    "Them",
+    "Okay."
+   ],
+   [
+    "Me",
+    "Pretty good. Busy week."
+   ],
+   [
+    "Them",
+    "I bought it at brightmart.com. Is the email working now?"
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "Okay, let's get started."
+   ],
+   [
+    "Me",
+    "Our social media post got 16079384 views."
+   ],
+   [
+    "Them",
+    "Great, talk soon."
+   ]
+  ],
+  "items": [],
+  "distractors": [
+   {
+    "kind": "nine_one_one",
+    "text": "nine one one",
+    "start": 101,
+    "end": 113
+   },
+   {
+    "kind": "year",
+    "text": "twenty nineteen",
+    "start": 197,
+    "end": 212
+   },
+   {
+    "kind": "website",
+    "text": "amazon dot com",
+    "start": 239,
+    "end": 253
+   },
+   {
+    "kind": "web_bought_email",
+    "text": "I bought it at brightmart.com. Is the email working now?",
+    "start": 316,
+    "end": 372
+   },
+   {
+    "kind": "social_views",
+    "text": "Our social media post got 16079384 views.",
+    "start": 434,
+    "end": 475
+   }
+  ],
+  "transcript": "**Me:** The weather has been lovely.\n\n**Them:** Sorry, can you repeat that?\n\n**Me:** I almost called nine one one.\n\n**Them:** Got it.\n\n**Me:** I know, finally some sun.\n\n**Them:** That was back in twenty nineteen.\n\n**Me:** I ordered it at amazon dot com.\n\n**Them:** Okay.\n\n**Me:** Pretty good. Busy week.\n\n**Them:** I bought it at brightmart.com. Is the email working now?\n\n**Me:** Right.\n\n**Them:** Okay, let's get started.\n\n**Me:** Our social media post got 16079384 views.\n\n**Them:** Great, talk soon."
+ },
+ {
+  "sid": "s19",
+  "lines": [
+   [
+    "Me",
+    "It was great, really relaxing."
+   ],
+   [
+    "Them",
+    "I know, finally some sun."
+   ],
+   [
+    "Me",
+    "Okay."
+   ],
+   [
+    "Them",
+    "Call (969) 555-0121 about the account number."
+   ],
+   [
+    "Me",
+    "Thanks so much."
+   ],
+   [
+    "Them",
+    "Got it."
+   ],
+   [
+    "Me",
+    "Can you send me the link? I bought it at amazon dot com."
+   ],
+   [
+    "Them",
+    "Sounds good."
+   ],
+   [
+    "Me",
+    "My email is quorrel dot telvane at example dot org."
+   ],
+   [
+    "Them",
+    "Right."
+   ],
+   [
+    "Me",
+    "Anything else?"
+   ],
+   [
+    "Them",
+    "I ordered it at target dot com."
+   ],
+   [
+    "Me",
+    "Okay."
+   ],
+   [
+    "Them",
+    "The order number is two one eight two nine."
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "The wifi passcode is yarrick sixty three."
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "Great, talk soon."
+   ]
+  ],
+  "items": [
+   {
+    "cls": "email",
+    "kind": "email",
+    "written": "quorrel.telvane@example.org",
+    "spoken": "quorrel dot telvane at example dot org",
+    "token": "quorrel",
+    "style": "dotted",
+    "cue": "same_sentence",
+    "speaker": "Me",
+    "start": 303,
+    "end": 341
+   },
+   {
+    "cls": "password",
+    "kind": "password",
+    "written": "yarrick63",
+    "spoken": "yarrick sixty three",
+    "token": "yarrick63",
+    "style": "word",
+    "cue": "same_sentence",
+    "speaker": "Them",
+    "start": 546,
+    "end": 565
+   }
+  ],
+  "distractors": [
+   {
+    "kind": "account_call",
+    "text": "Call (969) 555-0121 about the account number.",
+    "start": 102,
+    "end": 147
+   },
+   {
+    "kind": "website_send",
+    "text": "amazon dot com",
+    "start": 242,
+    "end": 256
+   },
+   {
+    "kind": "website",
+    "text": "target dot com",
+    "start": 412,
+    "end": 426
+   },
+   {
+    "kind": "order",
+    "text": "two one eight two nine",
+    "start": 474,
+    "end": 496
+   }
+  ],
+  "transcript": "**Me:** It was great, really relaxing.\n\n**Them:** I know, finally some sun.\n\n**Me:** Okay.\n\n**Them:** Call (969) 555-0121 about the account number.\n\n**Me:** Thanks so much.\n\n**Them:** Got it.\n\n**Me:** Can you send me the link? I bought it at amazon dot com.\n\n**Them:** Sounds good.\n\n**Me:** My email is quorrel dot telvane at example dot org.\n\n**Them:** Right.\n\n**Me:** Anything else?\n\n**Them:** I ordered it at target dot com.\n\n**Me:** Okay.\n\n**Them:** The order number is two one eight two nine.\n\n**Me:** Right.\n\n**Them:** The wifi passcode is yarrick sixty three.\n\n**Me:** Right.\n\n**Them:** Great, talk soon."
+ },
+ {
+  "sid": "s20",
+  "lines": [
+   [
+    "Me",
+    "Sounds good."
+   ],
+   [
+    "Them",
+    "Anything else?"
+   ],
+   [
+    "Me",
+    "My address is nine seven six six Vandrel Avenue."
+   ],
+   [
+    "Them",
+    "Mm-hm."
+   ],
+   [
+    "Me",
+    "Sorry, can you repeat that?"
+   ],
+   [
+    "Them",
+    "Okay."
+   ],
+   [
+    "Me",
+    "Can we do two thirty?"
+   ],
+   [
+    "Them",
+    "Can you send me the link? I bought it at target dot com."
+   ],
+   [
+    "Me",
+    "Perfect."
+   ],
+   [
+    "Them",
+    "Mm-hm."
+   ],
+   [
+    "Me",
+    "Order 990652422, thanks."
+   ],
+   [
+    "Them",
+    "Mm-hm."
+   ],
+   [
+    "Me",
+    "Pretty good. Busy week."
+   ],
+   [
+    "Them",
+    "I ordered it at target dot com."
+   ],
+   [
+    "Me",
+    "Mm-hm."
+   ],
+   [
+    "Them",
+    "Did you catch the game last night?"
+   ],
+   [
+    "Me",
+    "Got it."
+   ],
+   [
+    "Them",
+    "My credit score is 836."
+   ],
+   [
+    "Me",
+    "The order number is four two four three five seven."
+   ],
+   [
+    "Them",
+    "Mm-hm."
+   ],
+   [
+    "Me",
+    "I know, finally some sun."
+   ],
+   [
+    "Them",
+    "Okay."
+   ],
+   [
+    "Me",
+    "Great, talk soon."
+   ]
+  ],
+  "items": [
+   {
+    "cls": "address",
+    "kind": "address",
+    "written": "9766 Vandrel Avenue",
+    "spoken": "nine seven six six Vandrel Avenue",
+    "token": "Vandrel",
+    "style": "digits",
+    "cue": "same_sentence",
+    "speaker": "Me",
+    "start": 70,
+    "end": 103
+   }
+  ],
+  "distractors": [
+   {
+    "kind": "time",
+    "text": "two thirty",
+    "start": 196,
+    "end": 206
+   },
+   {
+    "kind": "website_send",
+    "text": "target dot com",
+    "start": 260,
+    "end": 274
+   },
+   {
+    "kind": "plain_order",
+    "text": "Order 990652422, thanks.",
+    "start": 321,
+    "end": 345
+   },
+   {
+    "kind": "website",
+    "text": "target dot com",
+    "start": 424,
+    "end": 438
+   },
+   {
+    "kind": "card_score",
+    "text": "My credit score is 836.",
+    "start": 530,
+    "end": 553
+   },
+   {
+    "kind": "order",
+    "text": "four two four three five seven",
+    "start": 583,
+    "end": 613
+   }
+  ],
+  "transcript": "**Me:** Sounds good.\n\n**Them:** Anything else?\n\n**Me:** My address is nine seven six six Vandrel Avenue.\n\n**Them:** Mm-hm.\n\n**Me:** Sorry, can you repeat that?\n\n**Them:** Okay.\n\n**Me:** Can we do two thirty?\n\n**Them:** Can you send me the link? I bought it at target dot com.\n\n**Me:** Perfect.\n\n**Them:** Mm-hm.\n\n**Me:** Order 990652422, thanks.\n\n**Them:** Mm-hm.\n\n**Me:** Pretty good. Busy week.\n\n**Them:** I ordered it at target dot com.\n\n**Me:** Mm-hm.\n\n**Them:** Did you catch the game last night?\n\n**Me:** Got it.\n\n**Them:** My credit score is 836.\n\n**Me:** The order number is four two four three five seven.\n\n**Them:** Mm-hm.\n\n**Me:** I know, finally some sun.\n\n**Them:** Okay.\n\n**Me:** Great, talk soon."
+ },
+ {
+  "sid": "s21",
+  "lines": [
+   [
+    "Me",
+    "Did you catch the game last night?"
+   ],
+   [
+    "Them",
+    "The weather has been lovely."
+   ],
+   [
+    "Me",
+    "Got it."
+   ],
+   [
+    "Them",
+    "It was only three fifty."
+   ],
+   [
+    "Me",
+    "My phone number is seven two four, triple five, zero triple one."
+   ],
+   [
+    "Them",
+    "I ordered it at target dot com."
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "That was back in two thousand eight."
+   ],
+   [
+    "Me",
+    "Got it."
+   ],
+   [
+    "Them",
+    "I bought it at deskhub.com. Is the email working now?"
+   ],
+   [
+    "Me",
+    "Can I get your social security number?"
+   ],
+   [
+    "Them",
+    "Yeah, it's zero three zero eight zero nine one three seven."
+   ],
+   [
+    "Me",
+    "Okay."
+   ],
+   [
+    "Them",
+    "Which card do you want to use?"
+   ],
+   [
+    "Me",
+    "Okay, three seven eight two, three three two four nine four, seven four seven five one."
+   ],
+   [
+    "Them",
+    "Right."
+   ],
+   [
+    "Me",
+    "Can you send me the link? I bought it at target dot com."
+   ],
+   [
+    "Them",
+    "Got it."
+   ],
+   [
+    "Me",
+    "Thanks so much."
+   ],
+   [
+    "Them",
+    "Okay."
+   ],
+   [
+    "Me",
+    "Great, talk soon."
+   ]
+  ],
+  "items": [
+   {
+    "cls": "phone",
+    "kind": "phone",
+    "written": "(724) 555-0111",
+    "spoken": "seven two four, triple five, zero triple one",
+    "token": "7245550111",
+    "style": "double",
+    "cue": "same_sentence",
+    "speaker": "Me",
+    "start": 164,
+    "end": 208
+   },
+   {
+    "cls": "ssn",
+    "kind": "ssn",
+    "written": "030-80-9137",
+    "spoken": "zero three zero eight zero nine one three seven",
+    "token": "030809137",
+    "style": "double",
+    "cue": "previous_turn",
+    "speaker": "Them",
+    "start": 469,
+    "end": 516
+   },
+   {
+    "cls": "card",
+    "kind": "amex",
+    "written": "3782 332494 74751",
+    "spoken": "three seven eight two, three three two four nine four, seven four seven five one",
+    "token": "378233249474751",
+    "style": "digits",
+    "cue": "previous_turn",
+    "speaker": "Me",
+    "start": 590,
+    "end": 670
+   }
+  ],
+  "distractors": [
+   {
+    "kind": "price",
+    "text": "three fifty",
+    "start": 123,
+    "end": 134
+   },
+   {
+    "kind": "website",
+    "text": "target dot com",
+    "start": 237,
+    "end": 251
+   },
+   {
+    "kind": "year",
+    "text": "two thousand eight",
+    "start": 297,
+    "end": 315
+   },
+   {
+    "kind": "web_bought_email",
+    "text": "I bought it at deskhub.com. Is the email working now?",
+    "start": 345,
+    "end": 398
+   },
+   {
+    "kind": "website_send",
+    "text": "target dot com",
+    "start": 740,
+    "end": 754
+   }
+  ],
+  "transcript": "**Me:** Did you catch the game last night?\n\n**Them:** The weather has been lovely.\n\n**Me:** Got it.\n\n**Them:** It was only three fifty.\n\n**Me:** My phone number is seven two four, triple five, zero triple one.\n\n**Them:** I ordered it at target dot com.\n\n**Me:** Right.\n\n**Them:** That was back in two thousand eight.\n\n**Me:** Got it.\n\n**Them:** I bought it at deskhub.com. Is the email working now?\n\n**Me:** Can I get your social security number?\n\n**Them:** Yeah, it's zero three zero eight zero nine one three seven.\n\n**Me:** Okay.\n\n**Them:** Which card do you want to use?\n\n**Me:** Okay, three seven eight two, three three two four nine four, seven four seven five one.\n\n**Them:** Right.\n\n**Me:** Can you send me the link? I bought it at target dot com.\n\n**Them:** Got it.\n\n**Me:** Thanks so much.\n\n**Them:** Okay.\n\n**Me:** Great, talk soon."
+ },
+ {
+  "sid": "s22",
+  "lines": [
+   [
+    "Me",
+    "Great, talk soon."
+   ],
+   [
+    "Them",
+    "Thanks so much."
+   ],
+   [
+    "Me",
+    "Okay."
+   ],
+   [
+    "Them",
+    "What's your email?"
+   ],
+   [
+    "Me",
+    "It's zorvath dot sterran at example dot com."
+   ],
+   [
+    "Them",
+    "Okay, let's get started."
+   ],
+   [
+    "Me",
+    "Okay."
+   ],
+   [
+    "Them",
+    "What's the IBAN?"
+   ],
+   [
+    "Me",
+    "It's G B nine four E K S C seven one two six two five oh eight seven eight four one two one."
+   ],
+   [
+    "Them",
+    "Right."
+   ],
+   [
+    "Me",
+    "What's the passcode situation for the new office?"
+   ],
+   [
+    "Them",
+    "Perfect."
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "What's the password for the wifi?"
+   ],
+   [
+    "Me",
+    "It's f e n n i c k three one."
+   ],
+   [
+    "Them",
+    "It was only four ninety nine."
+   ],
+   [
+    "Me",
+    "Sounds good."
+   ],
+   [
+    "Them",
+    "Your account number is fine, the order was 8630046481."
+   ],
+   [
+    "Me",
+    "How was the trip?"
+   ],
+   [
+    "Them",
+    "Okay."
+   ],
+   [
+    "Me",
+    "It's on page three."
+   ],
+   [
+    "Them",
+    "Great, talk soon."
+   ]
+  ],
+  "items": [
+   {
+    "cls": "email",
+    "kind": "email",
+    "written": "zorvath.sterran@example.com",
+    "spoken": "zorvath dot sterran at example dot com",
+    "token": "zorvath",
+    "style": "dotted",
+    "cue": "previous_turn",
+    "speaker": "Me",
+    "start": 112,
+    "end": 150
+   },
+   {
+    "cls": "account",
+    "kind": "iban",
+    "written": "GB94 EKSC 7126 2508 7841 21",
+    "spoken": "G B nine four E K S C seven one two six two five oh eight seven eight four one two one",
+    "token": "GB94EKSC71262508784121",
+    "style": "spelled",
+    "cue": "previous_turn",
+    "speaker": "Me",
+    "start": 245,
+    "end": 331
+   },
+   {
+    "cls": "password",
+    "kind": "password",
+    "written": "fennick31",
+    "spoken": "f e n n i c k three one",
+    "token": "fennick31",
+    "style": "spelled",
+    "cue": "previous_turn",
+    "speaker": "Me",
+    "start": 505,
+    "end": 528
+   }
+  ],
+  "distractors": [
+   {
+    "kind": "pw_passcode_office",
+    "text": "What's the passcode situation for the new office?",
+    "start": 360,
+    "end": 409
+   },
+   {
+    "kind": "price",
+    "text": "four ninety nine",
+    "start": 553,
+    "end": 569
+   },
+   {
+    "kind": "account_fine",
+    "text": "Your account number is fine, the order was 8630046481.",
+    "start": 604,
+    "end": 658
+   },
+   {
+    "kind": "page",
+    "text": "page three",
+    "start": 720,
+    "end": 730
+   }
+  ],
+  "transcript": "**Me:** Great, talk soon.\n\n**Them:** Thanks so much.\n\n**Me:** Okay.\n\n**Them:** What's your email?\n\n**Me:** It's zorvath dot sterran at example dot com.\n\n**Them:** Okay, let's get started.\n\n**Me:** Okay.\n\n**Them:** What's the IBAN?\n\n**Me:** It's G B nine four E K S C seven one two six two five oh eight seven eight four one two one.\n\n**Them:** Right.\n\n**Me:** What's the passcode situation for the new office?\n\n**Them:** Perfect.\n\n**Me:** Right.\n\n**Them:** What's the password for the wifi?\n\n**Me:** It's f e n n i c k three one.\n\n**Them:** It was only four ninety nine.\n\n**Me:** Sounds good.\n\n**Them:** Your account number is fine, the order was 8630046481.\n\n**Me:** How was the trip?\n\n**Them:** Okay.\n\n**Me:** It's on page three.\n\n**Them:** Great, talk soon."
+ },
+ {
+  "sid": "s23",
+  "lines": [
+   [
+    "Me",
+    "Did you catch the game last night?"
+   ],
+   [
+    "Them",
+    "It was great, really relaxing."
+   ],
+   [
+    "Me",
+    "I almost called nine one one."
+   ],
+   [
+    "Them",
+    "We had 461 66 2878 users."
+   ],
+   [
+    "Me",
+    "Where should we ship it?"
+   ],
+   [
+    "Them",
+    "Sure, seventy four oh two Zorvath Street, six oh six seven oh."
+   ],
+   [
+    "Me",
+    "No, I think that's everything."
+   ],
+   [
+    "Them",
+    "Mm-hm."
+   ],
+   [
+    "Me",
+    "Can we do quarter to six?"
+   ],
+   [
+    "Them",
+    "Mm-hm."
+   ],
+   [
+    "Me",
+    "Okay, let's get started."
+   ],
+   [
+    "Them",
+    "Mm-hm."
+   ],
+   [
+    "Me",
+    "Okay, one, two, three, go."
+   ],
+   [
+    "Them",
+    "Mm-hm."
+   ],
+   [
+    "Me",
+    "Hey, how's it going?"
+   ],
+   [
+    "Them",
+    "Okay."
+   ],
+   [
+    "Me",
+    "What's a good number for you?"
+   ],
+   [
+    "Them",
+    "Sure, three double four, triple five, zero one zero one."
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "Great, talk soon."
+   ]
+  ],
+  "items": [
+   {
+    "cls": "address",
+    "kind": "address",
+    "written": "7402 Zorvath Street, 60670",
+    "spoken": "seventy four oh two Zorvath Street, six oh six seven oh",
+    "token": "Zorvath",
+    "style": "grouped",
+    "cue": "previous_turn",
+    "speaker": "Them",
+    "start": 212,
+    "end": 267
+   },
+   {
+    "cls": "phone",
+    "kind": "phone",
+    "written": "(344) 555-0101",
+    "spoken": "three double four, triple five, zero one zero one",
+    "token": "3445550101",
+    "style": "double",
+    "cue": "previous_turn",
+    "speaker": "Them",
+    "start": 589,
+    "end": 638
+   }
+  ],
+  "distractors": [
+   {
+    "kind": "nine_one_one",
+    "text": "nine one one",
+    "start": 110,
+    "end": 122
+   },
+   {
+    "kind": "ssn_triple",
+    "text": "We had 461 66 2878 users.",
+    "start": 135,
+    "end": 160
+   },
+   {
+    "kind": "time",
+    "text": "quarter to six",
+    "start": 346,
+    "end": 360
+   },
+   {
+    "kind": "count",
+    "text": "one, two, three",
+    "start": 447,
+    "end": 462
+   }
+  ],
+  "transcript": "**Me:** Did you catch the game last night?\n\n**Them:** It was great, really relaxing.\n\n**Me:** I almost called nine one one.\n\n**Them:** We had 461 66 2878 users.\n\n**Me:** Where should we ship it?\n\n**Them:** Sure, seventy four oh two Zorvath Street, six oh six seven oh.\n\n**Me:** No, I think that's everything.\n\n**Them:** Mm-hm.\n\n**Me:** Can we do quarter to six?\n\n**Them:** Mm-hm.\n\n**Me:** Okay, let's get started.\n\n**Them:** Mm-hm.\n\n**Me:** Okay, one, two, three, go.\n\n**Them:** Mm-hm.\n\n**Me:** Hey, how's it going?\n\n**Them:** Okay.\n\n**Me:** What's a good number for you?\n\n**Them:** Sure, three double four, triple five, zero one zero one.\n\n**Me:** Right.\n\n**Them:** Great, talk soon."
+ },
+ {
+  "sid": "s24",
+  "lines": [
+   [
+    "Me",
+    "Thanks so much."
+   ],
+   [
+    "Them",
+    "I know, finally some sun."
+   ],
+   [
+    "Me",
+    "I ordered it at target dot com."
+   ],
+   [
+    "Them",
+    "Mm-hm."
+   ],
+   [
+    "Me",
+    "No, I missed it."
+   ],
+   [
+    "Them",
+    "I'll email you what I found at tinkerbay.com."
+   ],
+   [
+    "Me",
+    "How was the trip?"
+   ],
+   [
+    "Them",
+    "Okay."
+   ],
+   [
+    "Me",
+    "The vote was twelve to seven, with three abstaining."
+   ],
+   [
+    "Them",
+    "Right."
+   ],
+   [
+    "Me",
+    "Social media followers: 1900, 906, 806."
+   ],
+   [
+    "Them",
+    "Pretty good. Busy week."
+   ],
+   [
+    "Me",
+    "Okay."
+   ],
+   [
+    "Them",
+    "I almost called nine one one."
+   ],
+   [
+    "Me",
+    "Great, talk soon."
+   ]
+  ],
+  "items": [],
+  "distractors": [
+   {
+    "kind": "website",
+    "text": "target dot com",
+    "start": 86,
+    "end": 100
+   },
+   {
+    "kind": "web_email_found",
+    "text": "I'll email you what I found at tinkerbay.com.",
+    "start": 157,
+    "end": 202
+   },
+   {
+    "kind": "votes",
+    "text": "twelve to seven, with three abstaining",
+    "start": 269,
+    "end": 307
+   },
+   {
+    "kind": "social_followers",
+    "text": "Social media followers: 1900, 906, 806.",
+    "start": 336,
+    "end": 375
+   },
+   {
+    "kind": "nine_one_one",
+    "text": "nine one one",
+    "start": 453,
+    "end": 465
+   }
+  ],
+  "transcript": "**Me:** Thanks so much.\n\n**Them:** I know, finally some sun.\n\n**Me:** I ordered it at target dot com.\n\n**Them:** Mm-hm.\n\n**Me:** No, I missed it.\n\n**Them:** I'll email you what I found at tinkerbay.com.\n\n**Me:** How was the trip?\n\n**Them:** Okay.\n\n**Me:** The vote was twelve to seven, with three abstaining.\n\n**Them:** Right.\n\n**Me:** Social media followers: 1900, 906, 806.\n\n**Them:** Pretty good. Busy week.\n\n**Me:** Okay.\n\n**Them:** I almost called nine one one.\n\n**Me:** Great, talk soon."
+ },
+ {
+  "sid": "s25",
+  "lines": [
+   [
+    "Me",
+    "How was the trip?"
+   ],
+   [
+    "Them",
+    "Thanks so much."
+   ],
+   [
+    "Me",
+    "Okay."
+   ],
+   [
+    "Them",
+    "The order number is two one nine nine four six one."
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "Sounds good."
+   ],
+   [
+    "Me",
+    "Mm-hm."
+   ],
+   [
+    "Them",
+    "Your account number is fine, the order was 4568624395."
+   ],
+   [
+    "Me",
+    "It was great, really relaxing."
+   ],
+   [
+    "Them",
+    "Right."
+   ],
+   [
+    "Me",
+    "The counts were oh oh four, two six, five oh seven five."
+   ],
+   [
+    "Them",
+    "six ninety two, eighty seven, twelve fifty three, that's my social."
+   ],
+   [
+    "Me",
+    "Okay."
+   ],
+   [
+    "Them",
+    "It's on page forty five."
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "G B one seven L T M X eight eight two zero eight three three two three zero eight one six nine, that's the IBAN."
+   ],
+   [
+    "Me",
+    "Mm-hm."
+   ],
+   [
+    "Them",
+    "five five five five two oh five three six oh four seven three five one nine is the card."
+   ],
+   [
+    "Me",
+    "Great, talk soon."
+   ]
+  ],
+  "items": [
+   {
+    "cls": "ssn",
+    "kind": "ssn",
+    "written": "692-87-1253",
+    "spoken": "six ninety two, eighty seven, twelve fifty three",
+    "token": "692871253",
+    "style": "grouped",
+    "cue": "after_value",
+    "speaker": "Them",
+    "start": 388,
+    "end": 436
+   },
+   {
+    "cls": "account",
+    "kind": "iban",
+    "written": "GB17 LTMX 8820 8332 3081 69",
+    "spoken": "G B one seven L T M X eight eight two zero eight three three two three zero eight one six nine",
+    "token": "GB17LTMX88208332308169",
+    "style": "spelled",
+    "cue": "after_value",
+    "speaker": "Them",
+    "start": 534,
+    "end": 628
+   },
+   {
+    "cls": "card",
+    "kind": "card",
+    "written": "5555 2053 6047 3519",
+    "spoken": "five five five five two oh five three six oh four seven three five one nine",
+    "token": "5555205360473519",
+    "style": "digits",
+    "cue": "after_value",
+    "speaker": "Them",
+    "start": 674,
+    "end": 749
+   }
+  ],
+  "distractors": [
+   {
+    "kind": "order",
+    "text": "two one nine nine four six one",
+    "start": 99,
+    "end": 129
+   },
+   {
+    "kind": "account_fine",
+    "text": "Your account number is fine, the order was 4568624395.",
+    "start": 198,
+    "end": 252
+   },
+   {
+    "kind": "triple",
+    "text": "oh oh four, two six, five oh seven five",
+    "start": 336,
+    "end": 375
+   },
+   {
+    "kind": "page",
+    "text": "page forty five",
+    "start": 490,
+    "end": 505
+   }
+  ],
+  "transcript": "**Me:** How was the trip?\n\n**Them:** Thanks so much.\n\n**Me:** Okay.\n\n**Them:** The order number is two one nine nine four six one.\n\n**Me:** Right.\n\n**Them:** Sounds good.\n\n**Me:** Mm-hm.\n\n**Them:** Your account number is fine, the order was 4568624395.\n\n**Me:** It was great, really relaxing.\n\n**Them:** Right.\n\n**Me:** The counts were oh oh four, two six, five oh seven five.\n\n**Them:** six ninety two, eighty seven, twelve fifty three, that's my social.\n\n**Me:** Okay.\n\n**Them:** It's on page forty five.\n\n**Me:** Right.\n\n**Them:** G B one seven L T M X eight eight two zero eight three three two three zero eight one six nine, that's the IBAN.\n\n**Me:** Mm-hm.\n\n**Them:** five five five five two oh five three six oh four seven three five one nine is the card.\n\n**Me:** Great, talk soon."
+ },
+ {
+  "sid": "s26",
+  "lines": [
+   [
+    "Me",
+    "It was great, really relaxing."
+   ],
+   [
+    "Them",
+    "Sorry, can you repeat that?"
+   ],
+   [
+    "Me",
+    "It was only four ninety nine."
+   ],
+   [
+    "Them",
+    "Got it."
+   ],
+   [
+    "Me",
+    "The vote was forty one to thirty."
+   ],
+   [
+    "Them",
+    "I know, finally some sun."
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "We dealt 792, 3685, 9458, 9109 cards."
+   ],
+   [
+    "Me",
+    "Mm-hm."
+   ],
+   [
+    "Them",
+    "Great, talk soon."
+   ],
+   [
+    "Me",
+    "I ordered it at amazon dot com."
+   ],
+   [
+    "Them",
+    "vandrel dot corvane at example dot org, that's my email."
+   ],
+   [
+    "Me",
+    "l o m w e l l four six is my password."
+   ],
+   [
+    "Them",
+    "Right."
+   ],
+   [
+    "Me",
+    "Scores 611 879 301."
+   ],
+   [
+    "Them",
+    "Right."
+   ],
+   [
+    "Me",
+    "Great, talk soon."
+   ]
+  ],
+  "items": [
+   {
+    "cls": "email",
+    "kind": "email",
+    "written": "vandrel.corvane@example.org",
+    "spoken": "vandrel dot corvane at example dot org",
+    "token": "vandrel",
+    "style": "dotted",
+    "cue": "after_value",
+    "speaker": "Them",
+    "start": 378,
+    "end": 416
+   },
+   {
+    "cls": "password",
+    "kind": "password",
+    "written": "lomwell46",
+    "spoken": "l o m w e l l four six",
+    "token": "lomwell46",
+    "style": "spelled",
+    "cue": "after_value",
+    "speaker": "Me",
+    "start": 444,
+    "end": 466
+   }
+  ],
+  "distractors": [
+   {
+    "kind": "price",
+    "text": "four ninety nine",
+    "start": 99,
+    "end": 115
+   },
+   {
+    "kind": "votes",
+    "text": "forty one to thirty",
+    "start": 158,
+    "end": 177
+   },
+   {
+    "kind": "card_dealt",
+    "text": "We dealt 792, 3685, 9458, 9109 cards.",
+    "start": 243,
+    "end": 280
+   },
+   {
+    "kind": "website",
+    "text": "amazon dot com",
+    "start": 351,
+    "end": 365
+   },
+   {
+    "kind": "plain_scores",
+    "text": "Scores 611 879 301.",
+    "start": 510,
+    "end": 529
+   }
+  ],
+  "transcript": "**Me:** It was great, really relaxing.\n\n**Them:** Sorry, can you repeat that?\n\n**Me:** It was only four ninety nine.\n\n**Them:** Got it.\n\n**Me:** The vote was forty one to thirty.\n\n**Them:** I know, finally some sun.\n\n**Me:** Right.\n\n**Them:** We dealt 792, 3685, 9458, 9109 cards.\n\n**Me:** Mm-hm.\n\n**Them:** Great, talk soon.\n\n**Me:** I ordered it at amazon dot com.\n\n**Them:** vandrel dot corvane at example dot org, that's my email.\n\n**Me:** l o m w e l l four six is my password.\n\n**Them:** Right.\n\n**Me:** Scores 611 879 301.\n\n**Them:** Right.\n\n**Me:** Great, talk soon."
+ },
+ {
+  "sid": "s27",
+  "lines": [
+   [
+    "Me",
+    "Did you catch the game last night?"
+   ],
+   [
+    "Them",
+    "Anything else?"
+   ],
+   [
+    "Me",
+    "Mm-hm."
+   ],
+   [
+    "Them",
+    "four three four five five five oh one eight eight, that's my cell."
+   ],
+   [
+    "Me",
+    "Mm-hm."
+   ],
+   [
+    "Them",
+    "Perfect."
+   ],
+   [
+    "Me",
+    "Mm-hm."
+   ],
+   [
+    "Them",
+    "I'll email you what I found at parcelly.com."
+   ],
+   [
+    "Me",
+    "Got it."
+   ],
+   [
+    "Them",
+    "It was only nineteen ninety five."
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "six six nine one Yarrick Road, two six four three oh, that's my address."
+   ],
+   [
+    "Me",
+    "Thanks so much."
+   ],
+   [
+    "Them",
+    "Mm-hm."
+   ],
+   [
+    "Me",
+    "It's on page two hundred and twelve."
+   ],
+   [
+    "Them",
+    "Great, talk soon."
+   ]
+  ],
+  "items": [
+   {
+    "cls": "phone",
+    "kind": "phone",
+    "written": "(434) 555-0188",
+    "spoken": "four three four five five five oh one eight eight",
+    "token": "4345550188",
+    "style": "digits",
+    "cue": "after_value",
+    "speaker": "Them",
+    "start": 96,
+    "end": 145
+   },
+   {
+    "cls": "address",
+    "kind": "address",
+    "written": "6691 Yarrick Road, 26430",
+    "spoken": "six six nine one Yarrick Road, two six four three oh",
+    "token": "Yarrick",
+    "style": "digits",
+    "cue": "after_value",
+    "speaker": "Them",
+    "start": 360,
+    "end": 412
+   }
+  ],
+  "distractors": [
+   {
+    "kind": "web_email_found",
+    "text": "I'll email you what I found at parcelly.com.",
+    "start": 226,
+    "end": 270
+   },
+   {
+    "kind": "price",
+    "text": "nineteen ninety five",
+    "start": 311,
+    "end": 331
+   },
+   {
+    "kind": "page",
+    "text": "page two hundred and twelve",
+    "start": 493,
+    "end": 520
+   }
+  ],
+  "transcript": "**Me:** Did you catch the game last night?\n\n**Them:** Anything else?\n\n**Me:** Mm-hm.\n\n**Them:** four three four five five five oh one eight eight, that's my cell.\n\n**Me:** Mm-hm.\n\n**Them:** Perfect.\n\n**Me:** Mm-hm.\n\n**Them:** I'll email you what I found at parcelly.com.\n\n**Me:** Got it.\n\n**Them:** It was only nineteen ninety five.\n\n**Me:** Right.\n\n**Them:** six six nine one Yarrick Road, two six four three oh, that's my address.\n\n**Me:** Thanks so much.\n\n**Them:** Mm-hm.\n\n**Me:** It's on page two hundred and twelve.\n\n**Them:** Great, talk soon."
+ },
+ {
+  "sid": "s28",
+  "lines": [
+   [
+    "Me",
+    "No, I think that's everything."
+   ],
+   [
+    "Them",
+    "Thanks so much."
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "It's on page two hundred and twelve."
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "Can you send me the link? I bought it at amazon dot com."
+   ],
+   [
+    "Me",
+    "Mm-hm."
+   ],
+   [
+    "Them",
+    "The weather has been lovely."
+   ],
+   [
+    "Me",
+    "The account number changed on 2022-03-20."
+   ],
+   [
+    "Them",
+    "Okay, one, two, three, go."
+   ],
+   [
+    "Me",
+    "Sorry, can you repeat that?"
+   ],
+   [
+    "Them",
+    "Take this down, five eight zero dash six seven dash eight seven four six."
+   ],
+   [
+    "Me",
+    "Mm-hm."
+   ],
+   [
+    "Them",
+    "The password policy changed last week."
+   ],
+   [
+    "Me",
+    "Great, talk soon."
+   ]
+  ],
+  "items": [
+   {
+    "cls": "ssn",
+    "kind": "ssn",
+    "written": "580-67-8746",
+    "spoken": "five eight zero dash six seven dash eight seven four six",
+    "token": "580678746",
+    "style": "digits",
+    "cue": "none",
+    "speaker": "Them",
+    "start": 423,
+    "end": 479
+   }
+  ],
+  "distractors": [
+   {
+    "kind": "page",
+    "text": "page two hundred and twelve",
+    "start": 101,
+    "end": 128
+   },
+   {
+    "kind": "website_send",
+    "text": "amazon dot com",
+    "start": 198,
+    "end": 212
+   },
+   {
+    "kind": "account_changed",
+    "text": "The account number changed on 2022-03-20.",
+    "start": 279,
+    "end": 320
+   },
+   {
+    "kind": "count",
+    "text": "one, two, three",
+    "start": 338,
+    "end": 353
+   },
+   {
+    "kind": "pw_policy",
+    "text": "The password policy changed last week.",
+    "start": 508,
+    "end": 546
+   }
+  ],
+  "transcript": "**Me:** No, I think that's everything.\n\n**Them:** Thanks so much.\n\n**Me:** Right.\n\n**Them:** It's on page two hundred and twelve.\n\n**Me:** Right.\n\n**Them:** Can you send me the link? I bought it at amazon dot com.\n\n**Me:** Mm-hm.\n\n**Them:** The weather has been lovely.\n\n**Me:** The account number changed on 2022-03-20.\n\n**Them:** Okay, one, two, three, go.\n\n**Me:** Sorry, can you repeat that?\n\n**Them:** Take this down, five eight zero dash six seven dash eight seven four six.\n\n**Me:** Mm-hm.\n\n**Them:** The password policy changed last week.\n\n**Me:** Great, talk soon."
+ },
+ {
+  "sid": "s29",
+  "lines": [
+   [
+    "Me",
+    "Not bad, thanks. You?"
+   ],
+   [
+    "Them",
+    "The weather has been lovely."
+   ],
+   [
+    "Me",
+    "Order 242595323, thanks."
+   ],
+   [
+    "Them",
+    "It was great, really relaxing."
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "It was only four ninety nine."
+   ],
+   [
+    "Me",
+    "Anything else?"
+   ],
+   [
+    "Them",
+    "The counts were one forty one, seventy three, seven six eight two."
+   ],
+   [
+    "Me",
+    "Got it."
+   ],
+   [
+    "Them",
+    "Here it is, oh ninety seven, six eighty four, eight eleven."
+   ],
+   [
+    "Me",
+    "I almost called nine one one."
+   ],
+   [
+    "Them",
+    "Perfect."
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "Here you go, four two four two dash two four eight one dash zero four one seven dash six five eight six."
+   ],
+   [
+    "Me",
+    "Hey, how's it going?"
+   ],
+   [
+    "Them",
+    "Try yarrick nine nine."
+   ],
+   [
+    "Me",
+    "Great, talk soon."
+   ]
+  ],
+  "items": [
+   {
+    "cls": "account",
+    "kind": "routing",
+    "written": "097684811",
+    "spoken": "oh ninety seven, six eighty four, eight eleven",
+    "token": "097684811",
+    "style": "grouped",
+    "cue": "none",
+    "speaker": "Them",
+    "start": 345,
+    "end": 391
+   },
+   {
+    "cls": "card",
+    "kind": "card",
+    "written": "4242 2481 0417 6586",
+    "spoken": "four two four two dash two four eight one dash zero four one seven dash six five eight six",
+    "token": "4242248104176586",
+    "style": "double",
+    "cue": "none",
+    "speaker": "Them",
+    "start": 492,
+    "end": 582
+   },
+   {
+    "cls": "password",
+    "kind": "password",
+    "written": "yarrick99",
+    "spoken": "yarrick nine nine",
+    "token": "yarrick99",
+    "style": "word_digits",
+    "cue": "none",
+    "speaker": "Them",
+    "start": 629,
+    "end": 646
+   }
+  ],
+  "distractors": [
+   {
+    "kind": "plain_order",
+    "text": "Order 242595323, thanks.",
+    "start": 79,
+    "end": 103
+   },
+   {
+    "kind": "price",
+    "text": "four ninety nine",
+    "start": 185,
+    "end": 201
+   },
+   {
+    "kind": "triple",
+    "text": "one forty one, seventy three, seven six eight two",
+    "start": 254,
+    "end": 303
+   },
+   {
+    "kind": "nine_one_one",
+    "text": "nine one one",
+    "start": 418,
+    "end": 430
+   }
+  ],
+  "transcript": "**Me:** Not bad, thanks. You?\n\n**Them:** The weather has been lovely.\n\n**Me:** Order 242595323, thanks.\n\n**Them:** It was great, really relaxing.\n\n**Me:** Right.\n\n**Them:** It was only four ninety nine.\n\n**Me:** Anything else?\n\n**Them:** The counts were one forty one, seventy three, seven six eight two.\n\n**Me:** Got it.\n\n**Them:** Here it is, oh ninety seven, six eighty four, eight eleven.\n\n**Me:** I almost called nine one one.\n\n**Them:** Perfect.\n\n**Me:** Right.\n\n**Them:** Here you go, four two four two dash two four eight one dash zero four one seven dash six five eight six.\n\n**Me:** Hey, how's it going?\n\n**Them:** Try yarrick nine nine.\n\n**Me:** Great, talk soon."
+ },
+ {
+  "sid": "s30",
+  "lines": [
+   [
+    "Me",
+    "How was the trip?"
+   ],
+   [
+    "Them",
+    "The weather has been lovely."
+   ],
+   [
+    "Me",
+    "I almost called nine one one."
+   ],
+   [
+    "Them",
+    "Right."
+   ],
+   [
+    "Me",
+    "My social security check came on 2025-06-07."
+   ],
+   [
+    "Them",
+    "Mm-hm."
+   ],
+   [
+    "Me",
+    "Pretty good. Busy week."
+   ],
+   [
+    "Them",
+    "Okay, one two three four five, go."
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "I ordered it at target dot com."
+   ],
+   [
+    "Me",
+    "Sounds good."
+   ],
+   [
+    "Them",
+    "Okay."
+   ],
+   [
+    "Me",
+    "Email me the stuff from yesterday at deskhub.com."
+   ],
+   [
+    "Them",
+    "Mm-hm."
+   ],
+   [
+    "Me",
+    "Great, talk soon."
+   ],
+   [
+    "Them",
+    "It was only four ninety nine."
+   ],
+   [
+    "Me",
+    "Mm-hm."
+   ],
+   [
+    "Them",
+    "Okay, let's get started."
+   ],
+   [
+    "Me",
+    "Right."
+   ],
+   [
+    "Them",
+    "Great, talk soon."
+   ]
+  ],
+  "items": [],
+  "distractors": [
+   {
+    "kind": "nine_one_one",
+    "text": "nine one one",
+    "start": 91,
+    "end": 103
+   },
+   {
+    "kind": "social_check",
+    "text": "My social security check came on 2025-06-07.",
+    "start": 132,
+    "end": 176
+   },
+   {
+    "kind": "count",
+    "text": "one two three four five",
+    "start": 245,
+    "end": 268
+   },
+   {
+    "kind": "website",
+    "text": "target dot com",
+    "start": 317,
+    "end": 331
+   },
+   {
+    "kind": "web_email_yesterday",
+    "text": "Email me the stuff from yesterday at deskhub.com.",
+    "start": 381,
+    "end": 430
+   },
+   {
+    "kind": "price",
+    "text": "four ninety nine",
+    "start": 499,
+    "end": 515
+   }
+  ],
+  "transcript": "**Me:** How was the trip?\n\n**Them:** The weather has been lovely.\n\n**Me:** I almost called nine one one.\n\n**Them:** Right.\n\n**Me:** My social security check came on 2025-06-07.\n\n**Them:** Mm-hm.\n\n**Me:** Pretty good. Busy week.\n\n**Them:** Okay, one two three four five, go.\n\n**Me:** Right.\n\n**Them:** I ordered it at target dot com.\n\n**Me:** Sounds good.\n\n**Them:** Okay.\n\n**Me:** Email me the stuff from yesterday at deskhub.com.\n\n**Them:** Mm-hm.\n\n**Me:** Great, talk soon.\n\n**Them:** It was only four ninety nine.\n\n**Me:** Mm-hm.\n\n**Them:** Okay, let's get started.\n\n**Me:** Right.\n\n**Them:** Great, talk soon."
+ }
+]
