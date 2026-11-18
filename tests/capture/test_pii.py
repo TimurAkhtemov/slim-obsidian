@@ -1287,3 +1287,30 @@ def test_a_phone_blocks_only_what_it_governs():
               _q("Can I get your employee ID for the account?", "It's 20417733."),
               "The phone number on the account, 4155550134.", "A cell for my account: 4155550134."):
         _same(t)
+
+
+def test_money_is_not_a_social():
+    for t in ("My social security is 1,840 a month.", "1,840. That's my social security.",
+              "Her social security's 1840.50.", "My social security is 1840 per month.",
+              "His social security is 2,310.75 now.", "My social security is 4471."):
+        _same(t)
+    assert _m("**Me:** The counts were 004\n\n**Them:** 265075.1253. That's my social.").counts == {"ssn": 1}
+    assert _m("My social is 68581399.").counts == {"ssn": 1}
+    assert _m("My social security is 6858139.").counts == {"ssn": 1}     # seven digits: a garbled SSN
+
+
+def test_a_listed_question_binds_in_order():
+    assert _answer(_q("Can I get your zip code and your account number?", "10001 and 48213377.")) \
+        == "**Me:** 10001 and [ACCOUNT]."
+    assert _answer(_q("Date of birth and the last four of your social?", "1/2/1980 and 4471.")) \
+        == "**Me:** 1/2/1980 and [SSN]."
+    assert _answer(_q("Routing and account number?", "011000028 and 12345678")) == "**Me:** [ACCOUNT] and [ACCOUNT]"
+    assert _answer(_q("Your zip code, date of birth and account number?", "10001, 1/2/1980 and 48213377.")) \
+        == "**Me:** 10001, 1/2/1980 and [ACCOUNT]."
+    # counts differ: today's rule (the first number of the answer to an account question)
+    assert _answer(_q("Can I get your zip code and your account number?", "48213377.")) == "**Me:** [ACCOUNT]."
+
+
+def test_a_located_password_span_passes_the_answer_filter():
+    t = "The password? It is fine. Never mind."
+    assert pii.mask(t, classes=CLS, find_password=lambda w: "itis").counts == {}

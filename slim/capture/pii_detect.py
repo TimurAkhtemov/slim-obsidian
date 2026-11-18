@@ -271,6 +271,7 @@ _UNIT_AFTER = re.compile(
 # no set length: leaking the tail of "123456, 7890" is worse than taking an unlabelled number.
 CARD_COMPLETE = 15
 _SENTENCE_REACH = 300
+_LIST_SPLIT = re.compile(r"\s*,\s*(?:and\s+)?|\s+and\s+", re.I)
 _COMPLETE = {"ssn": 9, "card": CARD_COMPLETE, "account": None, "iban": None, "phone": 10}
 
 
@@ -285,12 +286,14 @@ class _Scene:
                 segs = [(m.start() + s.start(), m.start() + s.end()) for s in _SEGMENT.finditer(m.group())]
                 self.runs.append((m.start(), m.end(), segs))
         self.run_ends = [r[1] for r in self.runs]
+        self.run_starts = [r[0] for r in self.runs]
         self.cues = {c: [m.span() for m in rx.finditer(norm)] for c, rx in _CUE.items()}
         self.cue_ends = {c: [b for _, b in spans] for c, spans in self.cues.items()}
         self.labels = [m.span() for m in _TURN_START.finditer(norm)]
         self.label_starts = [a for a, _ in self.labels]
         self._questions: dict[int, list[tuple[int, int, set[str]]]] = {}
         self._asking: dict[int, list[tuple[int, int]]] = {}
+        self._orders: dict[int, dict[int, set[str]]] = {}
         self.phone_bound = self.bound("phone", _phone_fits)
 
     def orig(self, a: int, b: int) -> str:
@@ -356,12 +359,51 @@ class _Scene:
             return True
         return self.asked(cls, a)
 
+    def listed(self, k: int) -> list[set[str]] | None:
+        """The two or three things turn k's question lists ("your zip code and your account
+        number?"), in order: the classes each names ("last4" for the last four of a social, an
+        empty set for a thing that is no cue noun); None when it does not list."""
+        for s, e in self.questions(k):
+            parts = _LIST_SPLIT.split(self.norm[s:e].rstrip().rstrip("?"))
+            if 2 <= len(parts) <= 3:
+                return [{"last4"} if _LAST_FOUR_ASKED.search(part)
+                        else {c for c, rx in _CUE.items() if rx.search(part)} for part in parts]
+        return None
+
+    def ordinal(self, a: int) -> set[str] | None:
+        """The listed thing the number starting at `a` answers, when the answer gives exactly as
+        many numbers as the question listed, joined only by "and", commas or filler words."""
+        k = self.turn(a)
+        if k <= 0:
+            return None
+        if k not in self._orders:
+            order: dict[int, set[str]] = {}
+            things = self.listed(k - 1)
+            if things:
+                body, end = self.labels[k][1], self.turn_end(k)
+                numbers, prev = [], body
+                i = bisect.bisect_left(self.run_starts, body)
+                while i < len(self.runs) and self.runs[i][0] < end and len(numbers) <= len(things):
+                    a0, b0, segs = self.runs[i]
+                    if not _gap_ok(self.orig(prev, a0)):
+                        break
+                    numbers += segs
+                    prev, i = b0, i + 1
+                if len(numbers) == len(things):
+                    order = {seg[0]: thing for seg, thing in zip(numbers, things)}
+            self._orders[k] = order
+        return self._orders[k].get(a)
+
     def asked(self, cls: str, a: int) -> bool:
         """The previous turn asked for `cls`, and this is the first number of the answer with only
-        filler words before it — or the second, after a question that named two things."""
+        filler words before it — or the second, after a question that named two things — or the
+        question listed things and this number is in the place of a `cls` thing."""
         k = self.turn(a)
         if k <= 0:
             return False
+        thing = self.ordinal(a)
+        if thing is not None:
+            return cls in thing
         q, body = self.question(k - 1), self.labels[k][1]
         if not q:
             return False
@@ -394,7 +436,11 @@ class _Scene:
 
         spans = []
         for a0, b0, segs in self.runs:
-            if self.before(cls, a0):
+            if self.ordinal(a0) is not None:                 # a listed answer: each number on its own
+                for a, b in segs:
+                    if self.asked(cls, a) and fits(self.norm[a:b]) and not self.labelled(cls, b):
+                        spans.append((a, b))
+            elif self.before(cls, a0):
                 # grow while incomplete, never into a piece the speaker labels ("…, 891 dollars")
                 k = 0
                 while k + 1 < len(segs) and short(a0, segs[k][1]) and not self.labelled(cls, segs[k + 1][1]):
@@ -442,8 +488,12 @@ def _last_four_answers(scene: _Scene) -> list[tuple[int, int]]:
     """"Last four of your social?" ⏎ "Yeah, it's 4471.": exactly four digits, first in the answer."""
     spans = []
     for a, b, segs in scene.runs:
+        for x, y in segs:                                    # a listed answer: "1/2/1980 and 4471"
+            thing = scene.ordinal(x)
+            if thing and "last4" in thing and y - x == 4 and not scene.labelled("ssn", y):
+                spans.append((x, y))
         k = scene.turn(a)
-        if len(segs) != 1 or len(_digits(scene.norm[a:b])) != 4 or k <= 0 or b - a != 4:
+        if scene.ordinal(a) is not None or len(segs) != 1 or len(_digits(scene.norm[a:b])) != 4 or k <= 0 or b - a != 4:
             continue
         asked = any(_LAST_FOUR_ASKED.search(scene.norm, s, e) for s, e in scene.questions(k - 1))
         if asked and _gap_ok(scene.orig(scene.labels[k][1], a)) and not scene.labelled("ssn", b):
@@ -456,18 +506,25 @@ def _last_four_answers(scene: _Scene) -> list[tuple[int, int]]:
 # a digit too many or too few) is still the SSN.
 _PERSONAL = "my|your|his|her|their"
 _STRONG_SSN_AFTER = re.compile(
-    rf"\s*[,.]?\s*(?:that's|that is|it's|is)\s+(?:{_PERSONAL})\s+(?:{_CUE_NOUNS['ssn']})(?=\s*(?:[.,!?;]|$))",
+    rf"\s*[,.]?\s*(?:that's|that is|it's|is)\s+(?:{_PERSONAL})\s+({_CUE_NOUNS['ssn']})(?=\s*(?:[.,!?;]|$))",
     re.I | re.M)
-_STRONG_SSN_BEFORE = re.compile(rf"\b(?:{_PERSONAL})\s+(?:{_CUE_NOUNS['ssn']})\s*(?:is\b|['’]s\b|:)", re.I)
+_STRONG_SSN_BEFORE = re.compile(rf"\b(?:{_PERSONAL})\s+({_CUE_NOUNS['ssn']})\s*(?:is\b|['’]s\b|:)", re.I)
+# A benefit amount is not a social: "My social security is 1,840 a month."
+_MONEY = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+\.\d{1,2}")
+_RATE_AFTER = re.compile(
+    r"\s*(?:a month|per month|monthly|a year|per year|annually|a week|per week|dollars|bucks)\b", re.I)
 _DIGIT_TOKEN = re.compile(r"\d[\d.,-]*\d|\d")          # a number glued with . , or -
 _PIECE_TO_HERE = re.compile(r"\d+(?:[ ./-]\d+)*$")      # groups up to here, never across ", "
 # Ten digits after "social" is more often a phone number than a garbled SSN, even with no separators
 _PHONE_DIGITS = re.compile(r"1?[2-9]\d{2}[2-9]\d{6}")
 
 
-def _strong_value(s: str) -> bool:
-    return (4 <= len(_digits(s)) <= 12 and not _PHONE_SHAPED.fullmatch(s) and not _PHONE_DIGITS.fullmatch(s)
-            and not _date(s) and not _ZIP4.fullmatch(s))
+def _strong_value(s: str, noun: str) -> bool:
+    """`noun` is the cue noun: a bare "social security" (no "number") is also how a benefit is
+    named, so its value needs seven digits."""
+    least = 7 if noun.lower() == "social security" else 4
+    return (least <= len(_digits(s)) <= 12 and not _MONEY.fullmatch(s) and not _PHONE_SHAPED.fullmatch(s)
+            and not _PHONE_DIGITS.fullmatch(s) and not _date(s) and not _ZIP4.fullmatch(s))
 
 
 def _strong_ssns(scene: _Scene) -> list[tuple[int, int]]:
@@ -476,17 +533,18 @@ def _strong_ssns(scene: _Scene) -> list[tuple[int, int]]:
     phone number, a date, a ZIP+4 or labelled as something else."""
     norm, spans = scene.norm, []
 
-    def take(a: int, b: int, check_label: bool) -> None:
-        if (_alone(norm, a, b) and _strong_value(norm[a:b])
+    def take(a: int, b: int, noun: str, check_label: bool) -> None:
+        if (_alone(norm, a, b) and _strong_value(norm[a:b], noun) and not _RATE_AFTER.match(norm, b)
                 and not (check_label and scene.labelled("ssn", b))):
             spans.append((a, b))
 
     for m in _DIGIT_TOKEN.finditer(norm):
-        if (m.start() and not norm[m.start() - 1].isspace()) or not _STRONG_SSN_AFTER.match(norm, m.end()):
+        cue = None if m.start() and not norm[m.start() - 1].isspace() else _STRONG_SSN_AFTER.match(norm, m.end())
+        if not cue:
             continue
         run = _PIECE_TO_HERE.search(norm, max(0, m.end() - 80), m.end())
         a = min(m.start(), run.start()) if run else m.start()
-        take(a, m.end(), check_label=False)
+        take(a, m.end(), cue.group(1), check_label=False)
     for m in _STRONG_SSN_BEFORE.finditer(norm):
         p, words = m.end(), 0
         while True:                                          # at most two filler words
@@ -499,7 +557,7 @@ def _strong_ssns(scene: _Scene) -> list[tuple[int, int]]:
             break
         token, run = _DIGIT_TOKEN.match(norm, p), _SEGMENT.match(norm, p)
         if token:
-            take(p, max(token.end(), run.end() if run else 0), check_label=True)
+            take(p, max(token.end(), run.end() if run else 0), m.group(1), check_label=True)
     return spans
 
 

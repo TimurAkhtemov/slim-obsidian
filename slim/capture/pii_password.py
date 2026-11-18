@@ -141,7 +141,8 @@ def _password_spans(
         pos = window.find(secret)
         if pos < 0:
             found = _locate(window, secret)
-            if found and all(a + found[1] <= x or a + found[0] >= y for x, y in placeholders):
+            # the span found must pass the same filter as an answer: "itis" must not mask "It is"
+            if found and _answer_ok(window[found[0]:found[1]]) and all(a + found[1] <= x or a + found[0] >= y for x, y in placeholders):
                 spans.add((a + found[0], a + found[1]))
         while pos >= 0:
             s, e = a + pos, a + pos + len(secret)
