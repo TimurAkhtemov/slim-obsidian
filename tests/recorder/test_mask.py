@@ -88,8 +88,9 @@ def test_the_summary_is_masked_too(tmp_path, indexed):
     assert _body(text) == _body(before).replace(f"is {SSN}.", "is [SSN].").replace(EMAIL, "[EMAIL]")
     assert note_writer.read_review_sections(text)["summary"] == "They asked for mail at [EMAIL].\n\nMore."
     assert NOTES in text
-    assert out["counts"] == {"email": 2, "ssn": 1}
-    assert parse_frontmatter(text)[0]["pii_masked"] == ["email:2", "ssn:1"]
+    # the summary repeats the transcript's email: one value, counted once
+    assert out["counts"] == {"email": 1, "ssn": 1}
+    assert parse_frontmatter(text)[0]["pii_masked"] == ["email:1", "ssn:1"]
 
 
 def test_a_legacy_note_is_masked_in_place(tmp_path, indexed):
@@ -97,7 +98,7 @@ def test_a_legacy_note_is_masked_in_place(tmp_path, indexed):
     before = _legacy(tmp_path, rel)
     out = mask.mask_note(tmp_path, rel)
     text = (tmp_path / rel).read_text(encoding="utf-8")
-    assert out["counts"] == {"email": 2, "ssn": 1}
+    assert out["counts"] == {"email": 1, "ssn": 1}          # the summary repeats the email
     assert SSN in text and text.count(SSN) == 1 and NOTES in text   # only the Notes copy
     assert EMAIL not in text
     assert text.endswith("**Them:** mail it to [EMAIL] please.\n\ntrailing words  \n")
@@ -310,7 +311,7 @@ def test_the_masked_value_leaves_the_index(tmp_path, monkeypatch):
     con.close()
 
 
-# --- fix round 1: splices only, refuse what cannot stay byte-exact ---------------------------
+# --- splices only; what cannot stay byte-exact is refused ------------------------------------
 
 FM = "---\ntitle: t\norigin: recorded\n---\n"
 SUM = (f"<!-- slim:summary prompt=\"record-v2\" -->\n## Summary\n\nMail {EMAIL} today.\n"
@@ -422,7 +423,7 @@ def test_recordings_leaves_out_a_draft_still_recording(tmp_path):
     assert mask.recordings(tmp_path) == ["Notes/_unfiled/filed.md"]
 
 
-# --- fix round 2 -----------------------------------------------------------------------------
+# --- the integrity guard, every summary block, the disk's spelling ---------------------------
 
 def test_a_frontmatter_writer_that_touches_another_key_is_refused(tmp_path, indexed, monkeypatch):
     rel = "Notes/w/call.md"
@@ -532,3 +533,37 @@ def test_a_dry_run_reports_the_audio_reason_it_would_write(tmp_path, indexed):
     before = (tmp_path / rel).read_bytes()
     out = mask.mask_note(tmp_path, rel, dry_run=True)
     assert out["partial"] == ["audio"] and (tmp_path / rel).read_bytes() == before
+
+
+# --- counts, masker errors, symlinks ---------------------------------------------------------
+
+def test_a_summary_adds_only_what_the_transcript_did_not_have(tmp_path, indexed):
+    rel = "Notes/w/counts.md"
+    other = "other@example.com"
+    _recorded(tmp_path, rel, summary=f"Mail {EMAIL} and {other}; the card is 4111 1111 1111 1111.")
+    out = mask.mask_note(tmp_path, rel)
+    assert out["counts"] == {"card": 1, "email": 2, "ssn": 1}
+
+
+def test_a_masker_error_is_named_by_its_class_not_as_integrity(tmp_path, indexed, monkeypatch):
+    rel = "Notes/w/a.md"
+    before = _recorded(tmp_path, rel)
+
+    def boom(*a, **k):
+        raise ValueError(f"choked on {SSN}")
+    monkeypatch.setattr(pii, "mask", boom)
+    out = mask.mask_note(tmp_path, rel)
+    assert out["error"] == "ValueError" and SSN not in str(out)
+    assert (tmp_path / rel).read_text(encoding="utf-8") == before
+
+
+def test_a_symlinked_note_is_never_written_through(tmp_path, indexed):
+    target = tmp_path / "elsewhere" / "real.md"
+    target.parent.mkdir()
+    text = _recorded(tmp_path, "elsewhere/real.md")
+    link = tmp_path / "Notes/w/link.md"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(target)
+    assert mask.recordings(tmp_path) == ["elsewhere/real.md"]
+    out = mask.mask_note(tmp_path, "Notes/w/link.md")
+    assert out["error"] == "symlink" and link.is_symlink() and target.read_text(encoding="utf-8") == text

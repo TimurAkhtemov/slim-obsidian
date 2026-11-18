@@ -295,7 +295,8 @@ def merge_pii_frontmatter(text: str, counts: dict[str, int], reasons) -> str:
     ⚠ `pii_by` is never ADDED here. It says the whole transcript was checked, and a note filed
     before masking existed was not: only the new words were, and `slim mask` finds the note by
     the missing key. Such a note gets its counts and reasons, and nothing at all when the new
-    words held nothing. A note that has it is brought to the current version."""
+    words held nothing. ⚠ Nor is it CHANGED: it names the version that masked the older words,
+    and `slim mask` redoes a note by it once the masker changes."""
     from ..capture import pii
     from ..vault.frontmatter import parse_frontmatter, set_frontmatter
 
@@ -308,11 +309,15 @@ def merge_pii_frontmatter(text: str, counts: dict[str, int], reasons) -> str:
         total[cls] = total.get(cls, 0) + n
     unfinished = sorted((set(had) | set(reasons)) & set(pii.PARTIAL_REASONS))
     updates: dict[str, object] = {"pii_masked": [f"{c}:{n}" for c, n in sorted(total.items())]}
-    if checked:
-        updates["pii_by"] = pii.VERSION
     if unfinished:
         updates["pii_partial"] = unfinished
     return set_frontmatter(text, updates)
+
+
+def drop_pii_stamp(text: str) -> str:
+    """Remove `pii_by`: unmasked words were added (masking is off), so the note is no longer all
+    checked. Its counts and reasons stay; they are still true of the older words."""
+    return _drop_frontmatter_key(text, "pii_by")
 
 
 def set_pii_frontmatter(text: str, counts: dict[str, int], reasons) -> str:

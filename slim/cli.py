@@ -196,6 +196,22 @@ def _mask_line(res: dict) -> str:
     return f"{res['note']}  " + " ".join(tail)
 
 
+def _compact_index() -> bool:
+    """VACUUM the index, so masked text leaves its free pages. False (and said) when the server
+    holds the database: a rerun of the masking would find nothing changed and compact nothing,
+    hence `--compact`."""
+    con = db.connect()
+    try:
+        db.compact(con)
+        return True
+    except sqlite3.OperationalError:
+        print("  ⚠ index not compacted (database in use): old text may remain in free pages; "
+              "run `slim mask --compact` with the server stopped")
+        return False
+    finally:
+        con.close()
+
+
 def cmd_mask(args):
     """Mask personal data in recordings already in the vault (`recorder/mask.py`). Prints class
     counts per note, never a value. Non-zero when a note failed or was written but not
@@ -203,6 +219,14 @@ def cmd_mask(args):
     from . import config
     from .recorder import mask
 
+    if args.compact:
+        if args.notes or args.all or args.force or args.dry_run:
+            print("--compact runs alone: it compacts the index and masks nothing")
+            raise SystemExit(2)
+        if not _compact_index():
+            raise SystemExit(1)
+        print("index compacted")
+        return
     if not args.notes and not args.all:
         print("name the notes to mask, or pass --all")
         raise SystemExit(2)
@@ -224,6 +248,11 @@ def cmd_mask(args):
         # ONE spelling per note, the index's: relative to the RESOLVED vault. A symlinked or
         # `..` spelling would be masked and then never re-indexed under the path ingest uses.
         path = Path(name)
+        if (path if path.is_absolute() else VAULT / path).is_symlink():
+            # A write would replace the link with a masked copy and leave its target unmasked.
+            print(f"{name}  (error: symlink)")
+            errors += 1
+            continue
         try:
             rel = (path if path.is_absolute() else VAULT / path).resolve() \
                 .relative_to(VAULT.resolve()).as_posix()
@@ -266,14 +295,7 @@ def cmd_mask(args):
             failed = True
 
     if changed and not args.dry_run:
-        con = db.connect()
-        try:
-            db.compact(con)
-        except sqlite3.OperationalError:
-            print("  ⚠ index not compacted (database in use): old text may remain in free pages "
-                  "until the next `slim mask` run with the server stopped")
-        finally:
-            con.close()
+        _compact_index()
     prefix = "dry run: " if args.dry_run else ""
     failures = f", {errors} failed" if errors else ""
     print(f"{prefix}{masked} notes masked, {unchanged} unchanged, {skipped} skipped{failures}")
@@ -333,6 +355,9 @@ def main():
                    help="redo notes already masked by the current version")
     p.add_argument("--dry-run", dest="dry_run", action="store_true",
                    help="report what would be masked; write nothing")
+    p.add_argument("--compact", action="store_true",
+                   help="only compact the index, so masked text leaves its free pages "
+                        "(run with the server stopped)")
     p.set_defaults(fn=cmd_mask)
 
     args = ap.parse_args()

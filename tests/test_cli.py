@@ -241,7 +241,7 @@ def test_mask_survives_a_bad_note_and_a_busy_index(monkeypatch, mask_vault, caps
     out = capsys.readouterr().out
     assert "Notes/w/c.md  (error: UnicodeDecodeError)" in out
     assert "Notes/w/a.md  email:1 ssn:1" in out
-    assert "⚠ index not compacted (database in use)" in out
+    assert "⚠ index not compacted (database in use)" in out and "slim mask --compact" in out
     assert "1 notes masked, 0 unchanged, 0 skipped, 1 failed" in out
 
 
@@ -335,3 +335,43 @@ def test_mask_dry_run_shows_the_audio_reason(monkeypatch, mask_vault, capsys):
     _run_mask(monkeypatch, "Notes/w/a.md", "--dry-run")
     assert capsys.readouterr().out.splitlines()[0] == "Notes/w/a.md  email:1 ssn:1 (partial: audio)"
     assert (v / "Notes/w/a.md").read_bytes() == before
+
+
+def test_mask_compact_compacts_and_does_nothing_else(monkeypatch, mask_vault, capsys):
+    from slim.recorder import mask
+    v, compacted = mask_vault
+    before = (v / "Notes/w/a.md").read_bytes()
+    monkeypatch.setattr(mask, "mask_note", lambda *a, **k: pytest.fail("masked a note"))
+    monkeypatch.setattr(mask, "recordings", lambda *a, **k: pytest.fail("listed notes"))
+    _run_mask(monkeypatch, "--compact")
+    assert compacted == [1] and (v / "Notes/w/a.md").read_bytes() == before
+    assert "compacted" in capsys.readouterr().out
+
+
+def test_mask_compact_says_so_when_the_index_is_busy(monkeypatch, mask_vault, capsys):
+    import sqlite3
+
+    def busy(con):
+        raise sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr(db, "compact", busy)
+    with pytest.raises(SystemExit) as e:
+        _run_mask(monkeypatch, "--compact")
+    assert e.value.code not in (0, None)
+    assert "⚠ index not compacted (database in use)" in capsys.readouterr().out
+
+
+def test_mask_compact_runs_alone(monkeypatch, mask_vault, capsys):
+    with pytest.raises(SystemExit) as e:
+        _run_mask(monkeypatch, "--compact", "--all")
+    assert e.value.code == 2
+
+
+def test_mask_refuses_an_explicit_symlinked_note(monkeypatch, mask_vault, capsys):
+    v, _ = mask_vault
+    (v / "Notes/w/link.md").symlink_to(v / "Notes/w/a.md")
+    before = (v / "Notes/w/a.md").read_bytes()
+    with pytest.raises(SystemExit) as e:
+        _run_mask(monkeypatch, "Notes/w/link.md")
+    assert e.value.code not in (0, None)
+    assert capsys.readouterr().out.splitlines()[0] == "Notes/w/link.md  (error: symlink)"
+    assert (v / "Notes/w/link.md").is_symlink() and (v / "Notes/w/a.md").read_bytes() == before

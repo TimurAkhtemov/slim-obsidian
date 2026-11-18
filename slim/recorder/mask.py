@@ -62,7 +62,9 @@ def on_disk(vault: Path, rel: str, listdir=os.listdir) -> str:
 def recordings(vault: Path) -> list[str]:
     """Vault-relative paths of the recordings `slim mask --all` selects, sorted.
 
-    A skipped folder is pruned from the walk, so nothing under it is even opened."""
+    A skipped folder is pruned from the walk, so nothing under it is even opened. A symlinked
+    note is left out: writing it would replace the link with a masked copy and leave its target
+    as it was."""
     vault = Path(vault)
     out = []
     for root, dirs, files in os.walk(vault):
@@ -70,7 +72,8 @@ def recordings(vault: Path) -> list[str]:
         dirs[:] = [d for d in dirs if not _under(here / d, config.PII_SKIP)]
         for name in files:
             rel = here / name
-            if rel.suffix.casefold() != ".md" or not indexable(rel) or _under(rel, config.PII_SKIP):
+            if (rel.suffix.casefold() != ".md" or not indexable(rel) or _under(rel, config.PII_SKIP)
+                    or (vault / rel).is_symlink()):
                 continue
             try:
                 text = (vault / rel).read_text(encoding="utf-8")
@@ -156,28 +159,26 @@ def _plan(text: str, force: bool) -> dict:
         return {"error": "summary block"}
 
     find = lambda window: pii.ask_model(window)          # noqa: E731 - read at call time
-    counts: dict[str, int] = {}
-    partial = False
-    out = text
-    found = []
     try:
         m = pii.mask(transcript, find_password=find)
-        found.append(m)
+        sms = [pii.mask(summary, find_password=find) for summary in summaries]
+    except Exception as exc:                  # noqa: BLE001 - the class only: it can quote the text
+        return {"error": type(exc).__name__}
+    masked = [sm.text for sm in sms]          # each exact span, unstripped: its whitespace is kept
+    out = text
+    try:
         if m.text != transcript:
             out = note_writer.replace_transcript(out, m.text)
-        masked = []                       # each exact span, unstripped: its whitespace is kept
-        for summary in summaries:
-            sm = pii.mask(summary, find_password=find)
-            found.append(sm)
-            masked.append(sm.text)
         if masked != summaries:
             out = note_writer.replace_summaries(out, masked)
     except ValueError:
         return {"error": "integrity"}
-    for one in found:
-        partial = partial or one.partial
-        for cls, n in one.counts.items():
-            counts[cls] = counts.get(cls, 0) + n
+    partial = m.partial or any(sm.partial for sm in sms)
+    # A summary is written from the transcript and repeats its values: per class, the summaries
+    # add only what the transcript did not have.
+    counts = dict(m.counts)
+    for cls in {c for sm in sms for c in sm.counts}:
+        counts[cls] = max(counts.get(cls, 0), sum(sm.counts.get(cls, 0) for sm in sms))
 
     reasons = set(had)
     if "password" in config.PII_MASK:     # the pass ran: its outcome replaces the old one
@@ -212,6 +213,9 @@ def mask_note(vault: Path, rel: str, *, force: bool = False, dry_run: bool = Fal
         # the recorder or produce a note no reader can reach.
         return {**out, "skipped": "not indexed: draft or excluded folder"}
     src = state.vault_path(vault, rel)
+    if (Path(vault) / rel).is_symlink():
+        # A write would replace the link with a masked copy and leave its target unmasked.
+        return {**out, "error": "symlink"}
     for _ in range(_ATTEMPTS):
         text = _read_raw(src)
         plan = _plan(text, force)

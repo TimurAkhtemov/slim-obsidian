@@ -111,7 +111,7 @@ def _join_segments(gots: list[dict], labelled: bool = False) -> str:
     return "\n\n".join(parts)
 
 
-def _mask_segments(gots: list[dict], *, model: bool):
+def _mask_segments(gots: list[dict], *, model: bool, should_stop=None):
     """Each segment's words with personal data replaced, before any model reads them.
 
     Returns (masked copies of `gots`, summed class counts, the reasons masking is unfinished,
@@ -119,6 +119,9 @@ def _mask_segments(gots: list[dict], *, model: bool):
     when a secret could not be placed in its segment's audio — a cache written before token
     times has none, and a secret left audible is the leak. `model=False` is the paused preview,
     which never waits.
+
+    `should_stop` is asked between segments and between password calls, and raises to abandon
+    the pass (a cancelled recording).
 
     `config.PII_MASK` empty is masking OFF: the words come back as they were, with no spans."""
     from ..capture import pii
@@ -130,7 +133,9 @@ def _mask_segments(gots: list[dict], *, model: bool):
     find = (lambda window: pii.ask_model(window)) if model else None
     masked, seg_spans = [], []
     for got in gots:
-        m = pii.mask(str(got.get("text") or ""), find_password=find)
+        if should_stop is not None:
+            should_stop()
+        m = pii.mask(str(got.get("text") or ""), find_password=find, should_stop=should_stop)
         for cls, n in m.counts.items():
             counts[cls] = counts.get(cls, 0) + n
         found, missed = pii.spans(got.get("tokens") or [], m.secrets)
@@ -143,6 +148,21 @@ def _mask_segments(gots: list[dict], *, model: bool):
         masked.append({**{k: v for k, v in got.items() if k != "tokens"}, "text": m.text})
         seg_spans.append(found)
     return masked, counts, reasons, seg_spans
+
+
+def _mask_or_refuse(gots: list[dict], job_id: str):
+    """`_mask_segments` with the password pass, for words about to be filed. A crash refuses the
+    filing, as a failed transcript does: the audio stays staged, and words that may hold a value
+    are never filed unmasked. The masker's own message is never repeated, in the trace or the
+    error: it can quote the transcript."""
+    try:
+        return _mask_segments(gots, model=True, should_stop=lambda: state.check_cancel(job_id))
+    except state.RecordCancelled:
+        raise
+    except Exception as exc:                       # noqa: BLE001 - re-raised, see below
+        trace.record("record", {"stage": "pii", "status": "failed", "error": type(exc).__name__})
+        raise ValueError(f"masking failed ({type(exc).__name__}): nothing was written, and the audio "
+                         "is where it was") from None
 
 
 def _silence_segments(segments: list[Path], seg_spans: list) -> bool:
@@ -286,25 +306,26 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
             wall += 0.0 if cached else (got.get("wall_seconds") or 0.0)
             asr_model = got.get("model") or asr_model
             speakers_by = got.get("speakers_by") or speakers_by
-        # ⚠ BEFORE ANY MODEL: the summary, the title and the card all read `text`. The password
-        # pass is a model call per cue window, so a cancel is honoured before it.
-        state.check_cancel(job_id)
-        if config.PII_MASK:
-            progress("masking", "Masking sensitive details",
-                     "Replacing identifiers before any model reads the transcript")
-        gots, counts, reasons, seg_spans = _mask_segments(gots, model=True)
-        text = _join_segments(gots)
-        audio_seconds = seconds or None
-        transcribed_at = datetime.now(timezone.utc)
-        progress("transcribed", "Transcript ready", f"Captured {words} words",
-                 metrics={"transcript_words": words, "audio_seconds": seconds,
-                          "transcription_seconds": wall, "segments": len(segments),
-                          "transcription_realtime_factor": round(seconds / wall, 2) if wall else 0})
     except state.RecordCancelled:
         raise
     except Exception as exc:                       # noqa: BLE001 - re-raised, see below
         trace.record("record", {"stage": "transcribe", "status": "failed", "error": str(exc)})
         raise ValueError(f"transcription failed: {exc}") from exc
+
+    # ⚠ BEFORE ANY MODEL: the summary, the title and the card all read `text`. The password
+    # pass is a model call per cue window, so a cancel is honoured before it and between calls.
+    state.check_cancel(job_id)
+    if config.PII_MASK:
+        progress("masking", "Masking sensitive details",
+                 "Replacing identifiers before any model reads the transcript")
+    gots, counts, reasons, seg_spans = _mask_or_refuse(gots, job_id)
+    text = _join_segments(gots)
+    audio_seconds = seconds or None
+    transcribed_at = datetime.now(timezone.utc)
+    progress("transcribed", "Transcript ready", f"Captured {words} words",
+             metrics={"transcript_words": words, "audio_seconds": seconds,
+                      "transcription_seconds": wall, "segments": len(segments),
+                      "transcription_realtime_factor": round(seconds / wall, 2) if wall else 0})
 
     if not text.strip():
         # Silence is the same outcome by a different route — a muted mic, the wrong input — and
@@ -515,7 +536,7 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
         asr_model = got.get("model") or asr_model
         speakers_by = got.get("speakers_by") or speakers_by
     state.check_cancel(job_id)            # the password pass is a model call per cue window
-    gots, counts, reasons, seg_spans = _mask_segments(gots, model=True)
+    gots, counts, reasons, seg_spans = _mask_or_refuse(gots, job_id)
     fm, _ = parse_frontmatter(text)
     addition = _join_segments(gots, labelled=bool(fm.get("speakers_by")))
     if not addition:
@@ -550,6 +571,10 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
                                                     speakers_by=speakers_by)
         if config.PII_MASK:
             text = note_writer.merge_pii_frontmatter(text, counts, reasons)
+        else:
+            # Unmasked words join a note that may say it was checked: the stamp goes, so
+            # `slim mask` finds it again. Its counts and reasons stay true of the older words.
+            text = note_writer.drop_pii_stamp(text)
         # The card shows the NOTE's masking, so the response is what the note now says.
         note_counts, note_reasons = note_writer.read_pii(text)
         note_writer.write_note_text(src, note_writer.append_transcript(text, addition))

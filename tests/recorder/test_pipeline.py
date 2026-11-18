@@ -1054,7 +1054,7 @@ def test_an_append_onto_a_never_masked_note_never_claims_the_old_words(tmp_path,
     assert "pii_by" not in fm
 
 
-def test_an_append_onto_a_masked_note_keeps_it_current_and_partial(tmp_path, monkeypatch):
+def test_an_append_onto_a_masked_note_keeps_its_version_and_partial(tmp_path, monkeypatch):
     from slim.capture import pii, transcribe
     from slim.recorder import pipeline
     from slim.vault.frontmatter import parse_frontmatter, set_frontmatter
@@ -1068,7 +1068,8 @@ def test_an_append_onto_a_masked_note_keeps_it_current_and_partial(tmp_path, mon
     pipeline.handle_record_append(note=str(r.note.relative_to(tmp_path)),
                                   audio_rel=[_staged(tmp_path, "a-002.webm")], vault=tmp_path)
     fm, _ = parse_frontmatter(r.note.read_text(encoding="utf-8"))
-    assert fm["pii_masked"] == ["ssn:1"] and fm["pii_by"] == pii.VERSION
+    # the old words were masked by the old version: `pii_by` is what makes `slim mask` redo them
+    assert fm["pii_masked"] == ["ssn:1"] and fm["pii_by"] == "pii-0"
     assert fm["pii_partial"] == ["audio"], "the note's own reason survives a clean append"
 
 
@@ -1276,3 +1277,135 @@ def test_a_cancel_at_the_last_boundary_silences_and_writes_nothing(tmp_path, mon
                                title="T", when=NOW, vault=tmp_path, job_id="job-card")
     assert (tmp_path / staged).read_bytes() == b"fake-audio-bytes"
     assert not list(tmp_path.rglob("*.md"))
+
+
+# --- masking claims only what happened --------------------------------------------------------
+
+def test_an_append_with_masking_off_unstamps_a_checked_note(tmp_path, monkeypatch):
+    """Unmasked words now sit in a note stamped as checked: the stamp goes, so `slim mask` finds
+    it again; its counts and reasons stay true of the older words."""
+    from slim import config
+    from slim.capture import transcribe
+    from slim.recorder import pipeline
+    from slim.vault.frontmatter import parse_frontmatter, set_frontmatter
+    from tests.recorder.fakes import _existing
+    r = _existing(tmp_path, monkeypatch)
+    r.note.write_text(set_frontmatter(r.note.read_text(encoding="utf-8"), {
+        "pii_masked": ["email:1"], "pii_by": "pii-1", "pii_partial": ["audio"]}), encoding="utf-8")
+    monkeypatch.setattr(config, "PII_MASK", ())
+    monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
+        text=SSN_TEXT, model="fake", audio_seconds=9.0, wall_seconds=1.0))
+    out = pipeline.handle_record_append(note=str(r.note.relative_to(tmp_path)),
+                                        audio_rel=[_staged(tmp_path, "a-002.webm")], vault=tmp_path)
+    fm, _ = parse_frontmatter(r.note.read_text(encoding="utf-8"))
+    assert "pii_by" not in fm and fm["pii_masked"] == ["email:1"] and fm["pii_partial"] == ["audio"]
+    assert out["pii"] == {"masked": {"email": 1}, "partial": ["audio"]}
+
+
+def _crashing_masker(monkeypatch):
+    from slim.capture import pii
+
+    def boom(*a, **k):
+        raise RuntimeError("masker broke on 219-09-9999")
+    monkeypatch.setattr(pii, "mask", boom)
+
+
+def test_a_masker_crash_refuses_filing_and_keeps_audio_staged(tmp_path, monkeypatch):
+    from slim import trace
+    from slim.capture import enrich, summarize
+    from slim.recorder import pipeline, suggest
+    _fakes(monkeypatch, transcript=SSN_TEXT, tokens=SSN_TOKENS)
+    _crashing_masker(monkeypatch)
+    for mod, name in ((summarize, "summarize"), (enrich, "enrich"), (suggest, "build_card")):
+        monkeypatch.setattr(mod, name, lambda *a, **k: pytest.fail("a model read the transcript"))
+    staged = _staged(tmp_path)
+    with pytest.raises(ValueError) as err:
+        pipeline.handle_record(audio_rel=staged, notes_md="", declared_type="meeting",
+                               title="", when=NOW, vault=tmp_path)
+    assert "masking failed" in str(err.value) and "219-09-9999" not in str(err.value)
+    assert err.value.__cause__ is None and err.value.__suppress_context__
+    assert (tmp_path / staged).read_bytes() == b"fake-audio-bytes"
+    assert not list(tmp_path.rglob("*.md"))
+    logged = "".join(p.read_text() for p in trace.TRACE_DIR.rglob("*") if p.is_file())
+    assert '"stage": "pii", "status": "failed", "error": "RuntimeError"' in logged
+    assert "219-09-9999" not in logged
+
+
+def test_a_masker_crash_on_append_leaves_the_note_and_archives_nothing(tmp_path, monkeypatch):
+    from slim.capture import audio, transcribe
+    from slim.recorder import pipeline
+    from tests.recorder.fakes import _existing
+    r = _existing(tmp_path, monkeypatch)
+    before = r.note.read_bytes()
+    archived = sorted(audio.AUDIO_ARCHIVE.rglob("*"))
+    monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
+        text=SSN_TEXT, model="fake", audio_seconds=9.0, wall_seconds=1.0, tokens=SSN_TOKENS))
+    _crashing_masker(monkeypatch)
+    staged = _staged(tmp_path, "a-002.webm")
+    with pytest.raises(ValueError) as err:
+        pipeline.handle_record_append(note=str(r.note.relative_to(tmp_path)),
+                                      audio_rel=[staged], vault=tmp_path)
+    assert "masking failed" in str(err.value) and "219-09-9999" not in str(err.value)
+    assert r.note.read_bytes() == before and sorted(audio.AUDIO_ARCHIVE.rglob("*")) == archived
+    assert (tmp_path / staged).read_bytes() == b"fake-audio-bytes"
+
+
+def test_a_failed_silence_on_append_adds_the_audio_reason(tmp_path, monkeypatch):
+    import subprocess
+
+    from slim.capture import audio, pii, transcribe
+    from slim.recorder import pipeline
+    from slim.vault.frontmatter import parse_frontmatter, set_frontmatter
+    from tests.recorder.fakes import _existing
+    r = _existing(tmp_path, monkeypatch)
+    r.note.write_text(set_frontmatter(r.note.read_text(encoding="utf-8"), {
+        "pii_masked": [], "pii_by": "pii-1"}), encoding="utf-8")
+    monkeypatch.setattr(pii, "ask_model", lambda window: None)
+    monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
+        text=SSN_TEXT, model="fake", audio_seconds=9.0, wall_seconds=1.0, tokens=SSN_TOKENS))
+
+    def boom(path, spans, pad=0.15):
+        raise subprocess.CalledProcessError(1, ["ffmpeg"])
+    monkeypatch.setattr(audio, "silence", boom)
+    out = pipeline.handle_record_append(note=str(r.note.relative_to(tmp_path)),
+                                        audio_rel=[_staged(tmp_path, "a-002.webm")], vault=tmp_path)
+    fm, _ = parse_frontmatter(r.note.read_text(encoding="utf-8"))
+    assert fm["pii_partial"] == ["audio"] and out["pii"]["partial"] == ["audio"]
+
+
+def test_a_cancel_between_password_windows_stops_and_writes_nothing(tmp_path, monkeypatch):
+    from slim.capture import audio
+    from slim.recorder import pipeline, state
+    calls = []
+
+    def ask(window):
+        calls.append(window)
+        state.request_cancel("job-win")
+        return None
+    _fakes(monkeypatch, transcript="the PIN is 1234. ok. ok. ok. the door code is 99.", ask_model=ask)
+    monkeypatch.setattr(audio, "silence", lambda *a, **k: pytest.fail("silenced after a cancel"))
+    staged = _staged(tmp_path)
+    state.progress_start("job-win")
+    with pytest.raises(state.RecordCancelled):
+        pipeline.handle_record(audio_rel=staged, notes_md="", declared_type="meeting",
+                               title="T", when=NOW, vault=tmp_path, job_id="job-win")
+    assert len(calls) == 1
+    assert (tmp_path / staged).read_bytes() == b"fake-audio-bytes" and not list(tmp_path.rglob("*.md"))
+
+
+def test_a_cancel_between_segments_stops_the_masking(tmp_path, monkeypatch):
+    from slim.capture import pii
+    from slim.recorder import pipeline, state
+    seen = []
+    real = pii.mask
+
+    def mask(text, *a, **k):
+        seen.append(text)
+        state.request_cancel("job-seg")
+        return real(text, *a, **k)
+    monkeypatch.setattr(pii, "mask", mask)
+    state.progress_start("job-seg")
+    with pytest.raises(state.RecordCancelled):
+        pipeline._mask_segments([{"text": "one"}, {"text": "two"}], model=False,
+                                should_stop=lambda: state.check_cancel("job-seg"))
+    assert seen == ["one"]
