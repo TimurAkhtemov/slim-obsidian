@@ -60,7 +60,7 @@ def main(argv=None) -> int:
         classifier = Classifier(Path(a.cache), use_cache=not a.no_cache)
         classify = classifier.classify
     elif a.arm.startswith("D"):
-        entities = json.loads(Path(a.entities).read_text())
+        entities = json.loads(Path(a.entities).read_text())["entities"]
         classify = _tagger_classify(entities, float(a.arm[1:]))
 
     hits_by, per_case = {}, []

@@ -66,7 +66,7 @@ class Classifier:
 
     def __init__(self, cache: Path, *, use_cache: bool = True):
         self.path, self.use_cache = cache, use_cache
-        self.cache = json.loads(cache.read_text()) if cache.exists() else {}
+        self.cache = json.loads(cache.read_text()) if use_cache and cache.exists() else {}
         self.calls = self.cached = 0
         self.seconds: list[float] = []
         self.failures = 0
