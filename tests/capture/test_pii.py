@@ -288,7 +288,10 @@ def test_ask_model_sends_bounded_schema_call(monkeypatch):
         return {"secret": "hunter2"}, {}
     monkeypatch.setattr(pii.llm, "chat_json", fake)
     assert pii.ask_model("the password is hunter2") == "hunter2"
-    assert got["kw"]["think"] is False and got["kw"]["num_predict"] == 64
+    # A cold start reloads ~32 GB (llama-server unloads after 10 idle minutes): 60 s was a
+    # `password` partial. A 64-character secret plus JSON framing needs more than 64 tokens.
+    assert got["kw"]["think"] is False and got["kw"]["num_predict"] == 128
+    assert got["kw"]["timeout"] == 180
     assert got["schema"]["properties"]["secret"]["maxLength"] == 64
 
 

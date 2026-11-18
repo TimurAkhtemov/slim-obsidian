@@ -296,6 +296,11 @@ CUES = re.compile(
 _SENTENCE_END = re.compile(r"[.?!]\s+|\n\s*\n")
 _TURN_START = re.compile(r"\*\*[^*\n]+:\*\*")
 _MAX_SECRET = 64
+# Room for a 64-character secret plus its JSON framing: 64 tokens truncated the answer.
+_ASK_TOKENS = 128
+# llama-server unloads the model after 10 idle minutes and the first call reloads ~32 GB:
+# 60 s turned a cold start into a `password` partial.
+_ASK_TIMEOUT = 180
 _SCHEMA = {
     "type": "object",
     "properties": {"secret": {"type": ["string", "null"], "maxLength": _MAX_SECRET}},
@@ -311,7 +316,7 @@ def ask_model(window: str) -> str | None:
     """The model points at a secret in `window`; it never writes text. Raises on failure."""
     out, _ = llm.chat_json(
         [{"role": "system", "content": _SYSTEM}, {"role": "user", "content": window}],
-        _SCHEMA, think=False, num_predict=_MAX_SECRET, timeout=60,
+        _SCHEMA, think=False, num_predict=_ASK_TOKENS, timeout=_ASK_TIMEOUT,
     )
     secret = out.get("secret")
     return secret if isinstance(secret, str) else None
