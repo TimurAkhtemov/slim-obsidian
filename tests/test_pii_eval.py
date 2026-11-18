@@ -1096,6 +1096,89 @@ def test_check_full_and_full_runner_with_fakes(tmp_path):
     assert any("archived audio" in p for p in bad["problems"])
 
 
+def _filing_pipeline(db):
+    """A pipeline that files the way `note.py` does: the note named by its audio's sha, archived
+    audio by its whole sha, an index row; an existing note is refused, never overwritten."""
+    import hashlib
+    import sqlite3
+    from types import SimpleNamespace
+
+    pl = SimpleNamespace(_silence_segments=lambda segments, seg_spans: True)
+
+    def handle_record(*, audio_rel, notes_md, declared_type, title, vault):
+        seg = vault / audio_rel
+        digest = hashlib.sha256(seg.read_bytes()).hexdigest()
+        note = vault / "Notes" / "work" / f"2026-11-18--a-call--{digest[:8]}.md"
+        if note.exists():
+            raise ValueError("refusing to overwrite an existing note")
+        archived = vault / "Attachments" / "Recordings" / f"{digest}.webm"
+        archived.parent.mkdir(parents=True, exist_ok=True)
+        seg.replace(archived)
+        note.parent.mkdir(parents=True, exist_ok=True)
+        note.write_text("---\npii_masked: []\n---\n\n## Transcript\n\nwords\n")
+        rel = note.relative_to(vault).as_posix()
+        c = sqlite3.connect(db)
+        c.execute("INSERT INTO sources VALUES (?, ?, 0)", (digest[:8], rel))
+        c.execute("INSERT INTO fragments (source_id, text) VALUES (?, 'words')", (digest[:8],))
+        c.commit()
+        c.close()
+        return {"note": rel, "audio": archived.relative_to(vault).as_posix(), "title": "A call",
+                "summary": "", "pii": {"masked": {}, "partial": []}}
+
+    pl.handle_record = handle_record
+    return pl
+
+
+def _filing_sandbox(tmp_path, marked=True):
+    import sqlite3
+    from types import SimpleNamespace
+    out = tmp_path / "out"
+    (out / "vault" / "Notes" / "work").mkdir(parents=True)
+    if marked:
+        (out / ev_sandbox.MARKER).write_text("pii_eval output directory\n")
+    db = out / "slim.db"
+    con = sqlite3.connect(db)
+    con.executescript("CREATE TABLE sources (id TEXT, path TEXT, deleted INTEGER DEFAULT 0);"
+                      "CREATE TABLE fragments (id INTEGER PRIMARY KEY, source_id TEXT, text TEXT);")
+    con.close()
+    other = out / "vault" / "Notes" / "work" / "2026-11-01--another-call--0badf00d.md"
+    other.write_text("not this call's\n")
+    return SimpleNamespace(VAULT=out / "vault", DB_PATH=db, PII_MASK=ev_gen.CLASSES), other
+
+
+def test_full_mode_reruns_on_the_same_out(tmp_path):
+    """Unchanged audio files under the same name: an earlier run's filing of THAT call is removed
+    first (note, archived audio, index rows); nothing else is."""
+    import sqlite3
+    s = SCRIPTS[0]
+    config, other = _filing_sandbox(tmp_path)
+    work = tmp_path / "work.webm"
+    work.write_text("the same audio bytes every run")
+    runner = ev_calls._full_runner(config, pipeline=_filing_pipeline(config.DB_PATH), measure=lambda *a: -120.0)
+    first = runner(s, work, work, set())
+    second = runner(s, work, work, set())
+    assert "error" not in first and "error" not in second, (first, second)
+    assert first["result"]["note"] == second["result"]["note"] and second["fragments"] == ["words"]
+    assert other.read_text() == "not this call's\n"
+    con = sqlite3.connect(config.DB_PATH)
+    live = con.execute("SELECT count(*) FROM sources WHERE deleted = 0").fetchone()[0]
+    left = con.execute("SELECT count(*) FROM fragments").fetchone()[0]
+    con.close()
+    assert live == 1 and left == 1
+
+
+def test_full_mode_removes_nothing_outside_a_marked_sandbox(tmp_path):
+    s = SCRIPTS[0]
+    config, other = _filing_sandbox(tmp_path, marked=False)
+    work = tmp_path / "work.webm"
+    work.write_text("the same audio bytes every run")
+    runner = ev_calls._full_runner(config, pipeline=_filing_pipeline(config.DB_PATH), measure=lambda *a: -120.0)
+    first = runner(s, work, work, set())
+    note = config.VAULT / first["result"]["note"]
+    assert runner(s, work, work, set()) == {"error": "handle_record raised ValueError"}
+    assert note.is_file() and other.is_file()
+
+
 # --- public ----------------------------------------------------------------------------
 
 FINANCE_PAGE = {

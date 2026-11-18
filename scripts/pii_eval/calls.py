@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from .gen import Script
-from .sandbox import REPO
+from .sandbox import MARKER, REPO
 from .score import aggregate_calls, check_full, locate, score_call
 
 
@@ -223,6 +223,37 @@ def _diff(old: dict, new: dict) -> str:
     return "other " + ", ".join(keys) if keys else "another run"
 
 
+def _forget_filing(config, staged: Path) -> None:
+    """Remove what an earlier run filed for this same audio: its notes (`*--<sha8>.md`), its
+    archived recording and their index rows, so the note can be filed again. Audio with no
+    secret is not re-encoded, so a rerun names the same note, which `note.py` rightly refuses
+    to overwrite. Only inside a pii_eval sandbox (its marker beside the vault)."""
+    import sqlite3
+
+    vault = Path(config.VAULT)
+    marker = vault.parent / MARKER
+    if not marker.is_file() or marker.is_symlink():
+        return
+    digest = _sha_file(staged)
+    archived = vault / "Attachments" / "Recordings" / f"{digest}{staged.suffix.lower()}"
+    if archived.is_file() and not archived.is_symlink():
+        archived.unlink()
+    notes = [n for n in vault.rglob(f"*--{digest[:8]}.md") if n.is_file() and not n.is_symlink()]
+    if not notes:
+        return
+    con = sqlite3.connect(config.DB_PATH)
+    try:
+        for note in notes:
+            rel = note.relative_to(vault).as_posix()
+            for (sid,) in con.execute("SELECT id FROM sources WHERE path = ? AND deleted = 0", (rel,)).fetchall():
+                con.execute("DELETE FROM fragments WHERE source_id = ?", (sid,))
+                con.execute("UPDATE sources SET deleted = 1 WHERE id = ?", (sid,))
+            note.unlink()
+        con.commit()
+    finally:
+        con.close()
+
+
 def _full_runner(config, *, pipeline=None, measure=rms_dbfs):
     """`handle_record` on a staged copy; keeps the note, the result, its index rows and the
     archived audio's level inside the spans the pipeline itself muted (seen through
@@ -242,6 +273,7 @@ def _full_runner(config, *, pipeline=None, measure=rms_dbfs):
         cache = work.with_suffix(work.suffix + ".transcript.json")
         if cache.exists():
             shutil.copyfile(cache, staged.with_suffix(staged.suffix + ".transcript.json"))
+        _forget_filing(config, staged)
         muted: list = []
         real = pl._silence_segments
 
