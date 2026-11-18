@@ -87,7 +87,7 @@ def test_spoken_ssn_with_cue():
 
 
 def test_invalid_ssn_areas_not_masked():
-    # N1: only without a cue; a number bound to an SSN cue is masked whatever its range says
+    # only without a cue: a number bound to an SSN cue is masked whatever its range says
     for v in ("000-12-3456", "666-12-3456", "912-12-3456"):
         assert pii.mask(f"ref {v}", classes=pii.DEFAULT_CLASSES).counts == {}
         assert pii.mask(f"ssn {v}", classes=pii.DEFAULT_CLASSES).text == "ssn [SSN]"
@@ -99,7 +99,7 @@ def test_run_together_nine_digits_needs_cue():
 
 
 def test_card_needs_luhn():
-    # R3b: with a card cue in reach a Luhn-failing run is still a card (a misheard digit), so
+    # a Luhn-failing number bound to a card cue is still a card (a misheard digit), so
     # the Luhn guard is tested without one.
     assert pii.mask("ref 4111 1111 1111 1111", classes=pii.DEFAULT_CLASSES).counts == {"card": 1}
     assert pii.mask("ref 4111 1111 1111 1112", classes=pii.DEFAULT_CLASSES).counts == {}
@@ -197,7 +197,7 @@ def test_spaced_ssn_needs_cue():
 def test_card_shape_or_cue():
     assert pii.mask("4111 1111 1111 1111", classes=pii.DEFAULT_CLASSES).counts == {"card": 1}
     assert pii.mask("my visa is 4111 1111 1111 1112", classes=pii.DEFAULT_CLASSES).counts == {"card": 1}
-    # N1/N3: a card is contiguous or read in groups of 3+ digits, cued or not
+    # a card is contiguous or read in groups of 3+ digits, cued or not
     _same("my visa is 41 11 1111 1111 1111")
     _same("ref 91 60 1562 2746 67")
 
@@ -206,7 +206,7 @@ def test_spoken_email_needs_dot_or_cue():
     for t in ("I looked at amazon dot com yesterday", "I met her at Starbucks dot com",
               "check it out at google dot com"):
         _same(t)
-    # R5b: "me" never forms a local part on its own
+    # "me" never forms a local part on its own
     _same("email me at jane dot com")
     m = pii.mask("my email is jane at example dot com", classes=pii.DEFAULT_CLASSES)
     assert m.text == "my email is [EMAIL]"
@@ -374,7 +374,7 @@ def test_overlapping_and_touching_spans_merge():
     assert pii.spans(toks, ["a", "b"]) == ([(0, 2)], 0)
 
 
-# --- Task 7b: what the transcriber writes (synthetic values; Parakeet's rendering first, the
+# --- what the transcriber writes (synthetic values; Parakeet's rendering first, the
 # spoken-word rendering second) ---------------------------------------------------------------
 
 def _m(t, classes=CLS):
@@ -386,7 +386,7 @@ def _luhn_complete(body: str) -> str:
     return next(body + d for d in "0123456789" if pii._luhn(body + d))
 
 
-# normalise (R7)
+# normalise
 
 def test_dash_between_number_groups_becomes_a_dash():
     assert pii.normalise("six four four dash zero four dash eight nine zero one")[0] == "644-04-8901"
@@ -406,7 +406,7 @@ def test_dash_elsewhere_untouched_and_offsets_kept():
     assert _orig(text, a, a + 3) == "six four four"
 
 
-# SSN (R1, R2)
+# SSN
 
 def test_ssn_as_parakeet_writes_it():
     assert _m("**Them:** Sure. My social is 741 05 7024.").text == "**Them:** Sure. My social is [SSN]."
@@ -429,7 +429,7 @@ def test_ssn_as_words():
 
 def test_spaced_324_triple_standing_alone_is_an_ssn_without_cue():
     assert _m("rooms 219 09 9999").text == "rooms [SSN]"
-    assert _m("rooms 12, 219 09 9999").text == "rooms 12, [SSN]"           # P1: a value ends at a comma
+    assert _m("rooms 12, 219 09 9999").text == "rooms 12, [SSN]"           # a value ends at a comma
     for t in ("rooms 12 219 09 9999", "rooms 219 09 9999 12",
               "rooms 219 09 9999-1", "rooms 219  09 9999", "rooms 219, 09, 9999", "rooms 000 09 9999"):
         _same(t)
@@ -457,7 +457,7 @@ def test_ssn_cue_binding():
     assert _m("social, um, well, it's 219, 09, 9999").counts == {"ssn": 1}
 
 
-# card (R3)
+# card
 
 def test_card_as_parakeet_writes_it():
     assert _m("**Them:** it on my visa. 4111 7962 7393 8077.").counts == {"card": 1}
@@ -499,7 +499,7 @@ def test_card_brand_table():
 def test_luhn_without_brand_needs_a_cue_and_a_cue_rescues_a_misheard_digit():
     nobrand = _luhn_complete("9" + "1" * 14)
     _same(f"ref {nobrand}")
-    _same(f"my card is {nobrand}")                                       # P5: bound needs a brand prefix
+    _same(f"my card is {nobrand}")                                       # a bound card needs a brand prefix
     assert _m("my card is 4111 1111 1111 111").counts == {"card": 1}      # 15 digits: no Luhn, no length
     assert _m("card 4111 1111 1111 1112").counts == {"card": 1}             # Luhn fails
     assert _m("4111 1111 1111 1112 is the card").counts == {"card": 1}      # cue after
@@ -509,7 +509,7 @@ def test_luhn_without_brand_needs_a_cue_and_a_cue_rescues_a_misheard_digit():
 
 
 def test_comma_cards_need_a_cue():
-    # N3: no comma shape is a card without a cue ("The counts were 4187, 1143, 5235, 4423.")
+    # no comma shape is a card without a cue ("The counts were 4187, 1143, 5235, 4423.")
     _same("ref 42, 42, 7844, 6476, 8778")
     _same("ref 4242, 7844, 6476, 8778")
     assert _m("card number 4242, 7844, 6476, 8778").counts == {"card": 1}
@@ -520,7 +520,7 @@ def test_bank_strings_and_timestamps_are_not_cards():
         _same(t)
 
 
-# account (R4)
+# account
 
 def test_iban_glued_to_its_cue_and_spaced():
     assert _m("**Them:** Sure. IBANGB73 HWEC 4532 6581 9231 44.").text == "**Them:** Sure. IBAN[ACCOUNT]."
@@ -562,7 +562,7 @@ def test_cued_alphanumeric_account():
 
 
 def test_routing_needs_a_bound_cue():
-    # N3: the cue-free routing number is removed ("Order 289303696, thanks." was masked)
+    # a routing number needs a cue ("Order 289303696, thanks." was masked when it did not)
     for t in ("**Them:** Here it is. 035 690 281.", "it's 011000028", "Order 289303696, thanks.",
               "It's 015933395.", "Ship to 312973579.", "Scores 245 905 834."):
         _same(t)
@@ -572,7 +572,7 @@ def test_routing_needs_a_bound_cue():
     assert _m("routing number is 035, 690, 281").counts == {"account": 1}
 
 
-# email (R5)
+# email
 
 def test_email_as_parakeet_writes_it():
     assert _m("**Them:** email is vanholt at example.org.").text == "**Them:** email is [EMAIL]."
@@ -604,13 +604,13 @@ def test_email_cue_must_be_direct_or_identifying():
     _same("email: I said I bought six of them at example.com")   # more than 5 tokens between
     _same("I bought it at amazon.com, that's my favourite shop")
     assert _m("email: jane at example.com").text == "email: [EMAIL]"
-    _same("jane at example.com is my email")                                # N4: no bare "is"
+    _same("jane at example.com is my email")                                # no bare "is"
     assert _m("jane at example.com, that's my email.").text == "[EMAIL], that's my email."
     _same("jane at example.com, email me")                                  # email as a verb
     _same("jane at example.com and " + "x" * 40 + " that's my email")       # beyond 40
 
 
-# password windows (R6)
+# password windows
 
 def _pw(t, answer):
     seen = []
@@ -648,7 +648,7 @@ def test_overlapping_windows_do_not_double_mask():
     assert m.counts == {"password": 2} and m.secrets == ["hunter2", "hunter2"]
 
 
-# phone (R8)
+# phone
 
 PHONE = (*CLS, "phone")
 
@@ -670,10 +670,10 @@ def test_phone_cue_free_and_cued():
     assert _m("Call me on my cell. 4035550184.", PHONE).text == "Call me on my cell. [PHONE]."
     assert _m("4345550188. That's my cell.", PHONE).text == "[PHONE]. That's my cell."
     assert _m("my mobile is 344 5550101", PHONE).text == "my mobile is [PHONE]"
-    assert _m("my cell is 495, 555, 0133", PHONE).text == "my cell is [PHONE]"   # P2b: no bare "number"
+    assert _m("my cell is 495, 555, 0133", PHONE).text == "my cell is [PHONE]"   # a bare "number" is no phone cue
 
 
-# priorities (R9)
+# priorities: an exact tie goes to the more harmful leak
 
 def test_exact_tie_goes_to_the_higher_class():
     # bound to an account cue before and an SSN cue after: the same span, ssn wins
@@ -681,7 +681,7 @@ def test_exact_tie_goes_to_the_higher_class():
     assert pii.mask("account number 4111111111111111", classes=CLS).counts == {"card": 1}
 
 
-# ordinary speech, as Parakeet wrote it and as words (R11)
+# ordinary speech, as Parakeet wrote it and as words
 
 def test_ordinary_speech_survives():
     for t in ("I ordered it at Amazon.com.", "The counts were 194, 34, 67, 34.",
@@ -701,7 +701,7 @@ def test_ordinary_speech_survives():
         _same(t)
 
 
-# --- fix round 1: a number is masked on a cue only when bound to it (N1-N7) -------------------
+# --- a number is masked on a cue only when bound to it ------------------------------------------
 # Every sentence below was masked by the reach rules; each must survive.
 
 MEASURED_ORDINARY = [
@@ -790,7 +790,7 @@ def test_standing_alone():
 
 
 def test_spaced_324_shape_is_masked_without_cue_today():
-    # N3 / R2b, measurement-gated (pii_detect.SSN_SPACED_CUE_FREE): the shape the transcriber gives a
+    # measurement-gated (pii_detect.SSN_SPACED_CUE_FREE): the shape the transcriber gives a
     # spoken SSN is also an ordinary three-number list. Masked today; the trade-off is known.
     assert _m("we had 300 25 2000 users").text == "we had [SSN] users"
 
@@ -847,7 +847,7 @@ def test_phone_bound_shapes():
         assert _m(t, PHONE).counts == {}, t
 
 
-@pytest.mark.xfail(strict=True, reason="pending a ruling: an earlier ruling keeps this bound, Q2(a) does not")
+@pytest.mark.xfail(strict=True, reason="pending a ruling: a cue under a preposition does not bind, even right before the number")
 def test_cue_under_a_preposition_directly_before_the_number():
     assert _m("on my account 80608689949").text == "on my account [ACCOUNT]"
 
@@ -869,7 +869,7 @@ def test_bound_account_shapes():
         assert _m(t).text == want, t
 
 
-# N1c: a question in the previous turn binds the first number of the answer
+# a question in the previous turn binds the first number of the answer
 
 def test_question_binds_the_answer():
     t = "**Them:** Which card do you want to use?\n\n**Me:** Okay. 4242, 7844, 6476, 8778."
@@ -897,11 +897,11 @@ def test_question_with_several_cues_binds_the_class_the_value_fits():
     q = "**Them:** Card, account or social, which do you have?\n\n**Me:** Okay. "
     assert _m(q + "219099999.").counts == {"ssn": 1}
     assert _m(q + "412345678901.").counts == {"card": 1}      # 12 digits: card before account
-    assert _m(q + "806086899491.").counts == {"account": 1}   # P5: no brand prefix, not a card
+    assert _m(q + "806086899491.").counts == {"account": 1}   # no brand prefix, not a card
     assert _m(q + "12345").counts == {}
 
 
-# --- fix round 2 (P1-P7, m1-m4) -----------------------------------------------------------------
+# --- comma pieces, phones, dates, labels, questions ---------------------------------------------
 
 def _q(question, answer):
     return f"**Them:** {question}\n\n**Me:** {answer}"
@@ -911,7 +911,7 @@ def _answer(t, classes=CLS):
     return _m(t, classes).text.split("\n")[-1]
 
 
-def test_a_value_ends_at_the_comma():                                     # P1
+def test_a_value_ends_at_the_comma():
     assert _m("My card is 4111 1111 1111 1111, 09 30 is the expiry.").text \
         == "My card is [CARD], 09 30 is the expiry."
     assert _m("Card number 4111 1111 1111 1111, 03/28.").text == "Card number [CARD], 03/28."
@@ -925,7 +925,7 @@ def test_a_value_ends_at_the_comma():                                     # P1
     assert _m("card number 4242, 7844, 6476, 8778").text == "card number [CARD]"
 
 
-def test_phone_numbers_are_never_ssn_or_account():                       # P2
+def test_phone_numbers_are_never_ssn_or_account():
     for t in (_q("What's the best number for the account?", "Okay, 864-937-8396."),
               _q("What's the phone number on your account?", "Sure. 547-382-3582."),
               _q("Do you have the number for Social Security?", "Yeah, 777-588-2562."),
@@ -938,7 +938,7 @@ def test_phone_numbers_are_never_ssn_or_account():                       # P2
     assert _answer(_q("What's a good number for you?", "Sure. 344 5550101."), PHONE) == "**Me:** Sure. [PHONE]."
 
 
-def test_after_cue_must_end_its_clause():                                # P3
+def test_after_cue_must_end_its_clause():
     for t in ("888 655 8028 is the Social Security office.", "Call 358 870 9876, the account manager.",
               "We hit 36231709, the social media team said."):
         _same(t)
@@ -951,7 +951,7 @@ def test_after_cue_must_end_its_clause():                                # P3
         assert _m(t).text == want, t
 
 
-def test_bound_values_are_never_dates_or_zip4():                         # P4
+def test_bound_values_are_never_dates_or_zip4():
     for t in (_q("When did you get your social security card?", "So 04.17.2000."),
               _q("When did the social security letter come?", "2016/10/14."),
               _q("What's the zip on the account?", "Yeah, 13946-4891."),
@@ -962,7 +962,7 @@ def test_bound_values_are_never_dates_or_zip4():                         # P4
         _same(t)
 
 
-def test_a_number_labelled_as_something_else_is_left():                  # P5
+def test_a_number_labelled_as_something_else_is_left():
     for t in ("Your account. Okay so 98919781 is the ticket.", "My social. Well, 467032083 is the claim.",
               "Your Visa. Yes. 48915166171993 is the tracking.",
               "The card number. 51858923398493 is the tracking.",
@@ -974,7 +974,7 @@ def test_a_number_labelled_as_something_else_is_left():                  # P5
     assert _m("Your account. 98919781 is my account number.").text == "Your account. [ACCOUNT] is my account number."
 
 
-def test_a_question_must_ask_for_the_cue_thing():                         # P6
+def test_a_question_must_ask_for_the_cue_thing():
     for t in (_q("What's the order number on the account?", "So 43562933."),
               _q("What's the confirmation for the card payment?", "4111111111111112"),
               _q("Which years did you use the card?", "Right, 1995 1996 1997."),
@@ -986,7 +986,7 @@ def test_a_question_must_ask_for_the_cue_thing():                         # P6
     assert _answer(_q("Can I get your social security number?", "Sure, 030809137.")) == "**Me:** Sure, [SSN]."
 
 
-def test_cue_with_apostrophe_s():                                         # P7
+def test_cue_with_apostrophe_s():
     for t, want in (("My social's 741057024.", "My social's [SSN]."),
                     ("The card number's 4000 1234 5678 9011.", "The card number's [CARD]."),
                     ("My account number’s 12345678.", "My account number’s [ACCOUNT]."),
@@ -994,25 +994,25 @@ def test_cue_with_apostrophe_s():                                         # P7
         assert _m(t).text == want, t
 
 
-def test_hash_opens_a_value():                                            # m1
+def test_hash_opens_a_value():
     assert _m("My account number is #12345678.").text == "My account number is #[ACCOUNT]."
 
 
-def test_filler_phrases_on_the_original_text():                           # m2
+def test_filler_phrases_on_the_original_text():
     assert _m("My social is, um, let me see, 030809137.").text == "My social is, um, let me see, [SSN]."
     assert _m("My card number is, hold on, one moment, 4000 1234 5678 9011.").text \
         == "My card number is, hold on, one moment, [CARD]."
     _same("My social is, two weeks ago, 030809137.")
 
 
-def test_ssn_last_four():                                                 # m3
+def test_ssn_last_four():
     assert _m("The last four of my social are 8901.").text == "The last four of my social are [SSN]."
     assert _m("last 4 digits of the ssn: 8901").text == "last 4 digits of the ssn: [SSN]"
     _same("The last four of my card are 8901.")
     _same("The last four of my social are 89012.")
 
 
-def test_pathological_inputs_stay_fast():                                 # m4
+def test_pathological_inputs_stay_fast():
     import time
     for t in ("1" * 50_000, "a" * 50_000, "**Me:** 1234567\n\n" * 20_000, "account 1234567 " * 20_000,
               "**Them:** What's your social?\n\n**Me:** It's 1234567.\n\n" * 10_000):
@@ -1029,7 +1029,7 @@ def test_a_spelled_iban_starts_with_its_country_letters():
 
 
 def test_best_or_good_asks_only_for_a_phone():
-    # ruling on P2b vs P6(i): "best|good" may stand before a PHONE cue noun only
+    # "best" and "good" ask for a phone only
     t = _q("What's the best phone number for the account?", "Sure, 4155550134.")
     assert _answer(t, PHONE) == "**Me:** Sure, [PHONE]."
     _same(t)                                                  # phone off: left, never [ACCOUNT]
@@ -1037,7 +1037,7 @@ def test_best_or_good_asks_only_for_a_phone():
     _same(_q("What's the best account to use?", "Okay. 12345678."))
 
 
-# --- fix round 3 -------------------------------------------------------------------------------
+# --- complete values, prepositions, last four, tidied password answers -------------------------
 
 def test_a_bound_value_stops_when_it_is_complete():
     for t, want in (
