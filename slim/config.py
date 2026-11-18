@@ -43,12 +43,27 @@ def registry() -> dict:
 
 # Classes of personal data masked in a recording's transcript (`capture/pii.py`). `phone` is off
 # unless listed; an explicit empty list turns masking off.
+PII_CLASSES = ("ssn", "card", "account", "password", "email", "address", "phone")
 PII_DEFAULT = ("ssn", "card", "account", "password", "email", "address")
 
 
 def _pii_mask(data: dict) -> tuple[str, ...]:
+    """`pii.mask`, tidied. A name that is no class is an error at load: kept, it would mask
+    nothing while every recording was stamped as checked."""
     mask = (data.get("pii") or {}).get("mask")
-    return PII_DEFAULT if mask is None else tuple(mask)
+    if mask is None:
+        return PII_DEFAULT
+    if isinstance(mask, str):
+        mask = [mask] if mask.strip() else []
+    if not isinstance(mask, list):
+        raise ValueError(f"pii.mask in {PROJECTS_YAML} must be a list of classes, not {mask!r}; "
+                         f"allowed: {', '.join(PII_CLASSES)}")
+    names = tuple(dict.fromkeys(str(m).strip().lower() for m in mask))
+    unknown = [n for n in names if n not in PII_CLASSES]
+    if unknown:
+        raise ValueError(f"pii.mask in {PROJECTS_YAML}: unknown class {', '.join(map(repr, unknown))}; "
+                         f"allowed: {', '.join(PII_CLASSES)}")
+    return names
 
 
 PII_MASK: tuple[str, ...] = _pii_mask(_load())
