@@ -783,7 +783,7 @@ def test_standing_alone():
 
 
 def test_spaced_324_shape_is_masked_without_cue_today():
-    # N3 / R2b, measurement-gated (pii.SSN_SPACED_CUE_FREE): the shape the transcriber gives a
+    # N3 / R2b, measurement-gated (pii_detect.SSN_SPACED_CUE_FREE): the shape the transcriber gives a
     # spoken SSN is also an ordinary three-number list. Masked today; the trade-off is known.
     assert _m("we had 300 25 2000 users").text == "we had [SSN] users"
 
