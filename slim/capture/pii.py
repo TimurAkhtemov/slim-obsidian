@@ -10,7 +10,7 @@ import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
-from .. import config
+from .. import config, llm, trace
 
 _TOKEN = re.compile(r"[A-Za-z]+|\d+|[^A-Za-z\d]+")
 
@@ -285,25 +285,119 @@ def find(text: str, classes: Iterable[str]) -> list[Hit]:
     return sorted(kept, key=lambda h: h.start)
 
 
+CUES = re.compile(
+    r"\b(pass ?words?|pass ?codes?|pins?(?: number)?|door codes?|gate codes?|log ?in is|security codes?)\b",
+    re.I,
+)
+_SENTENCE_END = re.compile(r"[.?!]\s+|\n\s*\n")
+_TURN_START = re.compile(r"\*\*[^*\n]+:\*\*")
+_MAX_SECRET = 64
+_SCHEMA = {
+    "type": "object",
+    "properties": {"secret": {"type": ["string", "null"], "maxLength": _MAX_SECRET}},
+    "required": ["secret"],
+}
+_SYSTEM = (
+    "You find secrets in a transcript excerpt. Return the exact password, passcode, PIN or access "
+    "code as it appears in the text, copied character for character, or null if none is stated."
+)
+
+
+def ask_model(window: str) -> str | None:
+    """The model points at a secret in `window`; it never writes text. Raises on failure."""
+    out, _ = llm.chat_json(
+        [{"role": "system", "content": _SYSTEM}, {"role": "user", "content": window}],
+        _SCHEMA, think=False, num_predict=_MAX_SECRET, timeout=60,
+    )
+    secret = out.get("secret")
+    return secret if isinstance(secret, str) else None
+
+
+def _sentences(text: str) -> list[tuple[int, int]]:
+    cuts = {0, len(text)}
+    cuts.update(m.end() for m in _SENTENCE_END.finditer(text))
+    cuts.update(m.start() for m in _TURN_START.finditer(text))
+    edges = sorted(cuts)
+    return [(a, b) for a, b in zip(edges, edges[1:]) if a < b]
+
+
+def _windows(text: str) -> list[tuple[int, int]]:
+    """The sentence holding each cue plus the next, never crossing a turn start."""
+    sents = _sentences(text)
+    seen: set[int] = set()
+    out = []
+    for m in CUES.finditer(text):
+        i = next(k for k, (a, b) in enumerate(sents) if a <= m.start() < b)
+        if i in seen:
+            continue
+        seen.add(i)
+        end = sents[i][1]
+        if i + 1 < len(sents) and not _TURN_START.match(text, sents[i + 1][0]):
+            end = sents[i + 1][1]
+        out.append((sents[i][0], end))
+    return out
+
+
+def _password_spans(text: str, find_password: Callable[[str], str | None]) -> list[tuple[int, int]]:
+    """Spans of the model-named secret inside each cue window; only verbatim answers count."""
+    spans: set[tuple[int, int]] = set()
+    for a, b in _windows(text):
+        window = text[a:b]
+        secret = find_password(window)
+        if not secret or not 1 <= len(secret) <= _MAX_SECRET or secret not in window:
+            continue
+        pos = window.find(secret)
+        while pos >= 0:
+            spans.add((a + pos, a + pos + len(secret)))
+            pos = window.find(secret, pos + len(secret))
+    kept: list[tuple[int, int]] = []
+    for s in sorted(spans, key=lambda s: (-(s[1] - s[0]), s[0])):
+        if all(s[1] <= k[0] or s[0] >= k[1] for k in kept):
+            kept.append(s)
+    return sorted(kept)
+
+
 def mask(
     text: str,
     classes: Iterable[str] | None = None,
-    find_password: Callable[[str], str | None] | None = None,  # reserved: the password pass
+    find_password: Callable[[str], str | None] | None = None,
 ) -> Masked:
     wanted = config.PII_MASK if classes is None else tuple(classes)
     hits = find(text, wanted)
     counts: dict[str, int] = {}
-    secrets: list[str] = []
+    found: list[tuple[int, str]] = []  # (position in the pattern-masked text, original)
     out: list[str] = []
     pos = 0
+    length = 0
     for h in hits:
         out += [text[pos:h.start], PLACEHOLDER[h.cls]]
+        length += h.start - pos
         pos = h.end
         counts[h.cls] = counts.get(h.cls, 0) + 1
         if h.cls in SECRET:
-            secrets.append(text[h.start:h.end])
+            found.append((length, text[h.start:h.end]))
+        length += len(PLACEHOLDER[h.cls])
     out.append(text[pos:])
-    return Masked("".join(out), counts, secrets)
+    masked = "".join(out)
+    partial = False
+    if "password" in wanted and find_password is not None:
+        try:
+            spans = _password_spans(masked, find_password)
+        except Exception as exc:
+            partial = True
+            trace.record("pii", {"stage": "password", "status": "failed", "error": type(exc).__name__})
+            spans = []
+        if spans:
+            parts, last = [], 0
+            for a, b in spans:
+                parts += [masked[last:a], PLACEHOLDER["password"]]
+                found.append((a, masked[a:b]))
+                last = b
+            parts.append(masked[last:])
+            masked = "".join(parts)
+            counts["password"] = len(spans)
+    secrets = [v for _, v in sorted(found, key=lambda f: f[0])]
+    return Masked(masked, counts, secrets, partial)
 
 
 def frontmatter(m: Masked) -> dict[str, object]:

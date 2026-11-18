@@ -200,3 +200,88 @@ def test_spoken_email_needs_dot_or_cue():
 def test_spaced_account():
     m = pii.mask("account number 1234 5678", classes=pii.DEFAULT_CLASSES)
     assert m.text == "account number [ACCOUNT]"
+
+
+CLS = pii.DEFAULT_CLASSES
+
+
+def test_password_found_is_masked():
+    m = pii.mask("ok the wifi password is hunter2, all lowercase. Next topic.",
+                 classes=CLS, find_password=lambda w: "hunter2")
+    assert "hunter2" not in m.text and "[PASSWORD]" in m.text
+    assert m.counts == {"password": 1} and m.secrets == ["hunter2"]
+
+
+def test_model_only_points_never_writes():
+    m = pii.mask("the door code is four four one two.", classes=CLS,
+                 find_password=lambda w: "9999")
+    assert m.text == "the door code is four four one two." and m.counts == {}
+
+
+def test_no_cue_no_call():
+    calls = []
+    pii.mask("nothing secret here", classes=CLS, find_password=lambda w: calls.append(w))
+    assert calls == []
+
+
+def test_null_answer_masks_nothing():
+    t = "I forgot my password again."
+    assert pii.mask(t, classes=CLS, find_password=lambda w: None).text == t
+
+
+def test_failure_is_partial_not_raised(monkeypatch):
+    recorded = []
+    monkeypatch.setattr(pii.trace, "record", lambda kind, payload: recorded.append(payload))
+
+    def boom(w):
+        raise RuntimeError("server down 4412")
+    m = pii.mask("my PIN is 4412 and ssn 219-09-9999", classes=CLS, find_password=boom)
+    assert m.partial and m.counts == {"ssn": 1}
+    assert recorded == [{"stage": "password", "status": "failed", "error": "RuntimeError"}]
+
+
+def test_no_finder_skips_pass():
+    m = pii.mask("password is hunter2", classes=CLS, find_password=None)
+    assert m.text == "password is hunter2" and not m.partial
+
+
+def test_window_bounds_and_cap():
+    long = "x" * 80
+    m = pii.mask(f"password is {long}", classes=CLS, find_password=lambda w: long)
+    assert m.counts == {}          # over 64 chars: refused
+
+
+def test_answer_not_verbatim_in_window_is_ignored():
+    t = "the password is hunter2 ok."
+    assert pii.mask(t, classes=CLS, find_password=lambda w: "Hunter2").text == t
+
+
+def test_every_occurrence_in_window_masked_and_model_never_sees_patterns():
+    seen = []
+
+    def finder(w):
+        seen.append(w)
+        return "hunter2"
+    m = pii.mask("ssn 219-09-9999. password hunter2, again hunter2.", classes=CLS, find_password=finder)
+    assert m.text.count("[PASSWORD]") == 2 and "hunter2" not in m.text
+    assert all("219-09-9999" not in w for w in seen)
+    assert m.secrets == ["219-09-9999", "hunter2", "hunter2"]
+
+
+def test_window_does_not_cross_turn_start():
+    seen = []
+    pii.mask("**Me:** the password is\n**Them:** secret9 right.", classes=CLS,
+             find_password=lambda w: seen.append(w))
+    assert seen and all("**Them:**" not in w for w in seen)
+
+
+def test_ask_model_sends_bounded_schema_call(monkeypatch):
+    got = {}
+
+    def fake(messages, schema, **kw):
+        got.update(messages=messages, schema=schema, kw=kw)
+        return {"secret": "hunter2"}, {}
+    monkeypatch.setattr(pii.llm, "chat_json", fake)
+    assert pii.ask_model("the password is hunter2") == "hunter2"
+    assert got["kw"]["think"] is False and got["kw"]["num_predict"] == 64
+    assert got["schema"]["properties"]["secret"]["maxLength"] == 64
