@@ -100,7 +100,7 @@ def test_card_needs_luhn():
 
 
 def test_spoken_card_is_covered_whole():
-    t = "card four one one one, one one one one, one one one one, one one one one then five"
+    t = "card four one one one one one one one one one one one one one one one then five"
     m = pii.mask(t, classes=pii.DEFAULT_CLASSES)
     assert m.text == "card [CARD] then five"
 
@@ -164,3 +164,39 @@ def test_frontmatter_shape():
     m = pii.Masked(text="", counts={"ssn": 1, "email": 2}, secrets=[], partial=True)
     assert pii.frontmatter(m) == {"pii_masked": ["email:2", "ssn:1"], "pii_by": "pii-1",
                                   "pii_partial": "true"}
+
+
+def _same(t):
+    assert pii.mask(t, classes=pii.DEFAULT_CLASSES).text == t
+
+
+def test_number_lists_survive():
+    for t in ("we got 606, 968, 105, 924, 326, 32 votes", "prices 40 35 69 67 89 66 61 11 16",
+              "one, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve, thirteen",
+              "we had 300, 25, 2000 users", "rooms 101 22 3045"):
+        _same(t)
+
+
+def test_spaced_ssn_needs_cue():
+    assert pii.mask("my social 219 09 9999 ok", classes=pii.DEFAULT_CLASSES).counts == {"ssn": 1}
+    assert pii.mask("ssn 219, 09, 9999", classes=pii.DEFAULT_CLASSES).counts == {"ssn": 1}
+    _same("rooms 219 09 9999")
+
+
+def test_card_shape_or_cue():
+    assert pii.mask("4111 1111 1111 1111", classes=pii.DEFAULT_CLASSES).counts == {"card": 1}
+    assert pii.mask("my visa is 41 11 1111 1111 1111", classes=pii.DEFAULT_CLASSES).counts == {"card": 1}
+    _same("ref 41 11 1111 1111 1111")
+
+
+def test_spoken_email_needs_dot_or_cue():
+    for t in ("I looked at amazon dot com yesterday", "I met her at Starbucks dot com",
+              "check it out at google dot com"):
+        _same(t)
+    m = pii.mask("email me at jane dot com", classes=pii.DEFAULT_CLASSES)
+    assert m.counts == {"email": 1}
+
+
+def test_spaced_account():
+    m = pii.mask("account number 1234 5678", classes=pii.DEFAULT_CLASSES)
+    assert m.text == "account number [ACCOUNT]"

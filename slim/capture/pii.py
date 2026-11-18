@@ -144,13 +144,17 @@ class Masked:
 _SSN = re.compile(r"\b\d{3}[-\s,]+\d{2}[-\s,]+\d{4}\b")
 _SSN_RUN = re.compile(r"\b\d{9}\b")
 _SSN_CUE = re.compile(r"social|ssn|security number", re.I)
-_DIGIT_RUN = re.compile(r"\d+(?:(?:[ -]|, )\d+)*")
+_DIGIT_RUN = re.compile(r"\d+(?:[ -]\d+)*")
+_DASHED_SSN = re.compile(r"\d{3}-\d{2}-\d{4}")
+_CARD_CUE = re.compile(r"card|visa|mastercard|amex|credit|debit", re.I)
+_CARD_SHAPES = {(4, 4, 4, 4), (4, 4, 4, 4, 3), (4, 6, 5)}
+_EMAIL_CUE = re.compile(r"e-?mail|address|reach|write|send|contact", re.I)
 _IBAN = re.compile(r"\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){2,7}(?:\s?[A-Z0-9]{1,3})?\b")
 _ROUTING = re.compile(r"routing(?:\s+(?:number|no\.?|#))?\s*:?\s*(\d{9})\b", re.I)
-_ACCOUNT = re.compile(r"account\s+(?:number|no\.?|#)\s*:?\s*(\d{6,17})\b", re.I)
+_ACCOUNT = re.compile(r"account\s+(?:number|no\.?|#)\s*:?\s*(\d+(?: \d+)*)\b", re.I)
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 _SPOKEN_EMAIL = re.compile(
-    r"\b\w+(?: dot \w+)* at \w+(?: dot \w+)* dot (?:com|org|net|edu|gov|io|co|us|uk|de|ca|me|info)\b",
+    r"\b(\w+(?: dot \w+)*) at \w+(?: dot \w+)* dot (?:com|org|net|edu|gov|io|co|us|uk|de|ca|me|info)\b",
     re.I,
 )
 _STREET = (
@@ -189,20 +193,29 @@ def _aba_ok(d: str) -> bool:
 
 
 def _cards(norm: str) -> list[tuple[int, int]]:
-    """Luhn-valid runs of 13-19 digits, among windows of a run of digit groups."""
+    """Whole runs of digit groups (single space or dash) that are 13-19 digits and pass Luhn,
+    and are card-shaped or cued: ordinary number lists must not read as a card."""
     spans = []
     for run in _DIGIT_RUN.finditer(norm):
-        groups = [(m.start() + run.start(), m.end() + run.start()) for m in re.finditer(r"\d+", run.group())]
-        for i in range(len(groups)):
-            n = 0
-            for j in range(i, len(groups)):
-                n += groups[j][1] - groups[j][0]
-                if n > 19:
-                    break
-                digits = re.sub(r"\D", "", norm[groups[i][0]:groups[j][1]])
-                if n >= 13 and _luhn(digits):
-                    spans.append((groups[i][0], groups[j][1]))
+        groups = tuple(len(g) for g in re.findall(r"\d+", run.group()))
+        digits = re.sub(r"\D", "", run.group())
+        if not 13 <= len(digits) <= 19 or not _luhn(digits):
+            continue
+        shaped = len(groups) == 1 or groups in _CARD_SHAPES
+        if shaped or _CARD_CUE.search(norm[max(0, run.start() - 60):run.start()]):
+            spans.append((run.start(), run.end()))
     return spans
+
+
+def _account_digits(m: re.Match) -> tuple[int, int] | None:
+    """The cued digit groups of an account number, up to 17 digits, as a span."""
+    end, total = m.start(1), 0
+    for g in re.finditer(r"\d+", m.group(1)):
+        total += len(g.group())
+        if total > 17:
+            break
+        end = m.start(1) + g.end()
+    return (m.start(1), end) if sum(c.isdigit() for c in m.string[m.start(1):end]) >= 6 else None
 
 
 def _detect(norm: str, classes: set[str]) -> list[Hit]:
@@ -214,7 +227,8 @@ def _detect(norm: str, classes: set[str]) -> list[Hit]:
 
     if "ssn" in classes:
         for m in _SSN.finditer(norm):
-            if _ssn_ok(re.sub(r"\D", "", m.group())):
+            cued = _SSN_CUE.search(norm[max(0, m.start() - 60):m.start()])
+            if (cued or _DASHED_SSN.fullmatch(m.group())) and _ssn_ok(re.sub(r"\D", "", m.group())):
                 add("ssn", m.start(), m.end())
         for m in _SSN_RUN.finditer(norm):
             if _SSN_CUE.search(norm[max(0, m.start() - 60):m.start()]) and _ssn_ok(m.group()):
@@ -230,10 +244,16 @@ def _detect(norm: str, classes: set[str]) -> list[Hit]:
             if _aba_ok(m.group(1)):
                 add("account", m.start(1), m.end(1))
         for m in _ACCOUNT.finditer(norm):
-            add("account", m.start(1), m.end(1))
+            span = _account_digits(m)
+            if span:
+                add("account", *span)
     if "email" in classes:
-        for rx in (_EMAIL, _SPOKEN_EMAIL):
-            for m in rx.finditer(norm):
+        for m in _EMAIL.finditer(norm):
+            add("email", m.start(), m.end())
+        for m in _SPOKEN_EMAIL.finditer(norm):
+            local = m.group(1)
+            plain = " dot " in local or re.search(r"[\d_]", local)
+            if plain or _EMAIL_CUE.search(norm[max(0, m.start() - 60):m.start()]):
                 add("email", m.start(), m.end())
     if "address" in classes:
         for m in _ADDRESS.finditer(norm):
