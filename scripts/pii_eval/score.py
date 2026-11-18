@@ -726,10 +726,13 @@ def aggregate_calls(results: list[dict], classes, *, model: bool = True) -> dict
     audio_all = [f for r in results for f in r["audio_failures"]]
     audio_fail = [f for f in audio_all if f.get("cue") != "none"]       # span checks carry no cue
     audio_no_cue = [f for f in audio_all if f.get("cue") == "none"]
-    cued = [i for r in results for i in r["items"]
-            if i["class"] in gate_cls and i["class"] in classes and i["cue"] != "none"]
-    headline = {"text": [sum(bool(i["masked"]) for i in cued), len(cued)],
-                "audio": [sum(i.get("audible") is False for i in cued), len(cued)]}
+    # The two numbers read first, from the same per-item verdicts as the tables: masked in text
+    # = the cued numerators of the transcribed and garbled rows; silent in audio = cued secret
+    # items minus their gated audio failures.
+    cued_all = [(c, q, m) for c, q, m in records + garbled_records if c in gate_cls and q != "none"]
+    loud = [f for f in audio_fail if f["check"] == "retranscribed"]
+    headline = {"text": [sum(m for _, _, m in cued_all), len(cued_all)],
+                "audio": [len(cued_all) - len(loud), len(cued_all)]}
     fulls = [r["full"] for r in results if "full" in r]
     secret_recall, n, shape = _cued_recall(records, gate_cls)
     garbled_recall, _, garbled_shape = _cued_recall(garbled_records, gate_cls)

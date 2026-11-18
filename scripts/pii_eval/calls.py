@@ -90,83 +90,132 @@ def _sha_file(path: Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def detector_sha() -> str:
-    """Results depend on the detector: a change to it rescores (but does not re-speak or
-    re-transcribe) every script."""
-    return _sha_file(REPO / "slim" / "capture" / "pii.py")[:16]
+# Everything that decides what is masked and muted. Any byte of these changing redoes masking,
+# muting and the muted copy's transcription (never `say` or the first transcription).
+PIPELINE_FILES = ("slim/recorder/pipeline.py", "slim/capture/audio.py",
+                  "slim/capture/speakers.py", "slim/capture/transcribe.py")
+LAYOUT = "artifacts-1"
+
+
+def detector_sha(repo: Path = REPO) -> str:
+    """The detector and the pipeline around it: every `slim/capture/pii*.py` (sorted names and
+    contents) and `PIPELINE_FILES`."""
+    h = hashlib.sha256()
+    files = sorted((repo / "slim" / "capture").glob("pii*.py")) + [repo / f for f in PIPELINE_FILES]
+    for f in files:
+        h.update(str(f.relative_to(repo)).encode() + b"\0" + f.read_bytes() + b"\0")
+    return h.hexdigest()[:16]
+
+
+def _measured(levels: dict):
+    """`measure` answered from levels taken when the artifacts were made; an unreadable span
+    raises again, so it fails the check again."""
+    def measure(_path, a, b):
+        got = levels.get(f"{a:.3f}-{b:.3f}")
+        if got is None:
+            raise ValueError(f"no level recorded for {a:.2f}-{b:.2f} s")
+        return got
+    return measure
 
 
 def run_calls(scripts: list[Script], out: Path, *, synth, transcribe, mask_segments, silence,
               measure, classes, model: bool = True, seed: int = 7, detector: str = "",
               full=None, full_n: int = 0, redo: bool = False, log=print) -> dict:
-    """Every script: speak it, transcribe, mask, mute, re-transcribe, score.
+    """Every script: speak it, transcribe, mask, mute, re-transcribe; then SCORE, every run.
 
-    Caches, each keyed by what it depends on: audio by `audio_key` (lines, voices, seed); the
-    first transcription by the audio's sha256; the result by seed, classes, model, detector and
-    audio key. A result whose keys differ is recomputed, reusing the audio and the first
-    transcription; `redo` drops all three."""
+    Only expensive work is cached, each keyed by what it depends on: audio by `audio_key`
+    (lines, voices, seed); the first transcription by the audio's sha256; the artifacts of
+    masking and muting (raw and masked transcripts, spans, the muted copy's transcript, the
+    audio levels, full-mode outputs) by audio key, detector key, classes and model. Scoring
+    is never cached, so a scorer change applies to every script at once. `redo` drops all."""
     out = Path(out)
     for sub in ("audio", "work", "results"):
         (out / sub).mkdir(parents=True, exist_ok=True)
     results = []
     for n, s in enumerate(scripts):
         key = audio_key(s, seed)
-        meta = {"seed": seed, "classes": list(classes), "model": model, "detector": detector,
-                "audio_key": key, "full": bool(full is not None and n < full_n)}
-        res_path = out / "results" / f"{s.sid}.json"
+        want_full = bool(full is not None and n < full_n)
+        art_key = {"layout": LAYOUT, "audio_key": key, "detector": detector,
+                   "classes": list(classes), "model": model, "full": want_full}
         audio_path = out / "audio" / f"{s.sid}.webm"
         manifest_path = audio_path.with_suffix(".json")
+        art_path = out / "work" / f"{s.sid}.artifacts.json"
         if redo:
-            for old in [res_path, audio_path, manifest_path, *(out / "work").glob(f"{s.sid}.*")]:
+            for old in [audio_path, manifest_path, out / "results" / f"{s.sid}.json",
+                        *(out / "work").glob(f"{s.sid}.*")]:
                 old.unlink(missing_ok=True)
             shutil.rmtree(out / "audio" / f"{s.sid}.parts", ignore_errors=True)
-        if res_path.exists():
-            prior = json.loads(res_path.read_text())
-            if prior.get("meta") == meta:
-                results.append(prior)
-                continue
-            log(f"  {s.sid}: cached result is for {_diff(prior.get('meta') or {}, meta)}; rescoring")
+        art = json.loads(art_path.read_text()) if art_path.exists() else {}
         t0 = time.perf_counter()
-        manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
-        if manifest.get("key") != key or not audio_path.exists():
-            manifest = {**synth(s, audio_path), "key": key}
-            manifest_path.write_text(json.dumps(manifest))
-        audio_sha = _sha_file(audio_path)
-        work = out / "work" / f"{s.sid}.webm"
-        if not work.exists() or _sha_file(work) != audio_sha:
-            shutil.copyfile(audio_path, work)
-        first = out / "work" / f"{s.sid}.first.json"
-        cached = json.loads(first.read_text()) if first.exists() else {}
-        if cached.get("audio_sha") == audio_sha:
-            got = cached["got"]
-        else:
-            got = transcribe(work)
-            first.write_text(json.dumps({"audio_sha": audio_sha, "got": got}))
-        raw = str(got.get("text") or "")
-        masked_gots, counts, reasons, seg_spans = mask_segments([dict(got)])
-        masked = str(masked_gots[0].get("text") or "")
-        spans = [tuple(x) for x in seg_spans[0]]
-        silenced = out / "work" / f"{s.sid}.silenced.webm"
-        shutil.copyfile(work, silenced)
-        silence(silenced, spans)
-        heard_after = str(transcribe(silenced).get("text") or "")
-        res = score_call(s, raw, masked, heard_after, classes, spans=spans, reasons=reasons,
-                         manifest=manifest, measure=measure, silenced=silenced, model=model)
-        res["meta"] = meta
-        res["counts"] = counts
-        res["masked"] = masked
-        if meta["full"]:
-            transcribed = {i.token for i in s.items if locate(i.token, raw)}
-            res["full"] = full(s, audio_path, work, transcribed)
-        res["seconds"] = round(time.perf_counter() - t0, 1)
-        (out / "results" / f"{s.sid}.raw.md").write_text(raw)
-        (out / "results" / f"{s.sid}.masked.md").write_text(masked)
-        (out / "results" / f"{s.sid}.silenced.md").write_text(heard_after)
-        res_path.write_text(json.dumps(res, indent=1))
-        log(f"  {s.sid}  {res['seconds']:.1f}s  items={len(s.items)} spans={len(spans)} "
-            f"audio_fail={len(res['audio_failures'])}")
+        if art.get("key") != art_key:
+            if art:
+                log(f"  {s.sid}: artifacts are for {_diff(art.get('key') or {}, art_key)}; redoing "
+                    "masking and muting")
+            art = _make_artifacts(s, out, key, art_key, synth=synth, transcribe=transcribe,
+                                  mask_segments=mask_segments, silence=silence, measure=measure,
+                                  full=full if want_full else None)
+            art_path.write_text(json.dumps(art))
+            log(f"  {s.sid}  {time.perf_counter() - t0:.1f}s  items={len(s.items)} "
+                f"spans={len(art['spans'])}")
+        res = score_call(s, art["raw"], art["masked"], art["heard_after"], classes,
+                         spans=[tuple(x) for x in art["spans"]], reasons=set(art["reasons"]),
+                         manifest=art["manifest"], measure=_measured(art["levels"]),
+                         silenced=out / "work" / f"{s.sid}.silenced.webm", model=model)
+        res["counts"] = art["counts"]
+        res["masked"] = art["masked"]
+        if art.get("full") is not None:
+            transcribed = {i.token for i in s.items if locate(i.token, art["raw"])}
+            res["full"] = full_verdict(s, art["full"], transcribed)
+        (out / "results" / f"{s.sid}.json").write_text(json.dumps(res, indent=1))
         results.append(res)
     return aggregate_calls(results, classes, model=model)
+
+
+def _make_artifacts(s: Script, out: Path, key: str, art_key: dict, *, synth, transcribe,
+                    mask_segments, silence, measure, full) -> dict:
+    """The expensive part of one script, reusing the audio and first transcription when their
+    own keys still match."""
+    audio_path = out / "audio" / f"{s.sid}.webm"
+    manifest_path = audio_path.with_suffix(".json")
+    manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
+    if manifest.get("key") != key or not audio_path.exists():
+        manifest = {**synth(s, audio_path), "key": key}
+        manifest_path.write_text(json.dumps(manifest))
+    audio_sha = _sha_file(audio_path)
+    work = out / "work" / f"{s.sid}.webm"
+    if not work.exists() or _sha_file(work) != audio_sha:
+        shutil.copyfile(audio_path, work)
+    first = out / "work" / f"{s.sid}.first.json"
+    cached = json.loads(first.read_text()) if first.exists() else {}
+    if cached.get("audio_sha") == audio_sha:
+        got = cached["got"]
+    else:
+        got = transcribe(work)
+        first.write_text(json.dumps({"audio_sha": audio_sha, "got": got}))
+    raw = str(got.get("text") or "")
+    masked_gots, counts, reasons, seg_spans = mask_segments([dict(got)])
+    masked = str(masked_gots[0].get("text") or "")
+    spans = [list(x) for x in seg_spans[0]]
+    silenced = out / "work" / f"{s.sid}.silenced.webm"
+    shutil.copyfile(work, silenced)
+    silence(silenced, [tuple(x) for x in spans])
+    heard_after = str(transcribe(silenced).get("text") or "")
+    levels = {}
+    for a, b in [*spans, *((ln["start"], ln["end"]) for ln in manifest.get("lines", []))]:
+        try:
+            levels[f"{a:.3f}-{b:.3f}"] = measure(silenced, a, b)
+        except Exception:                              # noqa: BLE001 - recorded as unreadable
+            levels[f"{a:.3f}-{b:.3f}"] = None
+    (out / "results" / f"{s.sid}.raw.md").write_text(raw)
+    (out / "results" / f"{s.sid}.masked.md").write_text(masked)
+    (out / "results" / f"{s.sid}.silenced.md").write_text(heard_after)
+    art = {"key": art_key, "manifest": manifest, "raw": raw, "masked": masked, "counts": counts,
+           "reasons": sorted(reasons), "spans": spans, "heard_after": heard_after,
+           "levels": levels, "full": None}
+    if full is not None:
+        transcribed = {i.token for i in s.items if locate(i.token, raw)}
+        art["full"] = full(s, audio_path, work, transcribed)
+    return art
 
 
 def _diff(old: dict, new: dict) -> str:
@@ -175,8 +224,9 @@ def _diff(old: dict, new: dict) -> str:
 
 
 def _full_runner(config, *, pipeline=None, measure=rms_dbfs):
-    """`handle_record` on a staged copy, then `check_full`, including the archived audio's
-    level inside the spans the pipeline itself muted (seen through `_silence_segments`)."""
+    """`handle_record` on a staged copy; keeps the note, the result, its index rows and the
+    archived audio's level inside the spans the pipeline itself muted (seen through
+    `_silence_segments`), for `full_verdict` to score."""
     import sqlite3
 
     def run(script: Script, audio_path: Path, work: Path, transcribed: set[str]) -> dict:
@@ -204,8 +254,7 @@ def _full_runner(config, *, pipeline=None, measure=rms_dbfs):
             result = pl.handle_record(audio_rel=rel, notes_md="", declared_type="meeting",
                                       title="", vault=config.VAULT)
         except Exception as exc:                       # noqa: BLE001 - scored as a failure
-            return {"script": script.sid, "ok": False, "title": None, "note": None,
-                    "problems": [f"handle_record raised {type(exc).__name__}"]}
+            return {"error": f"handle_record raised {type(exc).__name__}"}
         finally:
             pl._silence_segments = real
         note_text = (config.VAULT / result["note"]).read_text(encoding="utf-8")
@@ -223,6 +272,15 @@ def _full_runner(config, *, pipeline=None, measure=rms_dbfs):
                 levels.append(([a, b], measure(archived, a, b)))
             except Exception:                          # noqa: BLE001 - unreadable fails the check
                 levels.append(([a, b], None))
-        return check_full(script, note_text, result, fragments, transcribed,
-                          config.PII_MASK, archived_levels=levels)
+        return {"note_text": note_text, "result": result, "fragments": fragments,
+                "levels": levels, "classes": list(config.PII_MASK)}
     return run
+
+
+def full_verdict(script: Script, art: dict, transcribed: set[str]) -> dict:
+    """`check_full` over what `_full_runner` kept: scored on every run, like everything else."""
+    if art.get("error"):
+        return {"script": script.sid, "ok": False, "title": None, "note": None,
+                "problems": [art["error"]]}
+    return check_full(script, art["note_text"], art["result"], art["fragments"], transcribed,
+                      tuple(art["classes"]), archived_levels=[(sp, db) for sp, db in art["levels"]])

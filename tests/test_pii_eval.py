@@ -424,7 +424,8 @@ def test_calls_scores_with_fakes_and_resumes(tmp_path, capsys):
     for s in scripts:
         res = json.loads((tmp_path / "results" / f"{s.sid}.json").read_text())
         assert (tmp_path / "results" / f"{s.sid}.raw.md").read_text().startswith("**")
-        assert "masked" in res and "audio_failures" in res and res["meta"]["detector"] == "d1"
+        art = json.loads((tmp_path / "work" / f"{s.sid}.artifacts.json").read_text())
+        assert "masked" in res and "audio_failures" in res and art["key"]["detector"] == "d1"
     assert report["renderings"] and {"class", "spoken", "heard"} <= set(report["renderings"][0])
     before = studio.transcribed
     ev_calls.run_calls(scripts, tmp_path, **kw)
@@ -432,6 +433,95 @@ def test_calls_scores_with_fakes_and_resumes(tmp_path, capsys):
     ev_calls.run_calls(scripts[:1], tmp_path, redo=True, **kw)
     assert studio.transcribed == before + 2                    # raw + silenced
     assert scripts[0].sid in capsys.readouterr().out
+
+
+class Counting:
+    def __init__(self, fn):
+        self.fn, self.calls = fn, 0
+
+    def __call__(self, *a, **k):
+        self.calls += 1
+        return self.fn(*a, **k)
+
+
+def test_detector_key_covers_every_detector_and_pipeline_file(tmp_path):
+    repo = tmp_path / "repo"
+    names = ["slim/capture/pii.py", "slim/capture/pii_detect.py", "slim/capture/pii_password.py",
+             "slim/capture/pii_normalise.py", *ev_calls.PIPELINE_FILES, "slim/capture/enrich.py"]
+    for n in names:
+        (repo / n).parent.mkdir(parents=True, exist_ok=True)
+        (repo / n).write_text(f"# {n}\n")
+    base = ev_calls.detector_sha(repo)
+    for n in names[:-1]:
+        before = (repo / n).read_text()
+        (repo / n).write_text(before + "x = 1\n")
+        assert ev_calls.detector_sha(repo) != base, n
+        (repo / n).write_text(before)
+    (repo / "slim/capture/enrich.py").write_text("changed\n")          # not the detector
+    assert ev_calls.detector_sha(repo) == base
+    (repo / "slim/capture/pii_new.py").write_text("")                   # a new detector module
+    assert ev_calls.detector_sha(repo) != base
+
+
+def test_a_detector_change_redoes_masking_not_speech(tmp_path):
+    scripts = SCRIPTS[:3]
+    studio = FakeStudio()
+    masker = Counting(FakeMasker(scripts))
+    kw = {**_kw(studio, masker), "synth": Counting(studio.synth)}
+    ev_calls.run_calls(scripts, tmp_path, **kw)
+    synths, transcribed, masks = kw["synth"].calls, studio.transcribed, masker.calls
+    ev_calls.run_calls(scripts, tmp_path, **{**kw, "detector": "d2"})
+    assert kw["synth"].calls == synths and masker.calls == masks + 3
+    assert studio.transcribed == transcribed + 3                        # the muted copies only
+
+
+def test_a_scorer_change_rescores_without_touching_artifacts(tmp_path, monkeypatch):
+    scripts = SCRIPTS[:3]
+    studio = FakeStudio()
+    masker = Counting(FakeMasker(scripts))
+    kw = _kw(studio, masker)
+    ev_calls.run_calls(scripts, tmp_path, **kw)
+    arts = {p: p.stat().st_mtime_ns for p in (tmp_path / "work").glob("*.artifacts.json")}
+    transcribed, masks = studio.transcribed, masker.calls
+    real = ev_calls.score_call
+    monkeypatch.setattr(ev_calls, "score_call", lambda *a, **k: {**real(*a, **k), "rescored": True})
+    ev_calls.run_calls(scripts, tmp_path, **kw)
+    res = json.loads((tmp_path / "results" / f"{scripts[0].sid}.json").read_text())
+    assert res["rescored"] and studio.transcribed == transcribed and masker.calls == masks
+    assert {p: p.stat().st_mtime_ns for p in (tmp_path / "work").glob("*.artifacts.json")} == arts
+
+
+def test_an_old_layout_result_is_recomputed(tmp_path):
+    s = SCRIPTS[0]
+    (tmp_path / "results").mkdir()
+    (tmp_path / "results" / f"{s.sid}.json").write_text(json.dumps(
+        {"script": s.sid, "items": [], "false_positives": [], "audio_failures": [],
+         "renderings": [], "meta": {"seed": 7, "classes": list(ev_gen.CLASSES), "model": True,
+                                    "detector": "d1", "audio_key": ev_calls.audio_key(s, 7),
+                                    "full": False}}))
+    studio = FakeStudio()
+    masker = Counting(FakeMasker([s]))
+    report = ev_calls.run_calls([s], tmp_path, **_kw(studio, masker))
+    assert masker.calls == 1 and studio.transcribed == 2
+    assert report["by_class"]["ssn"]["n"] + report["by_class"]["card"]["n"] >= 1
+    (tmp_path / "work" / f"{s.sid}.artifacts.json").write_text(json.dumps({"key": {"old": 1}}))
+    ev_calls.run_calls([s], tmp_path, **_kw(studio, masker))
+    assert masker.calls == 2
+
+
+def test_headline_comes_from_the_same_verdicts_as_the_tables(tmp_path):
+    scripts = SCRIPTS[:10]
+    s0 = next(s for s in scripts if any(i.cls == "ssn" and i.cue != "none" for i in s.items))
+    garble = next(i for i in s0.items if i.cls == "ssn" and i.cue != "none")
+    studio = FakeStudio(render={garble.spoken: "two one niner"})
+    report = ev_calls.run_calls(scripts, tmp_path, **_kw(studio, FakeMasker(scripts, "short_mute")))
+    gate = report["gate"]["secret_classes"]
+    items = [i for f in sorted((tmp_path / "results").glob("s*.json")) if f.name.count(".") == 1
+             for i in json.loads(f.read_text())["items"] if i["class"] in gate and i["cue"] != "none"]
+    loud = [f for f in report["audio_failures"] if f["check"] == "retranscribed"]
+    assert report["headline"]["text"] == [sum(bool(i["masked"]) for i in items), len(items)]
+    assert report["headline"]["audio"] == [len(items) - len(loud), len(items)]
+    assert loud and report["headline"]["audio"][0] < len(items)
 
 
 def test_calls_partial_mask_is_a_miss(tmp_path):
@@ -942,11 +1032,13 @@ def test_check_full_and_full_runner_with_fakes(tmp_path):
     work.write_text(audio.read_text())
     tokens = {i.token for i in s.items}
 
-    ok = ev_calls._full_runner(config, pipeline=make_pipeline(True, False), measure=studio.measure)(
-        s, audio, work, tokens)
+    ok = ev_calls.full_verdict(s, ev_calls._full_runner(
+        config, pipeline=make_pipeline(True, False), measure=studio.measure)(s, audio, work, tokens),
+        tokens)
     assert ok["ok"], ok["problems"]
-    bad = ev_calls._full_runner(config, pipeline=make_pipeline(False, True), measure=studio.measure)(
-        s, audio, work, tokens)
+    bad = ev_calls.full_verdict(s, ev_calls._full_runner(
+        config, pipeline=make_pipeline(False, True), measure=studio.measure)(s, audio, work, tokens),
+        tokens)
     assert not bad["ok"]
     assert any("title carries card" in p for p in bad["problems"])
     assert any("archived audio" in p for p in bad["problems"])
