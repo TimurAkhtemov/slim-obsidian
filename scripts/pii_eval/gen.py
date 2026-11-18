@@ -291,6 +291,51 @@ DISTRACTORS = {
 }
 
 SSN_TRIPLE = "ssn_triple"
+# 3-2-4 numbers that are not SSNs: masking their digits is a known trade-off, reported apart.
+TRIPLE_KINDS = ("triple", SSN_TRIPLE)
+# Lines whose number is phone-shaped: with `phone` masked they would be items, not distractors.
+PHONE_KINDS = ("social_office", "account_call", "account_fine", "card_order")
+
+
+def _luhn_ok(d: str) -> bool:
+    total = 0
+    for i, ch in enumerate(reversed(d)):
+        n = int(ch)
+        if i % 2:
+            n = n * 2 - 9 if n > 4 else n * 2
+        total += n
+    return total % 10 == 0
+
+
+def _aba_ok(d: str) -> bool:
+    n = [int(c) for c in d]
+    return (3 * (n[0] + n[3] + n[6]) + 7 * (n[1] + n[4] + n[7]) + (n[2] + n[5] + n[8])) % 10 == 0
+
+
+def _ssn_ok(d: str) -> bool:
+    return d[:3] not in ("000", "666") and d[0] != "9" and d[3:5] != "00" and d[5:] != "0000"
+
+
+_GROUP_RUN = re.compile(r"\d+(?:[ ,\-]+\d+)*")
+
+
+def secret_shaped(line: str) -> str | None:
+    """Why a distractor line holds a value our own validators would accept, or None. Every
+    stretch of consecutive digit groups is checked: 12-19 digits passing Luhn (a card, or a
+    4x4 list read as one), 9 digits passing the ABA check (routing), groups 3-2-4 forming a
+    valid SSN."""
+    for run in _GROUP_RUN.finditer(line):
+        groups = re.findall(r"\d+", run.group())
+        for i in range(len(groups)):
+            for j in range(i + 1, len(groups) + 1):
+                d = "".join(groups[i:j])
+                if 12 <= len(d) <= 19 and _luhn_ok(d):
+                    return "luhn"
+                if len(d) == 9 and _aba_ok(d):
+                    return "aba"
+                if tuple(len(g) for g in groups[i:j]) == (3, 2, 4) and _ssn_ok(d):
+                    return "ssn"
+    return None
 
 
 def _digits(r, n: int) -> str:
@@ -409,7 +454,7 @@ def _n_items(k: int, rng) -> int:
     return 0 if k % 6 == 5 else rng.randint(1, 3)
 
 
-def _script(k: int, seed: int) -> Script:
+def _script(k: int, seed: int, phone: bool = False) -> Script:
     rng = random.Random(f"{seed}:{k}")
     roots = list(ROOTS)
     n_items = _n_items(k, rng)
@@ -448,8 +493,13 @@ def _script(k: int, seed: int) -> Script:
     names = sorted(CUE_FAMILIES)
     picks = [names[k % len(names)]] + ([names[(k + 3) % len(names)]] if k % 2 else [])
     for f, fam in enumerate(picks):
-        kind, make = CUE_FAMILIES[fam][(k // len(names) + f) % len(CUE_FAMILIES[fam])]
+        lines = [ln for ln in CUE_FAMILIES[fam] if not (phone and ln[0] in PHONE_KINDS)]
+        kind, make = lines[(k // len(names) + f) % len(lines)]
+        # Redrawn until no number in it is a valid secret: a correct detector must be free to
+        # mask every valid one. The 3-2-4 trade-off line keeps its shape.
         line = make(rng)
+        while kind != SSN_TRIPLE and secret_shaped(line):
+            line = make(rng)
         d = Distractor(kind, line)
         distractors.append(d)
         blocks.append([(rng.choice(("Me", "Them")), line, (0, len(line), d))])
@@ -483,6 +533,7 @@ def _script(k: int, seed: int) -> Script:
     return Script(f"s{k + 1:02d}", [(s, t) for s, t, _ in lines], items, distractors, "\n\n".join(parts))
 
 
-def generate(n: int = 30, seed: int = 7) -> list[Script]:
-    """`n` call scripts, deterministic in `seed`; script k does not depend on `n`."""
-    return [_script(k, seed) for k in range(n)]
+def generate(n: int = 30, seed: int = 7, phone: bool = False) -> list[Script]:
+    """`n` call scripts, deterministic in `seed` (and `phone`); script k does not depend on `n`.
+    `phone`: phone numbers are masked, so no distractor line carries a phone-shaped number."""
+    return [_script(k, seed, phone) for k in range(n)]

@@ -71,7 +71,7 @@ def main(argv=None) -> int:
         _write(out, "public", report)
         return 0
 
-    scripts = generate(a.n, a.seed)
+    scripts = generate(a.n, a.seed, phone="phone" in classes)
     if a.only:
         scripts = [s for s in scripts if s.sid in set(a.only)]
     (out / "scripts.json").write_text(json.dumps([asdict(s) for s in scripts], indent=1))

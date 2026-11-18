@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import stat
 import sys
 from pathlib import Path
 
@@ -95,9 +96,13 @@ def guard(out, *, home: Path | None = None, discovered=discovered_vault, env=Non
                              f"(non-empty, no {MARKER} marker)")
         for root, dirs, files in os.walk(out, followlinks=False):
             for name in dirs + files:
-                if (Path(root) / name).is_symlink():
-                    rel = (Path(root) / name).relative_to(out)
-                    raise SystemExit(f"refusing --out: it contains a symlink ({rel})")
+                path = Path(root) / name
+                if path.is_symlink():
+                    raise SystemExit(f"refusing --out: it contains a symlink ({path.relative_to(out)})")
+                st = path.lstat()
+                if stat.S_ISREG(st.st_mode) and st.st_nlink > 1:
+                    raise SystemExit("refusing --out: it contains a hard-linked file "
+                                     f"({path.relative_to(out)})")
     projects = targets["--out/projects.yaml"]
     if projects.exists() and not projects.read_text(errors="replace").startswith(PROJECTS_HEADER):
         raise SystemExit("refusing --out: its projects.yaml was not written by pii_eval")

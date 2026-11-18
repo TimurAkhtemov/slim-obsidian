@@ -180,7 +180,7 @@ def test_score_text_perfect_identity_and_damage():
     assert {"script", "class", "cue", "context"} <= set(nothing["misses"][0])
 
     s = SCRIPTS[0]
-    d = s.distractors[0]
+    d = next(d for d in s.distractors if d.kind not in ev_gen.TRIPLE_KINDS)
     damaged = {x.sid: _perfect(x) for x in SCRIPTS}
     damaged[s.sid] = _mask_spans(s.transcript, [(i.start, i.end, i.cls) for i in s.items]
                                  + [(d.start, d.end, "card")])
@@ -688,10 +688,106 @@ def test_calls_ssn_shaped_triple_damage_is_reported_not_gated(tmp_path):
     raw = "**Me:** We had 123 45 6789 users.\n\n**Them:** My social is 219-09-9999."
     masked = "**Me:** We had [SSN] users.\n\n**Them:** My social is [SSN]."
     res = _call(s, raw, masked, masked, tmp_path)
-    assert res["false_positives"][0]["distractor"] == ev_gen.SSN_TRIPLE
+    assert not res["false_positives"] and res["ssn_shaped_triples"] == 1
     got = ev_score.aggregate_calls([res], ev_gen.CLASSES)
     assert got["ssn_shaped_triples"] == 1 and got["gate"]["false_positives"] == 0
     assert got["gate"]["ok"], got["gate"]
+
+
+@pytest.mark.parametrize("raw_tail, must_leave", [
+    ("Sure. 219 09 998. I paid 99.", ["Ipaid99"]),          # past a sentence end
+    # "21 99" is under half the value's length: nothing here reads as it, nothing is excused
+    ("Sure. Room 21 99 is mine.", ["Room", "2199", "ismine"]),
+])
+def test_garbled_excuse_stops_at_the_sentence_and_the_stretch(tmp_path, raw_tail, must_leave):
+    s = _mini([("Me", "Hi."), ("Them", f"Sure. {SSN_219[3]}.")], SSN_219)
+    raw = f"**Me:** Hi.\n\n**Them:** {raw_tail}"
+    masked = "**Me:** Hi.\n\n**Them:** Sure. [SSN]."
+    res = _call(s, raw, masked, masked, tmp_path)
+    assert res["false_positives"], res
+    assert all(m in res["false_positives"][0]["leftover"] for m in must_leave)
+
+
+def test_garbled_excuse_never_crosses_a_turn_into_a_distractor(tmp_path):
+    s = _mini([("Them", f"Sure. {SSN_219[3]}."), ("Me", "It was only four ninety nine.")], SSN_219,
+              distractor=("price", "four ninety nine"))
+    raw = "**Them:** Sure. 219 09 99.\n\n**Me:** It was only 4.99."
+    masked = "**Them:** Sure. [SSN]."
+    res = _call(s, raw, masked, masked, tmp_path)
+    fp = res["false_positives"][0]
+    assert "price" in fp["distractors"] and "Itwasonly499" in fp["leftover"]
+    report = ev_score.aggregate_calls([res], ev_gen.CLASSES)
+    assert report["distractors_damaged"] >= 1 and not report["gate"]["ok"]
+
+
+TRIPLE_LINE = "We had 123 45 6789 users."
+
+
+def test_text_triple_exemption_is_its_nine_digits_only():
+    lines = [("Them", f"My social is {SSN_219[3]}."), ("Me", TRIPLE_LINE), ("Them", "Great, talk soon.")]
+    s = _mini(lines, SSN_219, distractor=(ev_gen.SSN_TRIPLE, TRIPLE_LINE))
+    t, item = s.transcript, s.items[0]
+    num = t.index("123 45 6789")
+    cases = {
+        "digits only": [(item.start, item.end, "ssn"), (num, num + 11, "ssn")],
+        "into the next turn": [(item.start, item.end, "ssn"), (num, len(t) - 1, "ssn")],
+        "from the item through it": [(item.start, len(t) - 1, "ssn")],
+    }
+    got = {k: ev_score.score_text([s], {s.sid: _mask_spans(t, v)}, ev_gen.CLASSES, model=True)
+           for k, v in cases.items()}
+    assert got["digits only"]["gate"]["ok"] and got["digits only"]["ssn_shaped_triples"] == 1
+    for k in ("into the next turn", "from the item through it"):
+        assert not got[k]["gate"]["ok"] and got[k]["false_positives"], k
+        assert "talk" in got[k]["false_positives"][0]["leftover"], k
+    assert ev_gen.SSN_TRIPLE in got["from the item through it"]["false_positives"][0]["distractors"]
+
+
+def test_calls_one_mask_over_two_distractors_damages_both(tmp_path):
+    counts = "The counts were 1234, 5678, 2468, 1357."
+    s = _mini([("Them", f"My social is {SSN_219[3]}."), ("Me", TRIPLE_LINE), ("Them", counts)],
+              SSN_219, distractor=(ev_gen.SSN_TRIPLE, TRIPLE_LINE))
+    at = s.transcript.index(counts)
+    s.distractors.append(ev_gen.Distractor("plain_counts", counts, at, at + len(counts)))
+    raw = f"**Them:** My social is 219-09-9999.\n\n**Me:** {TRIPLE_LINE}\n\n**Them:** {counts}"
+    masked = "**Them:** My social is [SSN].\n\n**Me:** We had [SSN]."
+    res = _call(s, raw, masked, masked, tmp_path)
+    fp = res["false_positives"][0]
+    assert set(fp["distractors"]) == {ev_gen.SSN_TRIPLE, "plain_counts"}
+    report = ev_score.aggregate_calls([res], ev_gen.CLASSES)
+    assert report["distractors_damaged"] == 2 and not report["gate"]["ok"]
+
+
+def _windows(text):
+    """Every stretch of consecutive digit groups in the normalised text, as (groups, digits)."""
+    norm = pii.normalise(text)[0]
+    for run in re.finditer(r"\d+(?:[ ,\-]+\d+)*", norm):
+        groups = re.findall(r"\d+", run.group())
+        for i in range(len(groups)):
+            for j in range(i + 1, len(groups) + 1):
+                yield tuple(len(g) for g in groups[i:j]), "".join(groups[i:j])
+
+
+def test_no_distractor_is_a_valid_secret_over_200_seeds():
+    bad = []
+    for seed in range(200):
+        for s in ev_gen.generate(30, seed=seed):
+            for d in s.distractors:
+                if d.kind in ev_gen.TRIPLE_KINDS:
+                    continue
+                for shape, digits in _windows(d.text):
+                    if (12 <= len(digits) <= 19 and pii._luhn(digits)
+                            or len(digits) == 9 and pii._aba_ok(digits)
+                            or shape == (3, 2, 4) and pii._ssn_ok(digits)):
+                        bad.append((seed, s.sid, d.kind, d.text))
+    assert not bad, bad[:5]
+
+
+def test_with_phone_masked_no_distractor_is_phone_shaped():
+    bad = [(seed, d.kind, d.text) for seed in range(200)
+           for s in ev_gen.generate(30, seed=seed, phone=True) for d in s.distractors
+           if pii._PHONE.search(pii.normalise(d.text)[0])]
+    assert not bad, bad[:5]
+    assert ev_gen.generate(30, seed=7, phone=True) == ev_gen.generate(30, seed=7, phone=True)
 
 
 def test_check_full_and_full_runner_with_fakes(tmp_path):
@@ -1039,6 +1135,17 @@ def test_guard_refuses_a_symlink_anywhere_below_out(tmp_path, planted):
         _guard(out, tmp_path)
     assert _snapshot(tmp_path) == before
     assert (target / "Notes" / "note.md").read_text() == "theirs\n"
+
+
+def test_guard_refuses_a_hard_link_below_out(tmp_path):
+    import os
+    out, target = _plant(tmp_path)
+    note = target / "Notes" / "note.md"
+    os.link(note, out / "scripts.json")
+    before = _snapshot(tmp_path)
+    with pytest.raises(SystemExit, match="hard-linked"):
+        _guard(out, tmp_path)
+    assert _snapshot(tmp_path) == before and note.read_bytes() == b"theirs\n"
 
 
 @pytest.mark.parametrize("where", ["home", "home_parent", "desktop", "documents", "no_parent",

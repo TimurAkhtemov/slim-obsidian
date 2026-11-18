@@ -9,7 +9,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from .gen import CUES, Item, SECRET, SSN_TRIPLE, Script
+from .gen import CUES, Item, SECRET, TRIPLE_KINDS, Script
 
 
 PLACEHOLDERS = re.compile(r"\[(SSN|CARD|ACCOUNT|PASSWORD|EMAIL|ADDRESS|PHONE)\]")
@@ -105,8 +105,8 @@ def _ratio(d):
 
 GATE_RULE = (f"gate rule: secret-class recall >= {RECALL_GATE} over CUED items (same_sentence, "
              "previous_turn, after_value); items with no cue are shape-only, reported, not gated; "
-             "zero false positives, except damage to ssn-shaped triples (a known trade-off), "
-             "reported apart and not gated")
+             "zero false positives, every letter and digit counted, except the digits of an "
+             "ssn-shaped triple itself (a known trade-off), reported apart and not gated")
 
 
 def _cued_recall(records, gate_cls) -> tuple[float | None, int, dict]:
@@ -118,19 +118,32 @@ def _cued_recall(records, gate_cls) -> tuple[float | None, int, dict]:
     return (sum(cued) / len(cued) if cued else None), len(cued), row
 
 
-def _tradeoff(fp: dict) -> bool:
-    """A false positive whose only damage is to an ssn-shaped triple: reported, not gated."""
-    kinds = fp.get("distractors") or ([fp["distractor"]] if fp.get("distractor") else [])
-    return bool(kinds) and all(k == SSN_TRIPLE for k in kinds)
+def _triple_positions(text: str, dspans) -> set[int]:
+    """The characters of every ssn-shaped triple's own number: the digits of an `ssn_triple`
+    line, every letter and digit of a spoken `triple` phrase (which is only the number)."""
+    out = set()
+    for kind, x, y in dspans:
+        if kind in TRIPLE_KINDS:
+            out |= {k for k in range(x, y)
+                    if text[k].isdigit() or (kind != "ssn_triple" and text[k].isalnum())}
+    return out
+
+
+def _damage(text: str, a: int, b: int, own, excused, dspans):
+    """Per character: the letters and digits of text[a:b] that no item's own span, no excused
+    garbled value and no triple's own number explains (the false positive), every distractor
+    those touch, and the triples whose own number was masked (reported, not gated)."""
+    tri = _triple_positions(text, dspans)
+    left = [k for k in range(a, b) if text[k].isalnum() and k not in tri
+            and not any(x <= k < y for x, y in [*own, *excused])]
+    kinds = [kind for kind, x, y in dspans if any(x <= k < y for k in left)]
+    masked_triples = [(kind, x) for kind, x, y in dspans if kind in TRIPLE_KINDS
+                      and any(k in tri and x <= k < y for k in range(a, b))]
+    return left, kinds, masked_triples
 
 
 def _gate_classes(classes, model: bool) -> list[str]:
     return [c for c in SECRET if c in classes and (model or c != "password")]
-
-
-def _leftover(a: int, b: int, text: str, own) -> list[int]:
-    """Positions of letters and digits in text[a:b] outside every `own` span."""
-    return [k for k in range(a, b) if text[k].isalnum() and not any(x <= k < y for x, y in own)]
 
 
 def _segments_outside(text: str, spans) -> list[str]:
@@ -210,7 +223,8 @@ def score_text(scripts: list[Script], masked: dict[str, str], classes, *, model:
     classes = tuple(classes)
     by_class, by_cue = _empty(classes), _empty(CUES)
     misses, fps, placeholders, expected = [], [], Counter(), Counter()
-    damaged = triples = 0
+    damaged = 0
+    triples: set = set()
     records = []
     for s in scripts:
         t, m = s.transcript, masked[s.sid]
@@ -233,19 +247,20 @@ def score_text(scripts: list[Script], masked: dict[str, str], classes, *, model:
         own_all = [(i.start, i.end) for i in scored]
         for a, b, cls in reps3:
             own = [(x, y) for x, y in own_all if a < y and x < b]
-            left = _leftover(a, b, t, own)
+            dspans = [(d.kind, d.start, d.end) for d in s.distractors]
+            left, hit, tri = _damage(t, a, b, own, [], dspans)
+            triples |= {(s.sid, *x) for x in tri}
             if not left:
                 continue
-            hit = [d.kind for d in s.distractors if any(d.start <= k < d.end for k in left)]
-            damaged += sum(k != SSN_TRIPLE for k in hit)
-            triples += sum(k == SSN_TRIPLE for k in hit)
+            damaged += len(hit)
             fps.append({"script": s.sid, "text": t[a:b], "context": _line_at(t, a),
                         "kind": "over-wide mask" if own else "false positive",
                         "leftover": "".join(t[k] for k in left),
                         "distractor": hit[0] if hit else None, "distractors": hit, "class": cls})
     gate_cls = _gate_classes(classes, model)
     secret_recall, n, shape = _cued_recall(records, gate_cls)
-    gated = [f for f in fps if not _tradeoff(f)]
+    gated = fps
+    triples = len(triples)
     total = sum(d["n"] for d in by_class.values())
     no_evidence = [] if n else [f"no cued secret-class item ({','.join(gate_cls)}) in these scripts"]
     return {
@@ -281,7 +296,7 @@ def _gate_line(g: dict, extra: str = "") -> str:
     return (f"gate: {'ok' if g['ok'] else 'FAIL'} — cued secret recall {rec} over "
             f"{','.join(g['secret_classes'])} (needs >= {RECALL_GATE}), distractors damaged "
             f"{g['distractors_damaged']}, false positives {g['false_positives']} (need 0; "
-            f"ssn-shaped triples damaged {g['ssn_shaped_triples']}, not gated){extra}{why}")
+            f"ssn-shaped triples masked {g['ssn_shaped_triples']}, not gated){extra}{why}")
 
 
 def print_text_report(r: dict) -> None:
@@ -295,7 +310,8 @@ def print_text_report(r: dict) -> None:
     ph = ", ".join(f"[{c.upper()}] {d['found']}/{d['expected']}" for c, d in r["placeholders"].items())
     print(f"placeholders found/expected: {ph}")
     print(f"distractors damaged: {r['distractors_damaged']} of {r['distractors']}")
-    print(f"ssn-shaped triples damaged: {r['ssn_shaped_triples']} (known trade-off, not gated)")
+    print(f"ssn-shaped triples masked (their own digits only): {r['ssn_shaped_triples']} "
+          "(known trade-off, not gated)")
     for m in r["misses"]:
         print(f"  MISS {m['script']} {m['class']}/{m['kind']} cue={m['cue']} style={m['style']} "
               f"({m['result']}): {m['context']}")
@@ -379,40 +395,44 @@ def rendered_span(item: Item, raw: str, span: tuple[int, int]) -> tuple[int, int
     return min(a, words[lo][0]), max(b, words[hi][1])
 
 
+_PIECE_CUT = re.compile(r"(?<=[.?!])\s|\n\n|\*\*[^*\n]+:\*\*")
+
+
 def _aligned(raw: str, a: int, b: int, forms: list[str]) -> tuple[int, int] | None:
-    """The part of raw[a:b] that lines up with one of `forms` (a value Parakeet garbled), when it
-    reads as that value (>= 0.6): (start, end) in raw, else None. Only that part is excused."""
-    sq, starts, ends = _squash_map(raw[a:b])
+    """The one contiguous run of words in raw[a:b] that best reads as a value Parakeet garbled
+    (>= 0.6 against a form, at least half its length), never crossing a sentence end or a turn
+    start: (start, end) in raw, else None. Only that run is excused."""
+    cuts = sorted({a, b, *(m.start() + a for m in _PIECE_CUT.finditer(raw[a:b])),
+                   *(m.end() + a for m in _PIECE_CUT.finditer(raw[a:b]))})
     best = None
-    for f in forms:
-        blocks = [bl for bl in difflib.SequenceMatcher(None, sq, f, autojunk=False)
-                  .get_matching_blocks() if bl.size >= 2]
-        if not blocks:
-            continue
-        lo, hi = blocks[0].a, blocks[-1].a + blocks[-1].size
-        r = difflib.SequenceMatcher(None, sq[lo:hi], f, autojunk=False).ratio()
-        if r >= 0.6 and (best is None or r > best[0]):
-            best = (r, lo, hi)
-    if best is None:
-        return None
-    _, lo, hi = best
-    return a + starts[lo], a + max(ends[lo:hi])
+    for x, y in zip(cuts, cuts[1:]):
+        words = [(m.start() + x, m.end() + x) for m in re.finditer(r"\S+", raw[x:y])
+                 if "**" not in m.group()]
+        for i in range(len(words)):
+            for j in range(i, min(i + 12, len(words))):
+                ws, we = words[i][0], words[j][1]
+                sq = squash(raw[ws:we])
+                for f in forms:
+                    if not sq or len(sq) < len(f) / 2:
+                        continue
+                    r = difflib.SequenceMatcher(None, sq, f, autojunk=False).ratio()
+                    if r >= 0.6 and (best is None or (r, we - ws) > (best[0], best[2] - best[1])):
+                        best = (r, ws, we)
+    return (best[1], best[2]) if best else None
 
 
-def _distractor_at(script: Script, raw: str, left: list[int]) -> str | None:
-    """The distractor a false positive's unexplained letters and digits fall on, if any: where
-    Parakeet wrote it (any spelling squash reads alike), else by resemblance (>= 0.6)."""
-    if not left:
-        return None
-    for d in script.distractors:
-        for x, y in locate(d.text, raw):
-            if any(x <= k < y for k in left):
-                return d.kind
+def _distractor_spans(script: Script, raw: str) -> list[tuple[str, int, int]]:
+    """Where Parakeet wrote each distractor (any spelling squash reads alike)."""
+    return [(d.kind, x, y) for d in script.distractors for x, y in locate(d.text, raw)]
+
+
+def _resembles(script: Script, raw: str, left: list[int]) -> list[str]:
+    """For damage on no located distractor: the distractor it resembles (>= 0.6), if any."""
     text = squash("".join(raw[k] for k in left))
     near = [(difflib.SequenceMatcher(None, text, squash(d.text)).ratio(), d.kind)
             for d in script.distractors]
     best = max(near, default=(0.0, None))
-    return best[1] if best[0] >= 0.6 else None
+    return [best[1]] if best[0] >= 0.6 else []
 
 
 def score_call(script: Script, raw: str, masked: str, heard_after: str, classes, *,
@@ -462,26 +482,26 @@ def score_call(script: Script, raw: str, masked: str, heard_after: str, classes,
                 audio_fail.append({"script": script.sid, "check": "retranscribed", "class": i.cls,
                                    "runs": leaked[:5], "heard": _heard(i, line, heard_after)[0]})
     own_all = [sp for i in script.items if i.cls in classes for sp in rendered[id(i)]]
+    dspans = _distractor_spans(script, raw)
+    forms = [squash(v) for i in script.items if i.cls in classes for v in (i.spoken, i.written)]
+    triples: set = set()
     for a, b, cls in reps3:
         own = [(x, y) for x, y in own_all if a < y and x < b]
-        left = _leftover(a, b, raw, own)
+        part = None if own else _aligned(raw, a, b, forms)
+        excused = [part] if part else []
+        left, hit, tri = _damage(raw, a, b, own, excused, dspans)
+        triples |= set(tri)
+        if part:
+            garbled.append({"script": script.sid, "class": cls, "text": raw[part[0]:part[1]],
+                            "context": _line_at(raw, a)})
         if not left:
             continue
-        entry = {"script": script.sid, "class": cls, "text": raw[a:b], "context": _line_at(raw, a),
-                 "leftover": "".join(raw[k] for k in left),
-                 "kind": "over-wide mask" if own else "false positive"}
-        if not own:
-            forms = [squash(v) for i in script.items if i.cls in classes for v in (i.spoken, i.written)]
-            part = _aligned(raw, a, b, forms)
-            if part:
-                garbled.append({**entry, "text": raw[part[0]:part[1]]})
-                left = _leftover(a, b, raw, [part])
-                if not left:
-                    continue
-                entry = {**entry, "leftover": "".join(raw[k] for k in left),
-                         "kind": "beyond a garbled value"}
-        entry["distractor"] = _distractor_at(script, raw, left)
-        fps.append(entry)
+        hit = hit or _resembles(script, raw, left)
+        fps.append({"script": script.sid, "class": cls, "text": raw[a:b],
+                    "context": _line_at(raw, a), "leftover": "".join(raw[k] for k in left),
+                    "kind": "over-wide mask" if own else "beyond a garbled value" if part
+                    else "false positive",
+                    "distractor": hit[0] if hit else None, "distractors": hit})
 
     def level(a, b):
         try:
@@ -509,7 +529,7 @@ def score_call(script: Script, raw: str, masked: str, heard_after: str, classes,
                            "detail": "a secret could not be placed in token times"})
     return {"script": script.sid, "items": items, "false_positives": fps, "garbled_masked": garbled,
             "audio_failures": audio_fail, "renderings": renderings, "spans": [list(x) for x in spans],
-            "reasons": sorted(reasons)}
+            "reasons": sorted(reasons), "ssn_shaped_triples": len(triples)}
 
 
 def check_full(script: Script, note_text: str, result: dict, fragments: list[str],
@@ -593,9 +613,9 @@ def aggregate_calls(results: list[dict], classes, *, model: bool = True) -> dict
                 misses.append({"script": res["script"], **{k: i[k] for k in
                                ("class", "kind", "style", "cue", "spoken", "heard", "result")}})
     fps = [f for r in results for f in r["false_positives"]]
-    triples = [f for f in fps if _tradeoff(f)]
-    gated = [f for f in fps if not _tradeoff(f)]
-    damaged = [f for f in gated if f.get("distractor")]
+    triples = sum(r.get("ssn_shaped_triples", 0) for r in results)
+    gated = fps
+    damaged = [k for f in fps for k in f.get("distractors") or []]
     audio_fail = [f for r in results for f in r["audio_failures"]]
     fulls = [r["full"] for r in results if "full" in r]
     secret_recall, n, shape = _cued_recall(records, gate_cls)
@@ -616,7 +636,7 @@ def aggregate_calls(results: list[dict], classes, *, model: bool = True) -> dict
         "garbled": {c: {**d, "recall": _ratio(d)} for c, d in garbled_rows.items()},
         "not_transcribed": not_transcribed, "misses": misses, "remnants": remnants,
         "false_positives": fps, "distractors_damaged": len(damaged),
-        "ssn_shaped_triples": len(triples), "shape_only": shape, "garbled_shape_only": garbled_shape,
+        "ssn_shaped_triples": triples, "shape_only": shape, "garbled_shape_only": garbled_shape,
         "garbled_masked": [g for r in results for g in r.get("garbled_masked", [])],
         "audio_failures": audio_fail,
         "renderings": [x for r in results for x in r["renderings"]],
@@ -627,7 +647,7 @@ def aggregate_calls(results: list[dict], classes, *, model: bool = True) -> dict
                  "secret_recall": None if secret_recall is None else round(secret_recall, 3),
                  "garbled_secret_recall": None if garbled_recall is None else round(garbled_recall, 3),
                  "distractors_damaged": len(damaged), "false_positives": len(gated),
-                 "ssn_shaped_triples": len(triples),
+                 "ssn_shaped_triples": triples,
                  "audio_failures": len(audio_fail),
                  "full_failures": sum(not f["ok"] for f in fulls), "no_evidence": no_evidence},
     }
@@ -662,7 +682,7 @@ def print_calls_report(r: dict) -> None:
         print(f"  FALSE POSITIVE {f['script']} [{f['class'].upper()}] {f['kind']} over {where}: "
               f"{f['text']!r} (unexplained: {f['leftover']!r}) in {f['context']}")
     print(f"false positives: {len(r['false_positives'])}; distractors damaged: "
-          f"{r['distractors_damaged']}; ssn-shaped triples damaged: {r['ssn_shaped_triples']} "
+          f"{r['distractors_damaged']}; ssn-shaped triples masked: {r['ssn_shaped_triples']} "
           "(known trade-off, not gated)")
     for g in r["garbled_masked"]:
         print(f"  masked a garbled value {g['script']}: {g['text']!r}")
