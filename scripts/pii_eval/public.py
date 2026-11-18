@@ -8,6 +8,7 @@ import re
 import time
 from pathlib import Path
 
+from .gen import _aba_ok
 from .score import _covered
 
 
@@ -67,7 +68,7 @@ def _invalid(cls: str, label: str, value: str) -> bool:
         s = re.sub(r"\s", "", value)
         return not re.fullmatch(r"[A-Z]{2}\d{2}[A-Z0-9]{8,30}", s) or not pii._iban_ok(s)
     if label == "bank_routing_number":
-        return len(d) != 9 or not pii._aba_ok(d)
+        return len(d) != 9 or not _aba_ok(d)
     if cls == "email":
         return "@" not in value            # a template slot such as "[Shipper's Email]"
     if cls == "phone":

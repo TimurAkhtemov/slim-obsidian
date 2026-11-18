@@ -118,9 +118,11 @@ def _locate(window: str, secret: str) -> tuple[int, int] | None:
 
 
 def _password_spans(
-    text: str, find_password: Callable[[str], str | None]
+    text: str, find_password: Callable[[str], str | None], should_stop: Callable[[], None] | None = None,
 ) -> tuple[list[tuple[int, int]], bool]:
-    """Spans of the model-named secret inside each cue window, and whether any call failed.
+    """Spans of the model-named secret inside each cue window, and whether a call failed. The first
+    failure ends the pass (a hung server would otherwise cost every window its timeout); what was
+    found before it is kept. `should_stop` is called before each call and may raise.
 
     A verbatim answer counts as a whole word anywhere in the window (a secret is often said before
     its cue: "gavrell 68 is my password"); an answer that is not verbatim is located by `_locate`.
@@ -130,12 +132,14 @@ def _password_spans(
     failed = False
     for a, b in _windows(text):
         window = text[a:b]
+        if should_stop is not None:
+            should_stop()
         try:
             secret = find_password(window)
         except Exception as exc:
             failed = True
             trace.record("pii", {"stage": "password", "status": "failed", "error": type(exc).__name__})
-            continue
+            break
         if not _answer_ok(secret):
             continue
         pos = window.find(secret)

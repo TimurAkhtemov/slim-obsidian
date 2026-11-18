@@ -43,7 +43,7 @@ def test_values_pass_validators_and_round_trip(cls):
             if v.kind == "iban":
                 assert pii._iban_ok(v.written)
             elif v.kind == "routing":
-                assert len(d) == 9 and pii._aba_ok(d)
+                assert len(d) == 9 and ev_gen._aba_ok(d)
             else:
                 assert 8 <= len(d) <= 12
         elif cls == "email":
@@ -866,7 +866,7 @@ def test_no_distractor_is_a_valid_secret_over_200_seeds():
                     continue
                 for shape, digits in _windows(d.text):
                     if (12 <= len(digits) <= 19 and pii._luhn(digits)
-                            or len(digits) == 9 and pii._aba_ok(digits)
+                            or len(digits) == 9 and ev_gen._aba_ok(digits)
                             or shape == (3, 2, 4) and pii._ssn_ok(digits)):
                         bad.append((seed, s.sid, d.kind, d.text))
     assert not bad, bad[:5]

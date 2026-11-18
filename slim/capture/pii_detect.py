@@ -89,11 +89,16 @@ _ASK_LEAD = {
 }   # "the best phone number", "a good cell": best and good only ever describe a phone
 _COORDINATED = re.compile(r"\s*(?:,|and|or|, and|, or)\s*")
 # Another thing named in the cue's own clause: "your claim account number", "the order number on
-# the account". Cue nouns themselves are blanked out first.
+# the account". Cue nouns themselves are blanked out first. An identifier is read like an account
+# number, so a question naming one anywhere ("Can I get the order number and the account number?")
+# may be answered with it; a zip, a date or an amount has a shape of its own and blocks only in
+# the cue's clause ("Can I get your zip and your account number?" ⏎ "3744644286").
+_IDENTIFIER = (r"order|confirmation|tracking|ticket|invoice|reference|ref|claim|case|policy|"
+               r"employee id|member id|customer id|order id|id number|(?<!zip )(?<!postal )(?<!area )code")
+_OTHER_ID = re.compile(rf"\b(?:{_IDENTIFIER})\b", re.I)
 _OTHER = re.compile(
-    r"\b(?:order|confirmation|tracking|ticket|invoice|reference|ref|claim|case|policy|zip|postal|amount|"
-    r"balance|total|price|cost|date|year|years|birthday|born|expiry|expiration|how much|how many|when|"
-    r"employee id|member id|customer id|order id|id number|code)\b", re.I)
+    rf"\b(?:{_IDENTIFIER}|zip|postal|amount|balance|total|price|cost|date|year|years|birthday|born|expiry|"
+    r"expiration|how much|how many|when)\b", re.I)
 # A cue noun that is the object of a preposition is a modifier, not the thing being given: "the
 # phone number on the account", "your employee ID for the account". Cards are exempt: "put it on
 # my visa, …" is how a card number is introduced.
@@ -113,10 +118,20 @@ _PHONE_GOVERNS = re.compile(
 _CLAUSE_CUT = re.compile(r"\d|[,;:]|\b(?:and|but|so)\b", re.I)
 
 
-def _subject(norm: str, s: int, a: int, cls: str, preposition: bool = True) -> bool:
+def _names_other(text: str, rx: re.Pattern) -> bool:
+    if not rx.search(text):
+        return False
+    for cue in _CUE.values():
+        text = cue.sub(lambda m: " " * len(m.group()), text)
+    return bool(rx.search(text))
+
+
+def _subject(norm: str, s: int, a: int, cls: str, preposition: bool = True, question: bool = False) -> bool:
     """The cue noun of `cls` at `a`, in the sentence starting at `s`, names the thing being given.
     `preposition`: whether a cue under a preposition is a modifier here (not when the number
-    follows the cue directly: "on my account 80608689949")."""
+    follows the cue directly: "on my account 80608689949"). `question`: an identifier named
+    anywhere in the sentence blocks the cue ("Can I get the claim number, and then we'll pull up
+    the account?" asks for the claim number)."""
     pre = norm[s:a]
     tail = pre if len(pre) <= 60 else pre[-60:].split(" ", 1)[-1]   # the phrase is short; whole words
     if preposition and cls in _PREPOSITION_CLASSES and _UNDER_PREPOSITION.search(tail):
@@ -128,12 +143,7 @@ def _subject(norm: str, s: int, a: int, cls: str, preposition: bool = True) -> b
     start = 0
     for cut in _CLAUSE_CUT.finditer(pre):
         start = cut.end()
-    clause = pre[start:]
-    if not _OTHER.search(clause):
-        return True
-    for rx in _CUE.values():
-        clause = rx.sub(lambda m: " " * len(m.group()), clause)
-    return not _OTHER.search(clause)
+    return not _names_other(pre[start:], _OTHER) and not (question and _names_other(pre, _OTHER_ID))
 _SENTENCE_END = re.compile(r"[.?!]+(?=\s|$)")
 
 
@@ -147,7 +157,7 @@ def _asked_cues(norm: str, s: int, e: int) -> list[tuple[int, int, set[str]]]:
     for (a, b), classes in sorted(found.items()):
         pre = norm[s:a]
         coordinated = valid and _COORDINATED.fullmatch(norm[valid[-1][1]:a])
-        asks = {c for c in classes if _subject(norm, s, a, c)
+        asks = {c for c in classes if _subject(norm, s, a, c, question=True)
                 and (not pre.strip() or coordinated or _ASK_LEAD[c].search(pre))}
         if asks:
             valid.append((a, b, asks))
@@ -171,18 +181,29 @@ def _sentences(norm: str, s: int, e: int) -> list[tuple[int, int]]:
 # a list of ", "-separated segments: "4111 1111 1111 1111, 09 28" is a card, then an expiry.
 _RUN = re.compile(r"\d+(?:(?:, |[ ./-])\d+)*")
 _SEGMENT = re.compile(r"\d+(?:[ ./-]\d+)*")
-_OPENERS = "([{\"'“‘#"
-_CLOSERS = ".,;:!?)]}\"'”’"
+_GROUP = re.compile(r"\d+")
+_OPENERS = "([{\"'“‘#*_`~<"
+# What may follow a value before a space, the end or a turn label: "123-45-6789...", "(…6789),",
+# "**…6789**" in a summary. A dash ends the value like a space unless a digit follows ("…6789—and").
+_CLOSERS = ".,;:!?)]}\"'”’…*_`~>—–"
+_DASHES = "—–"
 
 
 def _alone(norm: str, a: int, b: int) -> bool:
-    """Not glued to a letter or to another digit group: "B219 09 9999", "12,219 09 9999" and the
-    "989-3111" of "(987) 989-3111" are not alone."""
+    """Not glued to a letter or to another digit group: "B219 09 9999", "12,219 09 9999", "6789.5"
+    and the "989-3111" of "(987) 989-3111" are not alone."""
     before = a == 0 or norm[a - 1] in _OPENERS or (
         norm[a - 1].isspace() and not re.search(r"\d\)\s$", norm[max(0, a - 3):a]))
-    after = b == len(norm) or norm[b].isspace() or (
-        norm[b] in _CLOSERS and (b + 1 == len(norm) or norm[b + 1].isspace()))
-    return before and after
+    if not before:
+        return False
+    p = b
+    while p < len(norm) and not norm[p].isspace() and not _TURN_START.match(norm, p):
+        if norm[p] not in _CLOSERS:
+            return False
+        if norm[p] in _DASHES and p + 1 < len(norm) and not norm[p + 1].isdigit():
+            return True
+        p += 1
+    return True
 
 
 def _digits(s: str) -> str:
@@ -210,11 +231,6 @@ def _luhn(digits: str) -> bool:
 def _iban_ok(raw: str) -> bool:
     s = re.sub(r"\s", "", raw).upper()
     return int("".join(str(int(c, 36)) for c in s[4:] + s[:4])) % 97 == 1
-
-
-def _aba_ok(d: str) -> bool:
-    n = [int(c) for c in d]
-    return (3 * (n[0] + n[3] + n[6]) + 7 * (n[1] + n[4] + n[7]) + (n[2] + n[5] + n[8])) % 10 == 0
 
 
 # --- what a bound value is never ---
@@ -271,7 +287,18 @@ _UNIT_AFTER = re.compile(
 CARD_COMPLETE = 15
 _SENTENCE_REACH = 300
 _LIST_SPLIT = re.compile(r"\s*,\s*(?:and\s+)?|\s+and\s+", re.I)
+# What a listed question may name besides a cue noun: "your zip and your account number?"
+_LISTED_THING = re.compile(
+    r"\b(?:zip|zip code|postal code|date of birth|birthday|dob|name|address|email|order number|claim number|"
+    r"policy number|reference number|confirmation number|member id|employee id|customer id|amount|balance|"
+    r"how much|how many)\b",
+    re.I)
+# Between two numbers of a listed answer: "10001 and 48213377", "10001, and then …", "10001. 4821…"
+_LIST_GAP = re.compile(r"\s*,?\s*(?:and(?:\s+then)?|[.?!]+(?:\s+and(?:\s+then)?)?)\s*", re.I)
 _COMPLETE = {"ssn": 9, "card": CARD_COMPLETE, "account": None, "iban": None, "phone": 10}
+# The most digits a value of each class has: a bound value longer than this masks its longest
+# leading part that is one (leaking a tail is better than leaving the whole).
+_LONGEST = {"ssn": 9, "card": 19, "account": 17, "iban": 34, "phone": 11}
 
 
 class _Scene:
@@ -351,27 +378,37 @@ class _Scene:
             if _TURN_START.search(self.norm, end, a):
                 if not self.asks_for(cls, cue):
                     continue
-            elif cls in _PREPOSITION_CLASSES and not _subject(
-                    self.norm, self.sentence_of(cue[0])[0], cue[0], cls,
-                    preposition=bool(re.search(r"[A-Za-z]", self.orig(end, a)))):
-                continue
+            elif cls in _PREPOSITION_CLASSES:
+                s, e = self.sentence_of(cue[0])
+                if not _subject(self.norm, s, cue[0], cls,
+                                preposition=bool(re.search(r"[A-Za-z]", self.orig(end, a))),
+                                question=self.norm[s:e].rstrip().endswith("?")):
+                    continue
             return True
         return self.asked(cls, a)
 
     def listed(self, k: int) -> list[set[str]] | None:
         """The two or three things turn k's question lists ("your zip code and your account
         number?"), in order: the classes each names ("last4" for the last four of a social, an
-        empty set for a thing that is no cue noun); None when it does not list."""
+        empty set for a named thing that is no cue noun); None when it does not list. A part that
+        names nothing ("Okay, and your social?") is no listed thing."""
         for s, e in self.questions(k):
-            parts = _LIST_SPLIT.split(self.norm[s:e].rstrip().rstrip("?"))
-            if 2 <= len(parts) <= 3:
-                return [{"last4"} if _LAST_FOUR_ASKED.search(part)
-                        else {c for c, rx in _CUE.items() if rx.search(part)} for part in parts]
+            things = []
+            for part in _LIST_SPLIT.split(self.norm[s:e].rstrip().rstrip("?")):
+                if _LAST_FOUR_ASKED.search(part):
+                    things.append({"last4"})
+                elif cues := {c for c, rx in _CUE.items() if rx.search(part)}:
+                    things.append(cues)
+                elif _LISTED_THING.search(part):
+                    things.append(set())
+            if 2 <= len(things) <= 3:
+                return things
         return None
 
     def ordinal(self, a: int) -> set[str] | None:
         """The listed thing the number starting at `a` answers, when the answer gives exactly as
-        many numbers as the question listed, joined only by "and", commas or filler words."""
+        many numbers as the question listed. The numbers are runs: "3267, 333943" is one number
+        read in pieces, and only "and" ("and then") or a sentence end separates two."""
         k = self.turn(a)
         if k <= 0:
             return None
@@ -380,16 +417,17 @@ class _Scene:
             things = self.listed(k - 1)
             if things:
                 body, end = self.labels[k][1], self.turn_end(k)
-                numbers, prev = [], body
+                numbers, prev = [], None
                 i = bisect.bisect_left(self.run_starts, body)
                 while i < len(self.runs) and self.runs[i][0] < end and len(numbers) <= len(things):
-                    a0, b0, segs = self.runs[i]
-                    if not _gap_ok(self.orig(prev, a0)):
+                    a0, b0, _ = self.runs[i]
+                    if not (_gap_ok(self.orig(body, a0)) if prev is None
+                            else _LIST_GAP.fullmatch(self.orig(prev, a0))):
                         break
-                    numbers += segs
+                    numbers.append(a0)
                     prev, i = b0, i + 1
                 if len(numbers) == len(things):
-                    order = {seg[0]: thing for seg, thing in zip(numbers, things)}
+                    order = dict(zip(numbers, things))
             self._orders[k] = order
         return self._orders[k].get(a)
 
@@ -428,24 +466,40 @@ class _Scene:
         only while it is not yet a complete value of its class, so "12345678, 300 dollars" stops
         at the account number; after a cue before it, it is dropped when the speaker labels it as
         something else."""
-        need = _COMPLETE[cls]
+        need, most = _COMPLETE[cls], _LONGEST[cls]
 
         def short(a: int, b: int) -> bool:
-            return need is None or len(_digits(self.norm[a:b])) < need
+            """Incomplete, and not yet past the longest value of the class (beyond it no piece
+            can make one, and "12, 12, 12, …" must not be read whole at every length)."""
+            n = len(_digits(self.norm[a:b])) if b - a <= 4 * most else most + 1
+            return n <= most and (need is None or n < need)
+
+        def leading(a0: int, segs: list[tuple[int, int]]) -> int | None:
+            """End of the value starting the run: grown while incomplete, never into a piece the
+            speaker labels ("…, 891 dollars"), then cut back to its longest leading part that fits."""
+            k = 0
+            while k + 1 < len(segs) and short(a0, segs[k][1]) and not self.labelled(cls, segs[k + 1][1]):
+                k += 1
+            b = next((segs[j][1] for j in range(k, -1, -1) if fits(self.norm[a0:segs[j][1]])), None)
+            if b is None and len(_digits(self.norm[a0:segs[k][1]])) > most and not any(
+                    _PHONE_SHAPED.fullmatch(self.norm[x:y]) or _not_a_value(self.norm[x:y]) for x, y in segs[:k + 1]):
+                # too long for one value ("4111 1111 1111 1111 2222"): its longest leading whole
+                # groups that are one, as for comma pieces
+                ends, n = [], 0
+                for m in _GROUP.finditer(self.norm, a0, segs[k][1]):
+                    n += m.end() - m.start()
+                    if n > most:
+                        break
+                    ends.append(m.end())
+                b = next((e for e in reversed(ends) if fits(self.norm[a0:e])), None)
+            return b if b is not None and not self.labelled(cls, b) else None
 
         spans = []
         for a0, b0, segs in self.runs:
-            if self.ordinal(a0) is not None:                 # a listed answer: each number on its own
-                for a, b in segs:
-                    if self.asked(cls, a) and fits(self.norm[a:b]) and not self.labelled(cls, b):
-                        spans.append((a, b))
-            elif self.before(cls, a0):
-                # grow while incomplete, never into a piece the speaker labels ("…, 891 dollars")
-                k = 0
-                while k + 1 < len(segs) and short(a0, segs[k][1]) and not self.labelled(cls, segs[k + 1][1]):
-                    k += 1
-                b = next((segs[j][1] for j in range(k, -1, -1) if fits(self.norm[a0:segs[j][1]])), None)
-                if b is not None and not self.labelled(cls, b):
+            # a listed answer is bound only by its place in the list
+            if self.asked(cls, a0) if self.ordinal(a0) is not None else self.before(cls, a0):
+                b = leading(a0, segs)
+                if b is not None:
                     spans.append((a0, b))
             if self.after(cls, b0):
                 k = len(segs) - 1
@@ -486,12 +540,13 @@ def _last_four_answers(scene: _Scene) -> list[tuple[int, int]]:
     """"Last four of your social?" ⏎ "Yeah, it's 4471.": exactly four digits, first in the answer."""
     spans = []
     for a, b, segs in scene.runs:
-        for x, y in segs:                                    # a listed answer: "1/2/1980 and 4471"
-            thing = scene.ordinal(x)
-            if thing and "last4" in thing and y - x == 4 and not scene.labelled("ssn", y):
-                spans.append((x, y))
+        thing = scene.ordinal(a)                             # a listed answer: "1/2/1980 and 4471"
+        if thing is not None:
+            if "last4" in thing and b - a == 4 and not scene.labelled("ssn", b):
+                spans.append((a, b))
+            continue
         k = scene.turn(a)
-        if scene.ordinal(a) is not None or len(segs) != 1 or len(_digits(scene.norm[a:b])) != 4 or k <= 0 or b - a != 4:
+        if len(segs) != 1 or len(_digits(scene.norm[a:b])) != 4 or k <= 0 or b - a != 4:
             continue
         asked = any(_LAST_FOUR_ASKED.search(scene.norm, s, e) for s, e in scene.questions(k - 1))
         if asked and _gap_ok(scene.orig(scene.labels[k][1], a)) and not scene.labelled("ssn", b):
@@ -506,8 +561,15 @@ _STRONG_SSN_AFTER = re.compile(
     rf"\s*[,.]?\s*(?:that's|that is|it's|is)\s+(?:{_PERSONAL})\s+({_CUE_NOUNS['ssn']})(?=\s*(?:[.,!?;]|$))",
     re.I | re.M)
 _STRONG_SSN_BEFORE = re.compile(rf"\b(?:{_PERSONAL})\s+({_CUE_NOUNS['ssn']})\s*(?:is\b|['’]s\b|:)", re.I)
-# A benefit amount is not a social: "My social security is 1,840 a month."
+# A benefit amount is not a social: "My social security is 1,840 a month." Seven digits or more
+# with thousands commas and no cents is an SSN the transcriber wrote that way ("219,099,999").
 _MONEY = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+\.\d{1,2}")
+
+
+def _money(s: str) -> bool:
+    return bool(_MONEY.fullmatch(s)) and ("." in s or len(_digits(s)) <= 6)
+
+
 _RATE_AFTER = re.compile(
     r"\s*(?:a month|per month|monthly|a year|per year|annually|a week|per week|dollars|bucks)\b", re.I)
 _DIGIT_TOKEN = re.compile(r"\d[\d.,-]*\d|\d")          # a number glued with . , or -
@@ -520,7 +582,7 @@ def _strong_value(s: str, noun: str) -> bool:
     """`noun` is the cue noun: a bare "social security" (no "number") is also how a benefit is
     named, so its value needs seven digits."""
     least = 7 if noun.lower() == "social security" else 4
-    return (least <= len(_digits(s)) <= 12 and not _MONEY.fullmatch(s) and not _PHONE_SHAPED.fullmatch(s)
+    return (least <= len(_digits(s)) <= 12 and not _money(s) and not _PHONE_SHAPED.fullmatch(s)
             and not _PHONE_DIGITS.fullmatch(s) and not _date(s) and not _ZIP4.fullmatch(s))
 
 
@@ -814,7 +876,7 @@ _DETECTORS = {
     "address": lambda scene: [m.span() for m in _ADDRESS.finditer(scene.norm)],
     "email": _emails,
 }
-# An exact tie goes to the class listed first: the more harmful leak wins.
+# Overlapping hits take the class listed first: the more harmful leak wins.
 _RANK = {c: k for k, c in enumerate(_DETECTORS)}
 
 
@@ -844,8 +906,9 @@ def _merged(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
 
 
 def find(text: str, classes: Iterable[str]) -> list[Hit]:
-    """Non-overlapping hits in the original text, sorted; the longest wins an overlap, and an
-    exact tie goes to the higher class (ssn > card > account > phone > address > email)."""
+    """Non-overlapping hits in the original text, sorted. Hits that overlap are masked as their
+    union, under the highest class among them (ssn > card > account > phone > address > email):
+    "219 09 9999 Main Street" must not keep five SSN digits readable beside an address."""
     wanted = set(classes)
     norm, idx = normalise(text)
     mapped = []
@@ -858,11 +921,11 @@ def find(text: str, classes: Iterable[str]) -> list[Hit]:
         while q + 1 < len(norm) and idx[q + 1] == idx[q]:
             q += 1
         mapped.append(Hit(idx[a], idx[q + 1], h.cls))
-    kept: list[Hit] = []                                      # disjoint, sorted by start
-    starts: list[int] = []
-    for h in sorted(mapped, key=lambda h: (-(h.end - h.start), h.start, _RANK[h.cls])):
-        i = bisect.bisect_left(starts, h.start)
-        if (i == 0 or kept[i - 1].end <= h.start) and (i == len(kept) or kept[i].start >= h.end):
-            kept.insert(i, h)
-            starts.insert(i, h.start)
+    kept: list[Hit] = []
+    for h in sorted(mapped, key=lambda h: h.start):
+        if kept and h.start < kept[-1].end:
+            top = min(kept[-1].cls, h.cls, key=_RANK.__getitem__)
+            kept[-1] = Hit(kept[-1].start, max(kept[-1].end, h.end), top)
+        else:
+            kept.append(h)
     return kept

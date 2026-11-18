@@ -1,5 +1,6 @@
 import pytest
 
+from slim import config
 from slim.capture import pii
 
 
@@ -75,86 +76,86 @@ def test_offsets_after_group_and_map_length():
 
 
 def test_dashed_ssn_masked():
-    m = pii.mask("my social is 219-09-9999 ok", classes=pii.DEFAULT_CLASSES)
+    m = pii.mask("my social is 219-09-9999 ok", classes=config.PII_DEFAULT)
     assert m.text == "my social is [SSN] ok" and m.counts == {"ssn": 1}
     assert m.secrets == ["219-09-9999"]
 
 
 def test_spoken_ssn_with_cue():
     t = "**Them:** social security number two one nine, oh nine, nine nine nine nine."
-    m = pii.mask(t, classes=pii.DEFAULT_CLASSES)
+    m = pii.mask(t, classes=config.PII_DEFAULT)
     assert "[SSN]" in m.text and "nine nine" not in m.text and m.text.startswith("**Them:**")
 
 
 def test_invalid_ssn_areas_not_masked():
     # only without a cue: a number bound to an SSN cue is masked whatever its range says
     for v in ("000-12-3456", "666-12-3456", "912-12-3456"):
-        assert pii.mask(f"ref {v}", classes=pii.DEFAULT_CLASSES).counts == {}
-        assert pii.mask(f"ssn {v}", classes=pii.DEFAULT_CLASSES).text == "ssn [SSN]"
+        assert pii.mask(f"ref {v}", classes=config.PII_DEFAULT).counts == {}
+        assert pii.mask(f"ssn {v}", classes=config.PII_DEFAULT).text == "ssn [SSN]"
 
 
 def test_run_together_nine_digits_needs_cue():
-    assert pii.mask("order 219099999 shipped", classes=pii.DEFAULT_CLASSES).counts == {}
-    assert pii.mask("my SSN is 219099999", classes=pii.DEFAULT_CLASSES).counts == {"ssn": 1}
+    assert pii.mask("order 219099999 shipped", classes=config.PII_DEFAULT).counts == {}
+    assert pii.mask("my SSN is 219099999", classes=config.PII_DEFAULT).counts == {"ssn": 1}
 
 
 def test_card_needs_luhn():
     # a Luhn-failing number bound to a card cue is still a card (a misheard digit), so
     # the Luhn guard is tested without one.
-    assert pii.mask("ref 4111 1111 1111 1111", classes=pii.DEFAULT_CLASSES).counts == {"card": 1}
-    assert pii.mask("ref 4111 1111 1111 1112", classes=pii.DEFAULT_CLASSES).counts == {}
+    assert pii.mask("ref 4111 1111 1111 1111", classes=config.PII_DEFAULT).counts == {"card": 1}
+    assert pii.mask("ref 4111 1111 1111 1112", classes=config.PII_DEFAULT).counts == {}
 
 
 def test_spoken_card_is_covered_whole():
     t = "card four one one one one one one one one one one one one one one one then five"
-    m = pii.mask(t, classes=pii.DEFAULT_CLASSES)
+    m = pii.mask(t, classes=config.PII_DEFAULT)
     assert m.text == "card [CARD] then five"
 
 
 def test_hit_ending_inside_a_spoken_group_is_widened():
     # the SSN pattern ends inside "nine nine nine nine nine": the whole phrase goes
     t = "ssn two one nine oh nine nine nine nine nine"
-    m = pii.mask(t, classes=pii.DEFAULT_CLASSES)
+    m = pii.mask(t, classes=config.PII_DEFAULT)
     assert m.text == "ssn [SSN]"
 
 
 def test_iban_and_routing_account():
-    assert pii.mask("IBAN GB82 WEST 1234 5698 7654 32", classes=pii.DEFAULT_CLASSES).counts == {"account": 1}
-    m = pii.mask("routing number 011000028 account number 12345678", classes=pii.DEFAULT_CLASSES)
+    assert pii.mask("IBAN GB82 WEST 1234 5698 7654 32", classes=config.PII_DEFAULT).counts == {"account": 1}
+    m = pii.mask("routing number 011000028 account number 12345678", classes=config.PII_DEFAULT)
     assert m.counts == {"account": 2}
 
 
 def test_email_written_and_spoken():
-    assert pii.mask("write to a.b@example.com", classes=pii.DEFAULT_CLASSES).text == "write to [EMAIL]"
-    m = pii.mask("it's jane dot doe at example dot com", classes=pii.DEFAULT_CLASSES)
+    assert pii.mask("write to a.b@example.com", classes=config.PII_DEFAULT).text == "write to [EMAIL]"
+    m = pii.mask("it's jane dot doe at example dot com", classes=config.PII_DEFAULT)
     assert m.text == "it's [EMAIL]" and m.secrets == []
 
 
 def test_address():
     m = pii.mask("I live at two twenty one Baker Street, apartment 4, 90210 now",
-                 classes=pii.DEFAULT_CLASSES)
+                 classes=config.PII_DEFAULT)
     assert m.text == "I live at [ADDRESS] now"
 
 
 def test_street_without_number_kept():
-    assert pii.mask("she lives on Baker Street", classes=pii.DEFAULT_CLASSES).counts == {}
+    assert pii.mask("she lives on Baker Street", classes=config.PII_DEFAULT).counts == {}
 
 
 def test_phone_off_by_default_on_when_listed():
     t = "call 415 555 0134"
-    assert pii.mask(t, classes=pii.DEFAULT_CLASSES).counts == {}
-    assert pii.mask(t, classes=(*pii.DEFAULT_CLASSES, "phone")).text == "call [PHONE]"
+    assert pii.mask(t, classes=config.PII_DEFAULT).counts == {}
+    assert pii.mask(t, classes=(*config.PII_DEFAULT, "phone")).text == "call [PHONE]"
 
 
 def test_ordinary_numbers_survive():
     for t in ("meet at two thirty", "it was four ninety nine", "back in 2019",
               "order number 5512 3349", "call nine one one", "page 123 of 456"):
-        assert pii.mask(t, classes=pii.DEFAULT_CLASSES).text == t
+        assert pii.mask(t, classes=config.PII_DEFAULT).text == t
 
 
 def test_untouched_text_byte_identical():
     t = "**Me:**  odd  spacing\n\n**Them:** a.b@example.com  end "
-    assert pii.mask(t, classes=pii.DEFAULT_CLASSES).text == "**Me:**  odd  spacing\n\n**Them:** [EMAIL]  end "
+    assert pii.mask(t, classes=config.PII_DEFAULT).text == "**Me:**  odd  spacing\n\n**Them:** [EMAIL]  end "
 
 
 def test_empty_class_list_is_off():
@@ -178,7 +179,7 @@ def test_frontmatter_complete_has_no_partial_and_names_only_known_reasons():
 
 
 def _same(t):
-    assert pii.mask(t, classes=pii.DEFAULT_CLASSES).text == t
+    assert pii.mask(t, classes=config.PII_DEFAULT).text == t
 
 
 def test_number_lists_survive():
@@ -189,14 +190,14 @@ def test_number_lists_survive():
 
 
 def test_spaced_ssn_needs_cue():
-    assert pii.mask("my social 219 09 9999 ok", classes=pii.DEFAULT_CLASSES).counts == {"ssn": 1}
-    assert pii.mask("ssn 219, 09, 9999", classes=pii.DEFAULT_CLASSES).counts == {"ssn": 1}
+    assert pii.mask("my social 219 09 9999 ok", classes=config.PII_DEFAULT).counts == {"ssn": 1}
+    assert pii.mask("ssn 219, 09, 9999", classes=config.PII_DEFAULT).counts == {"ssn": 1}
     _same("rooms 219, 09, 9999")
 
 
 def test_card_shape_or_cue():
-    assert pii.mask("4111 1111 1111 1111", classes=pii.DEFAULT_CLASSES).counts == {"card": 1}
-    assert pii.mask("my visa is 4111 1111 1111 1112", classes=pii.DEFAULT_CLASSES).counts == {"card": 1}
+    assert pii.mask("4111 1111 1111 1111", classes=config.PII_DEFAULT).counts == {"card": 1}
+    assert pii.mask("my visa is 4111 1111 1111 1112", classes=config.PII_DEFAULT).counts == {"card": 1}
     # a card is contiguous or read in groups of 3+ digits, cued or not
     _same("my visa is 41 11 1111 1111 1111")
     _same("ref 91 60 1562 2746 67")
@@ -208,16 +209,16 @@ def test_spoken_email_needs_dot_or_cue():
         _same(t)
     # "me" never forms a local part on its own
     _same("email me at jane dot com")
-    m = pii.mask("my email is jane at example dot com", classes=pii.DEFAULT_CLASSES)
+    m = pii.mask("my email is jane at example dot com", classes=config.PII_DEFAULT)
     assert m.text == "my email is [EMAIL]"
 
 
 def test_spaced_account():
-    m = pii.mask("account number 1234 5678", classes=pii.DEFAULT_CLASSES)
+    m = pii.mask("account number 1234 5678", classes=config.PII_DEFAULT)
     assert m.text == "account number [ACCOUNT]"
 
 
-CLS = pii.DEFAULT_CLASSES
+CLS = config.PII_DEFAULT
 
 
 def test_password_found_is_masked():
@@ -1018,11 +1019,14 @@ def test_ssn_last_four():
 
 def test_pathological_inputs_stay_fast():
     import time
+    # 3 s: a linear pass takes a fraction of that; a quadratic one takes minutes
     for t in ("1" * 50_000, "a" * 50_000, "**Me:** 1234567\n\n" * 20_000, "account 1234567 " * 20_000,
-              "**Them:** What's your social?\n\n**Me:** It's 1234567.\n\n" * 10_000):
+              "**Them:** What's your social?\n\n**Me:** It's 1234567.\n\n" * 10_000,
+              "**Them:** Okay, and your account number?\n\n**Me:** " + "12, " * 40_000,
+              "12, " * 40_000 + "is my account number.", "my account number is " + "1 " * 40_000):
         t0 = time.perf_counter()
         pii.mask(t, classes=CLS)
-        assert time.perf_counter() - t0 < 1.0, t[:30]
+        assert time.perf_counter() - t0 < 3.0, t[:30]
 
 
 def test_a_spelled_iban_starts_with_its_country_letters():
@@ -1305,12 +1309,162 @@ def test_a_listed_question_binds_in_order():
     assert _answer(_q("Date of birth and the last four of your social?", "1/2/1980 and 4471.")) \
         == "**Me:** 1/2/1980 and [SSN]."
     assert _answer(_q("Routing and account number?", "011000028 and 12345678")) == "**Me:** [ACCOUNT] and [ACCOUNT]"
-    assert _answer(_q("Your zip code, date of birth and account number?", "10001, 1/2/1980 and 48213377.")) \
-        == "**Me:** 10001, 1/2/1980 and [ACCOUNT]."
-    # counts differ: today's rule (the first number of the answer to an account question)
+    assert _answer(_q("Your zip code, date of birth and account number?", "10001 and 1/2/1980 and 48213377.")) \
+        == "**Me:** 10001 and 1/2/1980 and [ACCOUNT]."
+    # counts differ: the first cue thing binds the first number
     assert _answer(_q("Can I get your zip code and your account number?", "48213377.")) == "**Me:** [ACCOUNT]."
 
 
 def test_a_located_password_span_passes_the_answer_filter():
     t = "The password? It is fine. Never mind."
     assert pii.mask(t, classes=CLS, find_password=lambda w: "itis").counts == {}
+
+
+# --- punctuation and markdown beside a value; lists need named things; overlaps --------------
+
+def test_a_value_followed_by_closers_or_wrapped_in_markdown_is_masked():
+    for t, want in (
+        ("My social is 123-45-6789...", "My social is [SSN]..."),
+        ("My social is 123-45-6789..", "My social is [SSN].."),
+        ("My social is 123-45-6789…", "My social is [SSN]…"),
+        ("Here 123-45-6789.. ok", "Here [SSN].. ok"),
+        ('She said "my social is 123-45-6789."', 'She said "my social is [SSN]."'),
+        ("My social (123-45-6789), right", "My social ([SSN]), right"),
+        ("My social is 123-45-6789—and that's it", "My social is [SSN]—and that's it"),
+        ("My card is 4111 1111 1111 1111...", "My card is [CARD]..."),
+        ("- Bob gave his SSN (123-45-6789).", "- Bob gave his SSN ([SSN])."),
+        ("- SSN: **123-45-6789**", "- SSN: **[SSN]**"),
+        ("- Card number `4111 1111 1111 1111`", "- Card number `[CARD]`"),
+        ("- SSN: _123-45-6789_ and ~123-45-6789~", "- SSN: _[SSN]_ and ~[SSN]~"),
+        ("<123-45-6789>", "<[SSN]>"),
+        ("“123-45-6789”", "“[SSN]”"),
+        ("**Me:** 123-45-6789.**Them:** thanks", "**Me:** [SSN].**Them:** thanks"),
+        ("My account number is (12345678).", "My account number is ([ACCOUNT])."),
+    ):
+        assert _m(t).text == want, t
+
+
+def test_a_value_glued_to_a_letter_or_digit_is_not_alone():
+    for t in ("B219 09 9999", "12,219 09 9999", "1,250.50", "v2.1", "123-45-6789.5", "123-45-6789,5",
+              "123-45-6789-5", "123-45-6789/5", "123-45-6789:5", "123-45-6789..5", "123-45-6789.x",
+              "123-45-6789)x", "123-45-6789—5"):
+        _same(t)
+
+
+def test_a_lead_in_is_not_a_listed_thing():
+    for q, a, want in (
+        ("Okay, great, and your social?", "219, 09, 9999.", "**Me:** [SSN]."),
+        ("Okay, so, your social security number?", "163, 39, 5546.", "**Me:** [SSN]."),
+        ("Okay, and your account number?", "4821, 3377.", "**Me:** [ACCOUNT]."),
+        ("Okay, and your social?", "219099999, 10001.", "**Me:** [SSN], 10001."),
+        ("Great, and your routing number?", "011, 000028", "**Me:** [ACCOUNT]"),
+        ("Okay, perfect, and the account number?", "1234, 5678, 9012.", "**Me:** [ACCOUNT]."),
+        ("How much was the payment, and what's the account number?", "250 and 48213377.",
+         "**Me:** 250 and [ACCOUNT]."),
+    ):
+        assert _answer(_q(q, a)) == want, (q, a)
+
+
+def test_a_comma_read_value_is_one_number_of_a_list():
+    assert _answer(_q("Can I get the routing number and your zip?", "Sure, 3267, 333943.")) \
+        == "**Me:** Sure, [ACCOUNT]."
+    assert _answer(_q("Can I get your social security number and your zip?", "6379, 65709.")) == "**Me:** [SSN]."
+    # "and" (or "and then") and a sentence end separate the numbers of a listed answer
+    assert _answer(_q("Can I get your zip code and your account number?", "10001, and then 48213377.")) \
+        == "**Me:** 10001, and then [ACCOUNT]."
+    assert _answer(_q("Can I get your zip code and your account number?", "10001. 48213377.")) \
+        == "**Me:** 10001. [ACCOUNT]."
+
+
+def test_a_question_reads_its_whole_sentence_for_another_thing():
+    for t in (_q("Can I get the claim number, and then we'll pull up the account?", "7437291."),
+              _q("What's the order number and which account was it charged to?", "5512334."),
+              _q("Can I get the order number and the account number?", "5512334.")):
+        _same(t)
+    # same-turn statements still read only the cue's own clause
+    assert _m("The order number is 5512334, and my routing number is 011000028.").counts == {"account": 1}
+    # a zip, a date or an amount has its own shape: in a question it blocks only in the cue's clause
+    for q, a in (("Can I get your zip and your account number?", "Sure, 3744644286."),
+                 ("Your zip code and your social?", "Sure, 3299 23294."),
+                 ("Your date of birth and your social security number?", "664345765.")):
+        assert "[" in _answer(_q(q, a)), q
+    _same(_q("What's the zip code on your account?", "02139."))
+
+
+def test_a_thousands_comma_number_after_a_strong_cue_is_an_ssn():
+    assert _m("My social is 219,099,999.").text == "My social is [SSN]."
+    assert _m("219,099,999. That's my social.").text == "[SSN]. That's my social."
+    for t in ("My social security is 1,840 a month.", "My social is 1,840,000 dollars.",
+              "His social security is 2,310.75 now.", "My social is 1,234,567.50."):
+        _same(t)
+
+
+def test_overlapping_hits_mask_their_union_as_the_higher_class():
+    m = _m("I live at 219 09 9999 Main Street.")
+    assert m.text == "I live at [SSN]" and m.counts == {"ssn": 1}
+    assert m.secrets == ["219 09 9999 Main Street."]
+    hits = pii.find("I live at 219 09 9999 Main Street.", CLS)
+    assert [(h.cls, h.start) for h in hits] == [("ssn", 10)]
+
+
+def test_an_over_long_bound_value_masks_its_longest_fitting_prefix():
+    assert _m("My account number is 4111 1111 1111 1111 2222.").text == "My account number is [ACCOUNT] 2222."
+    assert _m("card 4111 1111 1111 1111 9999 Elm Street").text == "card [CARD] [ADDRESS]"
+    assert _m("ssn 219 09 9999 12").text == "ssn [SSN] 12"
+    # a phone number, a date or a value within its limit is never cut down to fit
+    for t in ("It's my account. 573 897 2549.", "My social is 1 415 555 0134.", "My account number is 2016 10 14.",
+              "account number 7731 22 2209"):
+        _same(t)
+
+
+def test_the_password_pass_stops_after_the_first_failed_call():
+    calls = []
+
+    def boom(w):
+        calls.append(w)
+        raise TimeoutError
+    t = "My PIN is 1234. Ok. Ok. Ok. The passcode is 99. Ok. Ok. Ok. Gate code 7. Ok. Ok. Ok. Door code 8."
+    m = pii.mask(t, classes=CLS, find_password=boom)
+    assert len(calls) == 1 and m.partial
+
+
+def test_the_password_pass_keeps_what_it_found_before_a_failure():
+    answers = iter(["hunter2"])
+
+    def finder(w):
+        return next(answers)                          # StopIteration on the second call
+    t = "The password is hunter2. Ok. Ok. Ok. The PIN is 4471."
+    m = pii.mask(t, classes=CLS, find_password=finder)
+    assert m.partial and m.counts == {"password": 1} and "hunter2" not in m.text
+
+
+def test_should_stop_is_asked_between_password_windows():
+    calls, checks = [], []
+
+    class Stop(Exception):
+        pass
+
+    def should_stop():
+        checks.append(1)
+        if len(calls) >= 1:
+            raise Stop
+    t = "The password is hunter2. Ok. Ok. Ok. The PIN is 4471."
+    with pytest.raises(Stop):
+        pii.mask(t, classes=CLS, find_password=lambda w: calls.append(w), should_stop=should_stop)
+    assert len(calls) == 1
+    # no cue: never asked
+    pii.mask("nothing here", classes=CLS, find_password=lambda w: None, should_stop=lambda: checks.append("x"))
+    assert "x" not in checks
+
+
+def test_spans_match_whole_tokens_only():
+    toks = [(" the", 0, 1), (" tiger", 1, 2), (" tigers", 2, 3)]
+    assert pii.spans(toks, ["tiger"]) == ([(1, 2)], 0)
+    assert pii.spans([(" tigers", 0, 1)], ["tiger"]) == ([], 1)
+    assert pii.spans([(" room", 0, 1), (" 144712", 1, 2)], ["4471"]) == ([], 1)
+    assert pii.spans([(" 44", 0, 1), ("71", 1, 2), ("2", 2, 3)], ["4471"]) == ([], 1)
+    assert pii.spans([(" pin", 0, 1), (" 4471.", 1, 2)], ["4471"]) == ([(1, 2)], 0)
+
+
+def test_no_dead_surface():
+    assert not hasattr(pii, "DEFAULT_CLASSES") and not hasattr(pii, "_aba_ok")
