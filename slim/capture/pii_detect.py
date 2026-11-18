@@ -43,7 +43,7 @@ _CUE_AFTER = {
 }
 _GAP_MAX = 60
 _FILLER = frozenset(
-    "is it's its it was number no the my your okay ok sure yeah yes yep so um uh well here that's that "
+    "is it's its it number no the my your okay ok sure yeah yes yep so um uh well here that's that "
     "would be and goes ahead right alright thanks please".split()
 )
 
@@ -209,11 +209,21 @@ def _iban(norm: str, m: re.Match) -> tuple[int, int] | None:
     return None
 
 
+_SORT_CODE = re.compile(r"\d{2}[- ]\d{2}[- ]\d{2}")
+
+
+def _account_shape(s: str) -> bool:
+    """Contiguous, 2-5 groups of 3+ digits, or a sort code: a list holding a 1- or 2-digit group
+    ("Routing was 675, 86, 415, 4, 643 packets") is not an account number."""
+    shape = _shape(s)
+    groups = len(shape) == 1 or (len(shape) <= 5 and min(shape) >= 3)
+    return (groups and 6 <= sum(shape) <= 17 and not _DATE.fullmatch(s)) or bool(_SORT_CODE.fullmatch(s))
+
+
 def _accounts(norm: str, bound: Bound) -> list[tuple[int, int]]:
     spans = [span for m in _IBAN.finditer(norm) if (span := _iban(norm, m))]
     for run in _runs(norm):
-        s, d = run.group(), _digits(run.group())
-        if 6 <= len(d) <= 17 and len(_shape(s)) <= 5 and not _DATE.fullmatch(s) and bound("account", *run.span()):
+        if _account_shape(run.group()) and bound("account", *run.span()):
             spans.append(run.span())
     for m in _ACCOUNT_TOKEN.finditer(norm):
         token = m.group()

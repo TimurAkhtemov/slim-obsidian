@@ -541,7 +541,8 @@ def test_cued_account_digits():
     assert _m("**Them:** eight zero six zero eight six eight nine nine four nine, that's the account "
               "number.").text == "**Them:** [ACCOUNT], that's the account number."
     assert _m("My routing number is 011000028.").text == "My routing number is [ACCOUNT]."
-    assert _m("acct no. 1234-5678-90").counts == {"account": 1}
+    assert _m("acct no. 1234-5678-900").counts == {"account": 1}
+    _same("acct no. 1234-5678-90")                    # a 2-digit group never binds as an account
     _same("account number " + "x" * 60 + " 865047")
     _same("account number is 12345")                                      # under 6 digits
 
@@ -838,3 +839,21 @@ def test_phone_bound_shapes():
         assert _m(t, PHONE).counts == {"phone": 1}, t
     for t in ("my cell is 72 45 55 03 11", "my number is 123456789", "my number is 123456789012"):
         assert _m(t, PHONE).counts == {}, t
+
+
+def test_bound_account_shapes():
+    # ruling on fix-1: "was" is not filler; bound accounts are contiguous, 2-5 groups of 3+
+    # digits, or the 2-2-2 sort code
+    for t in ("Routing was 675, 86, 415, 4, 643 packets per second.",
+              "Routing was 8848, 4, 83 packets per second.",
+              "Routing was 035 690 281",                  # accepted miss: no cue binds, none is free
+              "account number 12 34 56 78", "account number 1234, 56, 7890"):
+        _same(t)
+    for t, want in (("My routing number is 035 690 281", "My routing number is [ACCOUNT]"),
+                    ("routing is 035 690 281", "routing is [ACCOUNT]"),
+                    ("sort code 12-34-56", "sort code [ACCOUNT]"),
+                    ("sort code 12 34 56", "sort code [ACCOUNT]"),
+                    ("account number 1234 5678", "account number [ACCOUNT]"),
+                    ("on my account 80608689949", "on my account [ACCOUNT]"),
+                    ("80608689949, was the account number", "[ACCOUNT], was the account number")):
+        assert _m(t).text == want, t
