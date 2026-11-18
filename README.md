@@ -22,6 +22,7 @@ audio  ->  transcript  ->  LABEL  ->  FILE  ->  INDEX  ->  (REFLECT, TALK)
 - [Your vault stays yours](#your-vault-stays-yours)
 - [How a recording is filed](#how-a-recording-is-filed)
 - [What happens when you record](#what-happens-when-you-record)
+- [Masking sensitive details](#masking-sensitive-details)
 - [How answers work](#how-answers-work)
 - [Where state lives](#where-state-lives)
 - [Requirements](#requirements)
@@ -139,6 +140,7 @@ sequenceDiagram
     O->>S: PCM every ~2s — live captions (never saved)
     Note over O,S: Stop — one synchronous POST /api/record
     S->>S: batch transcription (120s windows, 15s overlap)
+    S->>S: mask personal details in the transcript
     S->>S: summary (thinking on), title, filing card
     S->>D: archive audio by hash, write the note, delete the draft
     S->>D: index + embed
@@ -151,8 +153,50 @@ batch transcript, because **the transcript is the note** — summary, title and 
 decorate it. A failed or silent transcript is refused rather than filed, and your audio stays
 staged so you can retry.
 
+Before any model reads the transcript, personal details in it — social security, card and
+account numbers, passwords, email and street addresses — are replaced by placeholders such as
+`[SSN]`, and the numbers and passwords are also silenced in the archived audio. See
+[Masking sensitive details](#masking-sensitive-details).
+
 The three model calls in that sequence share one server and its one context window: the
 window is fixed when the server starts, so a call cannot ask for a second, smaller one.
+
+## Masking sensitive details
+
+Calls carry things you would rather not keep: a card number read out to a support line, a
+door code, an account number. SLIM masks them in every new recording, right after
+transcription, so the summary, title, filing card, note and index only ever see a placeholder.
+Once the note is filed, the original is not kept anywhere SLIM writes.
+
+- **Numbers** are masked for their shape (an SSN written `123-45-6789` or `123 45 6789`, a card
+  number that passes the Luhn check with a known issuer prefix, an IBAN) or because a cue is
+  tied to them: "my account number is …", a question asking for it just before the answer, or
+  "…, that's my social" just after. A cue word somewhere nearby is not enough.
+- **Passwords** have no shape, so a cue ("password", "PIN", "door code") makes the local model
+  read the few sentences around it and point at the secret; code masks only text it finds
+  there, never what the model writes.
+- **Email and street addresses** are masked in the text; phone numbers only if you turn them on.
+- SSNs, cards, account numbers and passwords are also **silenced in the archived audio**.
+
+The classes are the `pii:` block of `config/projects.yaml` (see `config/projects.example.yaml`):
+`mask` lists them (the default is all but `phone`; `[]` turns masking off) and `skip` lists
+folders `slim mask --all` leaves alone. A note records class counts, never values (`pii_masked`), and
+`pii_partial` names anything left unfinished. For recordings filed before you turned it on:
+
+```bash
+uv run slim mask --all --dry-run   # counts per note; writes nothing (it still runs the model)
+uv run slim mask --all             # mask transcripts and summaries, then re-index
+```
+
+The limits, plainly: a number or password said with no cue and no recognisable shape is not
+caught; a number the transcriber garbles beyond recognition stays in the text and the audio;
+what you type into the note's Notes section is never masked; and live captions are not masked,
+since they are never saved. **Masked text cannot be recovered from SLIM**, so keep your own
+backup if you want the originals.
+
+It was measured only on synthetic data, never real recordings: generated calls spoken with
+macOS `say` into a throwaway vault, and public synthetic PII datasets
+(`uv run python -m scripts.pii_eval text|calls|public --out <dir>`).
 
 ## How answers work
 
@@ -305,6 +349,7 @@ uv run slim status                        # index health, incl. fragments still 
 uv run slim reflect                       # journal window -> ONE reflection note
 uv run slim chat                          # the Obsidian plugin's server, 127.0.0.1:7546
 uv run slim trace -n 1                    # replay the last traced operation
+uv run slim mask --all                    # mask personal details in recordings already filed
 ```
 
 Optional background jobs, each installed by its own script in `scripts/`: the reflection
@@ -312,7 +357,7 @@ nightly, and a restic backup of the vault daily.
 
 ## Code map
 
-- `slim/` — the entry points and seams: `cli.py` (five commands), `server.py` (the plugin's API
+- `slim/` — the entry points and seams: `cli.py` (six commands), `server.py` (the plugin's API
   server, run as `slim chat`), `reflect.py`, `db.py`, `llm.py` (never call the model server directly) and
   `llm_render.py` (the raw tool-call reply format), `trace.py`, `config.py`,
   `vaultpath.py`. Each subpackage below is a feature folder, not a layer.
@@ -320,11 +365,12 @@ nightly, and a restic backup of the vault daily.
   safe writes), `note_images.py` (a note's embedded images), `identity.py` (the vault pin).
 - `slim/capture/` — audio to labelled text: `transcribe.py` (two speech lanes),
   `audio.py` (ffmpeg, hashing, archive), `speakers.py`, `summarize.py`, `enrich.py` and
-  `voicetags.py` (labelling).
+  `voicetags.py` (labelling), `pii.py` with `pii_detect.py`, `pii_normalise.py` and
+  `pii_password.py` (masking).
 - `slim/recorder/` — the recorder: `routes.py` (the server's record routes), `pipeline.py`
   (audio to a filed note), `review.py` (edits to a filed note), `state.py` (the job queue,
   progress, locks), `note.py` (the sole writer of a recorded note), `suggest.py` (the filing
-  card).
+  card), `mask.py` (`slim mask`).
 - `slim/index/` — `ingest.py`, `chunk.py` (fragments), `embed.py`, `search.py`.
 - `slim/copilot/` — `turn.py` (one turn of the loop), `lookup.py` (search, read_note,
   list_folder), `context.py` (the open note, pins and what a skill reads), `run.py` (the run of

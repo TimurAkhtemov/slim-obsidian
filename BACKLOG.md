@@ -11,3 +11,9 @@ are the history. Past ~20 items is a signal about scope, not a reason for headin
 - [ ] The recorder summary resolves a bare image name with no note path, so an ambiguous one (`paste-001.png` ×5 in the vault) can be another note's; pass the note's path to `note_images.load`.
 - [ ] 11 orphaned transcript caches in `Attachments/_incoming` (`slim status`); two hold words no note has (2026-08-27, 2026-09-10). Owner decides: file or delete.
 - [ ] "Record this?" when a call starts, as Notion does: poll Core Audio for another process running mic input (`kAudioProcessPropertyIsRunningInput` + `BundleID`, macOS 14.4+; probed OK 2026-09-29) and offer one click. No model, no listening; needs a tiny native helper and must ignore SLIM's own capture.
+- [ ] `slim mask --audio`: re-transcribe old recordings for word times and silence their secret spans; today `slim mask` is text only, so `pii_partial: [audio]` stays on a note.
+- [ ] The plugin's meeting-note parser takes the FIRST `## Transcript` heading and the server the LAST; make them agree.
+- [ ] `note.replace_review_sections` (the review card's apply) rebuilds a recording's head and drops owner text between sections of a legacy or hand-edited note; splice like `slim mask`.
+- [ ] `slim mask <path>` typed in another Unicode normalisation form than the disk's reports FileNotFoundError (fails safe; `--all` still reaches the note).
+- [ ] Masking leaves alone the titles and file names of recordings filed before it, and live captions (on screen only, never saved).
+- [ ] Owner to decide after living with it: keep or switch off the cue-free spaced 3-2-4 SSN shape (`pii_detect.SSN_SPACED_CUE_FREE`).
