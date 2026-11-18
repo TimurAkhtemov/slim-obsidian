@@ -25,7 +25,9 @@ projects:
 # archived audio (`slim mask` changes text only).
 # The default is all but phone: add `phone` to mask phone numbers; `[]` turns masking off.
 # `skip` lists vault folders `slim mask --all` leaves alone (whole path segments; a note
-# named on the command line is still masked).
+# named on the command line is still masked). A name that is not a class is an error at start.
+# The list is read when the server starts: restart it after a change, and after adding a class
+# run `slim mask --all --force` for recordings already filed.
 # pii:
 #   mask: [ssn, card, account, password, email, address]
 #   skip: [Notes/some-folder]

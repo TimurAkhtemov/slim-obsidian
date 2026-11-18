@@ -17,3 +17,4 @@ are the history. Past ~20 items is a signal about scope, not a reason for headin
 - [ ] `slim mask <path>` typed in another Unicode normalisation form than the disk's reports FileNotFoundError (fails safe; `--all` still reaches the note).
 - [ ] Masking leaves alone the titles and file names of recordings filed before it, and live captions (on screen only, never saved).
 - [ ] Owner to decide after living with it: keep or switch off the cue-free spaced 3-2-4 SSN shape (`pii_detect.SSN_SPACED_CUE_FREE`).
+- [ ] `slim mask` does not reach saved chats or the copilot's pre-edit copies under the data dir; mask or purge them.

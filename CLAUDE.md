@@ -19,7 +19,7 @@ uv run slim chat --reload               # dev server; respawns on any slim/**/*.
 uv run slim ingest                      # index the vault, embedding included
 uv run slim status                      # counts, including `unembedded`
 uv run slim trace -n 5                  # what the last silent failures did
-uv run slim mask --all                  # mask filed recordings; --dry-run counts, --force redoes
+uv run slim mask --all                  # mask filed recordings; --dry-run counts, --force redoes, --compact
 uv run python -m scripts.pii_eval text|calls|public --out <dir>   # masking eval, synthetic only
 cp obsidian/{main.js,manifest.json,styles.css} \
    "$SLIM_VAULT/.obsidian/plugins/slim-recorder/"   # a COPY; reload the plugin after
@@ -51,7 +51,9 @@ audio  ->  transcript  ->  LABEL  ->  FILE  ->  INDEX  ->  (REFLECT, TALK)
      like `[SSN]`. Secrets (ssn, card, account, password) are also muted in the audio, after the
      last cancel point. The raw words live only in `_incoming`'s segment caches until filing
      deletes them; the owner's typed notes are never masked. Classes are `pii.mask` in
-     `projects.yaml` (phone off by default); `pii.skip` lists folders `slim mask --all` skips.
+     `projects.yaml` (phone off by default; read at import, so a change needs a restart); an
+     unknown name stops `config` at load, since it would mask nothing under a `pii_by` stamp.
+     `pii.skip` lists folders `slim mask --all` skips.
 2. **Label** — type and subject, written once at capture; `tagged_by`/`subject_by` record
    which layer decided. A wrong label is the owner's edit.
 3. **File** — `suggest` proposes `Notes/<subject>/`; an invented folder collapses to its
@@ -97,19 +99,27 @@ The copilot is a vault assistant shaped like the Pi coding agent, on the same mo
   Shape: a dashed or spaced 3-2-4 SSN, a Luhn-valid card with a brand prefix, an IBAN. Bound:
   the cue sits just before it with only filler between, asks for it in the previous turn, or
   follows it ("…, that's my social"). "My social is" and "that's my social" also take a
-  garbled number, and "last four of my social" its four digits. A cue merely nearby masked
-  lists and dates near a cue word, and a secret hit also mutes audio. The spaced 3-2-4 needs
+  garbled number, and "last four of my social" its four digits. A cue word merely nearby does
+  not bind: that rule masked number lists and dates, and a secret hit also mutes audio. A
+  question that lists things ("your zip and your account number?") binds the answer's numbers
+  in order, counting only parts that name a thing. The spaced 3-2-4 needs
   no cue (`pii_detect.SSN_SPACED_CUE_FREE`): it is how the transcriber writes a spoken SSN, at
   the cost of masking any other number said in that shape.
 - **Passwords have no shape**: a cue opens a window and the model is asked once per window
   (`capture/pii_password.py`). It may only point: code masks window text matching the answer
   verbatim or by its letters and digits, never what the model writes.
-- **A masking failure never stops filing.** `pii_partial` names what is unfinished: `password`
-  (`slim mask <note>` redoes it from the text) or `audio` (the secret may still be audible;
-  `slim mask` is text only and leaves this reason on every note whose secret it masks).
+- **Partial masking never stops filing; a masker crash refuses it** (the audio stays staged,
+  as for a failed transcript). `pii_partial` names what is unfinished: `password` (the first
+  failed call ends the pass; `slim mask <note>` redoes it from the text) or `audio` (the secret
+  may still be audible; `slim mask` is text only and leaves this reason on every note whose
+  secret it masks).
+- **`pii_by` says the whole transcript was checked, and by which version**: `slim mask` redoes
+  notes by it. An append never adds or changes it, and removes it when masking is off.
 - **`slim mask` splices** (`recorder/mask.py`; a model job, `--dry-run` too): only the masked
   spans (transcript, SLIM's summary) and the `pii_*` lines change, and a note it cannot restore
-  byte for byte is refused; rebuilding the head once deleted the owner's text.
+  byte for byte is refused; rebuilding the head once deleted the owner's text. It compacts the
+  index after a changing run; when the server holds the DB, `slim mask --compact` does it
+  later. Saved chats and the copilot's pre-edit copies in `DATA_DIR/threads/` are not reached.
 - **Values are never stored, traced or printed**: frontmatter and traces carry class counts.
 - **Measured on synthetic calls only** (`scripts/pii_eval`; `calls` and `text` without
   `--no-model` are model jobs), never the owner's recordings; the gate is recall on cued secrets.

@@ -167,7 +167,10 @@ Calls carry things you would rather not keep: a card number read out to a suppor
 door code, an account number. SLIM masks them in every new recording, right after
 transcription, so the summary, title, filing card, note and index only ever see a placeholder.
 Once the note is filed SLIM keeps no unmasked copy; backups, including SLIM's optional restic
-job, still hold whatever they captured before, such as a note before `slim mask`.
+job, still hold whatever they captured before, such as a note before `slim mask`. For a
+recording filed before masking, unmasked text also stays in SLIM's data folder (`threads/`:
+saved chats keep what a lookup returned, and each copilot edit keeps a copy of the note as it
+was), and in the index until it is compacted.
 
 - **Numbers** are masked for their shape (an SSN written `123-45-6789` or `123 45 6789`, a card
   number that passes the Luhn check with a known issuer prefix, an IBAN) or because a cue is
@@ -193,7 +196,10 @@ pii:
 ```
 
 `mask` lists the classes (add `phone`; `[]` turns masking off) and `skip` lists folders
-`slim mask --all` leaves alone. A note records class counts, never values (`pii_masked`).
+`slim mask --all` leaves alone; a name that is not a class stops SLIM at start, naming the
+allowed ones. The list is read when the server starts, so restart it after a change (`slim chat
+--reload` does not watch `.yaml`), and after adding a class run `slim mask --all --force` for
+the recordings already filed. A note records class counts, never values (`pii_masked`).
 `pii_partial` names what is unfinished: `password` (the password pass did not complete;
 `slim mask <note>` redoes it) or `audio` (the secret is masked in the text but may still be
 audible). For recordings filed before masking, close them in Obsidian, stop the plugin's
@@ -203,6 +209,7 @@ server (port 7546) so the index can be compacted, and dry-run first:
 lsof -tiTCP:7546 -sTCP:LISTEN | xargs kill
 uv run slim mask --all --dry-run   # counts per note; writes nothing (it still runs the model)
 uv run slim mask --all             # mask transcripts and summaries, then re-index
+uv run slim mask --compact         # only if it said the index was not compacted
 ```
 
 The limits, plainly: a number or password said with no cue and no recognisable shape is not
