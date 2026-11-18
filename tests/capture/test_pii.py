@@ -266,9 +266,11 @@ def test_window_bounds_and_cap():
     assert m.counts == {}          # over 64 chars: refused
 
 
-def test_answer_not_verbatim_in_window_is_ignored():
+def test_answer_not_in_window_is_ignored():
     t = "the password is hunter2 ok."
-    assert pii.mask(t, classes=CLS, find_password=lambda w: "Hunter2").text == t
+    assert pii.mask(t, classes=CLS, find_password=lambda w: "Hunter3").text == t
+    # a tidied answer (case, spacing, spoken digits) is located in the window text instead
+    assert pii.mask(t, classes=CLS, find_password=lambda w: "Hunter2").text == "the password is [PASSWORD] ok."
 
 
 def test_every_occurrence_in_window_masked_and_model_never_sees_patterns():
@@ -1083,6 +1085,22 @@ def test_ssn_last_four_asked_as_a_question():
     for t in (_q("Last four of your social?", "4471 dollars."), _q("Last four of your social?", "44712."),
               _q("Last four of your card?", "4471."), _q("Last four of your social?", "Hm.\n\n**Them:** 4471.")):
         _same(t)
+
+
+def test_a_tidied_password_answer_is_located_in_the_window():
+    t = "The wifi password is salvorn four six. Thanks."
+    assert pii.mask(t, classes=CLS, find_password=lambda w: "salvorn46").text \
+        == "The wifi password is [PASSWORD]. Thanks."
+    t = "What's the password? It's f e n n i c k three one."
+    for ans in ("fennick31", "FENNICK31"):
+        m = pii.mask(t, classes=CLS, find_password=lambda w, a=ans: a)
+        assert m.text == "What's the password? It's [PASSWORD].", ans
+        assert m.secrets == ["f e n n i c k three one"]
+    for ans in ("hunter2", "salvorn47", "It's"):
+        assert pii.mask("The wifi password is salvorn four six.", classes=CLS,
+                        find_password=lambda w, a=ans: a).counts == {}, ans
+    t = "**Me:** the password is salvorn\n**Them:** four six."
+    assert pii.mask(t, classes=CLS, find_password=lambda w: "salvorn46").counts == {}   # never across a turn
 
 
 def test_account_with_one_short_edge_group():

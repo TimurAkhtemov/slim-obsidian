@@ -5,6 +5,7 @@ from collections.abc import Callable
 
 from .. import llm, trace
 from .pii_detect import _TURN_START, PLACEHOLDER
+from .pii_normalise import normalise
 
 CUES = re.compile(
     r"\b(pass ?words?|pass ?codes?|pins?(?: number)?|door codes?|gate codes?|log ?in is|security codes?)\b",
@@ -84,13 +85,46 @@ def _answer_ok(secret: str | None) -> bool:
     )
 
 
+_MAX_LOCATED = 80
+
+
+def _key(s: str) -> str:
+    """Letters and digits only, case-folded, spoken numbers as digits: what a tidied answer keeps."""
+    return re.sub(r"[^0-9a-z]", "", normalise(s)[0].casefold())
+
+
+def _locate(window: str, secret: str) -> tuple[int, int] | None:
+    """The shortest run of whole tokens in `window` that reads as `secret` by `_key`, never across
+    a turn label: the model answers "salvorn46" for "salvorn four six", and the span masked is
+    still window text found by code."""
+    target = _key(secret)
+    if not target:
+        return None
+    tokens = [m.span() for m in re.finditer(r"\S+", window)]
+    best = None
+    for i, (s0, _) in enumerate(tokens):
+        for _, e0 in tokens[i:]:
+            piece = window[s0:e0]
+            if e0 - s0 > _MAX_LOCATED or _TURN_START.search(piece):
+                break
+            if _key(piece) == target:
+                lead = len(piece) - len(re.sub(r"^[^0-9A-Za-z]+", "", piece))
+                trail = len(piece) - len(re.sub(r"[^0-9A-Za-z]+$", "", piece))
+                span = (s0 + lead, e0 - trail)
+                if best is None or span[1] - span[0] < best[1] - best[0]:
+                    best = span
+                break
+    return best
+
+
 def _password_spans(
     text: str, find_password: Callable[[str], str | None]
 ) -> tuple[list[tuple[int, int]], bool]:
     """Spans of the model-named secret inside each cue window, and whether any call failed.
 
-    Only a verbatim answer counts, as a whole word anywhere in the window (a secret is often said
-    before its cue: "gavrell 68 is my password"), and never over a placeholder already in the text."""
+    A verbatim answer counts as a whole word anywhere in the window (a secret is often said before
+    its cue: "gavrell 68 is my password"); an answer that is not verbatim is located by `_locate`.
+    Never over a placeholder already in the text."""
     placeholders = [m.span() for m in _PLACEHOLDER.finditer(text)]
     spans: set[tuple[int, int]] = set()
     failed = False
@@ -105,6 +139,10 @@ def _password_spans(
         if not _answer_ok(secret):
             continue
         pos = window.find(secret)
+        if pos < 0:
+            found = _locate(window, secret)
+            if found and all(a + found[1] <= x or a + found[0] >= y for x, y in placeholders):
+                spans.add((a + found[0], a + found[1]))
         while pos >= 0:
             s, e = a + pos, a + pos + len(secret)
             word = (s == 0 or not text[s - 1].isalnum()) and (e == len(text) or not text[e].isalnum())
