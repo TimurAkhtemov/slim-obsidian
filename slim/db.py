@@ -133,6 +133,22 @@ def connect(db_path=None) -> sqlite3.Connection:
         raise
 
 
+def compact(con: sqlite3.Connection) -> None:
+    """Make deleted text actually leave the files. A deleted row lingers in SQLite's free pages,
+    in the WAL and in FTS5's segments until each is rewritten, so text masked in the vault would
+    still be readable in the brain DB.
+
+    Raises `sqlite3.OperationalError` when another connection holds the DB (the chat server):
+    a checkpoint it blocks reports busy rather than failing, and that is raised here too, since
+    an unfinished checkpoint leaves old pages in the WAL."""
+    con.execute("INSERT INTO fragments_fts(fragments_fts) VALUES('optimize')")
+    con.commit()
+    for step in ("PRAGMA wal_checkpoint(TRUNCATE)", "VACUUM", "PRAGMA wal_checkpoint(TRUNCATE)"):
+        row = con.execute(step).fetchone()
+        if row is not None and row[0]:
+            raise sqlite3.OperationalError("database in use: the WAL could not be checkpointed")
+
+
 def _migrate_atomically(con: sqlite3.Connection, script: str, target_version: int) -> None:
     """Apply schema and user_version as one retryable SQLite transaction."""
     try:

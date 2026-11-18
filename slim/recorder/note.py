@@ -285,6 +285,92 @@ def merge_pii_frontmatter(text: str, counts: dict[str, int], reasons) -> str:
     return set_frontmatter(text, updates)
 
 
+def set_pii_frontmatter(text: str, counts: dict[str, int], reasons) -> str:
+    """The whole note was checked (`slim mask`): counts, the masker's version, and `pii_partial`
+    exactly as `reasons` say — REMOVED when none are left, which `set_frontmatter` cannot do.
+
+    Unlike `merge_pii_frontmatter` this adds `pii_by`, because here the whole transcript was
+    read. Counts arrive already totalled; nothing is added to what the note says."""
+    from ..capture import pii
+    from ..vault.frontmatter import set_frontmatter
+
+    updates = pii.frontmatter(counts, reasons)
+    text = set_frontmatter(text, updates)
+    return text if "pii_partial" in updates else _drop_frontmatter_key(text, "pii_partial")
+
+
+def _drop_frontmatter_key(text: str, key: str) -> str:
+    """`text` without `key` in its frontmatter, block-list lines included; every other byte kept."""
+    from ..vault.frontmatter import parse_frontmatter
+
+    _, skip = parse_frontmatter(text)
+    lines = text.splitlines(keepends=True)
+    head, body = lines[:skip], lines[skip:]
+    kept, i = [], 0
+    while i < len(head):
+        line = head[i]
+        i += 1
+        if 0 < i - 1 < len(head) - 1 and re.match(rf"^{re.escape(key)}:(\s|$)", line):
+            if not line[len(key) + 1:].strip():        # a block list may follow
+                while i < len(head) - 1 and (head[i].strip().startswith("- ")
+                                             or (head[i][:1].isspace() and head[i].strip())):
+                    i += 1
+            continue
+        kept.append(line)
+    return "".join(kept + body)
+
+
+def _transcript_bounds(text: str) -> tuple[int, int]:
+    """Where the transcript's words sit: just past `## Transcript` to the end of the meeting
+    block's body, or of the file for a note filed before the block existed. One reader for
+    both shapes, matching `read_review_sections`, plus a block that STARTS with the marker
+    (a note filed with no summary and no notes)."""
+    block = split_meeting_block(text)
+    if block is None:
+        if not text.startswith("---\n"):
+            raise ValueError("recorded note has no frontmatter")
+        fm_end = text.find("\n---", 4)
+        if fm_end < 0:
+            raise ValueError("recorded note has unterminated frontmatter")
+        scope, offset, fm_end = text, 0, fm_end + 4
+    else:
+        scope, offset, fm_end = block.body, len(block.before) + len(block.opener), 0
+    at = scope.rfind(f"\n{TRANSCRIPT_MARKER}")
+    if at >= fm_end:
+        start = at + 1 + len(TRANSCRIPT_MARKER)
+    elif block is not None and re.match(rf"{re.escape(TRANSCRIPT_MARKER)}[ \t]*(?:\n|$)", scope):
+        start = len(TRANSCRIPT_MARKER)
+    else:
+        raise ValueError("recorded note has no transcript section")
+    return offset + start, offset + len(scope)
+
+
+def read_transcript(text: str) -> str:
+    """The transcript exactly as it sits in the note, from just past `## Transcript` on:
+    leading newlines and trailing whitespace included, so a caller that changes a few spans
+    and hands it to `replace_transcript` moves no other byte."""
+    start, end = _transcript_bounds(text)
+    return text[start:end]
+
+
+def replace_transcript(text: str, transcript: str) -> str:
+    """Swap the transcript (as `read_transcript` returns it) and nothing else.
+
+    ⚠ ONLY FOR A CHANGE THE OWNER ASKED FOR (`slim mask`): SLIM never rewrites a transcript on
+    its own. Every byte outside it — frontmatter, summary, their notes, `block.after` — is
+    sliced from the original. The block is re-fenced only if the new words carry a backtick
+    run as long as the fence, which would otherwise close it early."""
+    start, end = _transcript_bounds(text)
+    block = split_meeting_block(text)
+    if block is not None:
+        fence = len(block.opener) - len(block.opener.lstrip("`"))
+        if max((len(r) for r in re.findall(r"`+", transcript)), default=0) >= fence:
+            offset = len(block.before) + len(block.opener)
+            body = block.body[:start - offset] + transcript
+            return block.before + wrap_meeting_block(body) + "\n" + block.after
+    return text[:start] + transcript + text[end:]
+
+
 def write_note_text(path: Path, text: str) -> None:
     """The one way a recorded note is written after it exists.
 

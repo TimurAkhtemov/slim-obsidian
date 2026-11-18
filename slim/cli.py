@@ -3,6 +3,7 @@
 import argparse
 import json
 import re
+import sqlite3
 import time
 from pathlib import Path
 
@@ -179,6 +180,91 @@ def cmd_reflect(args):
     print(f"Open it in Obsidian: {VAULT / result.path}")
 
 
+def _mask_line(res: dict) -> str:
+    """One note: classes and counts, never a value."""
+    tail = []
+    if res.get("skipped"):
+        tail.append(f"({res['skipped']})")
+    elif res["counts"]:
+        tail.append(" ".join(f"{c}:{n}" for c, n in sorted(res["counts"].items())))
+    else:
+        tail.append("(unchanged)")
+    if res.get("partial"):
+        tail.append(f"(partial: {', '.join(res['partial'])})")
+    return f"{res['note']}  " + " ".join(tail)
+
+
+def cmd_mask(args):
+    """Mask personal data in recordings already in the vault (`recorder/mask.py`). Prints class
+    counts per note, never a value. Non-zero when a note failed or was written but not
+    re-indexed: anything that writes a note must index it, or say plainly that it did not."""
+    from . import config
+    from .recorder import mask
+
+    if not args.notes and not args.all:
+        print("name the notes to mask, or pass --all")
+        raise SystemExit(2)
+    if not config.PII_MASK:
+        print("masking is off: pii.mask is empty in projects.yaml")
+        raise SystemExit(1)
+    identity.require_vault_dir()
+    if not args.dry_run:
+        con = db.connect()
+        try:
+            identity.require_vault_identity(con)
+        finally:
+            con.close()
+
+    rels = []
+    for name in args.notes:
+        path = Path(name)
+        if path.is_absolute() and path.is_relative_to(VAULT):
+            path = path.relative_to(VAULT)
+        rels.append(path.as_posix())
+    if args.all:
+        rels += [r for r in mask.recordings(VAULT) if r not in rels]
+
+    masked = unchanged = skipped = 0
+    failed = changed = False
+    for rel in rels:
+        try:
+            res = mask.mask_note(VAULT, rel, force=args.force, dry_run=args.dry_run)
+        except Exception as exc:                   # noqa: BLE001 - one bad note never stops --all
+            # The class only: a message can quote the file it choked on.
+            trace.record("mask", {"note": rel, "status": "failed", "error": type(exc).__name__})
+            print(f"{rel}  (error: {type(exc).__name__})")
+            skipped += 1
+            failed = True
+            continue
+        print(_mask_line(res))
+        if res.get("skipped"):
+            skipped += 1
+        elif res["counts"]:
+            masked += 1
+        else:
+            unchanged += 1
+        changed = changed or res["changed"]
+        if res.get("index_error"):
+            print(f"  ⚠ not re-indexed: {res['index_error']}")
+            failed = True
+
+    if changed and not args.dry_run:
+        con = db.connect()
+        try:
+            db.compact(con)
+        except sqlite3.OperationalError:
+            print("  ⚠ index not compacted (database in use): old text may remain in free pages "
+                  "until the next `slim mask` run with the server stopped")
+        finally:
+            con.close()
+    prefix = "dry run: " if args.dry_run else ""
+    print(f"{prefix}{masked} notes masked, {unchanged} unchanged, {skipped} skipped")
+    trace.record("mask", {"status": "done", "dry_run": args.dry_run, "masked": masked,
+                          "unchanged": unchanged, "skipped": skipped, "failed": failed})
+    if failed:
+        raise SystemExit(1)
+
+
 def main():
     ap = argparse.ArgumentParser(prog="slim", description="Sparse Local Intelligence & Memory")
     sub = ap.add_subparsers(dest="cmd", required=False)
@@ -218,6 +304,16 @@ def main():
     p.add_argument("--dry-run", dest="dry_run", action="store_true",
                    help="preview the selection only — no model call, no write")
     p.set_defaults(fn=cmd_reflect)
+
+    p = sub.add_parser("mask", help="mask personal data in recordings already in the vault")
+    p.add_argument("notes", nargs="*", metavar="NOTE", help="vault-relative recording paths")
+    p.add_argument("--all", action="store_true",
+                   help="every recording, except folders listed under pii.skip")
+    p.add_argument("--force", action="store_true",
+                   help="redo notes already masked by the current version")
+    p.add_argument("--dry-run", dest="dry_run", action="store_true",
+                   help="report what would be masked; write nothing")
+    p.set_defaults(fn=cmd_mask)
 
     args = ap.parse_args()
     if not args.cmd:

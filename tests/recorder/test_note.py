@@ -530,3 +530,58 @@ def test_pii_provenance_sits_after_speakers_by(tmp_path):
 def test_nothing_found_still_reads_as_checked(tmp_path):
     r = _write(tmp_path, pii={"pii_masked": [], "pii_by": "pii-1"})
     assert "pii_masked: []\npii_by: pii-1\n" in r.note.read_text(encoding="utf-8")
+
+
+# --- slim mask: the transcript swapped in place, nothing else -------------------------------
+
+def _transcript_note(after=""):
+    return note_writer.render_note(
+        title="t", when=NOW, type_tag="meeting", transcript="**Me:** words one.\n\n**Them:** two.",
+        notes_md="- mine  ", summary_md="s", topics=[], audio_rel="a.webm",
+        filed_by_slim=True) + after
+
+
+LEGACY = ("---\ntitle: t\norigin: recorded\n---\n\n## Notes\n\nmine  \n\n## Transcript\n\n"
+          "**Me:** words one.\n\n**Them:** two.\n")
+
+
+@pytest.mark.parametrize("text", [_transcript_note("\nTheir Markdown after.\n"), LEGACY])
+def test_replace_transcript_swaps_only_the_transcript(text):
+    old = note_writer.read_transcript(text)
+    assert old.strip() == "**Me:** words one.\n\n**Them:** two."
+    new = old.replace("one", "[ONE]")
+    out = note_writer.replace_transcript(text, new)
+    assert out == text.replace("words one", "words [ONE]")
+    assert note_writer.read_transcript(out) == new
+
+
+def test_replace_transcript_reads_a_block_that_starts_with_it():
+    text = note_writer.render_note(title="t", when=NOW, type_tag="meeting", transcript="said",
+                                   notes_md="", summary_md="", topics=[], audio_rel="a.webm",
+                                   filed_by_slim=True)
+    assert note_writer.read_transcript(text).strip() == "said"
+    assert note_writer.replace_transcript(text, "\n\nsaid it\n") == text.replace("said", "said it")
+
+
+def test_replace_transcript_keeps_the_block_closed():
+    text = _transcript_note()
+    out = note_writer.replace_transcript(text, "\n\n````````\nnot a fence\n")
+    block = note_writer.split_meeting_block(out)
+    assert block is not None and "not a fence" in block.body
+
+
+def test_replace_transcript_refuses_a_note_without_one():
+    with pytest.raises(ValueError, match="no transcript"):
+        note_writer.replace_transcript("---\norigin: recorded\n---\n\nwords\n", "x")
+    with pytest.raises(ValueError, match="no transcript"):
+        note_writer.read_transcript("---\norigin: recorded\n---\n\nwords\n")
+
+
+def test_pii_frontmatter_drops_a_finished_reason_and_nothing_else():
+    text = ("---\ntitle: t\npii_masked: [ssn:1]\npii_by: pii-1\npii_partial:\n  - password\n"
+            "audio: a.webm\n---\nbody\r\nkept\n")
+    out = note_writer.set_pii_frontmatter(text, {"ssn": 1}, [])
+    assert out == "---\ntitle: t\npii_masked: [ssn:1]\npii_by: pii-1\naudio: a.webm\n---\nbody\r\nkept\n"
+    kept = note_writer.set_pii_frontmatter(text, {"ssn": 2}, ["audio"])
+    fm, _ = parse_frontmatter(kept)
+    assert fm["pii_partial"] == ["audio"] and fm["pii_masked"] == ["ssn:2"]

@@ -53,6 +53,19 @@ def _pii_mask(data: dict) -> tuple[str, ...]:
 
 PII_MASK: tuple[str, ...] = _pii_mask(_load())
 
+
+def _pii_skip(data: dict) -> tuple[str, ...]:
+    """Vault folders `slim mask --all` leaves alone (`pii.skip`), as prefixes of whole path
+    segments. Their names are the owner's, so they live in config, never in code. A note named
+    on the command line is masked wherever it sits."""
+    skip = (data.get("pii") or {}).get("skip") or ()
+    if isinstance(skip, str):
+        skip = [skip]
+    return tuple(p for p in (str(s).strip().strip("/") for s in skip) if p)
+
+
+PII_SKIP: tuple[str, ...] = _pii_skip(_load())
+
 # The name the prompts address. Only interpretation reads it (labels, summaries, reflection);
 # no path, id or filter ever does.
 OWNER: str = str(_load().get("owner") or "the vault's owner")

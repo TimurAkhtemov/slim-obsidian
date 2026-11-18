@@ -22,5 +22,8 @@ projects:
 # Personal data masked in recording transcripts (`slim mask`, and at capture). Classes:
 # ssn, card, account, password, email, address, phone. The default is all but phone:
 # add `phone` to mask phone numbers; `[]` turns masking off.
+# `skip` lists vault folders `slim mask --all` leaves alone (whole path segments; a note
+# named on the command line is still masked).
 # pii:
 #   mask: [ssn, card, account, password, email, address]
+#   skip: [Notes/some-folder]

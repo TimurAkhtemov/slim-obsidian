@@ -12,3 +12,14 @@ def test_pii_mask_empty_list_turns_masking_off():
 
 def test_pii_mask_custom_list():
     assert config._pii_mask({"pii": {"mask": ["email", "phone"]}}) == ("email", "phone")
+
+
+def test_pii_skip_defaults_to_nothing():
+    assert config._pii_skip({}) == ()
+    assert config._pii_skip({"pii": {"mask": []}}) == ()
+
+
+def test_pii_skip_lists_folder_prefixes():
+    assert config._pii_skip({"pii": {"skip": ["Notes/some-folder/", " Journal "]}}) == \
+        ("Notes/some-folder", "Journal")
+    assert config._pii_skip({"pii": {"skip": "Notes/one"}}) == ("Notes/one",)

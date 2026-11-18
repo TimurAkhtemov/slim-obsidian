@@ -139,3 +139,119 @@ def test_status_reports_fragments_without_a_current_vector(con, vault, monkeypat
     out = capsys.readouterr().out
     assert f"unembedded: {fragments}" in out
     assert "slim ingest" in out
+
+
+# --- slim mask ----------------------------------------------------------------------------
+
+def _run_mask(monkeypatch, *argv):
+    import sys
+    monkeypatch.setattr(sys, "argv", ["slim", "mask", *argv])
+    cli.main()
+
+
+@pytest.fixture
+def mask_vault(tmp_path, monkeypatch):
+    from slim import config
+    from slim.capture import pii
+    from slim.recorder import state
+    from tests.recorder.test_mask import _recorded
+    v = tmp_path / "vault"
+    _recorded(v, "Notes/w/a.md")
+    _recorded(v, "Notes/w/b.md", transcript="**Me:** nothing here.")
+    monkeypatch.setattr(cli, "VAULT", v)
+    monkeypatch.setattr(config, "PII_MASK", config.PII_DEFAULT)
+    monkeypatch.setattr(config, "PII_SKIP", ())
+    monkeypatch.setattr(pii, "ask_model", lambda window: None)
+    monkeypatch.setattr(identity, "require_vault_dir", lambda: None)
+    monkeypatch.setattr(identity, "require_vault_identity", lambda con, **kw: None)
+    monkeypatch.setattr(state, "index_now", lambda vault, rel, **kw: {"note": rel})
+    compacted = []
+    monkeypatch.setattr(db, "compact", lambda con: compacted.append(1))
+    return v, compacted
+
+
+def test_mask_with_no_notes_exits_non_zero(monkeypatch, mask_vault):
+    with pytest.raises(SystemExit) as e:
+        _run_mask(monkeypatch)
+    assert e.value.code not in (0, None)
+
+
+def test_mask_all_prints_counts_never_values(monkeypatch, mask_vault, capsys):
+    v, compacted = mask_vault
+    _run_mask(monkeypatch, "--all")
+    out = capsys.readouterr().out
+    assert out.splitlines() == ["Notes/w/a.md  email:1 ssn:1", "Notes/w/b.md  (unchanged)",
+                                "1 notes masked, 1 unchanged, 0 skipped"]
+    assert "219-09-9999" not in out and "@" not in out
+    assert compacted == [1]
+    _run_mask(monkeypatch, "--all")
+    out = capsys.readouterr().out
+    assert out.splitlines() == ["Notes/w/a.md  (already masked)", "Notes/w/b.md  (already masked)",
+                                "0 notes masked, 0 unchanged, 2 skipped"]
+    assert compacted == [1]                  # nothing changed, nothing to compact
+
+
+def test_mask_dry_run_writes_and_compacts_nothing(monkeypatch, mask_vault, capsys):
+    v, compacted = mask_vault
+    before = (v / "Notes/w/a.md").read_bytes()
+    _run_mask(monkeypatch, "Notes/w/a.md", "--dry-run")
+    out = capsys.readouterr().out
+    assert out.splitlines() == ["Notes/w/a.md  email:1 ssn:1",
+                                "dry run: 1 notes masked, 0 unchanged, 0 skipped"]
+    assert (v / "Notes/w/a.md").read_bytes() == before and compacted == []
+
+
+def test_mask_off_reads_no_note(monkeypatch, mask_vault, capsys):
+    from slim import config
+    from slim.recorder import mask
+    monkeypatch.setattr(config, "PII_MASK", ())
+    monkeypatch.setattr(mask, "mask_note", lambda *a, **k: pytest.fail("read a note"))
+    monkeypatch.setattr(mask, "recordings", lambda *a, **k: pytest.fail("listed notes"))
+    with pytest.raises(SystemExit) as e:
+        _run_mask(monkeypatch, "--all")
+    assert e.value.code not in (0, None)
+    assert "masking is off: pii.mask is empty in projects.yaml" in capsys.readouterr().out
+
+
+def test_mask_says_when_a_note_was_not_reindexed(monkeypatch, mask_vault, capsys):
+    from slim.recorder import state
+    monkeypatch.setattr(state, "index_now", lambda vault, rel, **kw: {"error": "locked"})
+    with pytest.raises(SystemExit) as e:
+        _run_mask(monkeypatch, "--all")
+    assert e.value.code not in (0, None)
+    out = capsys.readouterr().out
+    assert "Notes/w/a.md  email:1 ssn:1\n  ⚠ not re-indexed: locked\n" in out
+    assert "1 notes masked, 1 unchanged, 0 skipped" in out
+
+
+def test_mask_survives_a_bad_note_and_a_busy_index(monkeypatch, mask_vault, capsys):
+    import sqlite3
+    v, _ = mask_vault
+    (v / "Notes/w/c.md").write_bytes(b"---\norigin: recorded\n---\n\xff\xfe\n")
+
+    def busy(con):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(db, "compact", busy)
+    with pytest.raises(SystemExit) as e:
+        _run_mask(monkeypatch, "Notes/w/c.md", "Notes/w/a.md", "--force")
+    assert e.value.code not in (0, None)          # the bad note is an error
+    out = capsys.readouterr().out
+    assert "Notes/w/c.md  (error: UnicodeDecodeError)" in out
+    assert "Notes/w/a.md  email:1 ssn:1" in out
+    assert "⚠ index not compacted (database in use)" in out
+    assert "1 notes masked, 0 unchanged, 1 skipped" in out
+
+
+def test_mask_marks_partial_notes(monkeypatch, mask_vault, capsys):
+    from slim.capture import pii
+    from tests.recorder.test_mask import _recorded
+    v, _ = mask_vault
+    _recorded(v, "Notes/w/p.md", transcript="**Me:** the password is tango42.")
+
+    def down(window):
+        raise RuntimeError("down")
+
+    monkeypatch.setattr(pii, "ask_model", down)
+    _run_mask(monkeypatch, "Notes/w/p.md")
+    assert capsys.readouterr().out.splitlines()[0] == "Notes/w/p.md  (unchanged) (partial: password)"

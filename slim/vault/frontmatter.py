@@ -86,8 +86,9 @@ def set_frontmatter(text: str, updates: dict[str, object]) -> str:
     fm, skip = parse_frontmatter(text)
     if not skip:
         raise ValueError("note has no parseable frontmatter")
-    lines = text.splitlines()
-    head, body = lines[:skip], lines[skip:]
+    lines = text.splitlines(keepends=True)
+    # The body is re-attached as the exact bytes it was (CRLF and all); only the head is rebuilt.
+    head, body = [line.rstrip("\r\n") for line in lines[:skip]], "".join(lines[skip:])
 
     def render(key: str, value) -> str:
         if isinstance(value, (list, tuple)):
@@ -113,4 +114,6 @@ def set_frontmatter(text: str, updates: dict[str, object]) -> str:
             break
         else:
             head.insert(_insert_at(head, key), rendered)   # at its canonical position
-    return "\n".join(head + body) + ("\n" if text.endswith("\n") else "")
+    if body:
+        return "\n".join(head) + "\n" + body
+    return "\n".join(head) + ("\n" if text.endswith("\n") else "")

@@ -233,3 +233,22 @@ def test_failed_fresh_schema_creation_rolls_back_and_is_retryable(tmp_path, monk
     con = db.connect(path)
     assert con.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
     con.close()
+
+
+def test_compact_leaves_no_deleted_text_in_the_files(tmp_path):
+    """Deleted rows linger in free pages, the WAL and FTS5 segments until compacted."""
+    path = tmp_path / "c.db"
+    marker = "zqxmarkerqvj"
+    con = db.connect(path)
+    con.execute("INSERT INTO sources (id, path, current_hash) VALUES ('s', 'n.md', 'h')")
+    for i in range(50):
+        con.execute("INSERT INTO fragments (source_id, content_hash, seq, text) VALUES "
+                    "('s', 'h', ?, ?)", (i, f"{marker} {'filler ' * 200}"))
+    con.commit()
+    con.execute("DELETE FROM fragments")
+    con.commit()
+    db.compact(con)
+    con.close()
+    for f in (path, path.with_name("c.db-wal")):
+        if f.exists():
+            assert marker.encode() not in f.read_bytes(), f.name
