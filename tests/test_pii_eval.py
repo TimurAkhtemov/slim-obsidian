@@ -790,6 +790,48 @@ def test_with_phone_masked_no_distractor_is_phone_shaped():
     assert ev_gen.generate(30, seed=7, phone=True) == ev_gen.generate(30, seed=7, phone=True)
 
 
+def test_a_verbatim_value_cannot_excuse_a_look_alike_distractor(tmp_path):
+    # seed 28 s16: SSN 255-53-0179 written verbatim; "Call (563) 555-0112 about the account
+    # number." with its number masked read >= 0.6 like the SSN and was excused.
+    s = next(x for x in ev_gen.generate(30, seed=28) if x.sid == "s16")
+    item = s.items[0]
+    d = next(d for d in s.distractors if d.kind == "account_call")
+    assert item.token == "255530179" and "555-0112" in d.text
+    raw = f"**Them:** My social is 255-53-0179.\n\n**Me:** {d.text}"
+    masked = "**Them:** My social is [SSN].\n\n**Me:** Call (563) [ACCOUNT] about the account number."
+    mini = ev_gen.Script("s16", [("Them", "x"), ("Me", d.text)], [item], [d], s.transcript)
+    res = _call(mini, raw, masked, masked, tmp_path)
+    assert res["items"][0]["transcribed"] and not res["garbled_masked"]
+    assert res["false_positives"] and res["false_positives"][0]["distractors"] == ["account_call"]
+
+
+def test_a_garbled_value_excuses_only_inside_its_own_turn(tmp_path):
+    s = _mini([("Them", f"My social is {SSN_219[3]}."), ("Me", "Order 219 09 998, thanks.")],
+              SSN_219, distractor=("plain_order", "Order 219 09 998, thanks."))
+    raw = "**Them:** My social is 219 09 99.\n\n**Me:** Order 219 09 998, thanks."
+    in_turn = "**Them:** My social is [SSN].\n\n**Me:** Order 219 09 998, thanks."
+    res = _call(s, raw, in_turn, in_turn, tmp_path)
+    assert res["garbled_masked"] and not res["false_positives"]
+    other_turn = "**Them:** My social is 219 09 99.\n\n**Me:** Order [SSN], thanks."
+    res = _call(s, raw, other_turn, other_turn, tmp_path)
+    assert not res["garbled_masked"] and res["false_positives"][0]["distractors"] == ["plain_order"]
+
+
+def test_a_rewrite_that_is_not_a_placeholder_substitution_fails(tmp_path):
+    rewrite = {x.sid: re.sub(r"\[[A-Z]+\]", "XXXX", _perfect(x)) for x in SCRIPTS}
+    got = ev_score.score_text(SCRIPTS, rewrite, ev_gen.CLASSES, model=True)
+    assert got["errors"] and got["errors"][0]["error"] == ev_score.NOT_SUBSTITUTION
+    assert not got["gate"]["ok"] and got["gate"]["secret_recall"] == 0.0
+    s = _mini([("Me", "Hi."), ("Them", f"My social is {SSN_219[3]}.")], SSN_219)
+    raw = "**Me:** Hi.\n\n**Them:** My social is 219-09-9999."
+    res = _call(s, raw, raw.replace("219-09-9999", "XXXX"), raw, tmp_path)
+    assert res["error"] == ev_score.NOT_SUBSTITUTION and not res["items"][0]["masked"]
+    report = ev_score.aggregate_calls([res], ev_gen.CLASSES)
+    assert not report["gate"]["ok"] and report["gate"]["errors"] == 1
+    with pytest.raises(ev_score.NotSubstitution):
+        ev_score.replaced(raw, raw.replace("[", "").replace("Hi", "Ho"))
+
+
 def test_check_full_and_full_runner_with_fakes(tmp_path):
     import sqlite3
     from types import SimpleNamespace

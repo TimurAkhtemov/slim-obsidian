@@ -1,4 +1,9 @@
-"""Matching and scoring: is a value still readable, what masking replaced, the text and calls scorers."""
+"""Matching and scoring: is a value still readable, what masking replaced, the text and calls scorers.
+
+Known strictness: in `calls`, one mask over two adjacent values Parakeet garbled excuses only
+one of them, so the other counts as a false positive. Generated scripts put each item in its
+own turn, where an excuse cannot reach across.
+"""
 
 from __future__ import annotations
 
@@ -61,23 +66,29 @@ def locate(token: str, text: str) -> list[tuple[int, int]]:
     return out
 
 
+class NotSubstitution(ValueError):
+    """The masked text is not the original with spans swapped for known placeholders."""
+
+
+NOT_SUBSTITUTION = "not a placeholder substitution"
+
+
 def _replaced(orig: str, masked: str) -> list[tuple[int, int, str]]:
     """Spans of `orig` that masking replaced, with the placeholder's class. Masking leaves every
     other byte alone, so `masked` is `orig` with some spans swapped for placeholders: align the
-    literal pieces between placeholders."""
+    literal pieces between placeholders. Anything else (a rewrite, "XXXX" over a value) raises
+    `NotSubstitution`: the instrument never credits a change it cannot explain."""
     pieces = PLACEHOLDERS.split(masked)
     lits, names = pieces[0::2], [n.lower() for n in pieces[1::2]]
     if not names:
+        if masked != orig:
+            raise NotSubstitution(NOT_SUBSTITUTION)
         return []
     pattern = re.escape(lits[0]) + "".join("(.+?)" + re.escape(lit) for lit in lits[1:])
     m = re.fullmatch(pattern, orig, re.S)
-    if m:
-        return [(*m.span(g), names[g - 1]) for g in range(1, m.lastindex + 1)]
-    out = []                       # not a pure substitution: fall back to a diff
-    for op, a, b, _, _ in difflib.SequenceMatcher(None, orig, masked, autojunk=False).get_opcodes():
-        if op in ("replace", "delete"):
-            out.append((a, b, "?"))
-    return out
+    if not m:
+        raise NotSubstitution(NOT_SUBSTITUTION)
+    return [(*m.span(g), names[g - 1]) for g in range(1, m.lastindex + 1)]
 
 
 def replaced(orig: str, masked: str) -> list[tuple[int, int]]:
@@ -226,9 +237,14 @@ def score_text(scripts: list[Script], masked: dict[str, str], classes, *, model:
     damaged = 0
     triples: set = set()
     records = []
+    errors = []
     for s in scripts:
         t, m = s.transcript, masked[s.sid]
-        reps3 = _replaced(t, m)
+        try:
+            reps3 = _replaced(t, m)
+        except NotSubstitution as exc:
+            errors.append({"script": s.sid, "error": str(exc)})
+            reps3 = []                 # nothing is credited: every item scores as a miss
         reps = [(a, b) for a, b, _ in reps3]
         placeholders.update(p.lower() for p in PLACEHOLDERS.findall(m))
         scored = [i for i in s.items if i.cls in classes]
@@ -274,7 +290,9 @@ def score_text(scripts: list[Script], masked: dict[str, str], classes, *, model:
         "shape_only": shape,
         "placeholders": {c: {"found": placeholders[c], "expected": expected[c]} for c in classes},
         "misses": misses, "false_positives": fps,
-        "gate": {"ok": not no_evidence and not gated and secret_recall >= RECALL_GATE,
+        "errors": errors,
+        "gate": {"ok": not no_evidence and not gated and not errors
+                 and secret_recall >= RECALL_GATE, "errors": len(errors),
                  "rule": GATE_RULE, "secret_classes": gate_cls,
                  "secret_recall": None if secret_recall is None else round(secret_recall, 3),
                  "distractors_damaged": damaged, "false_positives": len(gated),
@@ -312,6 +330,8 @@ def print_text_report(r: dict) -> None:
     print(f"distractors damaged: {r['distractors_damaged']} of {r['distractors']}")
     print(f"ssn-shaped triples masked (their own digits only): {r['ssn_shaped_triples']} "
           "(known trade-off, not gated)")
+    for e in r.get("errors", []):
+        print(f"  ERROR {e['script']}: {e['error']} (fails the gate)")
     for m in r["misses"]:
         print(f"  MISS {m['script']} {m['class']}/{m['kind']} cue={m['cue']} style={m['style']} "
               f"({m['result']}): {m['context']}")
@@ -398,10 +418,24 @@ def rendered_span(item: Item, raw: str, span: tuple[int, int]) -> tuple[int, int
 _PIECE_CUT = re.compile(r"(?<=[.?!])\s|\n\n|\*\*[^*\n]+:\*\*")
 
 
-def _aligned(raw: str, a: int, b: int, forms: list[str]) -> tuple[int, int] | None:
+def _raw_turns(raw: str) -> list[tuple[int, int]]:
+    edges = [0, *(m.end() for m in re.finditer(r"\n\n", raw)), len(raw) + 2]
+    return [(x, y - 2) for x, y in zip(edges, edges[1:])]
+
+
+def _turn_of(item: Item, script: Script, raw: str, turns) -> tuple[int, int]:
+    """The raw turn that holds the script line `item` is on: the raw turn whose words read most
+    like that line (Parakeet keeps the order and wording of lines, not their exact spelling)."""
+    line = squash(next((t for _, t in script.lines if item.spoken in t), item.spoken))
+    return max(turns, key=lambda tn: difflib.SequenceMatcher(
+        None, squash(raw[tn[0]:tn[1]]), line, autojunk=False).ratio())
+
+
+def _aligned(raw: str, a: int, b: int, forms) -> tuple[int, int] | None:
     """The one contiguous run of words in raw[a:b] that best reads as a value Parakeet garbled
     (>= 0.6 against a form, at least half its length), never crossing a sentence end or a turn
-    start: (start, end) in raw, else None. Only that run is excused."""
+    start, and inside the turn that value belongs to. `forms` is (form, turn span). Returns
+    (start, end) in raw, else None. Only that run is excused."""
     cuts = sorted({a, b, *(m.start() + a for m in _PIECE_CUT.finditer(raw[a:b])),
                    *(m.end() + a for m in _PIECE_CUT.finditer(raw[a:b]))})
     best = None
@@ -412,8 +446,8 @@ def _aligned(raw: str, a: int, b: int, forms: list[str]) -> tuple[int, int] | No
             for j in range(i, min(i + 12, len(words))):
                 ws, we = words[i][0], words[j][1]
                 sq = squash(raw[ws:we])
-                for f in forms:
-                    if not sq or len(sq) < len(f) / 2:
+                for f, (lo, hi) in forms:
+                    if not sq or len(sq) < len(f) / 2 or ws < lo or we > hi:
                         continue
                     r = difflib.SequenceMatcher(None, sq, f, autojunk=False).ratio()
                     if r >= 0.6 and (best is None or (r, we - ws) > (best[0], best[2] - best[1])):
@@ -445,7 +479,11 @@ def score_call(script: Script, raw: str, masked: str, heard_after: str, classes,
     secret's token may come back from the muted copy unless the original says it elsewhere."""
     classes = tuple(classes)
     items, fps, garbled, audio_fail, renderings = [], [], [], [], []
-    reps3 = _replaced(raw, masked)
+    error = None
+    try:
+        reps3 = _replaced(raw, masked)
+    except NotSubstitution as exc:
+        error, reps3 = str(exc), []    # nothing is credited; the gate fails on the error
     reps = [(a, b) for a, b, _ in reps3]
     located = {id(i): locate(i.token, raw) for i in script.items}
     rendered = {id(i): [rendered_span(i, raw, sp) for sp in located[id(i)]] for i in script.items}
@@ -483,7 +521,12 @@ def score_call(script: Script, raw: str, masked: str, heard_after: str, classes,
                                    "runs": leaked[:5], "heard": _heard(i, line, heard_after)[0]})
     own_all = [sp for i in script.items if i.cls in classes for sp in rendered[id(i)]]
     dspans = _distractor_spans(script, raw)
-    forms = [squash(v) for i in script.items if i.cls in classes for v in (i.spoken, i.written)]
+    # Only a value Parakeet did NOT write verbatim may excuse a mask as "garbled", and only inside
+    # its own turn: a value written verbatim already has its own span.
+    turns = _raw_turns(raw)
+    forms = [(squash(v), _turn_of(i, script, raw, turns))
+             for i in script.items if i.cls in classes and not located[id(i)]
+             for v in (i.spoken, i.written)]
     triples: set = set()
     for a, b, cls in reps3:
         own = [(x, y) for x, y in own_all if a < y and x < b]
@@ -529,7 +572,7 @@ def score_call(script: Script, raw: str, masked: str, heard_after: str, classes,
                            "detail": "a secret could not be placed in token times"})
     return {"script": script.sid, "items": items, "false_positives": fps, "garbled_masked": garbled,
             "audio_failures": audio_fail, "renderings": renderings, "spans": [list(x) for x in spans],
-            "reasons": sorted(reasons), "ssn_shaped_triples": len(triples)}
+            "reasons": sorted(reasons), "ssn_shaped_triples": len(triples), "error": error}
 
 
 def check_full(script: Script, note_text: str, result: dict, fragments: list[str],
@@ -612,6 +655,7 @@ def aggregate_calls(results: list[dict], classes, *, model: bool = True) -> dict
             if not i["masked"]:
                 misses.append({"script": res["script"], **{k: i[k] for k in
                                ("class", "kind", "style", "cue", "spoken", "heard", "result")}})
+    errors = [{"script": r["script"], "error": r["error"]} for r in results if r.get("error")]
     fps = [f for r in results for f in r["false_positives"]]
     triples = sum(r.get("ssn_shaped_triples", 0) for r in results)
     gated = fps
@@ -626,7 +670,7 @@ def aggregate_calls(results: list[dict], classes, *, model: bool = True) -> dict
     if secret_total and secret_untranscribed > secret_total / 2:
         no_evidence.append(f"{secret_untranscribed} of {secret_total} secret items not transcribed: "
                            + ", ".join(untranscribed_secrets))
-    ok = (not no_evidence and not gated and secret_recall >= RECALL_GATE
+    ok = (not no_evidence and not gated and not errors and secret_recall >= RECALL_GATE
           and (garbled_recall is None or garbled_recall >= GARBLED_GATE)
           and not audio_fail and all(f["ok"] for f in fulls))
     return {
@@ -643,7 +687,8 @@ def aggregate_calls(results: list[dict], classes, *, model: bool = True) -> dict
         "full": fulls,
         "partial": {r["script"]: r["reasons"] for r in results if r.get("reasons")},
         "seconds": round(sum(r.get("seconds", 0) for r in results), 1),
-        "gate": {"ok": ok, "rule": GATE_RULE, "secret_classes": gate_cls,
+        "errors": errors,
+        "gate": {"ok": ok, "rule": GATE_RULE, "secret_classes": gate_cls, "errors": len(errors),
                  "secret_recall": None if secret_recall is None else round(secret_recall, 3),
                  "garbled_secret_recall": None if garbled_recall is None else round(garbled_recall, 3),
                  "distractors_damaged": len(damaged), "false_positives": len(gated),
@@ -671,6 +716,8 @@ def print_calls_report(r: dict) -> None:
     print("\n".join(_table("garbled", r["garbled"])))
     print("\n".join(_table("secret, no cue", {"no cue — shape only": r["shape_only"],
                                                "garbled, no cue": r["garbled_shape_only"]})))
+    for e in r.get("errors", []):
+        print(f"  ERROR {e['script']}: {e['error']} (fails the gate)")
     for m in r["misses"]:
         print(f"  MISS {m['script']} {m['class']}/{m['kind']} cue={m['cue']} ({m['result']}): "
               f"heard {m['heard']!r}")
