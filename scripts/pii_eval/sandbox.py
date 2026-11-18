@@ -37,7 +37,18 @@ def discovered_vault() -> Path | None:
         return None
 
 
-def _refusal(p: Path, *, home: Path, vault: Path | None) -> str | None:
+ENV_PATHS = ("SLIM_VAULT", "SLIM_DATA_DIR", "SLIM_PROJECTS")
+
+
+def _refusal(p: Path, *, home: Path, vault: Path | None, callers: dict[str, Path]) -> str | None:
+    if _inside(home, p):
+        return "the home folder or one of its ancestors"
+    for name in ("Desktop", "Documents"):
+        if _inside(p, home / name):
+            return f"under ~/{name}, which iCloud may sync"
+    for name, where in callers.items():
+        if _inside(p, where):
+            return f"inside {name}, which the caller had set"
     if _inside(p, home / "Library" / "Mobile Documents"):
         return "under iCloud Drive"
     if _inside(p, home / "Library" / "Application Support" / "slim"):
@@ -54,27 +65,39 @@ def _refusal(p: Path, *, home: Path, vault: Path | None) -> str | None:
     return None
 
 
-def guard(out, *, home: Path | None = None, discovered=discovered_vault) -> Path:
+def guard(out, *, home: Path | None = None, discovered=discovered_vault, env=None) -> Path:
     """`out` resolved once, or exit, WITHOUT creating or writing anything. `out` and the vault,
     data and projects.yaml under it are resolved through symlinks, and each must stay clear of
-    iCloud, the brain DB, the discovered vault, any Obsidian vault and any git working tree. An
-    existing non-empty `out` must carry pii_eval's marker."""
+    the home folder and its ancestors, ~/Desktop, ~/Documents, iCloud, the brain DB, the
+    discovered vault, wherever the caller's SLIM_VAULT / SLIM_DATA_DIR / SLIM_PROJECTS point,
+    any Obsidian vault and any git working tree. A new `out` needs an existing parent (a typo
+    must not create a tree). An existing one must be pii_eval's (marker when non-empty) and hold
+    no symlink anywhere below it."""
     home = Path(home or Path.home()).expanduser().resolve()
     out = Path(out).expanduser().resolve()
     vault = discovered()
+    env = os.environ if env is None else env
+    callers = {n: Path(env[n]).expanduser().resolve() for n in ENV_PATHS if env.get(n)}
     targets = {"--out": out}
     for name in ("vault", "data", "projects.yaml"):
         targets[f"--out/{name}"] = (out / name).resolve()
     for name, p in targets.items():
-        why = _refusal(p, home=home, vault=vault)
+        why = _refusal(p, home=home, vault=vault, callers=callers)
         if why:
             raise SystemExit(f"refusing {name}: it is {why}")
+    if not out.exists() and not out.parent.is_dir():
+        raise SystemExit("refusing --out: its parent folder does not exist (create it first)")
     if out.exists():
         if not out.is_dir():
             raise SystemExit("refusing --out: it is not a directory")
         if any(out.iterdir()) and not (out / MARKER).is_file():
             raise SystemExit("refusing --out: not a pii_eval output directory "
                              f"(non-empty, no {MARKER} marker)")
+        for root, dirs, files in os.walk(out, followlinks=False):
+            for name in dirs + files:
+                if (Path(root) / name).is_symlink():
+                    rel = (Path(root) / name).relative_to(out)
+                    raise SystemExit(f"refusing --out: it contains a symlink ({rel})")
     projects = targets["--out/projects.yaml"]
     if projects.exists() and not projects.read_text(errors="replace").startswith(PROJECTS_HEADER):
         raise SystemExit("refusing --out: its projects.yaml was not written by pii_eval")
@@ -95,15 +118,16 @@ def _config_outside(config, out: Path) -> list[str]:
             if not _inside(Path(getattr(config, name)).resolve(), out)]
 
 
-def sandbox(out, *, classes=None, home: Path | None = None, discovered=discovered_vault):
+def sandbox(out, *, classes=None, home: Path | None = None, discovered=discovered_vault, env=None):
     """Point SLIM at `<out>` and prove it: returns (resolved out, `slim.config`), or exits having
     created and written nothing."""
-    out = guard(out, home=home, discovered=discovered)
+    out = guard(out, home=home, discovered=discovered, env=env)
     already = sys.modules.get("slim.config")
     if already is not None and _config_outside(already, out):
         raise SystemExit("refusing to run: slim was imported before the sandbox was set, and "
                          f"slim.config.{_config_outside(already, out)[0]} resolves outside --out")
-    out.mkdir(parents=True, exist_ok=True)
+    print(f"--out {out}")
+    out.mkdir(exist_ok=True)
     (out / MARKER).write_text("pii_eval output directory\n")
     vault, data, projects = out / "vault", out / "data", out / "projects.yaml"
     for d in (vault / "Notes" / "work", vault / "Notes" / "school",

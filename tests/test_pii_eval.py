@@ -532,6 +532,97 @@ def test_score_call_on_real_parakeet_output(tmp_path):
     assert {i["kind"]: i["result"] for i in res["items"]}["card"] == "partial"
 
 
+def _mini(lines, item, distractor=None):
+    """A hand-made one-item script: `item` is (cls, token, written, spoken), placed in `lines`."""
+    text = "\n\n".join(f"**{sp}:** {t}" for sp, t in lines)
+    cls, token, written, spoken = item
+    at = text.index(spoken)
+    it = ev_gen.Item(cls, cls, written, spoken, token, "digits", "same_sentence", "Them",
+                     at, at + len(spoken))
+    ds = []
+    if distractor:
+        kind, phrase = distractor
+        d_at = text.index(phrase)
+        ds = [ev_gen.Distractor(kind, phrase, d_at, d_at + len(phrase))]
+    return ev_gen.Script("m01", list(lines), [it], ds, text)
+
+
+def _call(script, raw, masked, after, tmp_path):
+    return ev_score.score_call(script, raw, masked, after, ev_gen.CLASSES, spans=[], reasons=set(),
+                               manifest={}, measure=lambda p, a, b: -120.0,
+                               silenced=tmp_path / "x")
+
+
+SSN_219 = ("ssn", "219099999", "219-09-9999", "two one nine oh nine nine nine nine nine")
+
+
+def test_audio_check_covers_a_secret_parakeet_garbled(tmp_path):
+    # The probe: raw "219 09 999" (a digit lost, so the value is not located), masked [SSN],
+    # and the muted copy's transcript still says "219 09 999".
+    s = _mini([("Me", "Hi."), ("Them", f"Sure. My social is {SSN_219[3]}.")], SSN_219)
+    raw = "**Me:** Hi.\n\n**Them:** Sure. My social is 219 09 999."
+    masked = "**Me:** Hi.\n\n**Them:** Sure. My social is [SSN]."
+    res = _call(s, raw, masked, raw, tmp_path)
+    assert not res["items"][0]["transcribed"]
+    assert [f["check"] for f in res["audio_failures"]] == ["retranscribed"]
+    report = ev_score.aggregate_calls([res], ev_gen.CLASSES)
+    assert not report["gate"]["ok"]
+    # muted for real: nothing comes back
+    after = "**Me:** Hi.\n\n**Them:** Sure. My social is."
+    assert not _call(s, raw, masked, after, tmp_path)["audio_failures"]
+
+
+def test_a_distractor_excuses_its_own_digits_once(tmp_path):
+    # The count "one two three four five" and the SSN 123-45-6789; Parakeet wrote only "one two
+    # three four five" for the SSN and nothing was masked: 5 of 9 digits are readable.
+    s = _mini([("Me", "Okay, one two three four five, go."),
+               ("Them", "Sure, my social is one two three four five six seven eight nine.")],
+              ("ssn", "123456789", "123-45-6789", "one two three four five six seven eight nine"),
+              distractor=("count", "one two three four five"))
+    raw = "**Me:** Okay, one two three four five, go.\n\n**Them:** Sure, one two three four five."
+    res = _call(s, raw, raw, raw, tmp_path)
+    assert res["items"][0]["result"] == "REMNANT", res["items"][0]
+    # the distractor alone, once: explained, no remnant
+    alone = "**Me:** Okay, one two three four five, go.\n\n**Them:** Sure, [SSN]."
+    res = _call(s, raw.replace("Sure, one two three four five.", "Sure, [SSN]."), alone, alone,
+                tmp_path)
+    assert res["items"][0]["result"] == "no remnant"
+
+
+def test_another_items_value_does_not_excuse_a_remnant():
+    s = _mini([("Me", "Card four two four two."), ("Them", f"My social is {SSN_219[3]}.")], SSN_219)
+    other = ev_gen.Item("card", "card", "4242", "four two four two", "4242", "digits", "none", "Me",
+                        s.transcript.index("four two"), s.transcript.index("four two") + 17)
+    s.items.append(other)
+    elsewhere = ev_score.elsewhere_in_script(s)
+    assert not any("4242" in e for e in elsewhere) and not any("219099" in e for e in elsewhere)
+
+
+def test_garbled_excuse_covers_the_value_not_its_neighbour(tmp_path):
+    s = _mini([("Me", "Hi."), ("Them", f"Sure. {SSN_219[3]}, nine one one.")], SSN_219,
+              distractor=("nine_one_one", "nine one one"))
+    raw = "**Me:** Hi.\n\n**Them:** Sure. 219 09 998, 911."          # garbled: not located
+    masked = "**Me:** Hi.\n\n**Them:** Sure. [SSN]."
+    res = _call(s, raw, masked, masked, tmp_path)
+    assert not res["items"][0]["transcribed"]
+    assert res["garbled_masked"] and res["false_positives"]
+    fp = res["false_positives"][0]
+    assert fp["kind"] == "beyond a garbled value" and fp["leftover"] and fp["distractor"] == "nine_one_one"
+    report = ev_score.aggregate_calls([res], ev_gen.CLASSES)
+    assert report["distractors_damaged"] == 1 and report["gate"]["false_positives"] == 1
+
+
+def test_calls_false_positive_off_any_distractor_is_not_damage(tmp_path, capsys):
+    s = _mini([("Me", "Hello there."), ("Them", f"Sure. {SSN_219[3]}.")], SSN_219)
+    raw = "**Me:** Hello there.\n\n**Them:** Sure. 219-09-9999."
+    masked = "**Me:** [EMAIL] there.\n\n**Them:** Sure. [SSN]."
+    res = _call(s, raw, masked, masked, tmp_path)
+    report = ev_score.aggregate_calls([res], ev_gen.CLASSES)
+    assert report["gate"]["false_positives"] == 1 and report["distractors_damaged"] == 0
+    ev_score.print_calls_report(report)
+    assert "false positives: 1; distractors damaged: 0" in capsys.readouterr().out
+
+
 def test_check_full_and_full_runner_with_fakes(tmp_path):
     import sqlite3
     from types import SimpleNamespace
@@ -745,7 +836,7 @@ def _snapshot(root: Path) -> dict:
 
 
 def _guard(out, tmp_path, discovered=None):
-    return ev_sandbox.guard(out, home=tmp_path / "home", discovered=lambda: discovered)
+    return ev_sandbox.guard(out, home=tmp_path / "home", discovered=lambda: discovered, env={})
 
 
 @pytest.mark.parametrize("where", ["icloud", "brain", "git", "obsidian", "obsidian_part", "discovered"])
@@ -779,7 +870,8 @@ def test_guard_refuses_another_checkouts_config_and_keeps_its_projects_yaml(tmp_
     real.write_text('owner: "Someone"\n')
     before = _snapshot(tmp_path)
     with pytest.raises(SystemExit):
-        ev_sandbox.sandbox(checkout / "config", home=tmp_path / "home", discovered=lambda: None)
+        ev_sandbox.sandbox(checkout / "config", home=tmp_path / "home", discovered=lambda: None,
+                           env={})
     assert _snapshot(tmp_path) == before and real.read_text() == 'owner: "Someone"\n'
     # the same folder outside any git tree: refused for having no marker
     plain = tmp_path / "plain"
@@ -808,7 +900,7 @@ def test_guard_expands_the_home_once_and_returns_the_one_path(tmp_path, monkeypa
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     (tmp_path / "home").mkdir()
     before = _snapshot(tmp_path)
-    got = ev_sandbox.guard("~/eval", home=tmp_path / "home", discovered=lambda: None)
+    got = ev_sandbox.guard("~/eval", home=tmp_path / "home", discovered=lambda: None, env={})
     assert got == (tmp_path / "home" / "eval").resolve() and _snapshot(tmp_path) == before
 
 
@@ -829,7 +921,8 @@ def test_sandbox_refuses_when_config_resolved_elsewhere_before_writing(tmp_path,
         monkeypatch.delenv(name, raising=False)           # restored after the test
     before = _snapshot(tmp_path)
     with pytest.raises(SystemExit, match="imported before"):
-        ev_sandbox.sandbox(tmp_path / "out", home=tmp_path / "home", discovered=lambda: None)
+        ev_sandbox.sandbox(tmp_path / "out", home=tmp_path / "home", discovered=lambda: None,
+                           env={})
     assert _snapshot(tmp_path) == before and "SLIM_VAULT" not in __import__("os").environ
 
 
@@ -839,6 +932,72 @@ def test_sandbox_projects_yaml_is_generic(tmp_path):
     assert text.startswith(ev_sandbox.PROJECTS_HEADER) and 'owner: "Alex"' in text and "phone" in text
 
 
-def test_discovered_vault_loads_vaultpath_without_importing_slim(monkeypatch, tmp_path):
-    monkeypatch.setenv("SLIM_VAULT", str(tmp_path / "v"))
-    assert ev_sandbox.discovered_vault() == (tmp_path / "v").resolve()
+def test_discovered_vault_loads_vaultpath_without_importing_slim(tmp_path):
+    import subprocess
+    import sys
+    code = ("import sys; from scripts.pii_eval import sandbox as s; v = s.discovered_vault(); "
+            "print(v); print(any(m == 'slim' or m.startswith('slim.') for m in sys.modules))")
+    env = {k: v for k, v in __import__("os").environ.items() if not k.startswith("SLIM_")}
+    env["SLIM_VAULT"] = str(tmp_path / "v")
+    out = subprocess.run([sys.executable, "-c", code], cwd=ev_sandbox.REPO, env=env,
+                         capture_output=True, text=True, check=True).stdout.split("\n")
+    assert out[0] == str((tmp_path / "v").resolve()) and out[1] == "False"
+
+
+def _plant(tmp_path):
+    """A marked --out, and somebody's vault with a note in it."""
+    out = tmp_path / "out"
+    (out / "vault").mkdir(parents=True)
+    (out / ev_sandbox.MARKER).write_text("x")
+    target = tmp_path / "somebodys-vault"
+    (target / ".obsidian").mkdir(parents=True)
+    (target / "Notes").mkdir()
+    (target / "Notes" / "note.md").write_text("theirs\n")
+    return out, target
+
+
+@pytest.mark.parametrize("planted", ["notes_dir", "scripts_json"])
+def test_guard_refuses_a_symlink_anywhere_below_out(tmp_path, planted):
+    out, target = _plant(tmp_path)
+    if planted == "notes_dir":
+        (out / "vault" / "Notes").symlink_to(target / "Notes")
+    else:
+        (out / "scripts.json").symlink_to(target / "Notes" / "note.md")
+    before = _snapshot(tmp_path)
+    with pytest.raises(SystemExit, match="contains a symlink"):
+        _guard(out, tmp_path)
+    assert _snapshot(tmp_path) == before
+    assert (target / "Notes" / "note.md").read_text() == "theirs\n"
+
+
+@pytest.mark.parametrize("where", ["home", "home_parent", "desktop", "documents", "no_parent",
+                                   "caller_data", "caller_vault_itself"])
+def test_guard_refuses_home_icloud_folders_typos_and_caller_paths(tmp_path, where):
+    home = tmp_path / "home"
+    for d in ("Desktop", "Documents"):
+        (home / d).mkdir(parents=True)
+    (tmp_path / "data-they-set").mkdir()
+    (tmp_path / "vault-they-set").mkdir()
+    env = {"SLIM_DATA_DIR": str(tmp_path / "data-they-set"),
+           "SLIM_VAULT": str(tmp_path / "vault-they-set")}
+    out = {"home": home, "home_parent": tmp_path, "desktop": home / "Desktop" / "eval",
+           "documents": home / "Documents" / "eval", "no_parent": tmp_path / "typo" / "deeper",
+           "caller_data": tmp_path / "data-they-set" / "eval",
+           "caller_vault_itself": tmp_path / "vault-they-set"}[where]
+    before = _snapshot(tmp_path)
+    with pytest.raises(SystemExit):
+        ev_sandbox.guard(out, home=home, discovered=lambda: None, env=env)
+    assert _snapshot(tmp_path) == before
+
+
+def test_cli_prints_the_resolved_out_before_creating_it(tmp_path):
+    import os
+    import subprocess
+    import sys
+    env = {k: v for k, v in os.environ.items() if not k.startswith("SLIM_")}
+    out = tmp_path / "a" / ".." / "eval"
+    run = subprocess.run([sys.executable, "-m", "scripts.pii_eval", "text", "--no-model", "--n", "2",
+                          "--out", str(out)], cwd=ev_sandbox.REPO, env=env, capture_output=True,
+                         text=True)
+    assert run.stdout.splitlines()[0] == f"--out {(tmp_path / 'eval').resolve()}", run.stderr
+    assert (tmp_path / "eval" / ev_sandbox.MARKER).is_file() and not (tmp_path / "a").exists()

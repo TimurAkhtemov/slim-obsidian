@@ -186,9 +186,11 @@ def _full_runner(config, *, pipeline=None, measure=rms_dbfs):
         rel = f"Attachments/_incoming/eval{script.sid}-001.webm"
         staged = config.VAULT / rel
         staged.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(audio_path, staged)
+        # Stage the bytes that were transcribed (`work`, after any `normalize_container`), so the
+        # pipeline's sha-keyed segment cache matches and full mode does not transcribe again.
+        shutil.copyfile(work, staged)
         cache = work.with_suffix(work.suffix + ".transcript.json")
-        if cache.exists():               # same bytes, so the pipeline reuses this transcript
+        if cache.exists():
             shutil.copyfile(cache, staged.with_suffix(staged.suffix + ".transcript.json"))
         muted: list = []
         real = pl._silence_segments

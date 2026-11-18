@@ -126,10 +126,26 @@ def _runs(s: str, n: int) -> set[str]:
     return {s[k:k + n] for k in range(len(s) - n + 1)}
 
 
+def _count(hay: str, run: str) -> int:
+    """Occurrences of `run` in `hay`, overlapping ones included."""
+    n, at = 0, hay.find(run)
+    while at >= 0:
+        n, at = n + 1, hay.find(run, at + 1)
+    return n
+
+
 def _fresh_runs(token_part: str, n: int, hay: str, elsewhere: list[str]) -> list[str]:
-    """Runs of `n` characters of the token found in `hay` that cannot be explained by text found
-    elsewhere in the original (a distractor "2019" holding "019")."""
-    return sorted(r for r in _runs(token_part, n) if r in hay and not any(r in e for e in elsewhere))
+    """Runs of `n` characters of the token that `hay` holds MORE often than the rest of the
+    original accounts for. A distractor "2019" excuses one "019", not two: a run the other lines
+    explain once and `hay` repeats is still this item's."""
+    return sorted(r for r in _runs(token_part, n)
+                  if _count(hay, r) > sum(_count(e, r) for e in elsewhere))
+
+
+def elsewhere_in_script(script: "Script") -> list[str]:
+    """The script with EVERY item's value cut out, squashed piece by piece: what may explain a
+    run without it being an item's. Other items' values never excuse anything."""
+    return _segments_outside(script.transcript, [(i.start, i.end) for i in script.items])
 
 
 def remnant(item: "Item", text: str, elsewhere: list[str]) -> str | None:
@@ -155,7 +171,8 @@ def remnant(item: "Item", text: str, elsewhere: list[str]) -> str | None:
             for k in range(len(words) - size + 1):
                 window = squash(" ".join(words[k:k + size]))
                 for f in forms:
-                    if len(window) < len(f) / 2 or any(window in e for e in elsewhere):
+                    if len(window) < len(f) / 2 or (
+                            _count(hay, window) <= sum(_count(e, window) for e in elsewhere)):
                         continue
                     sm = difflib.SequenceMatcher(None, window, f)
                     if sm.quick_ratio() >= 0.6 and sm.ratio() >= 0.6:
@@ -334,6 +351,42 @@ def rendered_span(item: Item, raw: str, span: tuple[int, int]) -> tuple[int, int
     return min(a, words[lo][0]), max(b, words[hi][1])
 
 
+def _aligned(raw: str, a: int, b: int, forms: list[str]) -> tuple[int, int] | None:
+    """The part of raw[a:b] that lines up with one of `forms` (a value Parakeet garbled), when it
+    reads as that value (>= 0.6): (start, end) in raw, else None. Only that part is excused."""
+    sq, starts, ends = _squash_map(raw[a:b])
+    best = None
+    for f in forms:
+        blocks = [bl for bl in difflib.SequenceMatcher(None, sq, f, autojunk=False)
+                  .get_matching_blocks() if bl.size >= 2]
+        if not blocks:
+            continue
+        lo, hi = blocks[0].a, blocks[-1].a + blocks[-1].size
+        r = difflib.SequenceMatcher(None, sq[lo:hi], f, autojunk=False).ratio()
+        if r >= 0.6 and (best is None or r > best[0]):
+            best = (r, lo, hi)
+    if best is None:
+        return None
+    _, lo, hi = best
+    return a + starts[lo], a + max(ends[lo:hi])
+
+
+def _distractor_at(script: Script, raw: str, left: list[int]) -> str | None:
+    """The distractor a false positive's unexplained letters and digits fall on, if any: where
+    Parakeet wrote it (any spelling squash reads alike), else by resemblance (>= 0.6)."""
+    if not left:
+        return None
+    for d in script.distractors:
+        for x, y in locate(d.text, raw):
+            if any(x <= k < y for k in left):
+                return d.kind
+    text = squash("".join(raw[k] for k in left))
+    near = [(difflib.SequenceMatcher(None, text, squash(d.text)).ratio(), d.kind)
+            for d in script.distractors]
+    best = max(near, default=(0.0, None))
+    return best[1] if best[0] >= 0.6 else None
+
+
 def score_call(script: Script, raw: str, masked: str, heard_after: str, classes, *,
                spans, reasons, manifest, measure, silenced: Path, model: bool = True) -> dict:
     """One call's numbers: items (transcribed, masked, remnant), false positives, audio checks.
@@ -352,7 +405,7 @@ def score_call(script: Script, raw: str, masked: str, heard_after: str, classes,
         line = next((t for _, t in script.lines if i.spoken in t), i.spoken)
         heard, status = _heard(i, line, raw)
         transcribed = bool(located[id(i)])
-        elsewhere = _segments_outside(script.transcript, [(i.start, i.end)])
+        elsewhere = elsewhere_in_script(script)
         if transcribed:
             readable = present(i.token, masked)
             covered = all(_covered(a, b, raw, reps) for a, b in located[id(i)])
@@ -370,8 +423,13 @@ def score_call(script: Script, raw: str, masked: str, heard_after: str, classes,
                            "spoken": i.spoken, "heard": heard, "status": status,
                            "form": _form(heard) if transcribed else "-"})
         if i.cls in _gate_classes(classes, model):
-            raw_elsewhere = _segments_outside(raw, rendered[id(i)])
-            leaked = _fresh_runs(squash(i.token), 3, squash(heard_after), raw_elsewhere)
+            # Located: the raw transcript minus every located value explains runs. Not located:
+            # the raw text holds the garbled value itself, so only the SCRIPT's other lines may.
+            if transcribed:
+                why = _segments_outside(raw, [sp for x in script.items for sp in rendered[id(x)]])
+            else:
+                why = elsewhere
+            leaked = _fresh_runs(squash(i.token), 3, squash(heard_after), why)
             if leaked:
                 audio_fail.append({"script": script.sid, "check": "retranscribed", "class": i.cls,
                                    "runs": leaked[:5], "heard": _heard(i, line, heard_after)[0]})
@@ -385,13 +443,16 @@ def score_call(script: Script, raw: str, masked: str, heard_after: str, classes,
                  "leftover": "".join(raw[k] for k in left),
                  "kind": "over-wide mask" if own else "false positive"}
         if not own:
-            frag = squash(raw[a:b])
-            near = max((difflib.SequenceMatcher(None, frag, squash(v)).ratio()
-                        for i in script.items if i.cls in classes for v in (i.spoken, i.written)),
-                       default=0.0)
-            if near >= 0.6:
-                garbled.append(entry)
-                continue
+            forms = [squash(v) for i in script.items if i.cls in classes for v in (i.spoken, i.written)]
+            part = _aligned(raw, a, b, forms)
+            if part:
+                garbled.append({**entry, "text": raw[part[0]:part[1]]})
+                left = _leftover(a, b, raw, [part])
+                if not left:
+                    continue
+                entry = {**entry, "leftover": "".join(raw[k] for k in left),
+                         "kind": "beyond a garbled value"}
+        entry["distractor"] = _distractor_at(script, raw, left)
         fps.append(entry)
 
     def level(a, b):
@@ -501,6 +562,7 @@ def aggregate_calls(results: list[dict], classes, *, model: bool = True) -> dict
                 misses.append({"script": res["script"], **{k: i[k] for k in
                                ("class", "kind", "style", "cue", "spoken", "heard", "result")}})
     fps = [f for r in results for f in r["false_positives"]]
+    damaged = [f for f in fps if f.get("distractor")]
     audio_fail = [f for r in results for f in r["audio_failures"]]
     fulls = [r["full"] for r in results if "full" in r]
     n = sum(by_class[c]["n"] for c in gate_cls)
@@ -522,7 +584,7 @@ def aggregate_calls(results: list[dict], classes, *, model: bool = True) -> dict
         "by_cue": {c: {**d, "recall": _ratio(d)} for c, d in by_cue.items()},
         "garbled": {c: {**d, "recall": _ratio(d)} for c, d in garbled_rows.items()},
         "not_transcribed": not_transcribed, "misses": misses, "remnants": remnants,
-        "false_positives": fps, "distractors_damaged": len(fps),
+        "false_positives": fps, "distractors_damaged": len(damaged),
         "garbled_masked": [g for r in results for g in r.get("garbled_masked", [])],
         "audio_failures": audio_fail,
         "renderings": [x for r in results for x in r["renderings"]],
@@ -532,7 +594,7 @@ def aggregate_calls(results: list[dict], classes, *, model: bool = True) -> dict
         "gate": {"ok": ok, "secret_classes": gate_cls,
                  "secret_recall": None if secret_recall is None else round(secret_recall, 3),
                  "garbled_secret_recall": None if garbled_recall is None else round(garbled_recall, 3),
-                 "distractors_damaged": len(fps), "false_positives": len(fps),
+                 "distractors_damaged": len(damaged), "false_positives": len(fps),
                  "audio_failures": len(audio_fail),
                  "full_failures": sum(not f["ok"] for f in fulls), "no_evidence": no_evidence},
     }
@@ -560,8 +622,11 @@ def print_calls_report(r: dict) -> None:
         print(f"  REMNANT {m['script']} {m['class']}/{m['kind']} cue={m['cue']}: {m['remnant']}; "
               f"heard {m['heard']!r}")
     for f in r["false_positives"]:
-        print(f"  FALSE POSITIVE {f['script']} [{f['class'].upper()}] {f['kind']}: {f['text']!r} "
-              f"(unexplained: {f['leftover']!r}) in {f['context']}")
+        where = f"distractor {f['distractor']}" if f.get("distractor") else "other text"
+        print(f"  FALSE POSITIVE {f['script']} [{f['class'].upper()}] {f['kind']} over {where}: "
+              f"{f['text']!r} (unexplained: {f['leftover']!r}) in {f['context']}")
+    print(f"false positives: {len(r['false_positives'])}; distractors damaged: "
+          f"{r['distractors_damaged']}")
     for g in r["garbled_masked"]:
         print(f"  masked a garbled value {g['script']}: {g['text']!r}")
     for f in r["audio_failures"]:
