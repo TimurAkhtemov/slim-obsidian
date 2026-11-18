@@ -19,3 +19,5 @@ are the history. Past ~20 items is a signal about scope, not a reason for headin
 - [ ] Owner to decide after living with it: keep or switch off the cue-free spaced 3-2-4 SSN shape (`pii_detect.SSN_SPACED_CUE_FREE`).
 - [ ] `slim mask` does not reach saved chats or the copilot's pre-edit copies under the data dir; mask or purge them.
 - [ ] A listed answer given in another order than asked binds by position: "zip and account number?" ⏎ "48213377 and 10001" masks the zip and leaves the account.
+- [ ] A cue noun followed by balance/type/holder is read as the cue: "What's your account balance?" ⏎ "1234567." is masked as an account.
+- [ ] A card's 3-digit security code is not a masked class.
