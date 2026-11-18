@@ -67,7 +67,7 @@ def validate_bind_host(host: str) -> None:
     except ValueError:
         pass
     raise ChatError(
-        f"refusing to bind {host!r} — the chat surface can display Journal/ content and must "
+        f"refusing to bind {host!r} — the chat surface serves the vault and must "
         f"only ever listen on loopback (127.0.0.1 or localhost)")
 
 

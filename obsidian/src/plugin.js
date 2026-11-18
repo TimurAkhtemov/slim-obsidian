@@ -310,15 +310,12 @@ class SlimRecorderPlugin extends Plugin {
       if (!stranded.length) return;
 
       const draftsById = new Map();
-      for (const folder of [DRAFT_FOLDER, "Journal"]) {
-        if (!(await adapter.exists(folder))) continue;
-        const drafts = await adapter.list(folder);
-        for (const path of drafts.files || []) {
-          const name = nodePath.posix.basename(path);
-          if (!name.endsWith(DRAFT_SUFFIX) || !name.includes("--recording--")) continue;
-          const id = name.slice(0, -DRAFT_SUFFIX.length).split("--recording--").pop();
-          if (id) draftsById.set(id, path);
-        }
+      const drafts = (await adapter.exists(DRAFT_FOLDER)) ? await adapter.list(DRAFT_FOLDER) : {};
+      for (const path of drafts.files || []) {
+        const name = nodePath.posix.basename(path);
+        if (!name.endsWith(DRAFT_SUFFIX) || !name.includes("--recording--")) continue;
+        const id = name.slice(0, -DRAFT_SUFFIX.length).split("--recording--").pop();
+        if (id) draftsById.set(id, path);
       }
 
       // ⚠ A resumed recording stages `<id>-001.webm`, `-002.webm`. Without stripping that

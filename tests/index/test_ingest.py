@@ -106,22 +106,19 @@ def test_lowercase_profile_folder_is_excluded_too(tmp_path):
 
 
 def test_managed_recorder_drafts_are_not_ingested(tmp_path):
-    """A live draft changes on every keystroke and has no transcript yet. Indexing it would
-    create source versions mid-recording and let an incomplete journal reach reflection."""
+    """A live draft changes on every keystroke and has no transcript yet, and the note it is
+    filed as would find it as a same-content rival."""
     from slim.index import ingest as ingest_mod
 
     vault = tmp_path / "draft-vault"
-    journal = vault / "Journal" / "2026-08-23--recording--abc.slim-draft.md"
     capture = vault / "Notes" / "_unfiled" / "2026-08-23--recording--def.slim-draft.md"
-    journal.parent.mkdir(parents=True)
     capture.parent.mkdir(parents=True)
-    journal.write_text("private words still being typed\n")
     capture.write_text("meeting notes still being typed\n")
 
     assert list(ingest_mod.eligible_files(vault)) == []
 
 
-def test_draft_exclusion_is_narrow_to_the_two_managed_locations(tmp_path):
+def test_draft_exclusion_is_narrow_to_the_managed_location(tmp_path):
     """The suffix is lifecycle state only where the recorder owns it. A similarly named
     human note elsewhere must not become an undocumented opt-out of indexing."""
     from slim.index import ingest as ingest_mod
@@ -129,14 +126,14 @@ def test_draft_exclusion_is_narrow_to_the_two_managed_locations(tmp_path):
     vault = tmp_path / "draft-vault"
     ordinary = vault / "Notes" / "work" / "idea.slim-draft.md"
     completed = vault / "Notes" / "_unfiled" / "completed.md"
-    nested_journal = vault / "Journal" / "nested" / "idea.slim-draft.md"
-    for path in (ordinary, completed, nested_journal):
+    journal = vault / "Journal" / "2026-08-23--recording--abc.slim-draft.md"
+    for path in (ordinary, completed, journal):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(path.name + "\n")
 
     got = [p.relative_to(vault).as_posix() for p in ingest_mod.eligible_files(vault)]
     assert got == [
-        "Journal/nested/idea.slim-draft.md",
+        "Journal/2026-08-23--recording--abc.slim-draft.md",
         "Notes/_unfiled/completed.md",
         "Notes/work/idea.slim-draft.md",
     ]
@@ -144,10 +141,9 @@ def test_draft_exclusion_is_narrow_to_the_two_managed_locations(tmp_path):
 
 # --- the index keeps three frontmatter facts and invents none ---------------------------------
 
-def test_source_fields_keeps_only_what_something_reads():
-    """Schema v12 cut every other column. `reflect` selects on `type` and `authored_at`, the
-    copilot shows `title`; anything else a note declares is Obsidian's business, so it must not
-    silently reappear as a source column."""
+def test_source_fields_keeps_only_the_three_facts():
+    """Title, type and date; anything else a note declares is Obsidian's business, so it must
+    not silently reappear as a source column."""
     from slim.index import ingest as ingest_mod
     out = ingest_mod.source_fields({
         "title": "A", "type": "journal", "date": "2026-07-22",
@@ -156,8 +152,8 @@ def test_source_fields_keeps_only_what_something_reads():
 
 
 def test_authored_at_falls_back_to_created_time():
-    """Imported notes carry `created_time` where recorded ones carry `date`; `reflect`'s window
-    reads one column, so the fallback lives here."""
+    """Imported notes carry `created_time` where recorded ones carry `date`; one column holds
+    either, so the fallback lives here."""
     from slim.index import ingest as ingest_mod
     assert ingest_mod.source_fields({"created_time": "2026-07-01"})["authored_at"] == "2026-07-01"
     assert ingest_mod.source_fields({})["authored_at"] is None
@@ -227,12 +223,13 @@ def test_sweep_skips_managed_recorder_drafts_like_the_single_note_path(tmp_path)
     con = db.connect(tmp_path / "t.db")
     ingest(con, vault)
     indexed = {row[0] for row in con.execute("SELECT path FROM sources WHERE deleted=0")}
-    # The recorder's working copy under Journal/ or Notes/_unfiled/ becomes a real note
-    # when filed; indexing the draft gives that note a same-content rival. A `.slim-draft.md`
-    # anywhere else is the user's own file.
-    assert indexed == {"Capture/_unfiled/old.slim-draft.md", "Notes/own.slim-draft.md", "Notes/kept.md"}
+    # The recorder's working copy under Notes/_unfiled/ becomes a real note when filed;
+    # indexing the draft gives that note a same-content rival. A `.slim-draft.md` anywhere
+    # else is the user's own file.
+    assert indexed == {"Journal/2026-08-25.slim-draft.md", "Capture/_unfiled/old.slim-draft.md",
+                       "Notes/own.slim-draft.md", "Notes/kept.md"}
     with pytest.raises(IngestError, match="does not index this note"):
-        ingest_note(con, vault, "Journal/2026-08-25.slim-draft.md")
+        ingest_note(con, vault, "Notes/_unfiled/x.slim-draft.md")
 
 
 def test_a_note_edited_and_moved_in_one_step_keeps_identity_when_told_where_it_came_from(con, vault):
@@ -264,3 +261,22 @@ def test_the_moved_from_hint_is_ignored_while_the_old_file_still_exists(con, vau
     got = ingest_note(con, vault, "Projects/Demo/copy.md", moved_from="Projects/Demo/note.md")
     assert got["id"] != sid
     assert con.execute("SELECT COUNT(*) FROM sources WHERE deleted=0").fetchone()[0] == 2
+
+
+def test_notes_in_a_journal_folder_are_ordinary_notes(tmp_path):
+    """The journal route is gone; a vault's `Journal/` and its `type: journal` notes are the
+    owner's files, indexed and searchable like any other folder, at any depth."""
+    vault = tmp_path / "vault"
+    for rel in ["Journal/2026-08-01.md", "Journal/2026/older.md"]:
+        target = vault / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(f"---\ntitle: {target.stem}\ntype: journal\ndate: 2026-08-01\n---\n\n"
+                          "A walk by the harbour.\n")
+    con = db.connect(tmp_path / "t.db")
+    ingest(con, vault)
+    assert {row[0] for row in con.execute("SELECT path FROM sources WHERE deleted=0")} == {
+        "Journal/2026-08-01.md", "Journal/2026/older.md"}
+    assert {tuple(row) for row in con.execute("SELECT type, authored_at FROM sources")} == {
+        ("journal", "2026-08-01")}
+    hits = con.execute("SELECT count(*) FROM fragments_fts WHERE fragments_fts MATCH 'harbour'")
+    assert hits.fetchone()[0] == 2

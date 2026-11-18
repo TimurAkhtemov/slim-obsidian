@@ -96,20 +96,34 @@ def test_a_failed_draft_transcript_keeps_both_sources_for_retry(tmp_path, monkey
     assert (tmp_path / draft).read_text(encoding="utf-8") == "- a draft note\n"
 
 
-@pytest.mark.parametrize(
-    ("type_tag", "draft_type", "message"),
-    [("journal", "lecture", "Journal"), ("lecture", "journal", "Notes/_unfiled")],
-)
-def test_a_draft_cannot_cross_the_journal_floor(tmp_path, monkeypatch,
-                                                type_tag, draft_type, message):
+@pytest.mark.parametrize("declared_type", ["journal", "lecture"])
+def test_a_draft_outside_notes_unfiled_is_refused_whatever_its_type(tmp_path, monkeypatch,
+                                                                     declared_type):
     from slim.recorder import pipeline
 
     _fakes(monkeypatch)
-    with pytest.raises(ValueError, match=message):
-        pipeline.handle_record(audio_rel=_staged(tmp_path),
-                               draft_rel=_draft(tmp_path, type_tag=draft_type),
-                               notes_md=None, declared_type=type_tag, title="T", when=NOW,
+    staged = _staged(tmp_path)
+    new = tmp_path / _draft(tmp_path)
+    old = tmp_path / "Journal" / new.name
+    old.parent.mkdir(parents=True)
+    new.rename(old)
+    with pytest.raises(ValueError, match="Notes/_unfiled"):
+        pipeline.handle_record(audio_rel=staged, draft_rel=old.relative_to(tmp_path).as_posix(),
+                               notes_md=None, declared_type=declared_type, title="T", when=NOW,
                                vault=tmp_path)
+    assert old.read_text(encoding="utf-8") == "- a draft note\n"
+
+
+def test_a_recording_declared_a_journal_files_under_notes(tmp_path, monkeypatch):
+    from slim.recorder import pipeline
+
+    _fakes(monkeypatch)
+    (tmp_path / "Journal").mkdir()
+    out = pipeline.handle_record(audio_rel=_staged(tmp_path), draft_rel=_draft(tmp_path),
+                                 notes_md=None, declared_type="journal", title="T", when=NOW,
+                                 vault=tmp_path)
+    assert out["note"].startswith("Notes/")
+    assert list((tmp_path / "Journal").iterdir()) == []
 
 
 def test_a_draft_in_the_old_recordings_folder_is_refused(tmp_path, monkeypatch):
@@ -446,10 +460,8 @@ def test_a_failed_title_call_still_files_the_recording(tmp_path, monkeypatch):
 # --- indexing ----------------------------------------------------------------------------
 
 def test_a_filed_recording_is_indexed_so_the_brain_can_reach_it(tmp_path, monkeypatch):
-    """Filing makes it findable in OBSIDIAN. It does not reach ask, search, the MCP tools, the
-    chat vault lane, or reflect — all of which read SQLite. ⚠ reflect._journals() selects
-    type='journal' FROM THE DATABASE, so an unindexed journal is skipped by the nightly
-    synthesis silently."""
+    """Filing makes it findable in OBSIDIAN. It does not reach the copilot, which reads
+    SQLite."""
     from slim.recorder import pipeline, state
     _fakes(monkeypatch)
     called = {}

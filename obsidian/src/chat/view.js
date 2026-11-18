@@ -307,7 +307,7 @@ class CopilotView extends ItemView {
       this.openNote = { path, id: context.source?.id ?? null };
     } catch (error) {
       // Nearby notes are a convenience. A 400 is a note the server does not index (Skills/,
-      // Profile/, _Reflections/): it still opens, and the question is sent with its path.
+      // Profile/): it still opens, and the question is sent with its path.
       if (version === this.noteVersion) console.warn("[slim] nearby notes", path, error.message || error);
     } finally {
       if (version === this.noteVersion) {

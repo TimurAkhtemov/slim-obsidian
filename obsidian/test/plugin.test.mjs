@@ -41,7 +41,6 @@ test("startup reports a recoverable draft and audio pair by recording ID", async
   const listings = {
     "Attachments/_incoming": { files: [audio] },
     "Notes/_unfiled": { files: [draft] },
-    Journal: { files: [] },
   };
   const p = plugin();
   p.app = { vault: { adapter: {
@@ -69,7 +68,8 @@ test("startup reports paired and unpaired stranded recordings separately", async
     "Notes/_unfiled": { files: [
       `Notes/_unfiled/2026-08-23--recording--${pairedId}.slim-draft.md`,
     ] },
-    Journal: { files: [] },
+    // The owner's file, in a folder the recorder no longer drafts in: never read as a draft.
+    Journal: { files: [`Journal/2026-08-23--recording--${unpairedId}.slim-draft.md`] },
   };
   const p = plugin();
   p.app = { vault: { adapter: {

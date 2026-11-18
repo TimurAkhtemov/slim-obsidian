@@ -22,11 +22,9 @@ PROJECTS_YAML = Path(os.environ.get("SLIM_PROJECTS", str(REPO_ROOT / "config" / 
 # leading dot excludes nothing on its own.
 EXCLUDED_DIRS = {".obsidian", ".trash"}
 # `Profile/` is their self-description, excluded because it is not evidence — and since
-# 2026-09-03 nothing reads it at all. `_Reflections/` is `slim reflect`'s own output: the brain
-# must never retrieve its opinions back as evidence, and `reflect` reads that folder from disk
-# rather than the DB to find its last window. `Skills/` holds the copilot's prompt templates
+# 2026-09-03 nothing reads it at all. `Skills/` holds the copilot's prompt templates
 # (`copilot/skills.py`): instructions, not evidence.
-EXCLUDED_TOP = {"Attachments", "Profile", "Skills", "_Reflections"}
+EXCLUDED_TOP = {"Attachments", "Profile", "Skills"}
 
 def _load() -> dict:
     # The file is the user's own vocabulary and is gitignored; a fresh clone has none until
@@ -81,7 +79,7 @@ def _pii_skip(data: dict) -> tuple[str, ...]:
 
 PII_SKIP: tuple[str, ...] = _pii_skip(_load())
 
-# The name the prompts address. Only interpretation reads it (labels, summaries, reflection);
+# The name the prompts address. Only interpretation reads it (labels, summaries);
 # no path, id or filter ever does.
 OWNER: str = str(_load().get("owner") or "the vault's owner")
 

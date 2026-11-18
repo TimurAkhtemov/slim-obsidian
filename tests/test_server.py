@@ -1,6 +1,6 @@
 """The local API server behind the Obsidian plugin. What must never silently break:
 
-1. The bind refusal — this server can serve Journal content to the plugin, so a non-loopback
+1. The bind refusal — this server serves the vault to the plugin, so a non-loopback
    bind is refused BEFORE a socket exists, and a spoofed Host header (DNS rebinding, the one
    way a remote page reaches a loopback server) is refused before routing.
 2. The stale-server guard — `GET /api/health` reports whether the running process predates

@@ -10,9 +10,8 @@ const STAGING_DIR = "Attachments/_incoming";
 const RECORDER_ATTACHMENTS = "Attachments/Recorder";
 const ARCHIVE_DIR = "Attachments/Recordings";   // slim/capture/audio.py AUDIO_ARCHIVE
 const DRAFT_SUFFIX = ".slim-draft.md";
-// Where a recording's draft lives until it is filed (a journal's: "Journal"). The server names
-// the same folder twice: slim/capture/voicetags.py NAMESPACE + UNFILED, slim/index/ingest.py
-// _DRAFT_PARENTS.
+// Where a recording's draft lives until it is filed. The server names the same folder twice:
+// slim/capture/voicetags.py NAMESPACE + UNFILED, slim/index/ingest.py _DRAFT_PARENT.
 const DRAFT_FOLDER = "Notes/_unfiled";
 const EMPTY_MEETING_BLOCK = "````slim-meeting\n\n````\n\n";
 
@@ -23,7 +22,6 @@ const TYPES = [
   ["meeting-note", "Meeting"],
   ["lecture", "Lecture"],
   ["idea", "Idea"],
-  ["journal", "Journal"],
   ["note", "Note"],
 ];
 

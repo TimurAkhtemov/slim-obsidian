@@ -199,10 +199,8 @@ def index_now(vault: Path, note_rel: str, *, sweep: bool = True,
               moved_from: str | None = None) -> dict:
     """Make THIS note reachable by everything that reads the INDEX rather than the vault.
 
-    Filing makes a note findable in Obsidian immediately; it does NOT reach the two readers of
-    SQLite, the copilot and `reflect`. ⚠ The second fails silently: `reflect._journals()`
-    selects `type = 'journal'` FROM THE DATABASE, so a journal they record would be skipped by
-    the nightly synthesis with no error anywhere.
+    Filing makes a note findable in Obsidian immediately; it does NOT reach the copilot, which
+    reads SQLite.
 
     One note in the request, the vault in the background (`_schedule_sweep`) — a full pass here
     once embedded 1,287 fragments for a ~50-fragment note inside the pause after the summary.

@@ -48,8 +48,8 @@ _TAG = re.compile(r"<[^>]*>")
 _CODE = re.compile(r"^ {0,3}(?P<ticks>`{3,})[^`\n]*\n[\s\S]*?(?:^ {0,3}(?P=ticks)`*[ \t]*$|\Z)"
                    r"|^ {0,3}(?P<tildes>~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}(?P=tildes)~*[ \t]*$|\Z)"
                    r"|(?<!`)(?P<run>`+)(?!`)(?:[^\n]|\n(?![ \t]*\n))*?(?<!`)(?P=run)(?!`)", re.MULTILINE)
-# Binaries, SLIM's own derived output and Obsidian's config are never a copilot edit target.
-_NEVER_TOP = {"attachments", "_reflections"}
+# Binaries and Obsidian's config are never a copilot edit target.
+_NEVER_TOP = {"attachments"}
 _EXCLUDED_CF = {name.casefold() for name in EXCLUDED_DIRS}
 # Past this a note is edited in Obsidian, not from the sidebar: the whole note rides in the
 # request and in every call of a run, and a new note's text rides in the thread.

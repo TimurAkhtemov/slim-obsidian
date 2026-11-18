@@ -9,14 +9,13 @@ from .. import config
 # Single-valued, and `type:` and `tags:` are the same word by construction.
 # A lecture is anything they TOOK IN — a course, a talk, a podcast, an article. `learning` was a
 # separate type until 2026-09-22; nobody, model or owner, drew that line the same way twice.
-JOURNAL, MEETING, LECTURE, IDEA, NOTE = (
-    "journal", "meeting", "lecture", "idea", "note")
+MEETING, LECTURE, IDEA, NOTE = ("meeting", "lecture", "idea", "note")
 
 # The closed set of types. `enrich.TYPE_TAGS` IS this list, so the model can only infer a
 # type the code knows.
-ROUTING_TYPES = (JOURNAL, MEETING, LECTURE, IDEA, NOTE)
+ROUTING_TYPES = (MEETING, LECTURE, IDEA, NOTE)
 
-# --- WHERE IT LANDS: `Notes/<subject>/<note>.md`, or the flat journal folder ---------------
+# --- WHERE IT LANDS: `Notes/<subject>/<note>.md` ---------------------------------------------
 # SUBJECT is the ONLY axis, and that is not a taste call. A path is a single ordered sequence,
 # so encoding N independent facts in it forces a Cartesian product: the previous scheme crossed
 # type × subject × year and produced 11 folders for 116 recordings, with `school` in 6 of them
@@ -24,10 +23,6 @@ ROUTING_TYPES = (JOURNAL, MEETING, LECTURE, IDEA, NOTE)
 # A recording lands beside the owner's own writing (the owner's ruling, 2026-11-14): a separate
 # recordings tree put every subject in two places, and they were moving recordings by hand.
 NAMESPACE = "Notes"
-
-# The journal folder is its own top-level, a SIBLING of Notes/ rather than a hole punched
-# inside it: a journal is filed there flat, and no route carries a note out of it (test-enforced).
-JOURNAL_FOLDER = "Journal"
 
 # An unknown subject gets the sentinel, never a bare `Notes/note.md`.
 # The leading underscore sorts it out of the way in Obsidian.

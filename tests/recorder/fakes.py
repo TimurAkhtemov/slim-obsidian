@@ -23,10 +23,8 @@ def _staged(tmp_path: Path, name: str = "t.webm") -> str:
     return str(p.relative_to(tmp_path))
 
 
-def _draft(tmp_path: Path, *, recording_id: str = "t", type_tag: str = "lecture",
-           text: str = "- a draft note\n") -> str:
-    parent = tmp_path / ("Journal" if type_tag == "journal" else "Notes/_unfiled")
-    p = parent / f"2026-08-23--recording--{recording_id}.slim-draft.md"
+def _draft(tmp_path: Path, *, recording_id: str = "t", text: str = "- a draft note\n") -> str:
+    p = tmp_path / "Notes/_unfiled" / f"2026-08-23--recording--{recording_id}.slim-draft.md"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(text, encoding="utf-8")
     return str(p.relative_to(tmp_path))

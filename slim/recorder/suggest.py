@@ -18,12 +18,11 @@ from ..vault.frontmatter import parse_frontmatter
 from .. import llm
 from ..capture import voicetags
 
-# Derived or binary; never a filing destination and never a source of tags or counts.
-_NEVER = {"_reflections", "profile", "attachments"}
+# Not the owner's notes; never a filing destination and never a source of tags or counts.
+_NEVER = {"profile", "attachments"}
 
 # The tree a recording may be filed INTO, walked as directories so a folder they just created
-# is offered before it holds anything. `Journal/` is handled separately in `folder_tree` —
-# it is a destination but a FLAT one, so it must not be walked.
+# is offered before it holds anything.
 FILING_ROOTS = (voicetags.NAMESPACE,)
 
 
@@ -57,16 +56,11 @@ def folder_tree(vault: Path = VAULT) -> list[Folder]:
     ⚠ **The WHOLE tree, at every depth.** A depth cap of 3 hid MOST of it: measured on the real
     vault, 48 of 84 folders sit at depth 4–7, including the pattern actually in use.
 
-    ⚠ The floor appears but is FLAT. Walking directories is precisely how a subfolder could
-    sneak into it, so an empty dated folder on disk is still never emitted.
     """
     counts: Counter[str] = Counter()
     for rel in _eligible(vault):
         parts = list(rel.parts[:-1])
         if not parts:
-            continue
-        if parts[0] == voicetags.JOURNAL_FOLDER:
-            counts[voicetags.JOURNAL_FOLDER] += 1
             continue
         for depth in range(1, len(parts) + 1):
             counts["/".join(parts[:depth])] += 1
@@ -84,8 +78,6 @@ def folder_tree(vault: Path = VAULT) -> list[Folder]:
             if any(p.startswith(".") for p in rel.parts):
                 continue
             found.add("/".join(rel.parts))
-    if (vault / voicetags.JOURNAL_FOLDER).is_dir():
-        found.add(voicetags.JOURNAL_FOLDER)      # the floor itself, never its children
 
     return [Folder(path=p, count=counts.get(p, 0)) for p in sorted(found)]
 
@@ -212,13 +204,6 @@ def build_card(transcript: str, *, declared_type: str = "", title: str = "",
     # A type they SPOKE is testimony; a model's guess never overrides it.
     type_tag = declared_type or str(raw.get("type_tag") or "")
     topics = [str(t).strip() for t in (raw.get("topics") or []) if str(t).strip()]
-
-    if type_tag == "journal":
-        # ⚠ The floor is FLAT and permanent, so the destination is fixed regardless of what
-        # the model chose. Topics ride along as proposed: they are frontmatter for Obsidian's
-        # tag pane, and since v12 nothing promotes them into anything retrieval reads.
-        return Card(dest_dir=voicetags.JOURNAL_FOLDER, confident_depth=1, candidates=[],
-                    type_tag=type_tag, topics=topics)
 
     dest = str(raw.get("dest_dir") or "").strip("/")
     if dest not in known:

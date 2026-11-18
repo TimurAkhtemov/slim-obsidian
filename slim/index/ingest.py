@@ -29,19 +29,19 @@ _EXCLUDED_DIRS_CF = frozenset(name.casefold() for name in EXCLUDED_DIRS)
 _EXCLUDED_TOP_CF = frozenset(name.casefold() for name in EXCLUDED_TOP)
 
 
-# The recorder's working copy: `<recording id>.slim-draft.md` directly under Journal/ or
+# The recorder's working copy: `<recording id>.slim-draft.md` directly under
 # Notes/_unfiled/ (obsidian/src/recorder/meeting-note.js DRAFT_SUFFIX, DRAFT_FOLDER; a literal
 # here because `index` does not import `capture`, where `voicetags` names the same folder).
 # `recorder.note.write_recording` files it as a real note, so indexing the draft gives the
 # finished note a same-content rival. A
 # `.slim-draft.md` anywhere else is the user's own file and is indexed like any other.
 DRAFT_SUFFIX = ".slim-draft.md"
-_DRAFT_PARENTS = {("journal",), ("notes", "_unfiled")}
+_DRAFT_PARENT = ("notes", "_unfiled")
 
 
 def _managed_draft(rel: Path) -> bool:
     parent = tuple(part.casefold() for part in rel.parts[:-1])
-    return rel.name.endswith(DRAFT_SUFFIX) and parent in _DRAFT_PARENTS
+    return rel.name.endswith(DRAFT_SUFFIX) and parent == _DRAFT_PARENT
 
 
 def indexable(rel: Path) -> bool:
@@ -91,9 +91,9 @@ def source_file(path: str, *, vault: Path = VAULT) -> Path:
 
 
 def source_fields(fm: dict) -> dict:
-    """The three frontmatter facts the index keeps. Everything else a note declares is for
-    Obsidian, not retrieval — `reflect` needs `type` and `authored_at`, the copilot needs
-    `title`, and nothing reads any of the rest."""
+    """The three frontmatter facts the index keeps: the note's title, its `type:`, and the date
+    it was written (`date:`, else `created_time:`). Everything else a note declares is for
+    Obsidian, not retrieval."""
     return {
         "title": fm.get("title") or None,
         "type": fm.get("type") or None,
@@ -131,7 +131,7 @@ def ingest_note(con: sqlite3.Connection, vault: Path, rel_path: str, *,
         raise IngestError("note path must be a vault-relative Markdown path")
     if not indexable(rel):
         raise IngestError("SLIM does not index this note (Attachments/, Profile/, Skills/, "
-                          "_Reflections/ and recording drafts are left out), so the copilot "
+                          "and recording drafts are left out), so the copilot "
                           "cannot use it")
     target = (vault / rel).resolve()
     try:

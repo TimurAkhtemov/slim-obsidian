@@ -15,7 +15,7 @@ def vault(tmp_path):
     root = tmp_path / "vault"
     (root / "Notes/school/cs-201").mkdir(parents=True)
     (root / "Notes/school/cs-202").mkdir(parents=True)
-    (root / "_Reflections").mkdir()
+    (root / "Profile").mkdir()
     return root
 
 
@@ -67,12 +67,12 @@ def test_an_explicit_empty_folder_searches_the_whole_vault(con, vault, two, whol
 
 
 def test_search_excludes_excluded_top(con, vault, two):
-    write(vault, "_Reflections/r.md", "# R\n\nDijkstra reflection.\n")
+    write(vault, "Profile/r.md", "# R\n\nDijkstra, in my own words.\n")
     try:
-        ingest(con, vault, "_Reflections/r.md")
+        ingest(con, vault, "Profile/r.md")
     except Exception:
         pass
-    assert "_Reflections" not in lookup.Reader(con, vault).call("search", {"query": "Dijkstra"})
+    assert "Profile" not in lookup.Reader(con, vault).call("search", {"query": "Dijkstra"})
 
 
 def test_search_without_con_is_refused(vault):
@@ -125,9 +125,9 @@ def test_read_note_open_note_section_has_handles(vault):
     assert "[b4]" in r.call("read_note", {"path": path, "section": "B"})
 
 
-@pytest.mark.parametrize("bad", ["../x.md", "/etc/passwd", "Notes", "Notes/missing.md", "_Reflections/r.md"])
+@pytest.mark.parametrize("bad", ["../x.md", "/etc/passwd", "Notes", "Notes/missing.md", "Profile/r.md"])
 def test_read_note_refuses_bad_paths(vault, bad):
-    write(vault, "_Reflections/r.md", "r")
+    write(vault, "Profile/r.md", "r")
     assert lookup.Reader(None, vault).call("read_note", {"path": bad}).startswith("refused:")
 
 
@@ -137,7 +137,7 @@ def test_list_folder(vault):
     (vault / "Notes/z.txt").write_text("z")
     r = lookup.Reader(None, vault)
     assert r.call("list_folder", {"path": "Notes"}).splitlines() == ["school/", "a.md", "b.md"]
-    assert "Notes/" in r.call("list_folder", {"path": ""}) and "_Reflections" not in r.call("list_folder", {"path": ""})
+    assert "Notes/" in r.call("list_folder", {"path": ""}) and "Profile" not in r.call("list_folder", {"path": ""})
     assert r.call("list_folder", {"path": "Nope"}).startswith("refused:")
 
 
@@ -220,7 +220,7 @@ def test_read_note_names_the_candidates_when_a_shortened_path_is_ambiguous(con, 
 
 
 def test_a_shortened_path_never_reaches_an_excluded_folder(con, vault):
-    write(vault, "_Reflections/r.md", "# R\n\nsecret\n")
+    write(vault, "Profile/r.md", "# R\n\nsecret\n")
     assert lookup.Reader(con, vault).call("read_note", {"path": "r.md"}).startswith("refused:")
 
 

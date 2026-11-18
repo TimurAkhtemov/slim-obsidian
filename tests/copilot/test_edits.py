@@ -16,7 +16,7 @@ RECORDING = "---\ntitle: x\n---\n\n````slim-meeting\nid: 1\n````\n\nMy notes.\n"
 
 def test_backslash_colon_and_case_variant_paths_are_refused():
     for raw in ["Notes\\..\\..\\escaped.md", "Attachments\\x.md", "C:x.md", "attachments/x.md",
-                "_reflections/x.md", "Notes/.obsidian/x.md", "Notes/café.md"]:
+                "Notes/.obsidian/x.md", "Notes/café.md"]:
         assert edits.note_path(raw) is None, raw
     assert edits.note_path("Notes/work/a note.md") == "Notes/work/a note.md"
 

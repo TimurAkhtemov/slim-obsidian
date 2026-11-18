@@ -616,8 +616,8 @@ def _expanded(text: str, loaded: dict) -> str:
 
 def _source(con, vault: Path, open_path: str | None) -> dict | None:
     """The open note's source row, found by its path. A note the index leaves out (`Profile/`,
-    `_Reflections/`…) is still the open note, read from disk; a file that is not a note, or none,
-    is no note open."""
+    `Skills/`) is still the open note, read from disk; a file that is not a note, or none, is no
+    note open."""
     if open_path is None:
         return None
     pure = PurePosixPath(open_path) if isinstance(open_path, str) else None

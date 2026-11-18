@@ -120,8 +120,7 @@ NO_THINKING_BUDGET = -1
 # determinism IS correctness. PROSE THE OWNER READS is a different job, and greedy decoding is
 # why it reads canned: measured by observation 2026-07-20, the same note produced
 # near-identical sentences across separate conversations.
-# 0.7 is the conventional conversational value, not tuned here; the copilot's reply and
-# `reflect` sample.
+# 0.7 is the conventional conversational value, not tuned here; the copilot's reply samples.
 REPLY_TEMPERATURE = 0.7
 
 

@@ -90,12 +90,14 @@ test("a new meeting does not fall back to another session's cached pane", async 
   assert.equal(replacement.opened.length, 1);
 });
 
-test("a journal draft begins and remains inside the privacy floor", async () => {
+test("a remembered journal type falls back to the default and drafts in Notes/_unfiled", async () => {
+  // Settings saved before the journal type was cut still say `lastType: "journal"`.
   const { v, created } = fileBackedView({ type: "journal" });
+  assert.equal(v.type, "meeting-note");
   v.recordingId = "20260823T143000Z-abcd1234";
   await v.createDraft();
   assert.equal(created[0][0],
-               "Journal/2026-08-23--recording--20260823T143000Z-abcd1234.slim-draft.md");
+               "Notes/_unfiled/2026-08-23--recording--20260823T143000Z-abcd1234.slim-draft.md");
 });
 
 test("a start failure removes only an untouched plugin-created draft", async () => {
@@ -264,18 +266,21 @@ test("a draft with no staged audio is not adopted as paused", async () => {
   assert.equal(await v.adoptPausedDraft(draft), false);
 });
 
-test("a draft under Capture/_unfiled is not the recorder's to trash", async () => {
-  // The old recordings folder may still be on disk; only Notes/_unfiled and Journal hold drafts
-  // the recorder owns.
+test("a draft outside Notes/_unfiled is not the recorder's to trash", async () => {
+  // Folders the recorder once drafted in may still be on disk; only Notes/_unfiled holds
+  // drafts it owns.
   const { v, files } = fileBackedView();
   const mine = "Notes/_unfiled/2026-01-01--recording--x.slim-draft.md";
-  const old = "Capture/_unfiled/2026-01-01--recording--x.slim-draft.md";
-  for (const p of [mine, old]) files.set(p, { path: p, text: "" });
+  const olds = ["Capture/_unfiled/2026-01-01--recording--x.slim-draft.md",
+                "Journal/2026-01-01--recording--x.slim-draft.md"];
+  for (const p of [mine, ...olds]) files.set(p, { path: p, text: "" });
   v.recordingId = "x";
 
-  v.draftRel = old;
-  await v.trashStagedSources();
-  assert.equal(files.has(old), true);
+  for (const old of olds) {
+    v.draftRel = old;
+    await v.trashStagedSources();
+    assert.equal(files.has(old), true);
+  }
 
   v.draftRel = mine;
   await v.trashStagedSources();

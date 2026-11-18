@@ -22,23 +22,24 @@ def test_the_tree_reports_real_folders_with_counts(tmp_path):
     assert got["Notes/school"] == 3          # counts are cumulative, for orientation
 
 
-def test_derived_and_excluded_folders_never_appear_as_destinations(tmp_path):
-    """_Reflections/ and Profile/ are derived. Offering them as a filing target would invite
-    a recording into the one place the brain must not retrieve from."""
-    _note(tmp_path, "_Reflections/r.md")
+def test_excluded_folders_never_appear_as_destinations(tmp_path):
+    """Profile/, Skills/ and Attachments/ are not indexed. Offering one as a filing target
+    would invite a recording into a place the copilot cannot retrieve from."""
+    _note(tmp_path, "Skills/s.md")
     _note(tmp_path, "Profile/me.md")
     _note(tmp_path, "Attachments/x.md")
     assert [f.path for f in suggest.folder_tree(tmp_path)] == []
 
 
-def test_the_journal_floor_is_offered_but_never_with_children(tmp_path):
-    """Journal/ is a legitimate destination for a journal recording and is FLAT — one stream.
-    A subfolder under it would be a taxonomy slot inside one flat stream."""
+def test_only_folders_under_notes_are_offered(tmp_path):
+    """A recording files under Notes/ and nowhere else: any other top-level folder, a
+    `Journal/` from before the journal route was cut included, is the owner's and is not a
+    destination."""
     _note(tmp_path, "Journal/j.md")
     _note(tmp_path, "Journal/nested/k.md")
-    paths = [f.path for f in suggest.folder_tree(tmp_path)]
-    assert "Journal" in paths
-    assert not any(p.startswith("Journal/") for p in paths)
+    (tmp_path / "Journal" / "2026").mkdir()
+    _note(tmp_path, "Notes/work/a.md")
+    assert [f.path for f in suggest.folder_tree(tmp_path)] == ["Notes", "Notes/work"]
 
 
 def test_tag_counts_come_from_what_is_already_used(tmp_path):
@@ -96,21 +97,12 @@ def test_an_empty_dot_directory_is_still_excluded(tmp_path):
     assert not any(".obsidian" in f.path for f in suggest.folder_tree(tmp_path))
 
 
-def test_empty_derived_directories_are_still_never_offered(tmp_path):
-    """Walking directories must not quietly widen the exclusion hole: `_Reflections/` and
-    `Profile/` are derived and `Attachments/` is binary, empty or not."""
-    for d in ("_Reflections", "Profile", "Attachments", "Attachments/_incoming"):
+def test_empty_excluded_directories_are_still_never_offered(tmp_path):
+    """Walking directories must not quietly widen the exclusion hole: `Profile/`, `Skills/`
+    and `Attachments/` are never destinations, empty or not."""
+    for d in ("Skills", "Profile", "Attachments", "Attachments/_incoming"):
         (tmp_path / d).mkdir(parents=True, exist_ok=True)
     assert [f.path for f in suggest.folder_tree(tmp_path)] == []
-
-
-def test_the_journal_floor_stays_flat_even_with_empty_subdirectories(tmp_path):
-    """⚠ A directory walk is exactly how a subfolder could sneak into the floor. `Journal/` is
-    one stream; an empty `Journal/2026/` on disk must still never be offered as a destination."""
-    (tmp_path / "Journal" / "2026").mkdir(parents=True)
-    paths = [f.path for f in suggest.folder_tree(tmp_path)]
-    assert "Journal" in paths
-    assert not any(p.startswith("Journal/") for p in paths)
 
 
 def test_tag_counts_reads_comma_separated_string_spelling(tmp_path):
@@ -132,10 +124,10 @@ def test_tag_counts_reads_fences_with_trailing_space(tmp_path):
     assert suggest.tag_counts(tmp_path)["svm"] == 1
 
 
-def test_tag_counts_excludes_derived_folders(tmp_path):
-    """_Reflections/ is derived and Attachments/ is binary — neither may seed a tag
-    suggestion."""
-    _note(tmp_path, "_Reflections/r.md", topics=["derived-thing"])
+def test_tag_counts_excludes_folders_that_are_not_notes(tmp_path):
+    """Profile/ is the owner's self-description and Attachments/ is binary — neither may seed
+    a tag suggestion."""
+    _note(tmp_path, "Profile/r.md", topics=["derived-thing"])
     _note(tmp_path, "Attachments/x.md", topics=["binary-thing"])
     counts = suggest.tag_counts(tmp_path)
     assert "derived-thing" not in counts
@@ -218,17 +210,20 @@ def test_a_model_failure_still_yields_a_filable_card(tmp_path, monkeypatch):
     assert card.type_tag == "lecture"          # their declaration survives the failure
 
 
-def test_a_journal_recording_never_routes_out_of_the_floor(tmp_path, monkeypatch):
-    """⚠ The floor is a path and no layer may move a journal off it. The model here proposes a
-    course folder; the card must pin the destination regardless. Topics ride along as proposed:
-    they are frontmatter for Obsidian, and since schema v12 nothing promotes them anywhere."""
+def test_a_recording_called_a_journal_files_under_notes_like_any_other(tmp_path, monkeypatch):
+    """There is no journal route. A recording labelled `journal`, by the model or by an old
+    client, goes where its subject goes, and an existing `Journal/` folder is not a target."""
     _note(tmp_path, "Journal/j.md")
     _note(tmp_path, "Notes/school/CS201 ML/a.md")
     _fake_model(monkeypatch, _payload(dest_dir="Notes/school/CS201 ML",
                                       type_tag="journal", topics=["school"]))
+    assert suggest.build_card("...", vault=tmp_path).dest_dir == "Notes/school/CS201 ML"
     card = suggest.build_card("...", declared_type="journal", vault=tmp_path)
-    assert card.dest_dir == "Journal"
+    assert card.dest_dir == "Notes/school/CS201 ML"
     assert card.topics == ["school"]
+
+    _fake_model(monkeypatch, _payload(dest_dir="Journal", type_tag="journal"))
+    assert suggest.build_card("...", vault=tmp_path).dest_dir == "Notes/_unfiled"
 
 
 def test_the_default_tree_goes_all_the_way_down(tmp_path):

@@ -171,26 +171,6 @@ def test_vault_moved_repoints_the_pin(monkeypatch, tmp_path):
     assert identity.pinned_vault() == second
 
 
-def test_reflect_refuses_a_mismatched_vault_before_the_model_or_write(monkeypatch, tmp_path):
-    from slim import reflect
-
-    first = tmp_path / "First"
-    first.mkdir()
-    second = tmp_path / "Second"
-    second.mkdir()
-    con = stub_ingest(monkeypatch, tmp_path, first)
-    identity.pin_vault(first)
-    use_vault(monkeypatch, second)
-    calls = []
-    monkeypatch.setattr(reflect, "reflect", lambda *a, **kw: calls.append(1))
-
-    with pytest.raises(SystemExit):
-        cli.cmd_reflect(SimpleNamespace(days=None, min_entries=1, dry_run=False))
-
-    assert calls == []
-    con.close()
-
-
 def test_chat_refuses_a_mismatched_vault_before_serving_writes(monkeypatch, tmp_path):
     first = tmp_path / "First"
     first.mkdir()

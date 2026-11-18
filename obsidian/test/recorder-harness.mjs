@@ -121,7 +121,6 @@ function fileBackedView({ type = "lecture", existing = [] } = {}) {
   };
   const v = new RecorderView({ app }, plugin);
   v.app = app;
-  v.type = type;
   return { v, files, created, binaries, editorLeaf };
 }
 

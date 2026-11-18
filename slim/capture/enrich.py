@@ -11,7 +11,7 @@ from .. import config, llm
 from . import voicetags
 from ..config import OWNER
 
-PROMPT_VERSION = "enrich-v4"   # v4: + `project`, chosen against the registry's descriptions
+PROMPT_VERSION = "enrich-v5"   # v5: the `journal` type is gone; `note` takes what it held
 
 # ON since 2026-07-20, by the owner, after reading real proposals for their own memos. Tests run
 # with it OFF (conftest leaves the default) — enrichment must never put a live model call on
@@ -113,9 +113,8 @@ so choose the form, never the topic. Decide in this order and stop at the first 
                conference talk, a tutorial, a podcast, an article, a video — or their
                takeaways from one.
   3. idea      they propose or work out something to build or do, alone.
-  4. journal   they reflect — how something went, how they feel, thinking out loud about their
-               own life. When a recording is BOTH reflection and idea, prefer journal.
-  5. note      a short factual note to themself that is none of the above.
+  4. note      anything else they say to themself: a reminder, a fact, thinking out loud
+               about how something went.
 The subject belongs in `topics`, never here. "Acme survey meeting" is type `meeting`
 with topics [acme, survey] — putting the subject here throws away what KIND of thing
 it is and files it in the wrong place.

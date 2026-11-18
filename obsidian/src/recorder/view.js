@@ -4,7 +4,7 @@
 
 const { MarkdownView, Notice } = require("obsidian");
 const nodePath = require("path");
-const { STAGING_DIR, RECORDER_ATTACHMENTS, DRAFT_SUFFIX, DRAFT_FOLDER, EMPTY_MEETING_BLOCK, recordingIdFromStaged,
+const { STAGING_DIR, RECORDER_ATTACHMENTS, DRAFT_SUFFIX, DRAFT_FOLDER, EMPTY_MEETING_BLOCK, TYPES, recordingIdFromStaged,
         recordingId, splitMeetingNote, frontmatterScalar, hasMeetingBlock,
         embedLegacyMeetingBlock } = require("./meeting-note");
 const { piiFromFrontmatter } = require("./pii");
@@ -54,7 +54,9 @@ class RecorderView {
     this.editorFrozen = false;
     this.editorLeaf = null;
     this.title = "";
-    this.type = plugin.settings.lastType || "meeting-note";
+    // A remembered type the picker no longer offers would be sent while the picker showed another.
+    const last = plugin.settings.lastType;
+    this.type = TYPES.some(([value]) => value === last) ? last : "meeting-note";
     this.recordVoice = plugin.settings.recordVoice !== false;
     this.result = null;           // the server's response
     this.edited = false;          // has they touched the card?
@@ -235,7 +237,6 @@ class RecorderView {
     this.draftRel = draftPath;
     this.segments = segments;
     this.audioRel = segments[segments.length - 1];
-    this.type = draftPath.startsWith("Journal/") ? "journal" : this.type;
     this.pausedTranscript = null;
     this.state = "paused";
     return true;
@@ -423,7 +424,7 @@ class RecorderView {
     const audios = [...new Set([...(this.segments || []), this.audioRel].filter(Boolean))];
     const attachmentFolder = id ? `${RECORDER_ATTACHMENTS}/${id}` : "";
     const draftIsManaged = draft && draft.endsWith(DRAFT_SUFFIX) &&
-      (draft.startsWith(`${DRAFT_FOLDER}/`) || draft.startsWith("Journal/"));
+      draft.startsWith(`${DRAFT_FOLDER}/`);
     const managed = (audio) => Boolean(audio) && Boolean(id) &&
       audio.startsWith(`${STAGING_DIR}/`) && recordingIdFromStaged(audio) === id;
     if (draftIsManaged) await this.trashManagedPath(draft);
@@ -444,9 +445,8 @@ class RecorderView {
     if (!this.recordingId) this.recordingId = recordingId();
     const digits = this.recordingId.slice(0, 8);
     const date = `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
-    const folder = this.type === "journal" ? "Journal" : DRAFT_FOLDER;
-    await this.ensureVaultDirs(folder);
-    this.draftRel = `${folder}/${date}--recording--${this.recordingId}${DRAFT_SUFFIX}`;
+    await this.ensureVaultDirs(DRAFT_FOLDER);
+    this.draftRel = `${DRAFT_FOLDER}/${date}--recording--${this.recordingId}${DRAFT_SUFFIX}`;
     await this.app.vault.create(this.draftRel, EMPTY_MEETING_BLOCK);
     if (this.manager) this.manager.indexSession(this);
     await this.loadEditorFile(this.draftRel);
@@ -455,7 +455,7 @@ class RecorderView {
 
   async ensureDraftLocation() {
     if (!this.draftRel) return this.createDraft();
-    const folder = this.type === "journal" ? "Journal" : DRAFT_FOLDER;
+    const folder = DRAFT_FOLDER;
     if (this.draftRel.startsWith(`${folder}/`)) return this.draftRel;
     const file = this.app.vault.getAbstractFileByPath(this.draftRel);
     if (!file) { this.draftRel = ""; return this.createDraft(); }
@@ -466,7 +466,7 @@ class RecorderView {
     } else if (typeof this.app.vault.rename === "function") {
       await this.app.vault.rename(file, next);
     } else {
-      throw new Error("Obsidian cannot move the setup draft into its privacy-safe folder");
+      throw new Error("Obsidian cannot move the setup draft into the drafts folder");
     }
     this.draftRel = next;
     if (this.manager) this.manager.indexSession(this);

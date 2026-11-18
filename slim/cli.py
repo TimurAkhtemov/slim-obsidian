@@ -109,13 +109,6 @@ def _staging_lines(vault: Path) -> list[str]:
     return lines
 
 
-def _last_reflection(vault: Path) -> str:
-    """The newest reflection's date, from its filename (`<date>--reflection[-N].md`)."""
-    from . import reflect
-    dates = [f.name[:10] for f in (vault / reflect.NAMESPACE).glob("*--reflection*.md")]
-    return max(dates, default="never")
-
-
 def cmd_status(args):
     con = db.connect()
 
@@ -138,46 +131,6 @@ def cmd_status(args):
         print(f"  {row['c']:5d}  {row['area']}")
     for line in _staging_lines(VAULT):
         print(line)
-    print(f"reflected: {_last_reflection(VAULT)}")
-
-
-def cmd_reflect(args):
-    """REFLECT: read a window of journal entries with the resident model and write ONE
-    reflection note into `_Reflections/`. Nightly. `--dry-run` previews the selection — window,
-    entry counts, target path — with no model call and no write. It reads journals under
-    `Journal/` only, with the LOCAL model."""
-    from . import reflect as reflect_mod
-
-    identity.require_vault_dir()
-    con = db.connect()
-    try:
-        identity.require_vault_identity(con)
-    except BaseException:
-        con.close()
-        raise
-    result = reflect_mod.reflect(
-        con, days=args.days, min_entries=args.min_entries, dry_run=args.dry_run)
-
-    if args.dry_run:
-        if result.skipped:
-            print(f"quiet window ({result.reason}): {result.focus_count} journal(s) since "
-                  f"{result.window_start} — nothing would be written.")
-            return
-        print(f"WOULD reflect on {result.focus_count} journal(s) "
-              f"({result.window_start} → {result.window_end}), "
-              f"{result.context_count} context ent(y/ies) for continuity.")
-        print(f"  would write: {result.path}")
-        print("Re-run without --dry-run to generate it (a model pass, ~1–2 min).")
-        return
-
-    if result.skipped:
-        print(f"quiet window ({result.reason}): {result.focus_count} journal(s) since "
-              f"{result.window_start} — nothing written.")
-        return
-    print(f"reflected on {result.focus_count} journal(s) "
-          f"({result.window_start} → {result.window_end}) "
-          f"with {result.context_count} context ent(y/ies) → {result.path}")
-    print(f"Open it in Obsidian: {VAULT / result.path}")
 
 
 def _mask_line(res: dict) -> str:
@@ -335,16 +288,6 @@ def main():
 
     p = sub.add_parser("status", help="index statistics")
     p.set_defaults(fn=cmd_status)
-
-    p = sub.add_parser("reflect",
-                       help="write ONE journal-reflection note into the vault (nightly)")
-    p.add_argument("--days", type=int, default=None,
-                   help="reflect on the last N days (default: since the last reflection)")
-    p.add_argument("--min-entries", dest="min_entries", type=int, default=1,
-                   help="skip (quiet night) if fewer than N new journals in the window (default: 1)")
-    p.add_argument("--dry-run", dest="dry_run", action="store_true",
-                   help="preview the selection only — no model call, no write")
-    p.set_defaults(fn=cmd_reflect)
 
     p = sub.add_parser("mask", help="mask personal data in recordings already in the vault",
                        epilog="Run it while those notes are not open for editing in Obsidian.")

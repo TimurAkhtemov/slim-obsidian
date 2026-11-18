@@ -16,8 +16,8 @@ from ..vault import note_images
 _DRAFT_SUFFIX = ".slim-draft.md"
 
 
-def _draft_source(*, vault: Path, draft_rel: str, audio_rel: str | list[str],
-                  declared_type: str) -> tuple[Path, str]:
+def _draft_source(*, vault: Path, draft_rel: str,
+                  audio_rel: str | list[str]) -> tuple[Path, str]:
     from . import note as note_writer
 
     draft = state.vault_path(vault, draft_rel)
@@ -28,10 +28,9 @@ def _draft_source(*, vault: Path, draft_rel: str, audio_rel: str | list[str],
 
     rel = draft.relative_to(vault)
     parent = tuple(part.casefold() for part in rel.parts[:-1])
-    wanted = (voicetags.JOURNAL_FOLDER if declared_type == "journal"
-              else f"{voicetags.NAMESPACE}/{voicetags.UNFILED}")
+    wanted = f"{voicetags.NAMESPACE}/{voicetags.UNFILED}"
     if parent != tuple(part.casefold() for part in wanted.split("/")):
-        raise ValueError(f"a {declared_type or 'non-journal'} draft must be directly under {wanted}")
+        raise ValueError(f"a draft must be directly under {wanted}")
 
     base = draft.name[:-len(_DRAFT_SUFFIX)]
     if "--" not in base:
@@ -276,7 +275,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
         if notes_md is not None:
             raise ValueError("provide exactly one notes source: draft or notes_md")
         draft, notes_md = _draft_source(vault=vault, draft_rel=draft_rel,
-                                        audio_rel=audio_rels, declared_type=declared_type)
+                                        audio_rel=audio_rels)
     elif notes_md is None:
         raise ValueError("provide exactly one notes source: draft or notes_md")
 
@@ -393,9 +392,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
     if not title.strip():
         title = f"Recording {when.strftime('%Y-%m-%d %H%M')}"
 
-    # No empty-transcript branch: it was unreachable once an empty transcript became an error,
-    # and its job — filing a failed journal flat under `Journal/` — belongs to `build_card`,
-    # which returns `JOURNAL_FOLDER` for a declared journal before it consults the model at all.
+    # No empty-transcript branch: an empty transcript is an error before this point.
     state.check_cancel(job_id)
     progress("filing", "Choosing filing details", "Comparing the recording with the vault's existing structure")
     # Taken before the note is written, so a topic only this recording uses badges as new.

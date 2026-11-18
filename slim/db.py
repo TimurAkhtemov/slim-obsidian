@@ -13,8 +13,8 @@ CREATE TABLE sources (
     id           TEXT PRIMARY KEY,
     path         TEXT UNIQUE NOT NULL,
     title        TEXT,
-    type         TEXT,           -- frontmatter `type:`; `reflect` selects journals by it
-    authored_at  TEXT,           -- frontmatter `date:`; `reflect`'s window
+    type         TEXT,           -- frontmatter `type:`
+    authored_at  TEXT,           -- frontmatter `date:`, else `created_time:`
     current_hash TEXT NOT NULL,  -- content hash is identity; path is an attribute
     deleted      INTEGER NOT NULL DEFAULT 0
 );

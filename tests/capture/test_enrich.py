@@ -21,3 +21,11 @@ def test_an_invented_project_is_dropped_rather_than_filed():
     assert enrich.normalize(raw, "fallback", REGISTRY)["project"] == ""
     assert enrich.normalize({**raw, "project": "School"}, "fallback", REGISTRY)["project"] \
         == "school"
+
+
+def test_journal_is_not_a_type_the_labeller_can_choose():
+    """The journal route is gone, so the label that fed it is too: the grammar enum cannot
+    offer it, and one that arrives anyway degrades like any unknown type."""
+    from slim.capture import enrich
+    assert "journal" not in enrich.TYPE_TAGS
+    assert enrich.normalize({"title": "A walk", "type_tag": "journal"}, "x")["type_tag"] == ""

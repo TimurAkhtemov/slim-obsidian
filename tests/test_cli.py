@@ -96,20 +96,6 @@ def test_status_is_quiet_when_nothing_is_stranded(monkeypatch, tmp_path, capsys)
     assert "orphaned" not in out
 
 
-def test_status_reports_the_newest_reflection(monkeypatch, tmp_path, capsys):
-    folder = tmp_path / "Vault" / "_Reflections"
-    folder.mkdir(parents=True)
-    for name in ["2026-08-04--reflection.md", "2026-08-22--reflection.md",
-                 "2026-08-22--reflection-2.md", "2026-07-30--reflection.md", "notes.md"]:
-        (folder / name).write_text("", encoding="utf-8")
-
-    assert "reflected: 2026-08-22" in _status_out(monkeypatch, tmp_path, capsys)
-
-
-def test_status_says_when_nothing_was_ever_reflected(monkeypatch, tmp_path, capsys):
-    assert "reflected: never" in _status_out(monkeypatch, tmp_path, capsys)
-
-
 @pytest.fixture(name="vault")
 def _one_note_vault(tmp_path):
     v = tmp_path / "vault"

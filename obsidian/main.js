@@ -3901,7 +3901,6 @@ var require_meeting_note = __commonJS({
       ["meeting-note", "Meeting"],
       ["lecture", "Lecture"],
       ["idea", "Idea"],
-      ["journal", "Journal"],
       ["note", "Note"]
     ];
     function recordingIdFromStaged(filePath) {
@@ -6274,6 +6273,7 @@ var require_view2 = __commonJS({
       DRAFT_SUFFIX,
       DRAFT_FOLDER,
       EMPTY_MEETING_BLOCK,
+      TYPES,
       recordingIdFromStaged,
       recordingId,
       splitMeetingNote,
@@ -6325,7 +6325,8 @@ var require_view2 = __commonJS({
         this.editorFrozen = false;
         this.editorLeaf = null;
         this.title = "";
-        this.type = plugin.settings.lastType || "meeting-note";
+        const last = plugin.settings.lastType;
+        this.type = TYPES.some(([value]) => value === last) ? last : "meeting-note";
         this.recordVoice = plugin.settings.recordVoice !== false;
         this.result = null;
         this.edited = false;
@@ -6483,7 +6484,6 @@ var require_view2 = __commonJS({
         this.draftRel = draftPath;
         this.segments = segments;
         this.audioRel = segments[segments.length - 1];
-        this.type = draftPath.startsWith("Journal/") ? "journal" : this.type;
         this.pausedTranscript = null;
         this.state = "paused";
         return true;
@@ -6643,7 +6643,7 @@ var require_view2 = __commonJS({
         const draft = this.draftRel;
         const audios = [...new Set([...this.segments || [], this.audioRel].filter(Boolean))];
         const attachmentFolder = id ? `${RECORDER_ATTACHMENTS}/${id}` : "";
-        const draftIsManaged = draft && draft.endsWith(DRAFT_SUFFIX) && (draft.startsWith(`${DRAFT_FOLDER}/`) || draft.startsWith("Journal/"));
+        const draftIsManaged = draft && draft.endsWith(DRAFT_SUFFIX) && draft.startsWith(`${DRAFT_FOLDER}/`);
         const managed = (audio) => Boolean(audio) && Boolean(id) && audio.startsWith(`${STAGING_DIR}/`) && recordingIdFromStaged(audio) === id;
         if (draftIsManaged) await this.trashManagedPath(draft);
         for (const audio of audios) {
@@ -6661,9 +6661,8 @@ var require_view2 = __commonJS({
         if (!this.recordingId) this.recordingId = recordingId();
         const digits = this.recordingId.slice(0, 8);
         const date = `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`;
-        const folder = this.type === "journal" ? "Journal" : DRAFT_FOLDER;
-        await this.ensureVaultDirs(folder);
-        this.draftRel = `${folder}/${date}--recording--${this.recordingId}${DRAFT_SUFFIX}`;
+        await this.ensureVaultDirs(DRAFT_FOLDER);
+        this.draftRel = `${DRAFT_FOLDER}/${date}--recording--${this.recordingId}${DRAFT_SUFFIX}`;
         await this.app.vault.create(this.draftRel, EMPTY_MEETING_BLOCK);
         if (this.manager) this.manager.indexSession(this);
         await this.loadEditorFile(this.draftRel);
@@ -6671,7 +6670,7 @@ var require_view2 = __commonJS({
       }
       async ensureDraftLocation() {
         if (!this.draftRel) return this.createDraft();
-        const folder = this.type === "journal" ? "Journal" : DRAFT_FOLDER;
+        const folder = DRAFT_FOLDER;
         if (this.draftRel.startsWith(`${folder}/`)) return this.draftRel;
         const file = this.app.vault.getAbstractFileByPath(this.draftRel);
         if (!file) {
@@ -6685,7 +6684,7 @@ var require_view2 = __commonJS({
         } else if (typeof this.app.vault.rename === "function") {
           await this.app.vault.rename(file, next);
         } else {
-          throw new Error("Obsidian cannot move the setup draft into its privacy-safe folder");
+          throw new Error("Obsidian cannot move the setup draft into the drafts folder");
         }
         this.draftRel = next;
         if (this.manager) this.manager.indexSession(this);
@@ -7370,15 +7369,12 @@ var require_plugin = __commonJS({
           }
           if (!stranded.length) return;
           const draftsById = /* @__PURE__ */ new Map();
-          for (const folder of [DRAFT_FOLDER, "Journal"]) {
-            if (!await adapter.exists(folder)) continue;
-            const drafts = await adapter.list(folder);
-            for (const path of drafts.files || []) {
-              const name = nodePath.posix.basename(path);
-              if (!name.endsWith(DRAFT_SUFFIX) || !name.includes("--recording--")) continue;
-              const id = name.slice(0, -DRAFT_SUFFIX.length).split("--recording--").pop();
-              if (id) draftsById.set(id, path);
-            }
+          const drafts = await adapter.exists(DRAFT_FOLDER) ? await adapter.list(DRAFT_FOLDER) : {};
+          for (const path of drafts.files || []) {
+            const name = nodePath.posix.basename(path);
+            if (!name.endsWith(DRAFT_SUFFIX) || !name.includes("--recording--")) continue;
+            const id = name.slice(0, -DRAFT_SUFFIX.length).split("--recording--").pop();
+            if (id) draftsById.set(id, path);
           }
           const paired = [...new Set(stranded.map(recordingIdFromStaged))].filter((id) => draftsById.has(id));
           if (paired.length) {

@@ -1,7 +1,7 @@
 # SLIM — Sparse Local Intelligence & Memory
 
 A private local assistant that lives in an Obsidian vault. You speak; it transcribes,
-organizes, reflects, and can talk with you about any of it. Everything runs on one Mac —
+organizes, and can talk with you about any of it. Everything runs on one Mac —
 local models over llama.cpp and Ollama, a SQLite index, and Markdown files you can read without it.
 
 Built to replace a paid Notion subscription whose only load-bearing feature was AI meeting
@@ -11,7 +11,7 @@ that makes spoken audio **filable and findable**, and every design decision belo
 from that.
 
 ```
-audio  ->  transcript  ->  LABEL  ->  FILE  ->  INDEX  ->  (REFLECT, TALK)
+audio  ->  transcript  ->  LABEL  ->  FILE  ->  INDEX  ->  TALK
 ```
 
 ---
@@ -46,7 +46,7 @@ flowchart TB
         direction LR
         REC["Obsidian recorder<br/>one click"]
         COP["Copilot sidebar<br/>the vault, the open note first"]
-        CLI["slim CLI<br/>ingest / reflect / status"]
+        CLI["slim CLI<br/>ingest / status"]
     end
 
     SRV["slim chat — 127.0.0.1:7546<br/>22 endpoints, loopback only, Host + Origin gated"]
@@ -56,7 +56,7 @@ flowchart TB
         CAP["CAPTURE<br/>transcribe.py"] --> LAB["LABEL<br/>enrich"]
         LAB --> FIL["FILE<br/>suggest / recorder/note.py"]
         FIL --> IDX["INDEX<br/>ingest / chunk / embed"]
-        IDX --> ANS["ANSWER<br/>search / copilot / reflect"]
+        IDX --> ANS["ANSWER<br/>search / copilot"]
     end
 
     VAULT["The vault<br/>your Markdown"]
@@ -80,8 +80,8 @@ staleness; when in doubt, kill the port.
 ## Your vault stays yours
 
 **SLIM does not ask you to restructure anything.** Indexing walks every Markdown file in the
-vault — `rglob("*.md")` — and skips only four top-level names (`Attachments/`, `Profile/`,
-`Skills/`, `_Reflections/`), a few dot-folders, and the recorder's own drafts. There is no allow-list of
+vault — `rglob("*.md")` — and skips only three top-level names (`Attachments/`, `Profile/`,
+`Skills/`), a few dot-folders, and the recorder's own drafts. There is no allow-list of
 folders anywhere. A vault organised any way at all is searchable and copilot-ready with no
 setup at all.
 
@@ -90,11 +90,9 @@ writes something, and it creates them itself with their parents:
 
 | Folder | When it appears | What it is |
 |---|---|---|
-| `Journal/` | first journal entry | your journals — flat, and no route ever carries a note out of it |
 | `Notes/_unfiled/` | first recording | a recording's draft, and a recording no folder was found for |
 | `Notes/<subject>/` | you make it | recordings and your own writing, by subject; any depth below level 2 is yours |
 | `Attachments/` | first recording | archived audio, named by content hash; the plugin hides it from the file explorer |
-| `_Reflections/` | first nightly run | derived synthesis, excluded from indexing |
 
 Subjects are yours — they are the ids you define in `config/projects.yaml`.
 
@@ -104,9 +102,8 @@ new recording therefore lands in `Notes/<subject>/`, or `Notes/_unfiled` until y
 folder, and you drag it wherever you like afterwards — because identity is the content hash, not the path, a move keeps the note's history, and the
 chats started on it still find it.
 
-Two degradations, both graceful. Without registered subjects, the copilot's Nearby notes stay
-in the note's own folder instead of widening further. And the nightly reflection reads
-journals under `Journal/` only, so a note with `type: journal` moved anywhere else drops out of it.
+One degradation, and it is graceful: without registered subjects, the copilot's Nearby notes
+stay in the note's own folder instead of widening further.
 
 ## How a recording is filed
 
@@ -248,7 +245,7 @@ chat. Code holds every limit: lookups before an answer, plan steps, calls, refus
 tokens.
 
 Two deliberate details. The lookups see only what the index sees, plus the open note and what
-you pin, so SLIM never finds its own reflections and treats them as evidence. And a turn's sources are the notes code saw it look
+you pin, so `Profile/` and `Skills/` are read only when you open or pin them. And a turn's sources are the notes code saw it look
 at: no model call decides them and nothing in the prompt asks for citations, so an answer
 reads like an assistant talking, not a footnoted report.
 
@@ -261,24 +258,20 @@ edits only the open note (it may also create a new note in an existing folder), 
 change applied in the editor and undoable, and its chat history lives outside the vault and is
 never treated as evidence.
 
-Separately, `slim reflect` runs nightly and writes **one** synthesis note into `_Reflections/`
-from your recent journals. It is the part of the system that is actually read for pleasure,
-and it is create-only — it never overwrites an existing reflection.
-
 ## Where state lives
 
 | Where | What | If you deleted it |
 |---|---|---|
-| the vault | Every note, its frontmatter, its full transcript, archived audio, the reflections. Plain Markdown, readable with SLIM uninstalled. | Everything is gone — this is the only copy that matters. |
+| the vault | Every note, its frontmatter, its full transcript, archived audio. Plain Markdown, readable with SLIM uninstalled. | Everything is gone — this is the only copy that matters. |
 | `slim.db` | `sources`, `fragments`, `fragments_fts`, `embeddings`. In Application Support, never in a synced folder. | `slim ingest` rebuilds it — but new source ids cut a saved chat's link to the note it started on, so schema changes are migrations. |
 | outside both | Copilot threads, pasted images, JSONL traces, and the vault pin that stops ingest sweeping the wrong vault. | Chat history and the audit trail are lost; your notes are untouched. |
 
-Raw sources are never rewritten, and derived artifacts are never re-ingested — `_Reflections/`
-and `Profile/` are excluded, and the recorder's own summary is blanked before chunking. The
+Raw sources are never rewritten, and derived text is never re-ingested: the recorder's own
+summary is blanked before chunking. The
 index never retrieves its own opinions as evidence.
 
-**Filed is not the same as findable.** Filing writes a Markdown file; the copilot and the
-reflection read SQLite. Anything that writes a note must index *and* embed it, or say plainly
+**Filed is not the same as findable.** Filing writes a Markdown file; the copilot reads
+SQLite. Anything that writes a note must index *and* embed it, or say plainly
 that it did not.
 
 ## Requirements
@@ -301,7 +294,7 @@ which a 48 GB machine fits and a 16 GB machine does not.
   ```
 
 - **[llama.cpp](https://github.com/ggml-org/llama.cpp)**'s `llama-server` on `127.0.0.1:8080`
-  (`brew install llama.cpp`), for every generative call: summary, title, card, reflect, copilot.
+  (`brew install llama.cpp`), for every generative call: summary, title, card, copilot.
   It renders the prompt with the model's own chat template, which Ollama does not. Point it at
   the two GGUF files Ollama keeps for `qwen3.6:35b` (the `model` and `projector` layers of its
   manifest, under `~/.ollama/models/blobs/`), and give each slot at least `llm.RESIDENT_CTX` tokens:
@@ -372,19 +365,18 @@ The full command set:
 ```bash
 uv run slim ingest                        # index the vault; embeds at the end
 uv run slim status                        # index health, incl. fragments still unembedded
-uv run slim reflect                       # journal window -> ONE reflection note
 uv run slim chat                          # the Obsidian plugin's server, 127.0.0.1:7546
 uv run slim trace -n 1                    # replay the last traced operation
 uv run slim mask --all                    # mask personal details in recordings already filed
 ```
 
-Optional background jobs, each installed by its own script in `scripts/`: the reflection
-nightly, and a restic backup of the vault daily.
+One optional background job, installed by `scripts/install-backup-schedule.sh`: a restic
+backup of the vault daily.
 
 ## Code map
 
-- `slim/` — the entry points and seams: `cli.py` (six commands), `server.py` (the plugin's API
-  server, run as `slim chat`), `reflect.py`, `db.py`, `llm.py` (never call the model server directly) and
+- `slim/` — the entry points and seams: `cli.py` (five commands), `server.py` (the plugin's API
+  server, run as `slim chat`), `db.py`, `llm.py` (never call the model server directly) and
   `llm_render.py` (the raw tool-call reply format), `trace.py`, `config.py`,
   `vaultpath.py`. Each subpackage below is a feature folder, not a layer.
 - `slim/vault/` — `frontmatter.py` (the frontmatter reader and writer), `notefile.py` (slugs,
@@ -415,8 +407,6 @@ nightly, and a restic backup of the vault daily.
 - **Deterministic truth in code.** Hashes, ids, timestamps, filters and paths are code. The
   model is for interpretation, classification, synthesis and language — never for a fact the
   machine already knows.
-- **`Journal/` is flat, and it is a path.** No route carries a note out of it, and a test
-  enforces that.
 - **Subject is the only folder axis.** A path encodes one fact; type, course and status live in
   frontmatter where they can be queried. Folders SLIM invents are at most two segments deep;
   depth you create is yours.

@@ -1,5 +1,5 @@
 """The frontmatter reader and writer. Used by `index.chunk`, `index.ingest`, `recorder.note`,
-`recorder.pipeline`, `recorder.review`, `reflect`, `recorder.suggest`, `copilot.edits`,
+`recorder.pipeline`, `recorder.review`, `recorder.suggest`, `copilot.edits`,
 `copilot.blocks` and `copilot.context`."""
 
 import re

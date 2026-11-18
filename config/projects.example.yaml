@@ -5,8 +5,8 @@
 # notes widen to it. Filing does not read this file: the card
 # proposes folders that exist. `description` tells the titling model (`enrich`) what a subject is.
 
-# The name the prompts address you by. Only interpretation reads it — labels, summaries,
-# the nightly reflection; no path, id or filter ever does.
+# The name the prompts address you by. Only interpretation reads it (labels, summaries);
+# no path, id or filter ever does.
 owner: "Alex"
 
 projects:

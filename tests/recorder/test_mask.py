@@ -267,7 +267,7 @@ def test_a_note_edited_while_masking_is_masked_as_it_now_stands(tmp_path, indexe
 def test_recordings_skips_configured_prefixes_and_typed_notes(tmp_path, monkeypatch):
     for rel in ("Notes/a/one.md", "Notes/ab/two.md", "Notes/some-folder/x.md",
                 "Notes/some-folder/deep/y.md", "Journal/day.md",
-                "Attachments/copy.md", "_Reflections/r.md"):
+                "Attachments/copy.md"):
         _recorded(tmp_path, rel)
     (tmp_path / "Notes/a/typed.md").write_text("---\ntitle: mine\n---\nwords\n")
     (tmp_path / "Notes/a/bare.md").write_text("words\n")
@@ -418,7 +418,6 @@ def test_a_draft_or_excluded_note_is_never_written(tmp_path, indexed):
 
 def test_recordings_leaves_out_a_draft_still_recording(tmp_path):
     _recorded(tmp_path, "Notes/_unfiled/rec.slim-draft.md")
-    _recorded(tmp_path, "Journal/rec.slim-draft.md")
     _recorded(tmp_path, "Notes/_unfiled/filed.md")
     assert mask.recordings(tmp_path) == ["Notes/_unfiled/filed.md"]
 
