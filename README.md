@@ -142,7 +142,7 @@ sequenceDiagram
     S->>S: batch transcription (120s windows, 15s overlap)
     S->>S: mask personal details in the transcript
     S->>S: summary (thinking on), title, filing card
-    S->>D: archive audio by hash, write the note, delete the draft
+    S->>D: archive audio by hash (secrets muted), write the note, delete the draft
     S->>D: index + embed
     S-->>O: card appears, on an already-filed note
 ```
@@ -155,8 +155,8 @@ staged so you can retry.
 
 Before any model reads the transcript, personal details in it — social security, card and
 account numbers, passwords, email and street addresses — are replaced by placeholders such as
-`[SSN]`, and the numbers and passwords are also silenced in the archived audio. See
-[Masking sensitive details](#masking-sensitive-details).
+`[SSN]`, and SSN, card and account numbers and passwords are also silenced at capture in the
+archived audio. See [Masking sensitive details](#masking-sensitive-details).
 
 The three model calls in that sequence share one server and its one context window: the
 window is fixed when the server starts, so a call cannot ask for a second, smaller one.
@@ -166,33 +166,52 @@ window is fixed when the server starts, so a call cannot ask for a second, small
 Calls carry things you would rather not keep: a card number read out to a support line, a
 door code, an account number. SLIM masks them in every new recording, right after
 transcription, so the summary, title, filing card, note and index only ever see a placeholder.
-Once the note is filed, the original is not kept anywhere SLIM writes.
+Once the note is filed SLIM keeps no unmasked copy; backups, including SLIM's optional restic
+job, still hold whatever they captured before, such as a note before `slim mask`.
 
 - **Numbers** are masked for their shape (an SSN written `123-45-6789` or `123 45 6789`, a card
   number that passes the Luhn check with a known issuer prefix, an IBAN) or because a cue is
   tied to them: "my account number is …", a question asking for it just before the answer, or
-  "…, that's my social" just after. A cue word somewhere nearby is not enough.
+  "…, that's my social" just after. Next to "my social is" or "that's my social" a number the
+  transcriber garbled is still taken, and "the last four of my social" takes its four digits.
+  A cue word somewhere nearby is not enough.
 - **Passwords** have no shape, so a cue ("password", "PIN", "door code") makes the local model
-  read the few sentences around it and point at the secret; code masks only text it finds
-  there, never what the model writes.
+  read the sentence with the cue and the next two and point at the secret; code masks only
+  text it finds there, never what the model writes.
 - **Email and street addresses** are masked in the text; phone numbers only if you turn them on.
-- SSNs, cards, account numbers and passwords are also **silenced in the archived audio**.
+- At capture, SSNs, cards, account numbers and passwords are also **silenced in the archived
+  audio**. `slim mask` changes text only: a recording it masks keeps its audio and is marked
+  `pii_partial: [audio]`.
 
-The classes are the `pii:` block of `config/projects.yaml` (see `config/projects.example.yaml`):
-`mask` lists them (the default is all but `phone`; `[]` turns masking off) and `skip` lists
-folders `slim mask --all` leaves alone. A note records class counts, never values (`pii_masked`), and
-`pii_partial` names anything left unfinished. For recordings filed before you turned it on:
+Masking is on by default. To change it, copy the `pii:` block from
+`config/projects.example.yaml` into `config/projects.yaml`:
+
+```yaml
+pii:
+  mask: [ssn, card, account, password, email, address]
+  skip: [Notes/some-folder]
+```
+
+`mask` lists the classes (add `phone`; `[]` turns masking off) and `skip` lists folders
+`slim mask --all` leaves alone. A note records class counts, never values (`pii_masked`).
+`pii_partial` names what is unfinished: `password` (the password pass did not complete;
+`slim mask <note>` redoes it) or `audio` (the secret is masked in the text but may still be
+audible). For recordings filed before masking, close them in Obsidian, stop the plugin's
+server (port 7546) so the index can be compacted, and dry-run first:
 
 ```bash
+lsof -tiTCP:7546 -sTCP:LISTEN | xargs kill
 uv run slim mask --all --dry-run   # counts per note; writes nothing (it still runs the model)
 uv run slim mask --all             # mask transcripts and summaries, then re-index
 ```
 
 The limits, plainly: a number or password said with no cue and no recognisable shape is not
-caught; a number the transcriber garbles beyond recognition stays in the text and the audio;
-what you type into the note's Notes section is never masked; and live captions are not masked,
-since they are never saved. **Masked text cannot be recovered from SLIM**, so keep your own
-backup if you want the originals.
+caught; a number the transcriber garbles, with no strong cue beside it, stays in the text and
+the audio; any number said in exactly the SSN shape `123 45 6789` is masked even when it is not
+one; what you type into the note's Notes section is never masked, and the summary may repeat
+it; titles and file names of recordings filed before masking are not changed; and live
+captions are not masked, since they are never saved. **Masked text cannot be recovered from
+SLIM**, so keep your own backup if you want the originals.
 
 It was measured only on synthetic data, never real recordings: generated calls spoken with
 macOS `say` into a throwaway vault, and public synthetic PII datasets

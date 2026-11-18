@@ -12,14 +12,14 @@ is for outsiders.
 ## Commands
 
 ```bash
-uv run pytest -q                        # ~1000 tests; `uv` always — the system python is 3.9
+uv run pytest -q                        # ~1400 tests; `uv` always — the system python is 3.9
 node --test "obsidian/test/**/*.test.mjs"   # plugin tests; they load obsidian/src/ directly
 (cd obsidian && npm install && npm run build)   # src/ -> the committed main.js; bundle.test.mjs fails if stale
 uv run slim chat --reload               # dev server; respawns on any slim/**/*.py save (not .yaml)
 uv run slim ingest                      # index the vault, embedding included
 uv run slim status                      # counts, including `unembedded`
 uv run slim trace -n 5                  # what the last silent failures did
-uv run slim mask --all                  # mask recordings already filed; --dry-run counts, --force redoes stamped notes
+uv run slim mask --all                  # mask filed recordings; --dry-run counts, --force redoes
 uv run python -m scripts.pii_eval text|calls|public --out <dir>   # masking eval, synthetic only
 cp obsidian/{main.js,manifest.json,styles.css} \
    "$SLIM_VAULT/.obsidian/plugins/slim-recorder/"   # a COPY; reload the plugin after
@@ -47,11 +47,11 @@ audio  ->  transcript  ->  LABEL  ->  FILE  ->  INDEX  ->  (REFLECT, TALK)
      recordings). The audio stays staged and the card offers Try again.
    - `recorder/note.py` is the sole writer of a recording's frontmatter and managed sections.
    - **Recordings are masked before any model reads them** (`capture/pii.py`; the owner's
-     request, so not a privacy gate): right after transcription, so the summary, title, card,
-     note and index only ever see placeholders like `[SSN]`. Secret classes (ssn, card,
-     account, password) are also silenced in the archived audio, after the last cancel point.
-     No original is kept once the note is filed. Classes are `pii.mask` in `projects.yaml`
-     (phone off by default); `pii.skip` lists folders `slim mask --all` leaves alone.
+     request, not a privacy gate), so summary, title, card, note and index see only placeholders
+     like `[SSN]`. Secrets (ssn, card, account, password) are also muted in the audio, after the
+     last cancel point. The raw words live only in `_incoming`'s segment caches until filing
+     deletes them; the owner's typed notes are never masked. Classes are `pii.mask` in
+     `projects.yaml` (phone off by default); `pii.skip` lists folders `slim mask --all` skips.
 2. **Label** — type and subject, written once at capture; `tagged_by`/`subject_by` record
    which layer decided. A wrong label is the owner's edit.
 3. **File** — `suggest` proposes `Notes/<subject>/`; an invented folder collapses to its
@@ -94,28 +94,27 @@ The copilot is a vault assistant shaped like the Pi coding agent, on the same mo
 ## Masking: the decisions
 
 - **A number is masked for its shape or for a cue bound to it** (`capture/pii_detect.py`).
-  Shape: a dashed or spaced 3-2-4 SSN, a card passing Luhn with a known brand prefix, an IBAN.
-  Bound: the cue sits just before it with only filler between, asks for it in the previous
-  turn, or follows it ("…, that's my social"). A cue merely nearby masked "Credit union
-  members: 3816, 6368, …" and "my social security check came on 2023-08-13" in a third to all
-  of a false-positive hunt's cases, and a secret hit also mutes audio. The spaced 3-2-4 needs no
-  cue (`pii_detect.SSN_SPACED_CUE_FREE`): it is how the transcriber writes a spoken SSN, at
+  Shape: a dashed or spaced 3-2-4 SSN, a Luhn-valid card with a brand prefix, an IBAN. Bound:
+  the cue sits just before it with only filler between, asks for it in the previous turn, or
+  follows it ("…, that's my social"). "My social is" and "that's my social" also take a
+  garbled number, and "last four of my social" its four digits. A cue merely nearby masked
+  lists and dates near a cue word, and a secret hit also mutes audio. The spaced 3-2-4 needs
+  no cue (`pii_detect.SSN_SPACED_CUE_FREE`): it is how the transcriber writes a spoken SSN, at
   the cost of masking any other number said in that shape.
-- **Passwords have no shape**: a cue word opens a window and the model is asked once per window
-  (`capture/pii_password.py`). It may only point: code masks text it finds in the window,
-  never what the model writes.
-- **Filing never waits on masking.** `pii_partial: [audio, password]` names what is unfinished:
-  `slim mask <note>` redoes the password pass from the text; nothing but the audio can fix
-  `audio` (a mute failed, or a secret could not be placed in the word times).
+- **Passwords have no shape**: a cue opens a window and the model is asked once per window
+  (`capture/pii_password.py`). It may only point: code masks window text matching the answer
+  verbatim or by its letters and digits, never what the model writes.
+- **A masking failure never stops filing.** `pii_partial` names what is unfinished: `password`
+  (`slim mask <note>` redoes it from the text) or `audio` (the secret may still be audible;
+  `slim mask` is text only and leaves this reason on every note whose secret it masks).
 - **`slim mask` splices** (`recorder/mask.py`; a model job, `--dry-run` too): only the masked
   spans (transcript, SLIM's summary) and the `pii_*` lines change, and a note it cannot restore
-  byte for byte is refused; an earlier version rebuilt the head and deleted the owner's text
-  around the summary.
+  byte for byte is refused; rebuilding the head once deleted the owner's text.
 - **Values are never stored, traced or printed**: frontmatter and traces carry class counts.
-- **Measured on synthetic calls only** (`scripts/pii_eval`; with the model, a model job), never
-  the owner's recordings; its pass mark is on secrets said with a cue. Not caught: a value with no
-  cue and no shape; a number the transcriber garbles (it stays in the audio too); the owner's
-  typed notes, which the summary may repeat.
+- **Measured on synthetic calls only** (`scripts/pii_eval`; `calls` and `text` without
+  `--no-model` are model jobs), never the owner's recordings; the gate is recall on cued secrets.
+  Not caught: a value with no cue and no shape, or garbled with no strong cue beside it (it
+  stays in the audio too); typed notes the summary repeats.
 
 ## Where things live
 

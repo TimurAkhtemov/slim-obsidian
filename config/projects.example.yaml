@@ -21,7 +21,8 @@ projects:
 
 # Personal data masked in recording transcripts, at capture and by `slim mask`, each value
 # replaced by a placeholder such as `[SSN]`. Classes: ssn, card, account, password, email,
-# address, phone; ssn, card, account and password are also silenced in the archived audio.
+# address, phone; at capture, ssn, card, account and password are also silenced in the
+# archived audio (`slim mask` changes text only).
 # The default is all but phone: add `phone` to mask phone numbers; `[]` turns masking off.
 # `skip` lists vault folders `slim mask --all` leaves alone (whole path segments; a note
 # named on the command line is still masked).
