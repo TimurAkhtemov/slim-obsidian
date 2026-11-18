@@ -381,9 +381,9 @@ def test_a_splice_that_moves_other_bytes_is_refused(tmp_path, indexed, monkeypat
     rel = "Notes/w/call.md"
     _recorded(tmp_path, rel, summary=f"Mail {EMAIL}.")
     before = (tmp_path / rel).read_bytes()
-    real = note_writer.replace_summary
-    monkeypatch.setattr(note_writer, "replace_summary",
-                        lambda text, summary: real(text, summary).replace("- typed", "- TYPED"))
+    real = note_writer.replace_summaries
+    monkeypatch.setattr(note_writer, "replace_summaries",
+                        lambda text, summaries: real(text, summaries).replace("- typed", "- TYPED"))
     out = mask.mask_note(tmp_path, rel)
     assert out["error"] == "integrity" and out["changed"] is False
     assert (tmp_path / rel).read_bytes() == before and indexed == []
@@ -419,3 +419,70 @@ def test_recordings_leaves_out_a_draft_still_recording(tmp_path):
     _recorded(tmp_path, "Journal/rec.slim-draft.md")
     _recorded(tmp_path, "Notes/_unfiled/filed.md")
     assert mask.recordings(tmp_path) == ["Notes/_unfiled/filed.md"]
+
+
+# --- fix round 2 -----------------------------------------------------------------------------
+
+def test_a_frontmatter_writer_that_touches_another_key_is_refused(tmp_path, indexed, monkeypatch):
+    rel = "Notes/w/call.md"
+    _recorded(tmp_path, rel)
+    before = (tmp_path / rel).read_bytes()
+    real = note_writer.set_pii_frontmatter
+    monkeypatch.setattr(note_writer, "set_pii_frontmatter", lambda text, counts, reasons: real(
+        text, counts, reasons).replace('title: "Call"', 'title: "Other"'))
+    out = mask.mask_note(tmp_path, rel)
+    assert out["error"] == "integrity" and (tmp_path / rel).read_bytes() == before
+    assert indexed == []
+
+
+def test_the_guard_ignores_only_the_pii_keys_and_their_list_lines():
+    head = "---\ntitle: t\npii_masked:\n  - ssn:1\npii_by: pii-0\naudio: a\n---\nbody\n"
+    assert mask._head_without_pii(head) == ["---\n", "title: t\n", "audio: a\n", "---\n"]
+
+
+ONE_SUMMARY = ('<!-- slim:summary prompt="record-v2" -->\n## Summary\n\nMail {} today.\n'
+               "<!-- /slim:summary -->\n")
+
+
+def test_every_summary_block_is_masked(tmp_path, indexed):
+    other = "other@example.com"
+    rel = "Notes/w/two.md"
+    before = (FM + "\n" + ONE_SUMMARY.format(EMAIL) + "\n" + ONE_SUMMARY.format(other) + "\n" + TR)
+    (tmp_path / "Notes/w").mkdir(parents=True)
+    (tmp_path / rel).write_text(before, encoding="utf-8")
+    out = mask.mask_note(tmp_path, rel)
+    after = (tmp_path / rel).read_text(encoding="utf-8")
+    assert out["counts"] == {"email": 2, "ssn": 1}
+    assert _without_pii_lines(after) == \
+        before.replace(EMAIL, "[EMAIL]").replace(other, "[EMAIL]").replace(SSN, "[SSN]")
+
+
+@pytest.mark.parametrize("broken", [
+    "<!-- slim:summary prompt=\"x\" -->\n## Summary\n\nMail {} today, never closed.\n\n",
+    ONE_SUMMARY + "<!-- slim:summary prompt=\"x\" -->\n## Summary\n\nand {} again\n\n",
+])
+def test_a_summary_the_splice_cannot_see_refuses_the_note(tmp_path, indexed, broken):
+    rel = "Notes/w/broken.md"
+    raw = (FM + "\n````slim-meeting\n" + broken.format(EMAIL, EMAIL) + TR + "````\n").encode()
+    (tmp_path / "Notes/w").mkdir(parents=True)
+    (tmp_path / rel).write_bytes(raw)
+    out = mask.mask_note(tmp_path, rel)
+    assert out["error"] == "summary block" and out["changed"] is False
+    assert (tmp_path / rel).read_bytes() == raw and indexed == []
+
+
+def test_on_disk_takes_the_disk_spelling():
+    tree = {".": ["Notes", "x"], "Notes": ["w", "W2", "Ab", "aB"], "Notes/w": ["c.md", "C.md"],
+            "Notes/Ab": ["n.md"]}
+
+    def listdir(path):
+        rel = Path(path).relative_to("/v").as_posix()
+        return tree[rel]
+
+    v = Path("/v")
+    assert mask.on_disk(v, "notes/W/c.md", listdir) == "Notes/w/c.md"     # exact name wins
+    assert mask.on_disk(v, "NOTES/w2", listdir) == "Notes/W2"
+    with pytest.raises(FileNotFoundError):
+        mask.on_disk(v, "Notes/ab/n.md", listdir)                          # two case matches
+    with pytest.raises(FileNotFoundError):
+        mask.on_disk(v, "Notes/w/missing.md", listdir)

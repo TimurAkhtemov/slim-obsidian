@@ -231,6 +231,12 @@ def cmd_mask(args):
             print(f"{name}  (error: outside the vault)")
             errors += 1
             continue
+        try:
+            rel = mask.on_disk(VAULT, rel)        # the index's spelling, not the typed one
+        except OSError as exc:
+            print(f"{name}  (error: {type(exc).__name__})")
+            errors += 1
+            continue
         if rel not in rels:
             rels.append(rel)
     if args.all:

@@ -375,13 +375,20 @@ def transcript_span(text: str) -> tuple[int, int]:
     return offset + at + len(TRANSCRIPT_MARKER), offset + len(scope)
 
 
-def summary_span(text: str) -> tuple[int, int] | None:
-    """Where the derived summary's TEXT sits in `text` (inside its fence, after `## Summary`),
-    or None when the note has none. The same match `read_review_sections` strips and returns."""
+def summary_spans(text: str) -> list[tuple[int, int]]:
+    """Where the TEXT of every well-formed derived summary block sits in `text` (inside its
+    fence, after `## Summary`), in order. The first is what `read_review_sections` returns."""
     scope, offset, fm_end = _managed_scope(text)
     at = _transcript_at(scope, fm_end)
-    m = _SUMMARY_RE.search(scope, fm_end, _before_transcript(scope, at) if at >= 0 else len(scope))
-    return (offset + m.start(1), offset + m.end(1)) if m else None
+    end = _before_transcript(scope, at) if at >= 0 else len(scope)
+    return [(offset + m.start(1), offset + m.end(1)) for m in _SUMMARY_RE.finditer(scope, fm_end, end)]
+
+
+def summary_openers(text: str) -> int:
+    """How many summary openers the note holds anywhere. More than `summary_spans` found means a
+    block the splice cannot see (an unclosed fence, one below the transcript): its text would be
+    left as it is."""
+    return text.count(SUMMARY_OPEN)
 
 
 def read_transcript(text: str) -> str:
@@ -392,10 +399,9 @@ def read_transcript(text: str) -> str:
     return text[start:end]
 
 
-def read_summary(text: str) -> str:
-    """The summary's text exactly as it sits in the note, unstripped; "" when there is none."""
-    span = summary_span(text)
-    return text[span[0]:span[1]] if span else ""
+def read_summaries(text: str) -> list[str]:
+    """Each summary block's text exactly as it sits in the note, unstripped."""
+    return [text[a:b] for a, b in summary_spans(text)]
 
 
 def _longest_backticks(s: str) -> int:
@@ -420,17 +426,19 @@ def replace_transcript(text: str, transcript: str) -> str:
     return _splice(text, transcript_span(text), transcript)
 
 
-def replace_summary(text: str, summary: str) -> str:
-    """Swap the summary's text (as `read_summary` returns it) and nothing else.
+def replace_summaries(text: str, summaries: list[str]) -> str:
+    """Swap each summary block's text (as `read_summaries` returns them) and nothing else.
 
     Not `replace_review_sections`, which REBUILDS the head from summary and notes: on a note
     that is not in the canonical shape that drops the owner's text around them."""
-    span = summary_span(text)
-    if span is None:
-        raise ValueError("recorded note has no summary")
-    if SUMMARY_CLOSE in summary or SUMMARY_OPEN in summary:
-        raise ValueError("a summary cannot carry the summary fence's markers")
-    return _splice(text, span, summary)
+    spans = summary_spans(text)
+    if len(spans) != len(summaries):
+        raise ValueError(f"the note has {len(spans)} summary blocks, not {len(summaries)}")
+    for span, summary in reversed(list(zip(spans, summaries))):   # later spans first: offsets hold
+        if SUMMARY_CLOSE in summary or SUMMARY_OPEN in summary:
+            raise ValueError("a summary cannot carry the summary fence's markers")
+        text = _splice(text, span, summary)
+    return text
 
 
 def write_note_text(path: Path, text: str) -> None:

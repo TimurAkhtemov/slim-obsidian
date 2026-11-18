@@ -294,3 +294,33 @@ def test_mask_help_warns_about_notes_open_in_obsidian(monkeypatch, capsys):
     with pytest.raises(SystemExit):
         _run_mask(monkeypatch, "--help")
     assert "not open for editing in Obsidian" in capsys.readouterr().out
+
+
+def test_mask_a_wrong_case_path_masks_and_indexes_the_one_real_note(monkeypatch, tmp_path, capsys):
+    """macOS opens `notes/W/A.md` as `Notes/w/a.md`; the index must still see one source, masked."""
+    from slim import config
+    from slim.capture import pii
+    from slim.index import embed, ingest as ingest_mod
+    from tests.recorder.test_mask import _recorded
+    v = tmp_path / "vault"
+    _recorded(v, "Notes/w/a.md", notes="- typed, nothing personal")
+    if not (v / "notes/W/A.md").exists():
+        pytest.skip("case-sensitive filesystem: the wrong spelling names no file")
+    monkeypatch.setattr(cli, "VAULT", v)
+    monkeypatch.setattr(config, "PII_MASK", config.PII_DEFAULT)
+    monkeypatch.setattr(pii, "ask_model", lambda window: None)
+    monkeypatch.setattr(identity, "require_vault_dir", lambda: None)
+    monkeypatch.setattr(identity, "require_vault_identity", lambda con, **kw: None)
+    monkeypatch.setattr(embed, "embed_source", lambda con, sid: {"embedded": 0})
+    con = db.connect()
+    ingest_mod.ingest_note(con, v, "Notes/w/a.md")
+    con.close()
+    _run_mask(monkeypatch, "notes/W/A.md")
+    assert capsys.readouterr().out.splitlines()[0] == "Notes/w/a.md  email:1 ssn:1"
+    con = db.connect()
+    paths = [r["path"] for r in con.execute("SELECT path FROM sources WHERE deleted = 0")]
+    texts = [r["text"] for r in con.execute("SELECT text FROM fragments")]
+    fts = con.execute("SELECT count(*) FROM fragments_fts WHERE fragments_fts MATCH '9999'")
+    assert paths == ["Notes/w/a.md"]
+    assert not any("9999" in t for t in texts) and fts.fetchone()[0] == 0
+    con.close()

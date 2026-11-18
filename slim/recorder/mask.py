@@ -38,6 +38,27 @@ def _under(rel: Path, prefixes) -> bool:
     return False
 
 
+def on_disk(vault: Path, rel: str, listdir=os.listdir) -> str:
+    """`rel` as the disk spells it, one component at a time.
+
+    ⚠ macOS's disk is case-insensitive, so `notes/W/c.md` opens `Notes/w/c.md`; but the index
+    keys sources on the path STRING, and ingesting the wrong spelling makes a second source
+    while the original keeps its unmasked fragments. An exact name wins; else the one entry
+    that matches ignoring case; else FileNotFoundError."""
+    here = Path(vault)
+    parts = []
+    for part in Path(rel).parts:
+        names = listdir(here)
+        if part not in names:
+            folded = [n for n in names if n.casefold() == part.casefold()]
+            if len(folded) != 1:
+                raise FileNotFoundError(f"no single entry named {part!r}")
+            part = folded[0]
+        parts.append(part)
+        here = here / part
+    return Path(*parts).as_posix()
+
+
 def recordings(vault: Path) -> list[str]:
     """Vault-relative paths of the recordings `slim mask --all` selects, sorted.
 
@@ -66,19 +87,39 @@ def _read_raw(path: Path) -> str:
         return f.read()
 
 
-def _restores(original: str, new: str, transcript: str, summary: str | None) -> bool:
-    """INTEGRITY: put the original transcript, summary and frontmatter back into `new`, found
-    by the same locators on the NEW text, and require the original byte for byte. Anything a
-    splice moved outside those three places fails this."""
+_PII_KEYS = ("pii_masked", "pii_by", "pii_partial")
+
+
+def _head_without_pii(text: str) -> list[str]:
+    """The frontmatter lines, minus the masker's own keys and a block list's lines under them."""
+    _, skip = parse_frontmatter(text)
+    kept, in_pii = [], False
+    for line in text.splitlines(keepends=True)[:skip]:
+        if in_pii and (line.strip().startswith("- ") or (line[:1].isspace() and line.strip())):
+            continue
+        key = line.split(":", 1)[0]
+        in_pii = key in _PII_KEYS and ":" in line
+        if not in_pii:
+            kept.append(line)
+    return kept
+
+
+def _restores(original: str, new: str, transcript: str, summaries: list[str]) -> bool:
+    """INTEGRITY: the frontmatter must match apart from the `pii_*` keys, and putting the
+    original transcript, every original summary and the original frontmatter back into `new` —
+    each found by the same locators on the NEW text — must give the original byte for byte.
+    Anything a splice or the frontmatter writer moved elsewhere fails this."""
     try:
+        if _head_without_pii(original) != _head_without_pii(new):
+            return False
         back = new
         a, b = note_writer.transcript_span(back)
         back = back[:a] + transcript + back[b:]
-        span = note_writer.summary_span(back)
-        if (span is None) != (summary is None):
+        spans = note_writer.summary_spans(back)
+        if len(spans) != len(summaries):
             return False
-        if span is not None:
-            back = back[:span[0]] + summary + back[span[1]:]
+        for (a, b), summary in reversed(list(zip(spans, summaries))):
+            back = back[:a] + summary + back[b:]
         _, old_skip = parse_frontmatter(original)
         _, new_skip = parse_frontmatter(back)
         old_lines = original.splitlines(keepends=True)
@@ -109,8 +150,10 @@ def _plan(text: str, force: bool) -> dict:
         if "no transcript" in str(exc):
             return {"skipped": "no transcript"}
         return {"error": str(exc)}
-    span = note_writer.summary_span(text)
-    summary = text[span[0]:span[1]] if span else None
+    summaries = note_writer.read_summaries(text)
+    if note_writer.summary_openers(text) != len(summaries):
+        # A summary the splice cannot see would keep its values under a `pii_by` stamp.
+        return {"error": "summary block"}
 
     find = lambda window: pii.ask_model(window)          # noqa: E731 - read at call time
     counts: dict[str, int] = {}
@@ -122,11 +165,13 @@ def _plan(text: str, force: bool) -> dict:
         found.append(m)
         if m.text != transcript:
             out = note_writer.replace_transcript(out, m.text)
-        if summary:                       # the exact span, unstripped: its whitespace is kept
+        masked = []                       # each exact span, unstripped: its whitespace is kept
+        for summary in summaries:
             sm = pii.mask(summary, find_password=find)
             found.append(sm)
-            if sm.text != summary:
-                out = note_writer.replace_summary(out, sm.text)
+            masked.append(sm.text)
+        if masked != summaries:
+            out = note_writer.replace_summaries(out, masked)
     except ValueError:
         return {"error": "integrity"}
     for one in found:
@@ -143,7 +188,7 @@ def _plan(text: str, force: bool) -> dict:
     for cls, n in counts.items():
         total[cls] = total.get(cls, 0) + n
     out = note_writer.set_pii_frontmatter(out, total, reasons)
-    if not _restores(text, out, transcript, summary):
+    if not _restores(text, out, transcript, summaries):
         return {"error": "integrity"}
     return {"text": out, "counts": counts, "partial": sorted(reasons)}
 

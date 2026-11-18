@@ -578,14 +578,23 @@ def test_replace_transcript_never_refences_and_refuses_a_longer_backtick_run():
 
 def test_the_summary_is_spliced_not_rebuilt():
     text = _transcript_note("\nafter\n").replace("s\n<!-- /slim", "  sum mary  \n<!-- /slim")
-    assert note_writer.read_summary(text) == "  sum mary  "
-    out = note_writer.replace_summary(text, "  sum [X]  ")
+    assert note_writer.read_summaries(text) == ["  sum mary  "]
+    out = note_writer.replace_summaries(text, ["  sum [X]  "])
     assert out == text.replace("  sum mary  ", "  sum [X]  ")
     with pytest.raises(ValueError, match="fence"):
-        note_writer.replace_summary(text, "<!-- /slim:summary -->")
-    with pytest.raises(ValueError, match="no summary"):
-        note_writer.replace_summary(LEGACY, "x")
-    assert note_writer.read_summary(LEGACY) == ""
+        note_writer.replace_summaries(text, ["<!-- /slim:summary -->"])
+    with pytest.raises(ValueError, match="summary blocks"):
+        note_writer.replace_summaries(LEGACY, ["x"])
+    assert note_writer.read_summaries(LEGACY) == [] and note_writer.summary_openers(LEGACY) == 0
+
+
+def test_every_summary_block_is_found_and_spliced():
+    one = '<!-- slim:summary prompt="record-v2" -->\n## Summary\n\nfirst\n<!-- /slim:summary -->\n'
+    text = LEGACY.replace("## Notes", one + "\n" + one.replace("first", "second") + "\n## Notes")
+    assert note_writer.read_summaries(text) == ["first", "second"]
+    assert note_writer.summary_openers(text) == 2
+    out = note_writer.replace_summaries(text, ["1st", "2nd"])
+    assert out == text.replace("first", "1st").replace("second", "2nd")
 
 
 def test_replace_transcript_refuses_a_note_without_one():
