@@ -7,6 +7,7 @@ const nodePath = require("path");
 const { STAGING_DIR, RECORDER_ATTACHMENTS, DRAFT_SUFFIX, DRAFT_FOLDER, EMPTY_MEETING_BLOCK, recordingIdFromStaged,
         recordingId, splitMeetingNote, frontmatterScalar, hasMeetingBlock,
         embedLegacyMeetingBlock } = require("./meeting-note");
+const { piiFromFrontmatter } = require("./pii");
 
 class RecorderView {
   constructor(leaf, plugin) {
@@ -266,6 +267,9 @@ class RecorderView {
       notes_md: parts.notes,
       card: { dest_dir: parent, type_tag: type, topics, folders: [] },
     };
+    // Past the session that filed it, a partial masking must still say so on the card.
+    const pii = piiFromFrontmatter(fm);
+    if (pii) this.result.pii = pii;
     this.cardTitle = this.result.title;
     // Absence means complete for backwards compatibility: hundreds of historical recordings
     // predate durable review state and must not suddenly become an inbox. New recordings write

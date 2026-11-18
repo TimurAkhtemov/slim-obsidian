@@ -236,12 +236,15 @@ def merge_pii_frontmatter(text: str, masked) -> str:
     """Add a resumed segment's masking (`pii.Masked`) to the note's: counts add, partial sticks.
 
     ⚠ `pii_by` is never ADDED here. It says the whole transcript was checked, and a note filed
-    before masking existed was not: only the new words were. Such a note gets its counts and
-    partial flag, and nothing at all when the new words held nothing."""
+    before masking existed was not: only the new words were, and `slim mask` finds the note by
+    the missing key. Such a note gets its counts and partial flag, and nothing at all when the
+    new words held nothing. A note that has it is brought to the current version."""
+    from ..capture import pii
     from ..vault.frontmatter import parse_frontmatter, set_frontmatter
 
     fm, _ = parse_frontmatter(text)
-    if not fm.get("pii_by") and not masked.counts and not masked.partial:
+    checked = bool(fm.get("pii_by"))
+    if not checked and not masked.counts and not masked.partial:
         return text
     prior = fm.get("pii_masked") or []
     counts: dict[str, int] = {}
@@ -252,6 +255,8 @@ def merge_pii_frontmatter(text: str, masked) -> str:
     for cls, n in masked.counts.items():
         counts[cls] = counts.get(cls, 0) + n
     updates: dict[str, object] = {"pii_masked": [f"{c}:{n}" for c, n in sorted(counts.items())]}
+    if checked:
+        updates["pii_by"] = pii.VERSION
     if masked.partial:
         updates["pii_partial"] = "true"
     return set_frontmatter(text, updates)

@@ -983,3 +983,90 @@ def test_paused_preview_masks_without_model(tmp_path, monkeypatch):
         encoding="utf-8")
     out = pipeline.handle_record_transcript(audio_rel=[staged], vault=tmp_path)
     assert "219-09-9999" not in out["text"] and "my ssn is [SSN]" in out["text"]
+
+
+def test_masking_off_files_verbatim_and_claims_nothing(tmp_path, monkeypatch):
+    """`pii: {mask: []}` turns masking off: a note never checked must not say it was, or a
+    later `slim mask` would skip it."""
+    from slim import config
+    from slim.capture import audio, pii
+    from slim.recorder import pipeline
+    from slim.vault.frontmatter import parse_frontmatter
+    _fakes(monkeypatch, transcript=SSN_TEXT, tokens=SSN_TOKENS)
+    monkeypatch.setattr(config, "PII_MASK", ())
+    monkeypatch.setattr(pii, "ask_model", lambda window: pytest.fail("masking is off"))
+    monkeypatch.setattr(audio, "silence", lambda *a, **k: pytest.fail("masking is off"))
+    stages = []
+    out = pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="",
+                                 declared_type="meeting", title="T", when=NOW, vault=tmp_path,
+                                 on_progress=lambda stage, **k: stages.append(stage))
+    body = (tmp_path / out["note"]).read_text(encoding="utf-8")
+    assert "my ssn is 219-09-9999" in body
+    fm, _ = parse_frontmatter(body)
+    assert not [k for k in fm if k.startswith("pii_")]
+    assert out["pii"] == {"masked": {}, "partial": False}
+    assert "masking" not in stages
+
+
+def test_masking_off_leaves_an_append_and_the_preview_verbatim(tmp_path, monkeypatch):
+    import json
+
+    from slim import config
+    from slim.capture import audio, pii, transcribe
+    from slim.recorder import pipeline
+    from slim.vault.frontmatter import parse_frontmatter, set_frontmatter
+    from tests.recorder.fakes import _existing
+    monkeypatch.setattr(config, "PII_MASK", ())
+    monkeypatch.setattr(pii, "ask_model", lambda window: pytest.fail("masking is off"))
+    monkeypatch.setattr(audio, "silence", lambda *a, **k: pytest.fail("masking is off"))
+    r = _existing(tmp_path, monkeypatch)
+    monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
+        text=SSN_TEXT, model="fake", audio_seconds=9.0, wall_seconds=1.0, tokens=SSN_TOKENS))
+    pipeline.handle_record_append(note=str(r.note.relative_to(tmp_path)),
+                                  audio_rel=[_staged(tmp_path, "a-002.webm")], vault=tmp_path)
+    body = r.note.read_text(encoding="utf-8")
+    fm, _ = parse_frontmatter(body)
+    assert "my ssn is 219-09-9999" in body and not [k for k in fm if k.startswith("pii_")]
+
+    staged = _staged(tmp_path, "r-001.webm")
+    (tmp_path / staged).with_suffix(".webm.transcript.json").write_text(
+        json.dumps({"text": SSN_TEXT}), encoding="utf-8")
+    out = pipeline.handle_record_transcript(audio_rel=[staged], vault=tmp_path)
+    assert out["text"] == SSN_TEXT
+
+
+def test_an_append_onto_a_never_masked_note_never_claims_the_old_words(tmp_path, monkeypatch):
+    """No `pii_by` before means the older transcript was never checked: `slim mask` must still
+    pick the note up, so the append adds counts and partial, never `pii_by`."""
+    from slim.capture import pii, transcribe
+    from slim.recorder import pipeline
+    from slim.vault.frontmatter import parse_frontmatter
+    from tests.recorder.fakes import _existing
+    r = _existing(tmp_path, monkeypatch)
+    monkeypatch.setattr(pii, "ask_model", lambda window: (_ for _ in ()).throw(RuntimeError()))
+    monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
+        text="write to jane.doe@example.com, the door code is 4471", model="fake",
+        audio_seconds=9.0, wall_seconds=1.0))
+    pipeline.handle_record_append(note=str(r.note.relative_to(tmp_path)),
+                                  audio_rel=[_staged(tmp_path, "a-002.webm")], vault=tmp_path)
+    fm, _ = parse_frontmatter(r.note.read_text(encoding="utf-8"))
+    assert fm["pii_masked"] == ["email:1"] and fm["pii_partial"] == "true"
+    assert "pii_by" not in fm
+
+
+def test_an_append_onto_a_masked_note_keeps_it_current_and_partial(tmp_path, monkeypatch):
+    from slim.capture import pii, transcribe
+    from slim.recorder import pipeline
+    from slim.vault.frontmatter import parse_frontmatter, set_frontmatter
+    from tests.recorder.fakes import _existing
+    r = _existing(tmp_path, monkeypatch)
+    r.note.write_text(set_frontmatter(r.note.read_text(encoding="utf-8"), {
+        "pii_masked": ["ssn:1"], "pii_by": "pii-0", "pii_partial": "true"}), encoding="utf-8")
+    monkeypatch.setattr(pii, "ask_model", lambda window: None)
+    monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
+        text="nothing to hide here", model="fake", audio_seconds=9.0, wall_seconds=1.0))
+    pipeline.handle_record_append(note=str(r.note.relative_to(tmp_path)),
+                                  audio_rel=[_staged(tmp_path, "a-002.webm")], vault=tmp_path)
+    fm, _ = parse_frontmatter(r.note.read_text(encoding="utf-8"))
+    assert fm["pii_masked"] == ["ssn:1"] and fm["pii_by"] == pii.VERSION
+    assert fm["pii_partial"] == "true", "the note's own partial survives a clean append"

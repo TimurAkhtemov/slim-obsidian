@@ -268,3 +268,34 @@ test("the card says nothing about masking when nothing was masked", () => {
     assert.doesNotMatch(hintTexts(root).join("\n"), /Masked|password check/);
   }
 });
+
+test("a reopened card keeps its masking line from the note's frontmatter", async () => {
+  const path = "Notes/_unfiled/pending.md";
+  const { v, files, editorLeaf } = fileBackedView();
+  const file = { path, basename: "pending", text: [
+    "---", "origin: recorded", "review_status: pending", "pii_masked: [email:2, ssn:1]",
+    "pii_by: pii-1", "pii_partial: true", "---", "", "````slim-meeting",
+    "## Transcript", "", "words", "````", "",
+  ].join("\n") };
+  files.set(path, file);
+  await editorLeaf.openFile(file);
+  v.app.metadataCache = { getFileCache: () => ({ frontmatter: {
+    origin: "recorded", pii_masked: ["email:2", "ssn:1"], pii_by: "pii-1", pii_partial: true } }) };
+  v.plugin.getJSON = async () => ({ folders: [], tag_counts: {} });
+  assert.equal(await v.openExisting(file, editorLeaf), true);
+  assert.deepEqual(v.result.pii, { masked: { email: 2, ssn: 1 }, partial: true });
+  const root = fakeContentEl();
+  v.renderCard(root);
+  const hints = hintTexts(root).join("\n");
+  assert.match(hints, /Masked 1 SSN, 2 emails\./);
+  assert.match(hints, /The password check didn't run/);
+});
+
+test("the masking stage shows its label like its neighbours", () => {
+  const v = view();
+  v.processingProgress = { stage: "masking", label: "Masking sensitive details",
+                           detail: "Replacing identifiers before any model reads the transcript" };
+  const root = fakeContentEl();
+  v.renderProcessing(root);
+  assert.equal(findClass(root, "slim-thinking-stage").options.text, "Masking sensitive details");
+});

@@ -117,9 +117,13 @@ def _mask_segments(gots: list[dict], *, model: bool):
     Returns (masked copies of `gots`, one `pii.Masked` holding the summed counts, the audio
     spans of each segment's secrets). Partial when the password pass failed, or a secret could
     not be placed in its segment's audio: a cache written before token times has none, and a
-    secret left audible is the leak. `model=False` is the paused preview, which never waits."""
+    secret left audible is the leak. `model=False` is the paused preview, which never waits.
+
+    `config.PII_MASK` empty is masking OFF: the words come back as they were, with no spans."""
     from ..capture import pii
 
+    if not config.PII_MASK:
+        return list(gots), pii.Masked(text="", counts={}, secrets=[]), [[] for _ in gots]
     find = (lambda window: pii.ask_model(window)) if model else None
     masked, seg_spans, counts, partial = [], [], {}, False
     for got in gots:
@@ -275,8 +279,9 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
             asr_model = got.get("model") or asr_model
             speakers_by = got.get("speakers_by") or speakers_by
         # ⚠ BEFORE ANY MODEL: the summary, the title and the card all read `text`.
-        progress("masking", "Masking sensitive details",
-                 "Replacing identifiers before any model reads the transcript")
+        if config.PII_MASK:
+            progress("masking", "Masking sensitive details",
+                     "Replacing identifiers before any model reads the transcript")
         gots, masked, seg_spans = _mask_segments(gots, model=True)
         text = _join_segments(gots)
         audio_seconds = seconds or None
@@ -378,14 +383,17 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
     # archive, so the archived copy is the muted one.
     if not _silence_segments(segments, seg_spans):
         masked.partial = True
-    trace.record("record", {"stage": "pii", "counts": masked.counts, "partial": masked.partial})
+    if config.PII_MASK:
+        trace.record("record", {"stage": "pii", "counts": masked.counts,
+                                "partial": masked.partial})
     r = note_writer.write_recording(
         audio_src=segments, title=title, when=when, type_tag=card.type_tag, transcript=text,
         notes_md=notes_md, summary_md=summary_md,
         topics=card.topics, dest_dir=card.dest_dir, filed_by_slim=True, asr_model=asr_model,
         speakers_by=speakers_by,
         audio_seconds=audio_seconds, transcribed_at=transcribed_at,
-        pii=pii.frontmatter(masked), draft_src=draft, vault=vault)
+        # Masking off writes no `pii_` key: a note never checked must not say it was.
+        pii=pii.frontmatter(masked) if config.PII_MASK else None, draft_src=draft, vault=vault)
 
     # The note is committed, so the per-segment transcript caches have nothing left to save.
     for seg in segments:
@@ -510,7 +518,9 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
     state.check_cancel(job_id)
     if not _silence_segments(segments, seg_spans):
         masked.partial = True
-    trace.record("record", {"stage": "pii", "counts": masked.counts, "partial": masked.partial})
+    if config.PII_MASK:
+        trace.record("record", {"stage": "pii", "counts": masked.counts,
+                                "partial": masked.partial})
     with state.note_lock(vault, note):
         text = state.reread_for_write(src, note)
 
@@ -528,7 +538,8 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
         text = note_writer.append_audio_frontmatter(text, rels=archived_rels, digests=digests,
                                                     seconds=seconds, asr_model=asr_model,
                                                     speakers_by=speakers_by)
-        text = note_writer.merge_pii_frontmatter(text, masked)
+        if config.PII_MASK:
+            text = note_writer.merge_pii_frontmatter(text, masked)
         note_writer.write_note_text(src, note_writer.append_transcript(text, addition))
 
     archived_paths = {state.vault_path(vault, rel).resolve() for rel in archived_rels}

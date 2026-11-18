@@ -4273,6 +4273,46 @@ ${killCmd}`
   }
 });
 
+// src/recorder/pii.js
+var require_pii = __commonJS({
+  "src/recorder/pii.js"(exports2, module2) {
+    "use strict";
+    var PII_LABELS = [
+      ["ssn", "SSN"],
+      ["card", "card"],
+      ["account", "account"],
+      ["password", "password"],
+      ["email", "email"],
+      ["address", "address"],
+      ["phone", "phone"]
+    ];
+    var KNOWN = new Set(PII_LABELS.map(([cls]) => cls));
+    function piiHint(pii) {
+      if (!pii) return "";
+      const counts = pii.masked || {};
+      const parts = PII_LABELS.filter(([cls]) => counts[cls] > 0).map(([cls, label]) => `${counts[cls]} ${label}${counts[cls] === 1 || cls === "ssn" ? "" : "s"}`);
+      const lines = [];
+      if (parts.length) lines.push(`Masked ${parts.join(", ")}.`);
+      if (pii.partial) lines.push("The password check didn't run. Run `slim mask` on this note later.");
+      return lines.join(" ");
+    }
+    function piiFromFrontmatter(fm) {
+      if (!fm || typeof fm !== "object") return null;
+      const list = fm.pii_masked;
+      const partial = fm.pii_partial === true || String(fm.pii_partial).trim() === "true";
+      if (!Array.isArray(list) && !partial) return null;
+      const masked = {};
+      for (const item of Array.isArray(list) ? list : []) {
+        const m = /^\s*([a-z]+)\s*:\s*(\d+)\s*$/.exec(String(item));
+        if (!m || !KNOWN.has(m[1])) continue;
+        masked[m[1]] = (masked[m[1]] || 0) + Number(m[2]);
+      }
+      return { masked, partial };
+    }
+    module2.exports = { piiHint, piiFromFrontmatter };
+  }
+});
+
 // src/recorder/audio.js
 var require_audio = __commonJS({
   "src/recorder/audio.js"(exports2, module2) {
@@ -5643,24 +5683,7 @@ var require_review = __commonJS({
       markdownFromEditable
     } = require_editable_markdown();
     var { TYPES, renderMeetingTabs } = require_meeting_note();
-    var PII_LABELS = [
-      ["ssn", "SSN"],
-      ["card", "card"],
-      ["account", "account"],
-      ["password", "password"],
-      ["email", "email"],
-      ["address", "address"],
-      ["phone", "phone"]
-    ];
-    function piiHint(pii) {
-      if (!pii) return "";
-      const counts = pii.masked || {};
-      const parts = PII_LABELS.filter(([cls]) => counts[cls] > 0).map(([cls, label]) => `${counts[cls]} ${label}${counts[cls] === 1 || cls === "ssn" ? "" : "s"}`);
-      const lines = [];
-      if (parts.length) lines.push(`Masked ${parts.join(", ")}.`);
-      if (pii.partial) lines.push("The password check didn't run. Run `slim mask` on this note later.");
-      return lines.join(" ");
-    }
+    var { piiHint } = require_pii();
     module2.exports = {
       /* Returns the render promise when there is one, so a caller can act when the DOM is
        * actually there; a synchronous fallback returns undefined. */
@@ -6245,6 +6268,7 @@ var require_view2 = __commonJS({
       hasMeetingBlock,
       embedLegacyMeetingBlock
     } = require_meeting_note();
+    var { piiFromFrontmatter } = require_pii();
     var RecorderView = class {
       constructor(leaf, plugin) {
         this.leaf = leaf || null;
@@ -6477,6 +6501,8 @@ var require_view2 = __commonJS({
           notes_md: parts.notes,
           card: { dest_dir: parent, type_tag: type, topics, folders: [] }
         };
+        const pii = piiFromFrontmatter(fm);
+        if (pii) this.result.pii = pii;
         this.cardTitle = this.result.title;
         this.state = frontmatterScalar(text, "review_status") === "pending" ? "card" : "finished";
         this.activeTab = "summary";
