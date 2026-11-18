@@ -9,7 +9,7 @@ masked spans change; every other byte of the note is sliced through (`note.repla
 Which notes: `origin: recorded`, indexable, and not under a `pii.skip` prefix (`--all`); a note
 named on the command line runs wherever it sits. Done means `pii_by` is the current version and
 the password pass completed: a note left with only `audio` unfinished is done, since a text
-rerun cannot fix audio.
+rerun cannot fix audio. A secret-class value masked here adds `audio`: the audio still says it.
 
 Values are never returned, printed or traced: class counts and reasons only.
 """
@@ -184,6 +184,10 @@ def _plan(text: str, force: bool) -> dict:
         reasons.discard("password")
         if partial:
             reasons.add("password")
+    if any(counts.get(cls) for cls in pii.SECRET):
+        # ⚠ TEXT ONLY. A secret masked here was never silenced in the archived audio, which
+        # still says it: the note must not read as fully masked. Never removed by this command.
+        reasons.add("audio")
     total = dict(had_counts)
     for cls, n in counts.items():
         total[cls] = total.get(cls, 0) + n

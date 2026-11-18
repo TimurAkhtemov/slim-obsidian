@@ -180,13 +180,15 @@ def test_mask_all_prints_counts_never_values(monkeypatch, mask_vault, capsys):
     v, compacted = mask_vault
     _run_mask(monkeypatch, "--all")
     out = capsys.readouterr().out
-    assert out.splitlines() == ["Notes/w/a.md  email:1 ssn:1", "Notes/w/b.md  (unchanged)",
+    assert out.splitlines() == ["Notes/w/a.md  email:1 ssn:1 (partial: audio)",
+                                "Notes/w/b.md  (unchanged)",
                                 "1 notes masked, 1 unchanged, 0 skipped"]
     assert "219-09-9999" not in out and "@" not in out
     assert compacted == [1]
     _run_mask(monkeypatch, "--all")
     out = capsys.readouterr().out
-    assert out.splitlines() == ["Notes/w/a.md  (already masked)", "Notes/w/b.md  (already masked)",
+    assert out.splitlines() == ["Notes/w/a.md  (already masked) (partial: audio)",
+                                "Notes/w/b.md  (already masked)",
                                 "0 notes masked, 0 unchanged, 2 skipped"]
     assert compacted == [1]                  # nothing changed, nothing to compact
 
@@ -196,7 +198,7 @@ def test_mask_dry_run_writes_and_compacts_nothing(monkeypatch, mask_vault, capsy
     before = (v / "Notes/w/a.md").read_bytes()
     _run_mask(monkeypatch, "Notes/w/a.md", "--dry-run")
     out = capsys.readouterr().out
-    assert out.splitlines() == ["Notes/w/a.md  email:1 ssn:1",
+    assert out.splitlines() == ["Notes/w/a.md  email:1 ssn:1 (partial: audio)",
                                 "dry run: 1 notes masked, 0 unchanged, 0 skipped"]
     assert (v / "Notes/w/a.md").read_bytes() == before and compacted == []
 
@@ -220,7 +222,7 @@ def test_mask_says_when_a_note_was_not_reindexed(monkeypatch, mask_vault, capsys
         _run_mask(monkeypatch, "--all")
     assert e.value.code not in (0, None)
     out = capsys.readouterr().out
-    assert "Notes/w/a.md  email:1 ssn:1\n  ⚠ not re-indexed: locked\n" in out
+    assert "Notes/w/a.md  email:1 ssn:1 (partial: audio)\n  ⚠ not re-indexed: locked\n" in out
     assert "1 notes masked, 1 unchanged, 0 skipped" in out
 
 
@@ -286,7 +288,8 @@ def test_mask_spells_every_explicit_path_the_index_way(monkeypatch, mask_vault, 
     assert e.value.code not in (0, None)
     out = capsys.readouterr().out.splitlines()
     assert out == [f"{outside}  (error: outside the vault)", "../elsewhere.md  (error: outside the vault)",
-                   "Notes/w/a.md  email:1 ssn:1", "1 notes masked, 0 unchanged, 0 skipped, 2 failed"]
+                   "Notes/w/a.md  email:1 ssn:1 (partial: audio)",
+                   "1 notes masked, 0 unchanged, 0 skipped, 2 failed"]
     assert seen == ["Notes/w/a.md"]
 
 
@@ -316,7 +319,7 @@ def test_mask_a_wrong_case_path_masks_and_indexes_the_one_real_note(monkeypatch,
     ingest_mod.ingest_note(con, v, "Notes/w/a.md")
     con.close()
     _run_mask(monkeypatch, "notes/W/A.md")
-    assert capsys.readouterr().out.splitlines()[0] == "Notes/w/a.md  email:1 ssn:1"
+    assert capsys.readouterr().out.splitlines()[0] == "Notes/w/a.md  email:1 ssn:1 (partial: audio)"
     con = db.connect()
     paths = [r["path"] for r in con.execute("SELECT path FROM sources WHERE deleted = 0")]
     texts = [r["text"] for r in con.execute("SELECT text FROM fragments")]
@@ -324,3 +327,11 @@ def test_mask_a_wrong_case_path_masks_and_indexes_the_one_real_note(monkeypatch,
     assert paths == ["Notes/w/a.md"]
     assert not any("9999" in t for t in texts) and fts.fetchone()[0] == 0
     con.close()
+
+
+def test_mask_dry_run_shows_the_audio_reason(monkeypatch, mask_vault, capsys):
+    v, _ = mask_vault
+    before = (v / "Notes/w/a.md").read_bytes()
+    _run_mask(monkeypatch, "Notes/w/a.md", "--dry-run")
+    assert capsys.readouterr().out.splitlines()[0] == "Notes/w/a.md  email:1 ssn:1 (partial: audio)"
+    assert (v / "Notes/w/a.md").read_bytes() == before

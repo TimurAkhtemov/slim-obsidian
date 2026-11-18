@@ -74,7 +74,7 @@ def test_masks_transcript_only(tmp_path, indexed):
     assert _body(text) == expected
     fm, _ = parse_frontmatter(text)
     assert fm["pii_masked"] == ["email:1", "ssn:1"] and fm["pii_by"] == pii.VERSION
-    assert "pii_partial" not in fm
+    assert fm["pii_partial"] == ["audio"]            # masked in text only: the audio still says it
     assert indexed == [(rel, {"sweep": False})]
 
 
@@ -149,16 +149,16 @@ def test_partial_note_is_rerun(tmp_path, indexed, monkeypatch):
     monkeypatch.setattr(pii, "ask_model", _fails)
     out = mask.mask_note(tmp_path, rel)
     fm, _ = parse_frontmatter((tmp_path / rel).read_text(encoding="utf-8"))
-    assert out["partial"] == ["password"] and fm["pii_partial"] == ["password"]
+    assert out["partial"] == ["audio", "password"] and fm["pii_partial"] == ["audio", "password"]
     assert fm["pii_by"] == pii.VERSION and fm["pii_masked"] == ["ssn:1"]
 
     monkeypatch.setattr(pii, "ask_model", lambda window: "tango42" if "tango42" in window else None)
     out = mask.mask_note(tmp_path, rel)
     text = (tmp_path / rel).read_text(encoding="utf-8")
     fm, _ = parse_frontmatter(text)
-    assert out["changed"] is True and out["partial"] == [] and out["counts"] == {"password": 1}
+    assert out["changed"] is True and out["partial"] == ["audio"] and out["counts"] == {"password": 1}
     assert "tango42" not in text and "password is [PASSWORD] for guests" in text
-    assert "pii_partial" not in fm and "pii_partial" not in text
+    assert fm["pii_partial"] == ["audio"]            # `password` done; `audio` is never removed
     assert fm["pii_masked"] == ["password:1", "ssn:1"]
 
 
@@ -180,7 +180,8 @@ def test_a_legacy_partial_flag_is_the_password_pass(tmp_path, indexed, monkeypat
     _legacy(tmp_path, rel, extra_fm="pii_masked: [email:1]\npii_by: pii-1\npii_partial: true\n")
     out = mask.mask_note(tmp_path, rel)
     text = (tmp_path / rel).read_text(encoding="utf-8")
-    assert out["changed"] is True and "pii_partial" not in text
+    fm, _ = parse_frontmatter(text)
+    assert out["changed"] is True and fm["pii_partial"] == ["audio"]   # was `true`; SSN masked
 
 
 def test_a_failed_password_pass_on_a_done_note_adds_the_reason(tmp_path, indexed, monkeypatch):
@@ -486,3 +487,48 @@ def test_on_disk_takes_the_disk_spelling():
         mask.on_disk(v, "Notes/ab/n.md", listdir)                          # two case matches
     with pytest.raises(FileNotFoundError):
         mask.on_disk(v, "Notes/w/missing.md", listdir)
+
+
+# --- the audio reason: a text-only run never silenced the audio ---------------------------------
+
+def test_a_secret_masked_in_text_leaves_the_audio_reason(tmp_path, indexed):
+    rel = "Notes/w/old.md"
+    _recorded(tmp_path, rel, transcript=f"**Me:** my number is {SSN}.")
+    out = mask.mask_note(tmp_path, rel)
+    text = (tmp_path / rel).read_text(encoding="utf-8")
+    fm, _ = parse_frontmatter(text)
+    assert out["partial"] == ["audio"] and fm["pii_partial"] == ["audio"]
+    first = (tmp_path / rel).read_bytes()
+    again = mask.mask_note(tmp_path, rel)
+    assert again["skipped"] == "already masked" and again["partial"] == ["audio"]
+    forced = mask.mask_note(tmp_path, rel, force=True)
+    assert forced["changed"] is False and forced["partial"] == ["audio"]
+    assert (tmp_path / rel).read_bytes() == first
+
+
+def test_only_non_secret_classes_add_no_reason(tmp_path, indexed):
+    rel = "Notes/w/mail.md"
+    _recorded(tmp_path, rel, transcript=f"**Them:** mail it to {EMAIL} please.")
+    out = mask.mask_note(tmp_path, rel)
+    fm, _ = parse_frontmatter((tmp_path / rel).read_text(encoding="utf-8"))
+    assert out["counts"] == {"email": 1} and out["partial"] == [] and "pii_partial" not in fm
+
+
+def test_a_password_found_on_a_rerun_trades_password_for_audio(tmp_path, indexed, monkeypatch):
+    """Its span was never muted at capture, so the audio still says it."""
+    rel = "Notes/w/wifi.md"
+    _recorded(tmp_path, rel, transcript=PASSWORD_TRANSCRIPT,
+              pii_fm=pii.frontmatter({}, ["password"]))
+    monkeypatch.setattr(pii, "ask_model", lambda window: "tango42")
+    out = mask.mask_note(tmp_path, rel)
+    fm, _ = parse_frontmatter((tmp_path / rel).read_text(encoding="utf-8"))
+    assert out["counts"] == {"password": 1} and out["partial"] == ["audio"]
+    assert fm["pii_partial"] == ["audio"]
+
+
+def test_a_dry_run_reports_the_audio_reason_it_would_write(tmp_path, indexed):
+    rel = "Notes/w/old.md"
+    _recorded(tmp_path, rel, transcript=f"**Me:** my number is {SSN}.")
+    before = (tmp_path / rel).read_bytes()
+    out = mask.mask_note(tmp_path, rel, dry_run=True)
+    assert out["partial"] == ["audio"] and (tmp_path / rel).read_bytes() == before
