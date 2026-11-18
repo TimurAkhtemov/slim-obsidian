@@ -7,6 +7,10 @@ stored, logged or traced.
 """
 
 import re
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+
+from .. import config
 
 _TOKEN = re.compile(r"[A-Za-z]+|\d+|[^A-Za-z\d]+")
 
@@ -114,3 +118,176 @@ def normalise(text: str) -> tuple[str, list[int]]:
         idx.extend([start] * len(digits))
     idx.append(len(text))
     return "".join(out), idx
+
+
+VERSION = "pii-1"
+SECRET = frozenset({"ssn", "card", "account", "password"})
+DEFAULT_CLASSES = config.PII_DEFAULT
+PLACEHOLDER = {c: f"[{c.upper()}]" for c in ("ssn", "card", "account", "password", "email", "address", "phone")}
+
+
+@dataclass(frozen=True)
+class Hit:
+    start: int  # offsets in the ORIGINAL text
+    end: int
+    cls: str
+
+
+@dataclass
+class Masked:
+    text: str
+    counts: dict[str, int]
+    secrets: list[str]  # originals of secret-class hits, in text order; never persisted
+    partial: bool = False
+
+
+_SSN = re.compile(r"\b\d{3}[-\s,]+\d{2}[-\s,]+\d{4}\b")
+_SSN_RUN = re.compile(r"\b\d{9}\b")
+_SSN_CUE = re.compile(r"social|ssn|security number", re.I)
+_DIGIT_RUN = re.compile(r"\d+(?:(?:[ -]|, )\d+)*")
+_IBAN = re.compile(r"\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){2,7}(?:\s?[A-Z0-9]{1,3})?\b")
+_ROUTING = re.compile(r"routing(?:\s+(?:number|no\.?|#))?\s*:?\s*(\d{9})\b", re.I)
+_ACCOUNT = re.compile(r"account\s+(?:number|no\.?|#)\s*:?\s*(\d{6,17})\b", re.I)
+_EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+_SPOKEN_EMAIL = re.compile(
+    r"\b\w+(?: dot \w+)* at \w+(?: dot \w+)* dot (?:com|org|net|edu|gov|io|co|us|uk|de|ca|me|info)\b",
+    re.I,
+)
+_STREET = (
+    "Street|St|Avenue|Ave|Road|Rd|Drive|Dr|Lane|Ln|Boulevard|Blvd|Court|Ct|Way|Place|Pl|"
+    "Terrace|Parkway|Pkwy|Circle|Highway|Hwy"
+)
+_ADDRESS = re.compile(
+    rf"\b\d{{1,6}}(?:\s\d{{1,3}})?\s+(?:[A-Z][a-z]+\s+){{1,4}}(?:{_STREET})\b\.?"
+    r"(?:,? (?i:apartment|apt|suite|unit|#) \w+)?(?:,? \d{5}(?:-\d{4})?\b)?"
+)
+_PHONE = re.compile(r"(?<!\d)(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}(?!\d)")
+
+
+def _ssn_ok(digits: str) -> bool:
+    return digits[:3] not in ("000", "666") and digits[0] != "9" and digits[3:5] != "00" and digits[5:] != "0000"
+
+
+def _luhn(digits: str) -> bool:
+    total = 0
+    for i, ch in enumerate(reversed(digits)):
+        d = int(ch)
+        if i % 2:
+            d = d * 2 - 9 if d > 4 else d * 2
+        total += d
+    return total % 10 == 0
+
+
+def _iban_ok(raw: str) -> bool:
+    s = re.sub(r"\s", "", raw)
+    return int("".join(str(int(c, 36)) for c in s[4:] + s[:4])) % 97 == 1
+
+
+def _aba_ok(d: str) -> bool:
+    n = [int(c) for c in d]
+    return (3 * (n[0] + n[3] + n[6]) + 7 * (n[1] + n[4] + n[7]) + (n[2] + n[5] + n[8])) % 10 == 0
+
+
+def _cards(norm: str) -> list[tuple[int, int]]:
+    """Luhn-valid runs of 13-19 digits, among windows of a run of digit groups."""
+    spans = []
+    for run in _DIGIT_RUN.finditer(norm):
+        groups = [(m.start() + run.start(), m.end() + run.start()) for m in re.finditer(r"\d+", run.group())]
+        for i in range(len(groups)):
+            n = 0
+            for j in range(i, len(groups)):
+                n += groups[j][1] - groups[j][0]
+                if n > 19:
+                    break
+                digits = re.sub(r"\D", "", norm[groups[i][0]:groups[j][1]])
+                if n >= 13 and _luhn(digits):
+                    spans.append((groups[i][0], groups[j][1]))
+    return spans
+
+
+def _detect(norm: str, classes: set[str]) -> list[Hit]:
+    """Hits in the normalised text."""
+    hits: list[Hit] = []
+
+    def add(cls, a, b):
+        hits.append(Hit(a, b, cls))
+
+    if "ssn" in classes:
+        for m in _SSN.finditer(norm):
+            if _ssn_ok(re.sub(r"\D", "", m.group())):
+                add("ssn", m.start(), m.end())
+        for m in _SSN_RUN.finditer(norm):
+            if _SSN_CUE.search(norm[max(0, m.start() - 60):m.start()]) and _ssn_ok(m.group()):
+                add("ssn", m.start(), m.end())
+    if "card" in classes:
+        for a, b in _cards(norm):
+            add("card", a, b)
+    if "account" in classes:
+        for m in _IBAN.finditer(norm):
+            if _iban_ok(m.group()):
+                add("account", m.start(), m.end())
+        for m in _ROUTING.finditer(norm):
+            if _aba_ok(m.group(1)):
+                add("account", m.start(1), m.end(1))
+        for m in _ACCOUNT.finditer(norm):
+            add("account", m.start(1), m.end(1))
+    if "email" in classes:
+        for rx in (_EMAIL, _SPOKEN_EMAIL):
+            for m in rx.finditer(norm):
+                add("email", m.start(), m.end())
+    if "address" in classes:
+        for m in _ADDRESS.finditer(norm):
+            add("address", m.start(), m.end())
+    if "phone" in classes:
+        for m in _PHONE.finditer(norm):
+            add("phone", m.start(), m.end())
+    return hits
+
+
+def find(text: str, classes: Iterable[str]) -> list[Hit]:
+    """Non-overlapping hits in the original text, sorted; the longest wins an overlap."""
+    wanted = set(classes)
+    norm, idx = normalise(text)
+    mapped = []
+    for h in _detect(norm, wanted):
+        a, b = h.start, h.end
+        # a converted number phrase is all-or-nothing: never cut one in half
+        while a > 0 and idx[a - 1] == idx[a]:
+            a -= 1
+        q = b - 1
+        while q + 1 < len(norm) and idx[q + 1] == idx[q]:
+            q += 1
+        mapped.append(Hit(idx[a], idx[q + 1], h.cls))
+    kept: list[Hit] = []
+    for h in sorted(mapped, key=lambda h: (-(h.end - h.start), h.start)):
+        if all(h.end <= k.start or h.start >= k.end for k in kept):
+            kept.append(h)
+    return sorted(kept, key=lambda h: h.start)
+
+
+def mask(
+    text: str,
+    classes: Iterable[str] | None = None,
+    find_password: Callable[[str], str | None] | None = None,  # reserved: the password pass
+) -> Masked:
+    wanted = config.PII_MASK if classes is None else tuple(classes)
+    hits = find(text, wanted)
+    counts: dict[str, int] = {}
+    secrets: list[str] = []
+    out: list[str] = []
+    pos = 0
+    for h in hits:
+        out += [text[pos:h.start], PLACEHOLDER[h.cls]]
+        pos = h.end
+        counts[h.cls] = counts.get(h.cls, 0) + 1
+        if h.cls in SECRET:
+            secrets.append(text[h.start:h.end])
+    out.append(text[pos:])
+    return Masked("".join(out), counts, secrets)
+
+
+def frontmatter(m: Masked) -> dict[str, object]:
+    fm: dict[str, object] = {"pii_masked": [f"{c}:{n}" for c, n in sorted(m.counts.items())], "pii_by": VERSION}
+    if m.partial:
+        fm["pii_partial"] = "true"
+    return fm

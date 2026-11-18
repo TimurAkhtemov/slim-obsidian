@@ -41,6 +41,18 @@ def registry() -> dict:
     return _load().get("projects") or {}
 
 
+# Classes of personal data masked in a recording's transcript (`capture/pii.py`). `phone` is off
+# unless listed; an explicit empty list turns masking off.
+PII_DEFAULT = ("ssn", "card", "account", "password", "email", "address")
+
+
+def _pii_mask(data: dict) -> tuple[str, ...]:
+    mask = (data.get("pii") or {}).get("mask")
+    return PII_DEFAULT if mask is None else tuple(mask)
+
+
+PII_MASK: tuple[str, ...] = _pii_mask(_load())
+
 # The name the prompts address. Only interpretation reads it (labels, summaries, reflection);
 # no path, id or filter ever does.
 OWNER: str = str(_load().get("owner") or "the vault's owner")

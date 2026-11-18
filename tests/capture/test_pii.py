@@ -70,3 +70,97 @@ def test_offsets_after_group_and_map_length():
     a = norm.index("y")
     assert text[idx[a]:] == "y"
     assert idx[len(norm)] == len(text)
+
+
+def test_dashed_ssn_masked():
+    m = pii.mask("my social is 219-09-9999 ok", classes=pii.DEFAULT_CLASSES)
+    assert m.text == "my social is [SSN] ok" and m.counts == {"ssn": 1}
+    assert m.secrets == ["219-09-9999"]
+
+
+def test_spoken_ssn_with_cue():
+    t = "**Them:** social security number two one nine, oh nine, nine nine nine nine."
+    m = pii.mask(t, classes=pii.DEFAULT_CLASSES)
+    assert "[SSN]" in m.text and "nine nine" not in m.text and m.text.startswith("**Them:**")
+
+
+def test_invalid_ssn_areas_not_masked():
+    for v in ("000-12-3456", "666-12-3456", "912-12-3456"):
+        assert pii.mask(f"ssn {v}", classes=pii.DEFAULT_CLASSES).counts == {}
+
+
+def test_run_together_nine_digits_needs_cue():
+    assert pii.mask("order 219099999 shipped", classes=pii.DEFAULT_CLASSES).counts == {}
+    assert pii.mask("my SSN is 219099999", classes=pii.DEFAULT_CLASSES).counts == {"ssn": 1}
+
+
+def test_card_needs_luhn():
+    assert pii.mask("card 4111 1111 1111 1111", classes=pii.DEFAULT_CLASSES).counts == {"card": 1}
+    assert pii.mask("card 4111 1111 1111 1112", classes=pii.DEFAULT_CLASSES).counts == {}
+
+
+def test_spoken_card_is_covered_whole():
+    t = "card four one one one, one one one one, one one one one, one one one one then five"
+    m = pii.mask(t, classes=pii.DEFAULT_CLASSES)
+    assert m.text == "card [CARD] then five"
+
+
+def test_hit_ending_inside_a_spoken_group_is_widened():
+    # the SSN pattern ends inside "nine nine nine nine nine": the whole phrase goes
+    t = "ssn two one nine oh nine nine nine nine nine"
+    m = pii.mask(t, classes=pii.DEFAULT_CLASSES)
+    assert m.text == "ssn [SSN]"
+
+
+def test_iban_and_routing_account():
+    assert pii.mask("IBAN GB82 WEST 1234 5698 7654 32", classes=pii.DEFAULT_CLASSES).counts == {"account": 1}
+    m = pii.mask("routing number 011000028 account number 12345678", classes=pii.DEFAULT_CLASSES)
+    assert m.counts == {"account": 2}
+
+
+def test_email_written_and_spoken():
+    assert pii.mask("write to a.b@example.com", classes=pii.DEFAULT_CLASSES).text == "write to [EMAIL]"
+    m = pii.mask("it's jane dot doe at example dot com", classes=pii.DEFAULT_CLASSES)
+    assert m.text == "it's [EMAIL]" and m.secrets == []
+
+
+def test_address():
+    m = pii.mask("I live at two twenty one Baker Street, apartment 4, 90210 now",
+                 classes=pii.DEFAULT_CLASSES)
+    assert m.text == "I live at [ADDRESS] now"
+
+
+def test_street_without_number_kept():
+    assert pii.mask("she lives on Baker Street", classes=pii.DEFAULT_CLASSES).counts == {}
+
+
+def test_phone_off_by_default_on_when_listed():
+    t = "call 415 555 0134"
+    assert pii.mask(t, classes=pii.DEFAULT_CLASSES).counts == {}
+    assert pii.mask(t, classes=(*pii.DEFAULT_CLASSES, "phone")).text == "call [PHONE]"
+
+
+def test_ordinary_numbers_survive():
+    for t in ("meet at two thirty", "it was four ninety nine", "back in 2019",
+              "order number 5512 3349", "call nine one one", "page 123 of 456"):
+        assert pii.mask(t, classes=pii.DEFAULT_CLASSES).text == t
+
+
+def test_untouched_text_byte_identical():
+    t = "**Me:**  odd  spacing\n\n**Them:** a.b@example.com  end "
+    assert pii.mask(t, classes=pii.DEFAULT_CLASSES).text == "**Me:**  odd  spacing\n\n**Them:** [EMAIL]  end "
+
+
+def test_empty_class_list_is_off():
+    assert pii.mask("ssn 219-09-9999", classes=()).text == "ssn 219-09-9999"
+
+
+def test_classes_none_reads_config(monkeypatch):
+    monkeypatch.setattr(pii.config, "PII_MASK", ())
+    assert pii.mask("ssn 219-09-9999").text == "ssn 219-09-9999"
+
+
+def test_frontmatter_shape():
+    m = pii.Masked(text="", counts={"ssn": 1, "email": 2}, secrets=[], partial=True)
+    assert pii.frontmatter(m) == {"pii_masked": ["email:2", "ssn:1"], "pii_by": "pii-1",
+                                  "pii_partial": "true"}
