@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import ast
 import difflib
+import hashlib
 import json
 import os
 import random
@@ -40,6 +41,7 @@ PLACEHOLDERS = re.compile(r"\[(SSN|CARD|ACCOUNT|PASSWORD|EMAIL|ADDRESS|PHONE)\]"
 TEST_BINS = ("4111", "4242", "5555", "5105", "3782", "3714")
 VOICE = {"Me": "Samantha", "Them": "Daniel"}
 RECALL_GATE = 0.95
+GARBLED_GATE = 0.8          # recall over values Parakeet did not write verbatim
 SILENT_DBFS = -60.0           # a muted span must be quieter than this
 SPEECH_DBFS = -45.0           # a line nobody muted must be louder than this
 LEAD_SECONDS = 0.5
@@ -537,8 +539,68 @@ def _gate_classes(classes, model: bool) -> list[str]:
     return [c for c in SECRET if c in classes and (model or c != "password")]
 
 
+def _leftover(a: int, b: int, text: str, own) -> list[int]:
+    """Positions of letters and digits in text[a:b] outside every `own` span."""
+    return [k for k in range(a, b) if text[k].isalnum() and not any(x <= k < y for x, y in own)]
+
+
+def _segments_outside(text: str, spans) -> list[str]:
+    """`text` with `spans` cut out, squashed piece by piece (no run bridges a cut)."""
+    out, pos = [], 0
+    for a, b in sorted(spans):
+        out.append(squash(text[pos:a]))
+        pos = max(pos, b)
+    out.append(squash(text[pos:]))
+    return out
+
+
+def _runs(s: str, n: int) -> set[str]:
+    return {s[k:k + n] for k in range(len(s) - n + 1)}
+
+
+def _fresh_runs(token_part: str, n: int, hay: str, elsewhere: list[str]) -> list[str]:
+    """Runs of `n` characters of the token found in `hay` that cannot be explained by text found
+    elsewhere in the original (a distractor "2019" holding "019")."""
+    return sorted(r for r in _runs(token_part, n) if r in hay and not any(r in e for e in elsewhere))
+
+
+def remnant(item: "Item", text: str, elsewhere: list[str]) -> str | None:
+    """A readable trace of `item` in `text` in some other rendering: >= 4 consecutive digits of
+    its digit string, >= 5 consecutive letters of its distinctive word, or a run of words that
+    fuzzy-matches (>= 0.6) its spoken or written form. None when nothing is readable."""
+    hay_text = PLACEHOLDERS.sub(" | ", text)
+    hay = squash(hay_text)
+    tok = squash(item.token)
+    digits, letters = re.sub(r"\D", "", tok), re.sub(r"[^a-z]", "", tok)
+    if len(digits) >= 4:
+        runs = _fresh_runs(digits, 4, hay, elsewhere)
+        if runs:
+            return f"digits {runs[0]}"
+    if len(letters) >= 5:
+        runs = _fresh_runs(letters, 5, hay, elsewhere)
+        if runs:
+            return f"letters {runs[0]}"
+    forms = {f for f in (squash(item.spoken), squash(item.written)) if f}
+    for turn in hay_text.split("\n\n"):
+        words = [w for w in re.split(r"\s+", turn) if w and "**" not in w and w != "|"]
+        for size in range(1, min(8, len(words)) + 1):
+            for k in range(len(words) - size + 1):
+                window = squash(" ".join(words[k:k + size]))
+                for f in forms:
+                    if len(window) < len(f) / 2 or any(window in e for e in elsewhere):
+                        continue
+                    sm = difflib.SequenceMatcher(None, window, f)
+                    if sm.quick_ratio() >= 0.6 and sm.ratio() >= 0.6:
+                        return f"fuzzy {' '.join(words[k:k + size])!r}"
+    return None
+
+
 def score_text(scripts: list[Script], masked: dict[str, str], classes, *, model: bool) -> dict:
-    """Recall per class and cue placement, false positives, distractors damaged, the gate."""
+    """Recall per class and cue placement, false positives, distractors damaged, the gate.
+
+    An item is masked only when every letter and digit of it lies under a placeholder; a mask
+    reaching past its item (or masking an item outside `classes`) is a false positive, and
+    damages any distractor its extra letters or digits touch."""
     classes = tuple(classes)
     by_class, by_cue = _empty(classes), _empty(CUES)
     misses, fps, placeholders, expected = [], [], Counter(), Counter()
@@ -548,29 +610,35 @@ def score_text(scripts: list[Script], masked: dict[str, str], classes, *, model:
         reps3 = _replaced(t, m)
         reps = [(a, b) for a, b, _ in reps3]
         placeholders.update(p.lower() for p in PLACEHOLDERS.findall(m))
-        for i in s.items:
-            if i.cls not in classes:
-                continue
+        scored = [i for i in s.items if i.cls in classes]
+        for i in scored:
             expected[i.cls] += 1
-            gone = not present(i.token, m)
+            readable = present(i.token, m)
+            gone = not readable and _covered(i.start, i.end, t, reps)
             for d in (by_class[i.cls], by_cue[i.cue]):
                 d["n"] += 1
                 d["masked"] += gone
-            if not gone or not _covered(i.start, i.end, t, reps):
+            if not gone:
                 misses.append({"script": s.sid, "class": i.cls, "kind": i.kind, "style": i.style,
-                               "cue": i.cue, "result": "missed" if not gone else "partial",
+                               "cue": i.cue, "result": "missed" if readable else "partial",
                                "context": _line_at(t, i.start), "value": i.spoken})
+        own_all = [(i.start, i.end) for i in scored]
         for a, b, cls in reps3:
-            if any(a < i.end and i.start < b for i in s.items):
+            own = [(x, y) for x, y in own_all if a < y and x < b]
+            left = _leftover(a, b, t, own)
+            if not left:
                 continue
-            hit = [d for d in s.distractors if a < d.end and d.start < b]
+            hit = [d for d in s.distractors if any(d.start <= k < d.end for k in left)]
             damaged += len(hit)
             fps.append({"script": s.sid, "text": t[a:b], "context": _line_at(t, a),
+                        "kind": "over-wide mask" if own else "false positive",
+                        "leftover": "".join(t[k] for k in left),
                         "distractor": hit[0].kind if hit else None, "class": cls})
     gate_cls = _gate_classes(classes, model)
     n = sum(by_class[c]["n"] for c in gate_cls)
-    secret_recall = sum(by_class[c]["masked"] for c in gate_cls) / n if n else 1.0
+    secret_recall = sum(by_class[c]["masked"] for c in gate_cls) / n if n else None
     total = sum(d["n"] for d in by_class.values())
+    no_evidence = [] if n else [f"no secret-class item ({','.join(gate_cls)}) in these scripts"]
     return {
         "mode": "text", "model": model, "classes": list(classes), "scripts": len(scripts),
         "items": total,
@@ -581,9 +649,12 @@ def score_text(scripts: list[Script], masked: dict[str, str], classes, *, model:
         "distractors_damaged": damaged,
         "placeholders": {c: {"found": placeholders[c], "expected": expected[c]} for c in classes},
         "misses": misses, "false_positives": fps,
-        "gate": {"ok": damaged == 0 and secret_recall >= RECALL_GATE,
-                 "secret_classes": gate_cls, "secret_recall": round(secret_recall, 3),
-                 "distractors_damaged": damaged},
+        "gate": {"ok": not no_evidence and damaged == 0 and not fps
+                 and secret_recall >= RECALL_GATE,
+                 "secret_classes": gate_cls,
+                 "secret_recall": None if secret_recall is None else round(secret_recall, 3),
+                 "distractors_damaged": damaged, "false_positives": len(fps),
+                 "no_evidence": no_evidence},
     }
 
 
@@ -595,9 +666,18 @@ def _table(title: str, rows: dict) -> list[str]:
     return out
 
 
+def _gate_line(g: dict, extra: str = "") -> str:
+    rec = "-" if g["secret_recall"] is None else f"{g['secret_recall']:.3f}"
+    why = f"; NO EVIDENCE: {'; '.join(g['no_evidence'])}" if g["no_evidence"] else ""
+    return (f"gate: {'ok' if g['ok'] else 'FAIL'} — secret recall {rec} over "
+            f"{','.join(g['secret_classes'])} (needs >= {RECALL_GATE}), distractors damaged "
+            f"{g['distractors_damaged']}, false positives {g['false_positives']} (need 0){extra}{why}")
+
+
 def print_text_report(r: dict) -> None:
     print(f"\n== text: {r['scripts']} scripts, {r['items']} items, model={'yes' if r['model'] else 'no'}, "
           f"classes={','.join(r['classes'])}")
+    print("An item counts as masked only when every letter and digit of it is under a placeholder.")
     print("\n".join(_table("class", r["by_class"])))
     print("\n".join(_table("cue placement", r["by_cue"])))
     ph = ", ".join(f"[{c.upper()}] {d['found']}/{d['expected']}" for c, d in r["placeholders"].items())
@@ -608,12 +688,9 @@ def print_text_report(r: dict) -> None:
               f"({m['result']}): {m['context']}")
     for f in r["false_positives"]:
         where = f"distractor {f['distractor']}" if f["distractor"] else "other text"
-        print(f"  FALSE POSITIVE {f['script']} [{f['class'].upper()}] over {where}: "
-              f"{f['text']!r} in {f['context']}")
-    g = r["gate"]
-    print(f"gate: {'ok' if g['ok'] else 'FAIL'} — secret recall {g['secret_recall']:.3f} over "
-          f"{','.join(g['secret_classes'])} (needs >= {RECALL_GATE}), distractors damaged "
-          f"{g['distractors_damaged']} (needs 0)")
+        print(f"  FALSE POSITIVE {f['script']} [{f['class'].upper()}] {f['kind']} over {where}: "
+              f"{f['text']!r} (unexplained: {f['leftover']!r}) in {f['context']}")
+    print(_gate_line(r["gate"]))
 
 
 def run_text(scripts, mask, classes, *, model: bool, log=print) -> dict:
@@ -649,6 +726,12 @@ def _seconds(path: Path) -> float:
     return float(out.stdout.strip())
 
 
+def audio_key(script: Script, seed: int) -> str:
+    """What the synthesized audio depends on: the lines, the voices, the seed (gaps)."""
+    blob = json.dumps([script.lines, VOICE, seed, LEAD_SECONDS, "synth-1"])
+    return hashlib.sha256(blob.encode()).hexdigest()[:16]
+
+
 def synthesize(script: Script, dest: Path, seed: int = 7) -> dict:
     """Speak the script into a stereo 48 kHz opus `.webm`: Me (Samantha) LEFT, Them (Daniel)
     RIGHT, one line after another with a 0.3-0.6 s gap, never overlapping. Returns each line's
@@ -680,7 +763,8 @@ def synthesize(script: Script, dest: Path, seed: int = 7) -> dict:
 
 
 def rms_dbfs(path: Path, a: float, b: float) -> float:
-    """Loudest channel's RMS over [a, b] seconds, in dBFS."""
+    """Loudest channel's RMS over [a, b] seconds, in dBFS. Raises when no audio could be read
+    there: an unreadable span must fail a silence check, not pass it."""
     import numpy as np
 
     out = subprocess.run([_bin("ffmpeg"), "-nostdin", "-loglevel", "error", "-ss", f"{a:.3f}",
@@ -688,7 +772,7 @@ def rms_dbfs(path: Path, a: float, b: float) -> float:
                           "-ar", "48000", "-"], capture_output=True, check=True).stdout
     x = np.frombuffer(out[:len(out) - len(out) % 8], dtype="<f4").reshape(-1, 2)
     if not len(x):
-        return -200.0
+        raise ValueError(f"no samples in {a:.2f}-{b:.2f} s")
     rms = float(np.sqrt((x.astype(np.float64) ** 2).mean(axis=0)).max())
     return 20 * float(np.log10(max(rms, 1e-10)))
 
@@ -716,57 +800,135 @@ def _heard(item: Item, line: str, raw: str) -> tuple[str, str]:
     return best, "not transcribed"
 
 
+def rendered_span(item: Item, raw: str, span: tuple[int, int]) -> tuple[int, int]:
+    """The item's value as Parakeet wrote it: the located token grown over neighbouring words
+    while the whole grown region still reads as part of the value ("43 at example.org" after an
+    email's name; "sixty eight sixty eight" before a street). Grows up to three words at a step,
+    since a spoken number only reads back whole. Never over a speaker label or a turn break."""
+    forms = [f for f in (squash(item.spoken), squash(item.written)) if f]
+    words = [(m.start(), m.end()) for m in re.finditer(r"\S+", raw)]
+    a, b = span
+    inside = [k for k, (x, y) in enumerate(words) if x < b and a < y]
+    if not inside:
+        return span
+
+    def joinable(k1, k2):            # words k1..k2 inclusive, with what lies between them
+        piece = raw[words[k1][0]:words[k2][1]]
+        return "**" not in piece and "\n\n" not in piece
+
+    def reads(l, h):
+        sq = squash(raw[words[l][0]:words[h][1]])
+        return any(sq in f for f in forms)
+
+    lo, hi = inside[0], inside[-1]
+    grown = True
+    while grown:
+        grown = False
+        for k in (1, 2, 3):
+            if hi + k < len(words) and joinable(hi, hi + k) and reads(lo, hi + k):
+                hi, grown = hi + k, True
+                break
+        for k in (1, 2, 3):
+            if lo - k >= 0 and joinable(lo - k, lo) and reads(lo - k, hi):
+                lo, grown = lo - k, True
+                break
+    return min(a, words[lo][0]), max(b, words[hi][1])
+
+
 def score_call(script: Script, raw: str, masked: str, heard_after: str, classes, *,
-               spans, reasons, manifest, measure, silenced: Path) -> dict:
-    """One call's numbers: items (transcribed, masked), false positives, audio checks."""
+               spans, reasons, manifest, measure, silenced: Path, model: bool = True) -> dict:
+    """One call's numbers: items (transcribed, masked, remnant), false positives, audio checks.
+
+    A transcribed item is masked only when every letter and digit of every place Parakeet wrote
+    it is under a placeholder. An item Parakeet did not write verbatim is checked for a readable
+    remnant in the masked text instead of being dropped. Audio: no run of 3 characters of a
+    secret's token may come back from the muted copy unless the original says it elsewhere."""
+    classes = tuple(classes)
     items, fps, garbled, audio_fail, renderings = [], [], [], [], []
+    reps3 = _replaced(raw, masked)
+    reps = [(a, b) for a, b, _ in reps3]
     located = {id(i): locate(i.token, raw) for i in script.items}
+    rendered = {id(i): [rendered_span(i, raw, sp) for sp in located[id(i)]] for i in script.items}
     for i in script.items:
         line = next((t for _, t in script.lines if i.spoken in t), i.spoken)
         heard, status = _heard(i, line, raw)
         transcribed = bool(located[id(i)])
-        gone = not present(i.token, masked) if transcribed else None
+        elsewhere = _segments_outside(script.transcript, [(i.start, i.end)])
+        if transcribed:
+            readable = present(i.token, masked)
+            covered = all(_covered(a, b, raw, reps) for a, b in located[id(i)])
+            gone, rem = not readable and covered, None
+            result = "masked" if gone else "missed" if readable else "partial"
+        else:
+            rem = remnant(i, masked, elsewhere)
+            gone = rem is None
+            result = "no remnant" if gone else "REMNANT"
         items.append({"class": i.cls, "kind": i.kind, "style": i.style, "cue": i.cue,
-                      "transcribed": transcribed, "masked": gone, "spoken": i.spoken,
-                      "heard": heard, "in_classes": i.cls in classes})
+                      "transcribed": transcribed, "masked": gone, "result": result,
+                      "remnant": rem, "spoken": i.spoken, "heard": heard,
+                      "in_classes": i.cls in classes})
         renderings.append({"script": script.sid, "class": i.cls, "kind": i.kind, "style": i.style,
                            "spoken": i.spoken, "heard": heard, "status": status,
                            "form": _form(heard) if transcribed else "-"})
-        if i.cls in SECRET and i.cls in classes and transcribed and present(i.token, heard_after):
-            audio_fail.append({"script": script.sid, "check": "retranscribed", "class": i.cls,
-                               "heard": _heard(i, line, heard_after)[0]})
-    for a, b, cls in _replaced(raw, masked):
-        if any(a < y and x < b for i in script.items for x, y in located[id(i)]):
+        if i.cls in _gate_classes(classes, model):
+            raw_elsewhere = _segments_outside(raw, rendered[id(i)])
+            leaked = _fresh_runs(squash(i.token), 3, squash(heard_after), raw_elsewhere)
+            if leaked:
+                audio_fail.append({"script": script.sid, "check": "retranscribed", "class": i.cls,
+                                   "runs": leaked[:5], "heard": _heard(i, line, heard_after)[0]})
+    own_all = [sp for i in script.items if i.cls in classes for sp in rendered[id(i)]]
+    for a, b, cls in reps3:
+        own = [(x, y) for x, y in own_all if a < y and x < b]
+        left = _leftover(a, b, raw, own)
+        if not left:
             continue
-        frag = squash(raw[a:b])
-        near = max((difflib.SequenceMatcher(None, frag, squash(v)).ratio()
-                    for i in script.items for v in (i.spoken, i.written)), default=0.0)
-        entry = {"script": script.sid, "class": cls, "text": raw[a:b], "context": _line_at(raw, a)}
-        (garbled if near >= 0.6 else fps).append(entry)
+        entry = {"script": script.sid, "class": cls, "text": raw[a:b], "context": _line_at(raw, a),
+                 "leftover": "".join(raw[k] for k in left),
+                 "kind": "over-wide mask" if own else "false positive"}
+        if not own:
+            frag = squash(raw[a:b])
+            near = max((difflib.SequenceMatcher(None, frag, squash(v)).ratio()
+                        for i in script.items if i.cls in classes for v in (i.spoken, i.written)),
+                       default=0.0)
+            if near >= 0.6:
+                garbled.append(entry)
+                continue
+        fps.append(entry)
+
+    def level(a, b):
+        try:
+            return measure(silenced, a, b)
+        except Exception as exc:                       # noqa: BLE001 - unreadable is a failure
+            audio_fail.append({"script": script.sid, "check": "unmeasurable", "span": [a, b],
+                               "error": str(exc)})
+            return None
+
     for a, b in spans:
-        level = measure(silenced, a, b)
-        if level >= SILENT_DBFS:
+        got = level(a, b)
+        if got is not None and got >= SILENT_DBFS:
             audio_fail.append({"script": script.sid, "check": "rms", "span": [a, b],
-                               "dbfs": round(level, 1)})
+                               "dbfs": round(got, 1)})
     pad = 0.15
     for ln in manifest.get("lines", []):
         if any(ln["start"] < b + pad and a - pad < ln["end"] for a, b in spans):
             continue
-        level = measure(silenced, ln["start"], ln["end"])
-        if level < SPEECH_DBFS:
+        got = level(ln["start"], ln["end"])
+        if got is not None and got < SPEECH_DBFS:
             audio_fail.append({"script": script.sid, "check": "speech", "line": ln,
-                               "dbfs": round(level, 1)})
+                               "dbfs": round(got, 1)})
     if "audio" in reasons:
         audio_fail.append({"script": script.sid, "check": "unplaced",
                            "detail": "a secret could not be placed in token times"})
     return {"script": script.sid, "items": items, "false_positives": fps, "garbled_masked": garbled,
-            "audio_failures": audio_fail, "renderings": renderings, "spans": spans,
+            "audio_failures": audio_fail, "renderings": renderings, "spans": [list(x) for x in spans],
             "reasons": sorted(reasons)}
 
 
 def check_full(script: Script, note_text: str, result: dict, fragments: list[str],
-               transcribed: set[str], classes) -> dict:
-    """The filed note, its frontmatter, summary, title and index rows, after `handle_record`."""
+               transcribed: set[str], classes, *, archived_levels=()) -> dict:
+    """The filed note, its frontmatter, summary, title, index rows and archived audio, after
+    `handle_record`. `archived_levels` is (span, dBFS or None) inside the spans the pipeline
+    muted, measured on the archived file."""
     from slim.capture import pii
     from slim.recorder import note as nw
     from slim.vault.frontmatter import parse_frontmatter
@@ -794,38 +956,75 @@ def check_full(script: Script, note_text: str, result: dict, fragments: list[str
         problems.append("pii_by missing or wrong")
     if not fragments:
         problems.append("the note has no index fragments")
+    if any(c in SECRET for c in counts) and not archived_levels:
+        problems.append("secrets were masked but the pipeline muted no audio span")
+    for span, db in archived_levels:
+        if db is None:
+            problems.append(f"archived audio unreadable in {span}")
+        elif db >= SILENT_DBFS:
+            problems.append(f"archived audio at {db:.1f} dBFS in muted span {span}")
     return {"script": script.sid, "ok": not problems, "problems": problems,
             "note": result.get("note"), "title": result.get("title")}
 
 
+def _sha_file(path: Path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def detector_sha() -> str:
+    """Results depend on the detector: a change to it rescores (but does not re-speak or
+    re-transcribe) every script."""
+    return _sha_file(REPO / "slim" / "capture" / "pii.py")[:16]
+
+
 def run_calls(scripts: list[Script], out: Path, *, synth, transcribe, mask_segments, silence,
-              measure, classes, full=None, full_n: int = 0, redo: bool = False, log=print) -> dict:
-    """Every script: speak it, transcribe, mask, mute, re-transcribe, score. Each script's result
-    is a file under `<out>/results/`, so a rerun skips what is scored unless `redo`."""
+              measure, classes, model: bool = True, seed: int = 7, detector: str = "",
+              full=None, full_n: int = 0, redo: bool = False, log=print) -> dict:
+    """Every script: speak it, transcribe, mask, mute, re-transcribe, score.
+
+    Caches, each keyed by what it depends on: audio by `audio_key` (lines, voices, seed); the
+    first transcription by the audio's sha256; the result by seed, classes, model, detector and
+    audio key. A result whose keys differ is recomputed, reusing the audio and the first
+    transcription; `redo` drops all three."""
     out = Path(out)
     for sub in ("audio", "work", "results"):
         (out / sub).mkdir(parents=True, exist_ok=True)
     results = []
     for n, s in enumerate(scripts):
+        key = audio_key(s, seed)
+        meta = {"seed": seed, "classes": list(classes), "model": model, "detector": detector,
+                "audio_key": key, "full": bool(full is not None and n < full_n)}
         res_path = out / "results" / f"{s.sid}.json"
-        if res_path.exists() and not redo:
-            results.append(json.loads(res_path.read_text()))
-            continue
-        t0 = time.perf_counter()
         audio_path = out / "audio" / f"{s.sid}.webm"
         manifest_path = audio_path.with_suffix(".json")
-        if redo or not audio_path.exists() or not manifest_path.exists():
-            manifest_path.write_text(json.dumps(synth(s, audio_path)))
-        manifest = json.loads(manifest_path.read_text())
         if redo:
-            for old in (out / "work").glob(f"{s.sid}.*"):
-                old.unlink()
+            for old in [res_path, audio_path, manifest_path, *(out / "work").glob(f"{s.sid}.*")]:
+                old.unlink(missing_ok=True)
+            shutil.rmtree(out / "audio" / f"{s.sid}.parts", ignore_errors=True)
+        if res_path.exists():
+            prior = json.loads(res_path.read_text())
+            if prior.get("meta") == meta:
+                results.append(prior)
+                continue
+            log(f"  {s.sid}: cached result is for {_diff(prior.get('meta') or {}, meta)}; rescoring")
+        t0 = time.perf_counter()
+        manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
+        if manifest.get("key") != key or not audio_path.exists():
+            manifest = {**synth(s, audio_path), "key": key}
+            manifest_path.write_text(json.dumps(manifest))
+        audio_sha = _sha_file(audio_path)
         work = out / "work" / f"{s.sid}.webm"
-        if not work.exists():
+        if not work.exists() or _sha_file(work) != audio_sha:
             shutil.copyfile(audio_path, work)
-        got = transcribe(work)
+        first = out / "work" / f"{s.sid}.first.json"
+        cached = json.loads(first.read_text()) if first.exists() else {}
+        if cached.get("audio_sha") == audio_sha:
+            got = cached["got"]
+        else:
+            got = transcribe(work)
+            first.write_text(json.dumps({"audio_sha": audio_sha, "got": got}))
         raw = str(got.get("text") or "")
-        masked_gots, counts, reasons, seg_spans = mask_segments([got])
+        masked_gots, counts, reasons, seg_spans = mask_segments([dict(got)])
         masked = str(masked_gots[0].get("text") or "")
         spans = [tuple(x) for x in seg_spans[0]]
         silenced = out / "work" / f"{s.sid}.silenced.webm"
@@ -833,10 +1032,11 @@ def run_calls(scripts: list[Script], out: Path, *, synth, transcribe, mask_segme
         silence(silenced, spans)
         heard_after = str(transcribe(silenced).get("text") or "")
         res = score_call(s, raw, masked, heard_after, classes, spans=spans, reasons=reasons,
-                         manifest=manifest, measure=measure, silenced=silenced)
+                         manifest=manifest, measure=measure, silenced=silenced, model=model)
+        res["meta"] = meta
         res["counts"] = counts
         res["masked"] = masked
-        if full is not None and n < full_n:
+        if meta["full"]:
             transcribed = {i.token for i in s.items if locate(i.token, raw)}
             res["full"] = full(s, audio_path, work, transcribed)
         res["seconds"] = round(time.perf_counter() - t0, 1)
@@ -847,37 +1047,70 @@ def run_calls(scripts: list[Script], out: Path, *, synth, transcribe, mask_segme
         log(f"  {s.sid}  {res['seconds']:.1f}s  items={len(s.items)} spans={len(spans)} "
             f"audio_fail={len(res['audio_failures'])}")
         results.append(res)
-    return aggregate_calls(results, classes)
+    return aggregate_calls(results, classes, model=model)
 
 
-def aggregate_calls(results: list[dict], classes) -> dict:
+def _diff(old: dict, new: dict) -> str:
+    keys = [k for k in new if old.get(k) != new[k]]
+    return "other " + ", ".join(keys) if keys else "another run"
+
+
+def aggregate_calls(results: list[dict], classes, *, model: bool = True) -> dict:
+    """Totals over scripts. Recall counts transcribed items; items Parakeet did not write
+    verbatim are scored apart (`garbled`: masked = no readable remnant). The gate needs
+    evidence: some transcribed secret item, and at most half of the secret items untranscribed."""
     classes = tuple(classes)
-    by_class, by_cue = _empty(classes), _empty(CUES)
-    misses, not_transcribed = [], 0
+    by_class, by_cue, garbled_rows = _empty(classes), _empty(CUES), _empty(classes)
+    misses, remnants, not_transcribed = [], [], 0
+    gate_cls = _gate_classes(classes, model)
+    secret_total = secret_untranscribed = 0
+    untranscribed_secrets = []
     for res in results:
         for i in res["items"]:
-            if not i["in_classes"]:
+            if i["class"] not in classes:
                 continue
+            if i["class"] in gate_cls:
+                secret_total += 1
             if not i["transcribed"]:
                 not_transcribed += 1
+                row = garbled_rows[i["class"]]
+                row["n"] += 1
+                row["masked"] += bool(i["masked"])
+                if i["class"] in gate_cls:
+                    secret_untranscribed += 1
+                    untranscribed_secrets.append(f"{res['script']}:{i['class']}")
+                if not i["masked"]:
+                    remnants.append({"script": res["script"], **{k: i[k] for k in
+                                     ("class", "kind", "style", "cue", "spoken", "heard", "remnant")}})
                 continue
             for d in (by_class[i["class"]], by_cue[i["cue"]]):
                 d["n"] += 1
                 d["masked"] += bool(i["masked"])
             if not i["masked"]:
                 misses.append({"script": res["script"], **{k: i[k] for k in
-                               ("class", "kind", "style", "cue", "spoken", "heard")}})
+                               ("class", "kind", "style", "cue", "spoken", "heard", "result")}})
     fps = [f for r in results for f in r["false_positives"]]
     audio_fail = [f for r in results for f in r["audio_failures"]]
     fulls = [r["full"] for r in results if "full" in r]
-    gate_cls = _gate_classes(classes, True)
     n = sum(by_class[c]["n"] for c in gate_cls)
-    secret_recall = sum(by_class[c]["masked"] for c in gate_cls) / n if n else 1.0
+    secret_recall = sum(by_class[c]["masked"] for c in gate_cls) / n if n else None
+    gn = sum(garbled_rows[c]["n"] for c in gate_cls)
+    garbled_recall = sum(garbled_rows[c]["masked"] for c in gate_cls) / gn if gn else None
+    no_evidence = []
+    if not n:
+        no_evidence.append("no secret-class item was transcribed")
+    if secret_total and secret_untranscribed > secret_total / 2:
+        no_evidence.append(f"{secret_untranscribed} of {secret_total} secret items not transcribed: "
+                           + ", ".join(untranscribed_secrets))
+    ok = (not no_evidence and not fps and secret_recall >= RECALL_GATE
+          and (garbled_recall is None or garbled_recall >= GARBLED_GATE)
+          and not audio_fail and all(f["ok"] for f in fulls))
     return {
-        "mode": "calls", "scripts": len(results), "classes": list(classes),
+        "mode": "calls", "model": model, "scripts": len(results), "classes": list(classes),
         "by_class": {c: {**d, "recall": _ratio(d)} for c, d in by_class.items()},
         "by_cue": {c: {**d, "recall": _ratio(d)} for c, d in by_cue.items()},
-        "not_transcribed": not_transcribed, "misses": misses,
+        "garbled": {c: {**d, "recall": _ratio(d)} for c, d in garbled_rows.items()},
+        "not_transcribed": not_transcribed, "misses": misses, "remnants": remnants,
         "false_positives": fps, "distractors_damaged": len(fps),
         "garbled_masked": [g for r in results for g in r.get("garbled_masked", [])],
         "audio_failures": audio_fail,
@@ -885,30 +1118,39 @@ def aggregate_calls(results: list[dict], classes) -> dict:
         "full": fulls,
         "partial": {r["script"]: r["reasons"] for r in results if r.get("reasons")},
         "seconds": round(sum(r.get("seconds", 0) for r in results), 1),
-        "gate": {"ok": not fps and secret_recall >= RECALL_GATE and not audio_fail
-                 and all(f["ok"] for f in fulls),
-                 "secret_classes": gate_cls, "secret_recall": round(secret_recall, 3),
-                 "distractors_damaged": len(fps), "audio_failures": len(audio_fail),
-                 "full_failures": sum(not f["ok"] for f in fulls)},
+        "gate": {"ok": ok, "secret_classes": gate_cls,
+                 "secret_recall": None if secret_recall is None else round(secret_recall, 3),
+                 "garbled_secret_recall": None if garbled_recall is None else round(garbled_recall, 3),
+                 "distractors_damaged": len(fps), "false_positives": len(fps),
+                 "audio_failures": len(audio_fail),
+                 "full_failures": sum(not f["ok"] for f in fulls), "no_evidence": no_evidence},
     }
 
 
 def print_calls_report(r: dict) -> None:
-    print(f"\n== calls: {r['scripts']} scripts, classes={','.join(r['classes'])}, "
-          f"{r['seconds']}s of work")
+    print(f"\n== calls: {r['scripts']} scripts, model={'yes' if r['model'] else 'no'}, "
+          f"classes={','.join(r['classes'])}, {r['seconds']}s of work")
     print("How Parakeet wrote each spoken form:")
     print(f"  {'script':<7}{'class':<9}{'style':<12}{'form':<8}spoken -> heard")
     for x in r["renderings"]:
         print(f"  {x['script']:<7}{x['class']:<9}{x['style']:<12}{x['form']:<8}"
               f"{x['spoken']!r} -> {x['heard']!r}")
-    print("Recall counts only values Parakeet transcribed; "
-          f"not transcribed (garbled, not a masking miss): {r['not_transcribed']}")
+    print("Transcribed items (Parakeet wrote the exact value); masked = every letter and digit "
+          "under a placeholder:")
     print("\n".join(_table("class", r["by_class"])))
     print("\n".join(_table("cue placement", r["by_cue"])))
+    print(f"Not transcribed verbatim ({r['not_transcribed']}); masked = no readable remnant "
+          f"(>= 4 digits, >= 5 letters, or a fuzzy match >= 0.6) left in the masked text:")
+    print("\n".join(_table("garbled", r["garbled"])))
     for m in r["misses"]:
-        print(f"  MISS {m['script']} {m['class']}/{m['kind']} cue={m['cue']}: heard {m['heard']!r}")
+        print(f"  MISS {m['script']} {m['class']}/{m['kind']} cue={m['cue']} ({m['result']}): "
+              f"heard {m['heard']!r}")
+    for m in r["remnants"]:
+        print(f"  REMNANT {m['script']} {m['class']}/{m['kind']} cue={m['cue']}: {m['remnant']}; "
+              f"heard {m['heard']!r}")
     for f in r["false_positives"]:
-        print(f"  FALSE POSITIVE {f['script']} [{f['class'].upper()}]: {f['text']!r} in {f['context']}")
+        print(f"  FALSE POSITIVE {f['script']} [{f['class'].upper()}] {f['kind']}: {f['text']!r} "
+              f"(unexplained: {f['leftover']!r}) in {f['context']}")
     for g in r["garbled_masked"]:
         print(f"  masked a garbled value {g['script']}: {g['text']!r}")
     for f in r["audio_failures"]:
@@ -920,9 +1162,9 @@ def print_calls_report(r: dict) -> None:
     if r["partial"]:
         print(f"pii_partial reasons: {r['partial']}")
     g = r["gate"]
-    print(f"gate: {'ok' if g['ok'] else 'FAIL'} — secret recall {g['secret_recall']:.3f} "
-          f"(needs >= {RECALL_GATE}), false positives {g['distractors_damaged']}, audio failures "
-          f"{g['audio_failures']}, full-pipeline failures {g['full_failures']}")
+    grec = "-" if g["garbled_secret_recall"] is None else f"{g['garbled_secret_recall']:.3f}"
+    print(_gate_line(g, f", garbled secret recall {grec} (needs >= {GARBLED_GATE}), audio "
+                        f"failures {g['audio_failures']}, full-pipeline failures {g['full_failures']}"))
 
 
 # --- public mode ------------------------------------------------------------------------------
@@ -958,10 +1200,8 @@ def _en_v1(row: dict):
         value, label = str(e.get("entity") or ""), (e.get("types") or [""])[0]
         if not value:
             continue
-        at = text.find(value)
-        while at >= 0:
-            gold.append((at, at + len(value), LABELS.get(label), label))
-            at = text.find(value, at + len(value))
+        for m in re.finditer(rf"(?<![A-Za-z0-9]){re.escape(value)}(?![A-Za-z0-9])", text):
+            gold.append((m.start(), m.end(), LABELS.get(label), label))
     gold.sort()
     return text, gold
 
@@ -996,7 +1236,8 @@ def _invalid(cls: str, label: str, value: str) -> bool:
 def score_public(docs, find) -> dict:
     """Recall (every letter and digit of a gold value under some hit) and precision (a hit of class
     C overlapping a gold span mapped to C), per class; misses split into invalid gold and true."""
-    stats = {c: {"gold": 0, "found": 0, "touched": 0, "invalid": 0, "true_miss": 0, "hits": 0,
+    stats = {c: {"gold": 0, "found": 0, "found_valid": 0, "touched": 0, "invalid": 0,
+                 "true_miss": 0, "hits": 0,
                  "tp_hits": 0, "misses": [], "false_positives": []} for c in PUBLIC_CLASSES}
     for text, gold in docs:
         hits = find(text)
@@ -1008,11 +1249,13 @@ def score_public(docs, find) -> dict:
             st["gold"] += 1
             touched = any(x < b and a < y for x, y in spans)
             st["touched"] += touched
+            bad = _invalid(cls, label, text[a:b])
+            st["invalid"] += bad
             if touched and _covered(a, b, text, spans):
                 st["found"] += 1
+                st["found_valid"] += not bad
                 continue
-            bad = _invalid(cls, label, text[a:b])
-            st["invalid" if bad else "true_miss"] += 1
+            st["true_miss"] += not bad
             if not bad and len(st["misses"]) < 10:
                 st["misses"].append({"label": label, "value": text[a:b],
                                      "context": text[max(0, a - 40):b + 40].replace("\n", " ")})
@@ -1030,7 +1273,7 @@ def score_public(docs, find) -> dict:
     for st in stats.values():
         st["recall"] = round(st["found"] / st["gold"], 3) if st["gold"] else None
         valid = st["gold"] - st["invalid"]
-        st["recall_valid"] = round(st["found"] / valid, 3) if valid else None
+        st["recall_valid"] = round(st["found_valid"] / valid, 3) if valid else None
         st["precision"] = round(st["tp_hits"] / st["hits"], 3) if st["hits"] else None
     return {"by_class": stats}
 
@@ -1121,6 +1364,11 @@ def run_public(out: Path, *, rows: int, fetch, find, log=print) -> dict:
                 except OSError as exc:
                     _fetch_failed(report, entry, exc, f"{dataset} offset {offset}", log)
                     break
+                if not isinstance(page, dict) or "rows" not in page:
+                    err = page.get("error") if isinstance(page, dict) else type(page).__name__
+                    entry["error"] = f"no rows at {dataset} offset {offset}: {str(err)[:120]}"
+                    log(entry["error"] + " (not cached)")
+                    break
                 page_path.write_text(json.dumps(page))
             got = page.get("rows") or []
             for r in got:
@@ -1138,6 +1386,10 @@ def run_public(out: Path, *, rows: int, fetch, find, log=print) -> dict:
 
 def print_public_report(r: dict) -> None:
     print("\n== public (written text, patterns only; no speech)")
+    print("recall: every letter and digit of a gold value under a hit of ANY class (an account "
+          "masked as [CARD] counts as found); valid-rec: found among values that pass our "
+          "validators; invalid: gold that fails them (counted whether found or not); "
+          "precision: hits of class C over a gold span mapped to C")
     for name, d in r["datasets"].items():
         if not d.get("used"):
             print(f"{name}: skipped — {d.get('reason', 'not reached')}")
@@ -1234,25 +1486,38 @@ def _classes(arg: str | None):
     return got
 
 
-def _full_runner(config, out: Path):
-    """`handle_record` on a staged copy, then `check_full`."""
+def _full_runner(config, *, pipeline=None, measure=rms_dbfs):
+    """`handle_record` on a staged copy, then `check_full`, including the archived audio's
+    level inside the spans the pipeline itself muted (seen through `_silence_segments`)."""
     import sqlite3
 
-    from slim.recorder import pipeline
-
     def run(script: Script, audio_path: Path, work: Path, transcribed: set[str]) -> dict:
+        pl = pipeline
+        if pl is None:
+            from slim.recorder import pipeline as pl
         rel = f"Attachments/_incoming/eval{script.sid}-001.webm"
         staged = config.VAULT / rel
+        staged.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(audio_path, staged)
         cache = work.with_suffix(work.suffix + ".transcript.json")
         if cache.exists():               # same bytes, so the pipeline reuses this transcript
             shutil.copyfile(cache, staged.with_suffix(staged.suffix + ".transcript.json"))
+        muted: list = []
+        real = pl._silence_segments
+
+        def spy(segments, seg_spans):
+            muted.append([[tuple(x) for x in sp] for sp in seg_spans])
+            return real(segments, seg_spans)
+
+        pl._silence_segments = spy
         try:
-            result = pipeline.handle_record(audio_rel=rel, notes_md="", declared_type="meeting",
-                                            title="", vault=config.VAULT)
+            result = pl.handle_record(audio_rel=rel, notes_md="", declared_type="meeting",
+                                      title="", vault=config.VAULT)
         except Exception as exc:                       # noqa: BLE001 - scored as a failure
             return {"script": script.sid, "ok": False, "title": None, "note": None,
                     "problems": [f"handle_record raised {type(exc).__name__}"]}
+        finally:
+            pl._silence_segments = real
         note_text = (config.VAULT / result["note"]).read_text(encoding="utf-8")
         con = sqlite3.connect(config.DB_PATH)
         try:
@@ -1261,8 +1526,15 @@ def _full_runner(config, out: Path):
                 "WHERE s.path = ? AND s.deleted = 0", (result["note"],))]
         finally:
             con.close()
+        archived = config.VAULT / result["audio"]
+        levels = []
+        for a, b in (muted[-1][0] if muted and muted[-1] else []):
+            try:
+                levels.append(([a, b], measure(archived, a, b)))
+            except Exception:                          # noqa: BLE001 - unreadable fails the check
+                levels.append(([a, b], None))
         return check_full(script, note_text, result, fragments, transcribed,
-                          config.PII_MASK)
+                          config.PII_MASK, archived_levels=levels)
     return run
 
 
@@ -1314,8 +1586,9 @@ def main(argv=None) -> int:
             synth=lambda s, dest: synthesize(s, dest, a.seed),
             transcribe=lambda p: pipeline._transcribe_segment(Path(p), tmod)[0],
             mask_segments=lambda gots: pipeline._mask_segments(gots, model=model),
-            silence=audio.silence, measure=rms_dbfs, classes=classes,
-            full=_full_runner(config, out) if a.full and model else None, full_n=a.full,
+            silence=audio.silence, measure=rms_dbfs, classes=classes, model=model,
+            seed=a.seed, detector=detector_sha(),
+            full=_full_runner(config) if a.full and model else None, full_n=a.full,
             redo=a.redo)
         print_calls_report(report)
     _write(out, a.mode, report)

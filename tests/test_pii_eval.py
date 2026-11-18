@@ -112,6 +112,19 @@ def test_previous_turn_answer_carries_no_cue():
     assert seen
 
 
+
+
+# --- scorers: text --------------------------------------------------------------------------
+# Every scorer test builds its "masked" text by hand or with a fake masker: nothing here depends
+# on what the detector currently catches.
+
+@pytest.fixture(autouse=True)
+def _pin_mask_classes(monkeypatch):
+    """Results never depend on a local config/projects.yaml."""
+    from slim import config
+    monkeypatch.setattr(config, "PII_MASK", config.PII_DEFAULT)
+
+
 def test_replaced_finds_masked_ranges():
     orig = "**Me:** my social is two one nine. ok."
     masked = "**Me:** my social is [SSN]. ok."
@@ -119,107 +132,167 @@ def test_replaced_finds_masked_ranges():
     assert ev.replaced(orig, orig) == []
 
 
-def _perfect(script):
-    t, out, pos = script.transcript, [], 0
-    for i in sorted(script.items, key=lambda i: i.start):
-        out += [t[pos:i.start], pii.PLACEHOLDER[i.cls]]
-        pos = i.end
-    return "".join(out + [t[pos:]])
+def _mask_spans(text, spans):
+    out, pos = [], 0
+    for a, b, cls in sorted(spans):
+        out += [text[pos:a], pii.PLACEHOLDER[cls]]
+        pos = b
+    return "".join(out + [text[pos:]])
+
+
+def _perfect(script, classes=ev.CLASSES):
+    return _mask_spans(script.transcript, [(i.start, i.end, i.cls) for i in script.items
+                                           if i.cls in classes])
+
+
+SCRIPTS = ev.generate(30, seed=7)
+
+
+def _with(pred):
+    return next(s for s in SCRIPTS if any(pred(i) for i in s.items))
 
 
 def test_score_text_perfect_identity_and_damage():
-    scripts = ev.generate(30, seed=7)
     classes = ev.CLASSES
-    perfect = ev.score_text(scripts, {s.sid: _perfect(s) for s in scripts}, classes, model=True)
+    perfect = ev.score_text(SCRIPTS, {s.sid: _perfect(s) for s in SCRIPTS}, classes, model=True)
     assert perfect["recall"] == 1.0 and perfect["distractors_damaged"] == 0
-    assert perfect["gate"]["ok"] and not perfect["misses"]
-    assert sum(v["n"] for v in perfect["by_cue"].values()) == sum(len(s.items) for s in scripts)
+    assert perfect["gate"]["ok"] and not perfect["misses"] and not perfect["false_positives"]
+    assert sum(v["n"] for v in perfect["by_cue"].values()) == sum(len(s.items) for s in SCRIPTS)
 
-    nothing = ev.score_text(scripts, {s.sid: s.transcript for s in scripts}, classes, model=True)
+    nothing = ev.score_text(SCRIPTS, {s.sid: s.transcript for s in SCRIPTS}, classes, model=True)
     assert nothing["recall"] == 0.0 and not nothing["gate"]["ok"]
-    assert len(nothing["misses"]) == sum(len(s.items) for s in scripts)
-    miss = nothing["misses"][0]
-    assert {"script", "class", "cue", "context"} <= set(miss)
+    assert len(nothing["misses"]) == sum(len(s.items) for s in SCRIPTS)
+    assert {"script", "class", "cue", "context"} <= set(nothing["misses"][0])
 
-    s = scripts[0]
+    s = SCRIPTS[0]
     d = s.distractors[0]
-    damaged = {x.sid: _perfect(x) for x in scripts}
-    damaged[s.sid] = _perfect(s).replace(d.text, "[CARD]", 1)
-    got = ev.score_text(scripts, damaged, classes, model=True)
+    damaged = {x.sid: _perfect(x) for x in SCRIPTS}
+    damaged[s.sid] = _mask_spans(s.transcript, [(i.start, i.end, i.cls) for i in s.items]
+                                 + [(d.start, d.end, "card")])
+    got = ev.score_text(SCRIPTS, damaged, classes, model=True)
     assert got["distractors_damaged"] == 1 and not got["gate"]["ok"]
     assert got["false_positives"][0]["script"] == s.sid
 
 
+def test_partly_masked_value_is_a_miss():
+    # "[SSN], nine nine nine nine": 4 of 9 digits still readable
+    s = _with(lambda i: i.cls == "ssn")
+    item = next(i for i in s.items if i.cls == "ssn")
+    cut = item.start + len(item.spoken) // 2
+    while s.transcript[cut].isalnum():
+        cut += 1
+    others = [(i.start, i.end, i.cls) for i in s.items if i is not item]
+    masked = {x.sid: _perfect(x) for x in SCRIPTS}
+    masked[s.sid] = _mask_spans(s.transcript, others + [(item.start, cut, "ssn")])
+    got = ev.score_text(SCRIPTS, masked, ev.CLASSES, model=True)
+    assert got["by_class"]["ssn"]["masked"] == got["by_class"]["ssn"]["n"] - 1
+    miss = [m for m in got["misses"] if m["script"] == s.sid and m["class"] == "ssn"]
+    assert miss and miss[0]["result"] == "partial"
+    assert got["gate"]["secret_recall"] < 1.0
+
+
+def test_partial_whose_token_is_gone_still_misses():
+    # The digit run masked, the bank letters left ("G B nine four E K S C [CARD]"): the compact
+    # token is gone from the text, but letters of the value are still readable.
+    s = _with(lambda i: i.kind == "iban")
+    item = next(i for i in s.items if i.kind == "iban")
+    bank = re.search(r"(?:[A-Z],? ){3}[A-Z]", item.spoken[4:])
+    at = item.start + 4 + bank.end()
+    others = [(i.start, i.end, i.cls) for i in s.items if i is not item]
+    masked = {x.sid: _perfect(x) for x in SCRIPTS}
+    masked[s.sid] = _mask_spans(s.transcript, others + [(at, item.end, "card")])
+    got = ev.score_text(SCRIPTS, masked, ev.CLASSES, model=True)
+    miss = [m for m in got["misses"] if m["script"] == s.sid and m["kind"] == "iban"]
+    assert miss and miss[0]["result"] == "partial"
+    assert got["by_class"]["account"]["masked"] == got["by_class"]["account"]["n"] - 1
+
+
+def test_over_wide_mask_damages_what_it_swallows():
+    # An [SSN] that runs past its item, over the turn break, the next label and a distractor.
+    s = next(x for x in SCRIPTS
+             if any(i.cls == "ssn" and any(d.start > i.end for d in x.distractors) for i in x.items))
+    item = next(i for i in s.items if i.cls == "ssn")
+    d = next(d for d in s.distractors if d.start > item.end)
+    swallowed = [i for i in s.items if item.end <= i.start < d.end]
+    others = [(i.start, i.end, i.cls) for i in s.items if i is not item and i not in swallowed]
+    masked = {x.sid: _perfect(x) for x in SCRIPTS}
+    masked[s.sid] = _mask_spans(s.transcript, others + [(item.start, d.end, "ssn")])
+    got = ev.score_text(SCRIPTS, masked, ev.CLASSES, model=True)
+    fp = [f for f in got["false_positives"] if f["script"] == s.sid]
+    assert fp and fp[0]["kind"] == "over-wide mask" and got["distractors_damaged"] >= 1
+    assert not got["gate"]["ok"]
+
+
+def test_value_outside_classes_masked_as_another_class_is_a_false_positive():
+    s = _with(lambda i: i.cls == "phone")
+    phone = next(i for i in s.items if i.cls == "phone")
+    classes = tuple(c for c in ev.CLASSES if c != "phone")
+    masked = {x.sid: _perfect(x, classes) for x in SCRIPTS}
+    masked[s.sid] = _mask_spans(s.transcript, [(i.start, i.end, i.cls) for i in s.items
+                                               if i.cls in classes] + [(phone.start, phone.end, "account")])
+    got = ev.score_text(SCRIPTS, masked, classes, model=True)
+    assert [f["class"] for f in got["false_positives"]] == ["account"]
+    assert not got["gate"]["ok"]
+
+
 def test_score_text_without_model_leaves_password_out_of_the_gate():
-    scripts = ev.generate(30, seed=7)
-    masked = {}
-    for s in scripts:
-        keep = [i for i in s.items if i.cls == "password"]
-        t = _perfect(s)
-        for i in keep:                          # no model: every password survives
-            t = t.replace("[PASSWORD]", i.spoken, 1)
-        masked[s.sid] = t
-    got = ev.score_text(scripts, masked, ev.CLASSES, model=False)
+    classes = ev.CLASSES
+    masked = {s.sid: _perfect(s, tuple(c for c in classes if c != "password")) for s in SCRIPTS}
+    got = ev.score_text(SCRIPTS, masked, classes, model=False)
     assert got["by_class"]["password"]["masked"] == 0
     assert got["gate"]["ok"] and "password" not in got["gate"]["secret_classes"]
 
 
+def test_text_gate_needs_evidence():
+    quiet = [s for s in SCRIPTS if not s.items]
+    got = ev.score_text(quiet, {s.sid: s.transcript for s in quiet}, ev.CLASSES, model=True)
+    assert not got["gate"]["ok"] and got["gate"]["no_evidence"]
+
+
 def test_classes_not_masked_are_not_scored():
-    scripts = ev.generate(30, seed=7)
-    got = ev.score_text(scripts, {s.sid: s.transcript for s in scripts}, ("ssn",), model=True)
+    got = ev.score_text(SCRIPTS, {s.sid: s.transcript for s in SCRIPTS}, ("ssn",), model=True)
     assert set(got["by_class"]) == {"ssn"}
 
 
 def test_text_report_names_every_miss(capsys):
-    scripts = ev.generate(30, seed=7)
-    got = ev.score_text(scripts, {s.sid: s.transcript for s in scripts}, ev.CLASSES, model=True)
+    got = ev.score_text(SCRIPTS, {s.sid: s.transcript for s in SCRIPTS}, ev.CLASSES, model=True)
     ev.print_text_report(got)
     out = capsys.readouterr().out
     assert "same_sentence" in out and "MISS" in out
 
 
-# --- sandbox guard ---------------------------------------------------------------------
-
-def test_out_inside_a_vault_or_icloud_or_the_repo_is_refused(tmp_path):
-    vault = tmp_path / "v"
-    (vault / ".obsidian").mkdir(parents=True)
-    with pytest.raises(SystemExit):
-        ev.check_out(vault / "eval", home=tmp_path / "home", repo=tmp_path / "repo")
-    icloud = tmp_path / "home" / "Library" / "Mobile Documents" / "x"
-    with pytest.raises(SystemExit):
-        ev.check_out(icloud, home=tmp_path / "home", repo=tmp_path / "repo")
-    with pytest.raises(SystemExit):
-        ev.check_out(tmp_path / "repo" / "out", home=tmp_path / "home", repo=tmp_path / "repo")
-    ok = tmp_path / "scratch" / "eval"
-    assert ev.check_out(ok, home=tmp_path / "home", repo=tmp_path / "repo") == ok.resolve()
-
-
-def test_sandbox_refuses_when_config_resolved_elsewhere(tmp_path, monkeypatch):
-    # In this process slim.config is already imported with other paths: the guard must catch it.
-    for name in ("SLIM_VAULT", "SLIM_DATA_DIR", "SLIM_PROJECTS"):
-        monkeypatch.delenv(name, raising=False)           # restored after the test
-    with pytest.raises(SystemExit):
-        ev.sandbox(tmp_path / "out", home=tmp_path / "home", repo=tmp_path / "repo")
-
-
-def test_sandbox_projects_yaml_is_generic(tmp_path):
-    ev.write_projects(tmp_path / "projects.yaml", ev.CLASSES)
-    text = (tmp_path / "projects.yaml").read_text()
-    assert 'owner: "Alex"' in text and "phone" in text
+def test_remnant_finds_other_renderings():
+    s = _with(lambda i: i.cls == "ssn")
+    item = next(i for i in s.items if i.cls == "ssn")
+    d = item.token
+    elsewhere = ev._segments_outside(s.transcript, [(item.start, item.end)])
+    assert ev.remnant(item, f"**Me:** it's {d[:3]}, O {d[4]}, {d[5:]}.", elsewhere)
+    assert ev.remnant(item, "**Me:** it's [SSN].", elsewhere) is None
+    word = _with(lambda i: i.cls == "password")
+    pw = next(i for i in word.items if i.cls == "password")
+    root = re.sub(r"\d", "", pw.token)
+    out = ev._segments_outside(word.transcript, [(pw.start, pw.end)])
+    assert ev.remnant(pw, f"**Them:** It's {root.capitalize()} 12.", out)
 
 
 # --- calls, end to end with fakes -------------------------------------------------------
 
 class FakeStudio:
     """`say` + Parakeet + ffmpeg stand-ins: the audio file is a JSON list of (speaker, word, t0,
-    t1), silencing drops words inside spans, transcription returns what is left."""
+    t1), silencing drops words inside spans, transcription returns what is left. `render` maps a
+    spoken phrase to what "Parakeet" writes instead."""
 
-    def __init__(self):
+    def __init__(self, render=None):
         self.transcribed = 0
+        self.synths = 0
+        self.render = render or {}
 
     def synth(self, script, dest: Path):
+        self.synths += 1
         words, t, lines = [], 0.5, []
         for speaker, text in script.lines:
+            for said, heard in self.render.items():
+                text = text.replace(said, heard)
             start = t
             for w in text.split():
                 words.append([speaker, w, t, t + 0.3])
@@ -253,64 +326,274 @@ class FakeStudio:
         return -20.0 if any(w[2] < b and w[3] > a for w in words) else -120.0
 
 
-def _finder(scripts):
-    secrets = [i.spoken for s in scripts for i in s.items if i.cls == "password"]
-    return lambda window: next((x for x in secrets if x in window), None)
+class FakeMasker:
+    """`_mask_segments` stand-in that masks exactly the script's values found verbatim in the
+    text. `how` bends it: "partial" masks the first half of each value, "wide" runs to the end
+    of the turn, "short_mute" mutes only the first half of a value's words."""
+
+    def __init__(self, scripts, how="exact", classes=ev.CLASSES):
+        self.items = [i for s in scripts for i in s.items if i.cls in classes]
+        self.how = how
+
+    def __call__(self, gots):
+        got = gots[0]
+        text, tokens = got["text"], got.get("tokens") or []
+        spans, counts, secrets, cuts = [], {}, [], []
+        for i in self.items:
+            at = text.find(i.spoken)
+            if at < 0:
+                continue
+            end = at + len(i.spoken)
+            if self.how == "partial":
+                end = at + len(" ".join(i.spoken.split()[:len(i.spoken.split()) // 2]))
+            elif self.how == "wide":
+                nxt = text.find("\n\n", end)
+                end = nxt if nxt >= 0 else len(text)
+            cuts.append((at, end, i.cls))
+            counts[i.cls] = counts.get(i.cls, 0) + 1
+            if i.cls in pii.SECRET:
+                words = text[at:end].split()
+                if self.how == "short_mute":
+                    words = words[:max(1, len(words) // 2)]
+                secrets.append(words)
+        def bare(w):
+            return w.strip().rstrip(".,?!")
+
+        for words in secrets:
+            words = [bare(w) for w in words]
+            seq = [bare(t[0]) for t in tokens]
+            for k in range(len(seq) - len(words) + 1):
+                if seq[k:k + len(words)] == words:
+                    spans.append((tokens[k][1], tokens[k + len(words) - 1][2]))
+        masked = _mask_spans(text, cuts)
+        return [{**got, "text": masked}], counts, set(), [sorted(spans)]
 
 
-def test_calls_scores_with_fakes_and_resumes(tmp_path, monkeypatch, capsys):
-    scripts = ev.generate(8, seed=7)
-    monkeypatch.setattr(pii, "ask_model", _finder(scripts))
+def _kw(studio, masker, **extra):
+    return dict(synth=studio.synth, transcribe=studio.transcribe, mask_segments=masker,
+                silence=studio.silence, measure=studio.measure, classes=ev.CLASSES,
+                detector="d1", **extra)
+
+
+def test_calls_scores_with_fakes_and_resumes(tmp_path, capsys):
+    scripts = SCRIPTS[:8]
     studio = FakeStudio()
-    kw = dict(synth=studio.synth, transcribe=studio.transcribe,
-              mask_segments=lambda gots: pipeline._mask_segments(gots, model=True),
-              silence=studio.silence, measure=studio.measure, classes=ev.CLASSES)
+    kw = _kw(studio, FakeMasker(scripts))
     report = ev.run_calls(scripts, tmp_path, **kw)
-    assert set(report["by_class"]) <= set(ev.CLASSES)
-    assert report["scripts"] == 8
+    assert report["scripts"] == 8 and report["gate"]["ok"], report["gate"]
+    assert report["by_class"]["ssn"]["recall"] == 1.0 and not report["audio_failures"]
     for s in scripts:
         res = json.loads((tmp_path / "results" / f"{s.sid}.json").read_text())
         assert (tmp_path / "results" / f"{s.sid}.raw.md").read_text().startswith("**")
-        assert "masked" in res and "audio_failures" in res
+        assert "masked" in res and "audio_failures" in res and res["meta"]["detector"] == "d1"
     assert report["renderings"] and {"class", "spoken", "heard"} <= set(report["renderings"][0])
-    # every secret the text pass masked is gone from the re-transcribed audio
-    audio_fail = [f for f in report["audio_failures"] if f["check"] == "retranscribed"]
-    masked_secrets = [m for m in report["misses"] if m["class"] in pii.SECRET]
-    assert len(audio_fail) <= len(masked_secrets)
-    calls_before = studio.transcribed
+    before = studio.transcribed
     ev.run_calls(scripts, tmp_path, **kw)
-    assert studio.transcribed == calls_before                    # resumed: nothing redone
+    assert studio.transcribed == before                        # resumed: nothing redone
     ev.run_calls(scripts[:1], tmp_path, redo=True, **kw)
-    assert studio.transcribed == calls_before + 2                # raw + silenced
-    out = capsys.readouterr().out
-    assert scripts[0].sid in out
+    assert studio.transcribed == before + 2                    # raw + silenced
+    assert scripts[0].sid in capsys.readouterr().out
 
 
-def test_calls_counts_untranscribed_values_apart(tmp_path, monkeypatch):
-    scripts = [s for s in ev.generate(30, seed=7) if s.items][:3]
-    monkeypatch.setattr(pii, "ask_model", lambda w: None)
-    studio = FakeStudio()
-    garble = lambda p: {**studio.transcribe(p), "text": "**Me:** something else entirely",
-                        "tokens": [[" something", 0.1, 0.2]]}
-    report = ev.run_calls(scripts, tmp_path, synth=studio.synth, transcribe=garble,
-                          mask_segments=lambda g: pipeline._mask_segments(g, model=True),
-                          silence=studio.silence, measure=studio.measure, classes=ev.CLASSES)
-    assert report["not_transcribed"] == sum(len(s.items) for s in scripts)
-    assert all(v["n"] == 0 for v in report["by_class"].values())
+def test_calls_partial_mask_is_a_miss(tmp_path):
+    scripts = [_with(lambda i: i.cls == "card")]
+    report = ev.run_calls(scripts, tmp_path, **_kw(FakeStudio(), FakeMasker(scripts, "partial")))
+    assert report["by_class"]["card"]["masked"] == 0 and report["misses"]
+    assert report["misses"][0]["result"] in ("partial", "missed") and not report["gate"]["ok"]
 
 
-def test_calls_audio_check_fails_when_a_secret_stays_loud(tmp_path, monkeypatch):
-    scripts = [s for s in ev.generate(30, seed=7)
-               if pii.mask(s.transcript, ev.CLASSES).secrets][:1]
+def test_calls_over_wide_mask_is_a_false_positive(tmp_path):
+    scripts = [s for s in SCRIPTS if any(i.cls == "card" and i.cue == "after_value" for i in s.items)][:1]
     assert scripts
-    monkeypatch.setattr(pii, "ask_model", lambda w: None)
-    studio = FakeStudio()
-    report = ev.run_calls(scripts, tmp_path, synth=studio.synth, transcribe=studio.transcribe,
-                          mask_segments=lambda g: pipeline._mask_segments(g, model=True),
-                          silence=lambda p, s, pad=0.15: None, measure=studio.measure,
-                          classes=ev.CLASSES)
+    report = ev.run_calls(scripts, tmp_path, **_kw(FakeStudio(), FakeMasker(scripts, "wide")))
+    assert any(f["kind"] == "over-wide mask" for f in report["false_positives"])
+    assert not report["gate"]["ok"]
+
+
+def test_calls_value_in_another_rendering_is_a_remnant(tmp_path):
+    s = _with(lambda i: i.cls == "ssn")
+    item = next(i for i in s.items if i.cls == "ssn")
+    d = item.token
+    studio = FakeStudio(render={item.spoken: f"{d[:3]}, O {d[4]}, {d[5:]}"})   # not the exact token
+    report = ev.run_calls([s], tmp_path, **_kw(studio, FakeMasker([s])))
+    assert report["garbled"]["ssn"]["n"] == 1 and report["garbled"]["ssn"]["masked"] == 0
+    assert report["remnants"] and report["remnants"][0]["class"] == "ssn"
+
+
+def test_calls_gate_fails_without_evidence(tmp_path):
+    s = next(x for x in SCRIPTS if any(i.cls in pii.SECRET for i in x.items))
+    studio = FakeStudio(render={i.spoken: "mumble" for i in s.items})
+    report = ev.run_calls([s], tmp_path, **_kw(studio, FakeMasker([s])))
+    assert report["gate"]["secret_recall"] is None
+    assert not report["gate"]["ok"] and report["gate"]["no_evidence"]
+    assert report["not_transcribed"] == len(s.items)
+
+
+def test_calls_short_mute_leaks_in_the_retranscription(tmp_path):
+    s = _with(lambda i: i.cls == "card")
+    report = ev.run_calls([s], tmp_path, **_kw(FakeStudio(), FakeMasker([s], "short_mute")))
+    leaks = [f for f in report["audio_failures"] if f["check"] == "retranscribed"]
+    assert "card" in {f["class"] for f in leaks} and not report["gate"]["ok"]
+
+
+def test_calls_audio_check_fails_when_a_secret_stays_loud(tmp_path):
+    s = _with(lambda i: i.cls in ("card", "ssn"))
+    kw = _kw(FakeStudio(), FakeMasker([s]))
+    kw["silence"] = lambda p, spans, pad=0.15: None
+    report = ev.run_calls([s], tmp_path, **kw)
     checks = {f["check"] for f in report["audio_failures"]}
     assert {"rms", "retranscribed"} <= checks and not report["gate"]["ok"]
+
+
+def test_calls_unreadable_audio_fails(tmp_path):
+    s = _with(lambda i: i.cls in ("card", "ssn"))
+    kw = _kw(FakeStudio(), FakeMasker([s]))
+
+    def broken(path, a, b):
+        raise ValueError("no samples")
+    kw["measure"] = broken
+    report = ev.run_calls([s], tmp_path, **kw)
+    assert any(f["check"] == "unmeasurable" for f in report["audio_failures"])
+    assert not report["gate"]["ok"]
+
+
+def test_calls_without_model_leaves_password_out_of_the_gate(tmp_path):
+    scripts = SCRIPTS[:8]
+    no_pw = tuple(c for c in ev.CLASSES if c != "password")
+    report = ev.run_calls(scripts, tmp_path, model=False,
+                          **_kw(FakeStudio(), FakeMasker(scripts, classes=no_pw)))
+    assert "password" not in report["gate"]["secret_classes"] and report["gate"]["ok"], report["gate"]
+
+
+def test_calls_stale_caches_are_rescored_reusing_audio_and_transcript(tmp_path):
+    scripts = SCRIPTS[:3]
+    studio = FakeStudio()
+    ev.run_calls(scripts, tmp_path, **_kw(studio, FakeMasker(scripts)))
+    synths, transcribed = studio.synths, studio.transcribed
+    # a detector change: rescored, same audio, same first transcription; only the muted copy
+    ev.run_calls(scripts, tmp_path, **{**_kw(studio, FakeMasker(scripts)), "detector": "d2"})
+    assert studio.synths == synths and studio.transcribed == transcribed + 3
+    # other classes: no KeyError, rescored
+    kw = _kw(studio, FakeMasker(scripts, classes=("ssn", "card")))
+    kw["classes"] = ("ssn", "card")
+    report = ev.run_calls(scripts, tmp_path, **kw)
+    assert set(report["by_class"]) == {"ssn", "card"} and studio.synths == synths
+    # another seed: different scripts under the same ids, so new audio
+    other = ev.generate(3, seed=8)
+    ev.run_calls(other, tmp_path, seed=8, **_kw(studio, FakeMasker(other)))
+    assert studio.synths == synths + 3
+
+
+# Parakeet's real output for s01 (seed 7) from a sandbox run: digits, "IBANGB73" glued on.
+S01_RAW = """**Me:** It was great, really relaxing.
+
+**Them:** How was the trip?
+
+**Me:** I ordered it at Amazon.com.
+
+**Them:** Sure. IBANGB73 HWEC 4532 6581 9231 44.
+
+**Me:** Okay.
+
+**Them:** Sure. My social is 741 05 7024.
+
+**Me:** Not bad. Thanks. You? Put
+
+**Them:** it on my visa. 4111 7962 7393 8077.
+
+**Me:** Okay.
+
+**Them:** That was back in 2019.
+
+**Me:** The counts were 194, 34, 67, 34.
+
+**Them:** Great. Talk soon."""
+
+
+def test_score_call_on_real_parakeet_output(tmp_path):
+    s01 = SCRIPTS[0]
+    assert s01.sid == "s01" and {i.kind for i in s01.items} == {"iban", "ssn", "card"}
+    masked = S01_RAW.replace("741 05 7024", "[SSN]").replace("4111 7962 7393 8077", "[CARD]")
+    after = masked.replace(" [SSN]", "").replace(" [CARD]", "")
+    res = ev.score_call(s01, S01_RAW, masked, after, ev.CLASSES, spans=[(10.0, 12.0)],
+                        reasons=set(), manifest={}, measure=lambda p, a, b: -120.0,
+                        silenced=tmp_path / "x")
+    got = {i["kind"]: (i["transcribed"], i["result"]) for i in res["items"]}
+    assert got == {"iban": (True, "missed"), "ssn": (True, "masked"), "card": (True, "masked")}
+    assert not res["false_positives"]
+    assert [f["class"] for f in res["audio_failures"]] == ["account"]     # the IBAN is audible
+    # the card masked as "4111 [CARD]": a partial, and "4111" stays readable
+    half = S01_RAW.replace("7962 7393 8077", "[CARD]").replace("741 05 7024", "[SSN]")
+    res = ev.score_call(s01, S01_RAW, half, after, ev.CLASSES, spans=[], reasons=set(),
+                        manifest={}, measure=lambda p, a, b: -120.0, silenced=tmp_path / "x")
+    assert {i["kind"]: i["result"] for i in res["items"]}["card"] == "partial"
+
+
+def test_check_full_and_full_runner_with_fakes(tmp_path):
+    import sqlite3
+    from types import SimpleNamespace
+
+    s = _with(lambda i: i.cls == "card")
+    card = next(i for i in s.items if i.cls == "card")
+    studio = FakeStudio()
+    vault = tmp_path / "vault"
+    db = tmp_path / "slim.db"
+    con = sqlite3.connect(db)
+    con.executescript("CREATE TABLE sources (id TEXT, path TEXT, deleted INTEGER DEFAULT 0);"
+                      "CREATE TABLE fragments (id INTEGER PRIMARY KEY, source_id TEXT, text TEXT);")
+    con.commit()
+    con.close()
+
+    def make_pipeline(mute: bool, leak_title: bool):
+        pl = SimpleNamespace()
+
+        def silence_segments(segments, seg_spans):
+            if mute:
+                for seg, sp in zip(segments, seg_spans):
+                    studio.silence(seg, sp)
+            return True
+
+        def handle_record(*, audio_rel, notes_md, declared_type, title, vault):
+            seg = vault / audio_rel
+            got = studio.transcribe(seg)
+            (masked,), counts, reasons, spans = FakeMasker([s])([got])
+            pl._silence_segments([seg], spans)
+            archived = vault / "Attachments" / "Recordings" / "a.webm"
+            archived.parent.mkdir(parents=True, exist_ok=True)
+            seg.replace(archived)
+            note = vault / "Notes" / "work" / "n.md"
+            note.parent.mkdir(parents=True, exist_ok=True)
+            listed = ", ".join(f"{c}:{n}" for c, n in sorted(counts.items()))
+            note.write_text(f"---\npii_masked: [{listed}]\npii_by: {pii.VERSION}\n---\n\n"
+                            f"## Transcript\n\n{masked['text']}\n")
+            c = sqlite3.connect(db)
+            c.execute("INSERT INTO sources VALUES ('x', 'Notes/work/n.md', 0)")
+            c.execute("INSERT INTO fragments (source_id, text) VALUES ('x', ?)", (masked["text"],))
+            c.commit()
+            c.close()
+            return {"note": "Notes/work/n.md", "audio": "Attachments/Recordings/a.webm",
+                    "title": card.spoken if leak_title else "A call", "summary": "",
+                    "pii": {"masked": counts, "partial": []}}
+
+        pl._silence_segments = silence_segments
+        pl.handle_record = handle_record
+        return pl
+
+    config = SimpleNamespace(VAULT=vault, DB_PATH=db, PII_MASK=ev.CLASSES)
+    audio = tmp_path / "audio.webm"
+    studio.synth(s, audio)
+    work = tmp_path / "work.webm"
+    work.write_text(audio.read_text())
+    tokens = {i.token for i in s.items}
+
+    ok = ev._full_runner(config, pipeline=make_pipeline(True, False), measure=studio.measure)(
+        s, audio, work, tokens)
+    assert ok["ok"], ok["problems"]
+    bad = ev._full_runner(config, pipeline=make_pipeline(False, True), measure=studio.measure)(
+        s, audio, work, tokens)
+    assert not bad["ok"]
+    assert any("title carries card" in p for p in bad["problems"])
+    assert any("archived audio" in p for p in bad["problems"])
 
 
 # --- public ----------------------------------------------------------------------------
@@ -332,11 +615,25 @@ FINANCE_PAGE = {
 }
 EN_V1_PAGE = {
     "rows": [
-        {"row": {"text": "Reach me at 12 Quorrel Street or kim@example.org.",
+        {"row": {"text": "Reach me at 12 Quorrel Street or kim@example.org, not 1234 or 7234.",
                  "entities": "[{'entity': '12 Quorrel Street', 'types': ['street_address']}, "
-                             "{'entity': 'kim@example.org', 'types': ['email']}]"}},
+                             "{'entity': 'kim@example.org', 'types': ['email']}, "
+                             "{'entity': '234', 'types': ['account_number']}]"}},
     ],
 }
+
+
+class Hit:
+    def __init__(self, start, end, cls):
+        self.start, self.end, self.cls = start, end, cls
+
+
+def _hits_at(text, pieces):
+    """A fake detector: the given (substring, class) pairs, wherever they occur."""
+    def find(t):
+        return [Hit(m.start(), m.end(), cls) for piece, cls in pieces
+                for m in re.finditer(re.escape(piece), t)]
+    return find
 
 
 def test_adapters_map_labels_onto_our_classes():
@@ -347,17 +644,30 @@ def test_adapters_map_labels_onto_our_classes():
     assert {g[2] for g in gold} == {"email", "ssn", "card", "account"}
     assert text[gold[1][0]:gold[1][1]] == "219-09-9999"
     text, gold = ev.ADAPTERS["gretelai/gretel-pii-masking-en-v1"](EN_V1_PAGE["rows"][0]["row"])
+    # "234" is only ever inside longer numbers here: never tagged
     assert [(text[a:b], c) for a, b, c, _ in gold] == [("12 Quorrel Street", "address"),
                                                       ("kim@example.org", "email")]
 
 
 def test_score_public_splits_invalid_gold_from_true_misses():
     text, gold = ev.ADAPTERS["gretelai/synthetic_pii_finance_multilingual"](FINANCE_PAGE["rows"][0]["row"])
-    got = ev.score_public([(text, gold)], lambda t: pii.find(t, ev.CLASSES))
+    find = _hits_at(text, [("219-09-9999", "ssn"), ("4111 1111 1111 1111", "card"),
+                           ("jo.ann@example.com", "email"), ("4111 1111 1111 1112", "card")])
+    got = ev.score_public([(text, gold)], find)
     card = got["by_class"]["card"]
-    assert card["gold"] == 2 and card["found"] == 1 and card["invalid"] == 1 and card["true_miss"] == 0
-    assert got["by_class"]["ssn"]["recall"] == 1.0
+    # the invalid card was "found" too: valid recall stays a ratio over valid values
+    assert card["gold"] == 2 and card["found"] == 2 and card["invalid"] == 1
+    assert card["true_miss"] == 0 and card["recall_valid"] == 1.0
+    assert got["by_class"]["account"]["true_miss"] == 1
     assert got["by_class"]["email"]["precision"] == 1.0
+
+
+def test_valid_recall_never_exceeds_one():
+    text = "a 4111 1111 1111 1112 b 4111 1111 1111 1111"
+    gold = [(2, 21, "card", "credit_card_number"), (24, 43, "card", "credit_card_number")]
+    got = ev.score_public([(text, gold)], _hits_at(text, [("4111 1111 1111 1112", "card")]))
+    card = got["by_class"]["card"]
+    assert card["found"] == 1 and card["recall_valid"] == 0.0 <= 1
 
 
 def test_licence_check_and_cached_fetch(tmp_path):
@@ -371,15 +681,24 @@ def test_licence_check_and_cached_fetch(tmp_path):
 
     assert ev.licence("gretelai/x", fetch) == ("apache-2.0", True)
     assert ev.licence("ai4privacy/pii-masking-300k", fetch) == ("other", False)
-    report = ev.run_public(tmp_path, rows=10, fetch=fetch,
-                           find=lambda t: pii.find(t, ev.CLASSES), log=lambda *a: None)
+    find = _hits_at("", [])
+    report = ev.run_public(tmp_path, rows=10, fetch=fetch, find=find, log=lambda *a: None)
     assert report["datasets"]["ai4privacy/pii-masking-300k"]["used"] is False
     assert report["datasets"]["gretelai/synthetic_pii_finance_multilingual"]["used"] is True
     n = len(calls)
-    ev.run_public(tmp_path, rows=10, fetch=fetch, find=lambda t: pii.find(t, ev.CLASSES),
-                  log=lambda *a: None)
+    ev.run_public(tmp_path, rows=10, fetch=fetch, find=find, log=lambda *a: None)
     assert all("datasets-server" not in u for u in calls[n:])          # pages came from cache
     assert any(tmp_path.joinpath("public").rglob("*.json"))
+
+
+def test_public_error_body_is_not_cached(tmp_path):
+    def fetch(url):
+        if "api/datasets/" in url:
+            return {"cardData": {"license": "apache-2.0"}}
+        return {"error": "The dataset viewer is not available"}
+    report = ev.run_public(tmp_path, rows=10, fetch=fetch, find=lambda t: [], log=lambda *a: None)
+    d = report["datasets"]["gretelai/synthetic_pii_finance_multilingual"]
+    assert "no rows" in d["error"] and not any(tmp_path.joinpath("public").rglob("*.json"))
 
 
 def test_public_without_network_says_so(tmp_path):
@@ -409,5 +728,38 @@ def test_public_counts_letters_and_digits_and_rejects_slots():
     a = text.index("[kim")
     gold = [(a, a + len("[kim@example.org]"), "email", "email"),
             (text.index("[Ship"), text.index(" now"), "email", "email")]
-    got = ev.score_public([(text, gold)], lambda t: pii.find(t, ev.CLASSES))["by_class"]["email"]
+    got = ev.score_public([(text, gold)], _hits_at(text, [("kim@example.org", "email")]))
+    got = got["by_class"]["email"]
     assert got["found"] == 1 and got["invalid"] == 1 and got["true_miss"] == 0
+
+
+# --- sandbox guard ---------------------------------------------------------------------
+
+def test_out_inside_a_vault_or_icloud_or_the_repo_is_refused(tmp_path):
+    vault = tmp_path / "v"
+    (vault / ".obsidian").mkdir(parents=True)
+    with pytest.raises(SystemExit):
+        ev.check_out(vault / "eval", home=tmp_path / "home", repo=tmp_path / "repo")
+    icloud = tmp_path / "home" / "Library" / "Mobile Documents" / "x"
+    with pytest.raises(SystemExit):
+        ev.check_out(icloud, home=tmp_path / "home", repo=tmp_path / "repo")
+    with pytest.raises(SystemExit):
+        ev.check_out(tmp_path / "repo" / "out", home=tmp_path / "home", repo=tmp_path / "repo")
+    ok = tmp_path / "scratch" / "eval"
+    assert ev.check_out(ok, home=tmp_path / "home", repo=tmp_path / "repo") == ok.resolve()
+
+
+def test_sandbox_refuses_when_config_resolved_elsewhere(tmp_path, monkeypatch):
+    # In this process slim.config is already imported with other paths: the guard must catch it.
+    for name in ("SLIM_VAULT", "SLIM_DATA_DIR", "SLIM_PROJECTS"):
+        monkeypatch.delenv(name, raising=False)           # restored after the test
+    with pytest.raises(SystemExit):
+        ev.sandbox(tmp_path / "out", home=tmp_path / "home", repo=tmp_path / "repo")
+
+
+def test_sandbox_projects_yaml_is_generic(tmp_path):
+    ev.write_projects(tmp_path / "projects.yaml", ev.CLASSES)
+    text = (tmp_path / "projects.yaml").read_text()
+    assert 'owner: "Alex"' in text and "phone" in text
+
+
