@@ -4278,13 +4278,13 @@ var require_pii = __commonJS({
   "src/recorder/pii.js"(exports2, module2) {
     "use strict";
     var PII_LABELS = [
-      ["ssn", "SSN"],
-      ["card", "card"],
-      ["account", "account"],
-      ["password", "password"],
-      ["email", "email"],
-      ["address", "address"],
-      ["phone", "phone"]
+      ["ssn", "SSN", "SSN"],
+      ["card", "card", "cards"],
+      ["account", "account", "accounts"],
+      ["password", "password", "passwords"],
+      ["email", "email", "emails"],
+      ["address", "address", "addresses"],
+      ["phone", "phone", "phones"]
     ];
     var KNOWN = new Set(PII_LABELS.map(([cls]) => cls));
     var PARTIAL_LINES = [
@@ -4300,7 +4300,7 @@ var require_pii = __commonJS({
     function piiHint(pii) {
       if (!pii) return "";
       const counts = pii.masked || {};
-      const parts = PII_LABELS.filter(([cls]) => counts[cls] > 0).map(([cls, label]) => `${counts[cls]} ${label}${counts[cls] === 1 || cls === "ssn" ? "" : "s"}`);
+      const parts = PII_LABELS.filter(([cls]) => counts[cls] > 0).map(([cls, one, many]) => `${counts[cls]} ${counts[cls] === 1 ? one : many}`);
       const lines = [];
       if (parts.length) lines.push(`Masked ${parts.join(", ")}.`);
       const unfinished = partialReasons(pii.partial);
@@ -5066,8 +5066,9 @@ var require_filing = __commonJS({
             if (this.state === "processing") this.render();
           });
         }
+        let appended = null;
         try {
-          await this.plugin.appendRecording({ note, audio: rels, job_id: jobId });
+          appended = await this.plugin.appendRecording({ note, audio: rels, job_id: jobId });
         } catch (e) {
           if (e && (e.cancelled || e.silent)) {
             if (e.silent) {
@@ -5101,6 +5102,7 @@ var require_filing = __commonJS({
           new Notice(`SLIM: the recording was added to ${note}, but the note could not be opened \u2014 ${e.message || e}`);
         }
         if (this.result) this.result.notes_md = this.noteParts.notes;
+        if (this.result && appended && appended.pii) this.result.pii = appended.pii;
         this.freezeEditor(false);
         this.activeTab = "transcript";
         this.state = this.resumeReturnState || "finished";

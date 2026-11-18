@@ -990,3 +990,58 @@ test("a filing the server completed finishes the review even when the pane canno
   PluginClass.prototype.noticeClosedPendingReviews.call(v.plugin);
   assert.ok(!notices.some((n) => /Review is still pending/.test(n)), notices.join(" | "));
 });
+
+test("after an append the card shows the note's masking as the server now states it", async () => {
+  const v = view();
+  v.state = "card";
+  v.filedNotePath = "Notes/x.md";
+  v.result = { title: "T", summary: "s", notes_md: "", pii: { masked: { ssn: 1 }, partial: [] },
+               card: { dest_dir: "Notes", confident_depth: 1, type_tag: "meeting", topics: [],
+                       folders: [], tag_counts: {} } };
+  v.noteParts = { summary: "s", notes: "", transcript: "raw" };
+  v.start = async () => {};
+  v.loadEditorFile = async () => {};
+  v.loadNoteParts = async () => v.noteParts;
+  v.plugin.appendRecording = async () => ({
+    note: "Notes/x.md", words: 4, pii: { masked: { email: 1, ssn: 1 }, partial: ["audio"] } });
+
+  await v.startAppendRecording();
+  v.segments = ["Attachments/_incoming/y-001.webm"];
+  await v.submitRecording(v.segments);
+
+  assert.deepEqual(v.result.pii, { masked: { email: 1, ssn: 1 }, partial: ["audio"] });
+  const root = fakeContentEl();
+  v.renderCard(root);
+  const hint = findClass(root, "slim-hint");
+  assert.equal(hint.options.text,
+               "Masked 1 SSN, 1 email. Some secrets could not be silenced in the audio.");
+});
+
+test("an append whose note states no masking clears the card's line", async () => {
+  const v = view();
+  v.state = "card";
+  v.filedNotePath = "Notes/x.md";
+  v.result = { title: "T", summary: "s", notes_md: "",
+               pii: { masked: { ssn: 1 }, partial: ["password"] },
+               card: { dest_dir: "Notes", confident_depth: 1, type_tag: "meeting", topics: [],
+                       folders: [], tag_counts: {} } };
+  v.noteParts = { summary: "s", notes: "", transcript: "raw" };
+  v.start = async () => {};
+  v.loadEditorFile = async () => {};
+  v.loadNoteParts = async () => v.noteParts;
+  v.plugin.appendRecording = async () => ({
+    note: "Notes/x.md", words: 4, pii: { masked: {}, partial: [] } });
+
+  await v.startAppendRecording();
+  v.segments = ["Attachments/_incoming/y-001.webm"];
+  await v.submitRecording(v.segments);
+
+  const root = fakeContentEl();
+  v.renderCard(root);
+  const texts = [];
+  (function walk(el) {
+    if (el.classes?.has("slim-hint")) texts.push(el.options?.text ?? el.text);
+    for (const c of el.children || []) walk(c);
+  })(root);
+  assert.doesNotMatch(texts.join("\n"), /Masked|password check|silenced/);
+});

@@ -1089,7 +1089,8 @@ def test_an_append_unions_its_reasons_with_the_notes(tmp_path, monkeypatch):
                                         vault=tmp_path)
     fm, _ = parse_frontmatter(r.note.read_text(encoding="utf-8"))
     assert fm["pii_partial"] == ["audio", "password"] and fm["pii_masked"] == ["ssn:2"]
-    assert out["pii"] == {"masked": {"ssn": 1}, "partial": ["audio"]}
+    assert out["pii"] == {"masked": {"ssn": 2}, "partial": ["audio", "password"]}, \
+        "the response is the NOTE's state, so the card shows what the note says"
 
 
 def test_both_reasons_are_named_and_traced_without_values(tmp_path, monkeypatch):
@@ -1108,3 +1109,170 @@ def test_both_reasons_are_named_and_traced_without_values(tmp_path, monkeypatch)
     logged = "".join(p.read_text() for p in trace.TRACE_DIR.rglob("*") if p.is_file())
     assert '"partial": ["audio", "password"]' in logged
     assert "219-09-9999" not in logged and "4471" not in logged
+
+
+# --- review fixes: edge cases ---------------------------------------------------------------
+
+def test_a_malformed_existing_count_never_breaks_an_append(tmp_path, monkeypatch):
+    """`"²".isdigit()` is True and `int("²")` raises, inside the note lock and after the
+    archive: a parse that can throw there orphans archived audio."""
+    from slim.capture import pii, transcribe
+    from slim.recorder import pipeline
+    from slim.vault.frontmatter import parse_frontmatter, set_frontmatter
+    from tests.recorder.fakes import _existing
+    r = _existing(tmp_path, monkeypatch)
+    r.note.write_text(set_frontmatter(r.note.read_text(encoding="utf-8"), {
+        "pii_masked": ["email:²", "nonsense", "ssn:-1", "card:2"], "pii_by": "pii-1"}),
+        encoding="utf-8")
+    monkeypatch.setattr(pii, "ask_model", lambda window: None)
+    monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
+        text="more words", model="fake", audio_seconds=9.0, wall_seconds=1.0))
+    out = pipeline.handle_record_append(note=str(r.note.relative_to(tmp_path)),
+                                        audio_rel=[_staged(tmp_path, "a-002.webm")],
+                                        vault=tmp_path)
+    body = r.note.read_text(encoding="utf-8")
+    fm, _ = parse_frontmatter(body)
+    assert "more words" in body and fm["pii_masked"] == ["card:2"]
+    assert out["pii"] == {"masked": {"card": 2}, "partial": []}
+
+
+def test_the_append_response_mirrors_the_note_when_masking_is_off(tmp_path, monkeypatch):
+    from slim import config
+    from slim.capture import transcribe
+    from slim.recorder import pipeline
+    from slim.vault.frontmatter import set_frontmatter
+    from tests.recorder.fakes import _existing
+    r = _existing(tmp_path, monkeypatch)
+    r.note.write_text(set_frontmatter(r.note.read_text(encoding="utf-8"), {
+        "pii_masked": ["email:1"], "pii_by": "pii-1", "pii_partial": ["audio"]}),
+        encoding="utf-8")
+    monkeypatch.setattr(config, "PII_MASK", ())
+    monkeypatch.setattr(transcribe, "transcribe", lambda p, model=None: transcribe.Transcript(
+        text="more words", model="fake", audio_seconds=9.0, wall_seconds=1.0))
+    out = pipeline.handle_record_append(note=str(r.note.relative_to(tmp_path)),
+                                        audio_rel=[_staged(tmp_path, "a-002.webm")],
+                                        vault=tmp_path)
+    assert out["pii"] == {"masked": {"email": 1}, "partial": ["audio"]}
+
+
+def test_a_cancel_during_transcription_never_reaches_the_password_pass(tmp_path, monkeypatch):
+    from slim.capture import pii, transcribe
+    from slim.recorder import pipeline, state
+    _fakes(monkeypatch)
+    monkeypatch.setattr(pii, "ask_model", lambda window: pytest.fail("cancelled before masking"))
+
+    def cancel_during(p, model=None):
+        state.request_cancel("job-pw")
+        return transcribe.Transcript(text="the door code is 4471", model="fake",
+                                     audio_seconds=9.0, wall_seconds=1.0)
+    monkeypatch.setattr(transcribe, "transcribe", cancel_during)
+    staged = _staged(tmp_path)
+    state.progress_start("job-pw")
+    with pytest.raises(state.RecordCancelled):
+        pipeline.handle_record(audio_rel=staged, notes_md="", declared_type="meeting",
+                               title="T", when=NOW, vault=tmp_path, job_id="job-pw")
+    assert (tmp_path / staged).read_bytes() == b"fake-audio-bytes"
+    assert not list(tmp_path.rglob("*.md"))
+
+
+def test_a_cancel_during_an_appended_transcription_never_reaches_the_password_pass(
+        tmp_path, monkeypatch):
+    from slim.capture import pii, transcribe
+    from slim.recorder import pipeline, state
+    from tests.recorder.fakes import _existing
+    r = _existing(tmp_path, monkeypatch)
+    before = r.note.read_text(encoding="utf-8")
+    monkeypatch.setattr(pii, "ask_model", lambda window: pytest.fail("cancelled before masking"))
+
+    def cancel_during(p, model=None):
+        state.request_cancel("job-apw")
+        return transcribe.Transcript(text="the door code is 4471", model="fake",
+                                     audio_seconds=9.0, wall_seconds=1.0)
+    monkeypatch.setattr(transcribe, "transcribe", cancel_during)
+    staged = _staged(tmp_path, "a-002.webm")
+    state.progress_start("job-apw")
+    with pytest.raises(state.RecordCancelled):
+        pipeline.handle_record_append(note=str(r.note.relative_to(tmp_path)),
+                                      audio_rel=[staged], job_id="job-apw", vault=tmp_path)
+    assert r.note.read_text(encoding="utf-8") == before
+    assert (tmp_path / staged).is_file()
+
+
+def test_masked_copies_carry_no_raw_tokens(monkeypatch):
+    from slim.capture import pii
+    from slim.recorder import pipeline
+    monkeypatch.setattr(pii, "ask_model", lambda window: None)
+    got = {"text": "card 4111 1111 1111 1111 please",
+           "tokens": [["card", 0.0, 0.5], [" 4111", 0.6, 1.0], [" 1111", 1.0, 1.4],
+                      [" 1111", 1.4, 1.8], [" 1111", 1.8, 2.2], [" please", 2.3, 2.6]]}
+    copies, counts, reasons, spans = pipeline._mask_segments([got], model=True)
+    assert counts == {"card": 1} and spans == [[(0.6, 2.2)]] and reasons == set()
+    assert "tokens" not in copies[0] and "4111" not in json_dump(copies)
+    assert got["tokens"][1] == [" 4111", 0.6, 1.0], "the caller's segment is not mutated"
+
+
+def json_dump(value) -> str:
+    import json
+    return json.dumps(value)
+
+
+def test_only_the_segment_holding_a_secret_is_silenced(tmp_path, monkeypatch):
+    from slim.capture import audio, transcribe
+    from slim.recorder import pipeline
+    _fakes(monkeypatch)
+    queue = [("hello there", [("hello", 0.0, 0.4), (" there", 0.4, 0.8)]),
+             (SSN_TEXT, SSN_TOKENS),
+             ("card 4111 1111 1111 1111 please", [])]          # a secret, no token times
+
+    def fake_tx(p, model=None):
+        text, tokens = queue.pop(0)
+        return transcribe.Transcript(text=text, model="fake", audio_seconds=10.0,
+                                     wall_seconds=1.0, tokens=tokens)
+    monkeypatch.setattr(transcribe, "transcribe", fake_tx)
+    calls = []
+    monkeypatch.setattr(audio, "silence",
+                        lambda path, spans, pad=0.15: calls.append((path.name, spans)))
+    rels = [_staged(tmp_path, f"r-00{i}.webm") for i in (1, 2, 3)]
+    out = pipeline.handle_record(audio_rel=rels, notes_md="", declared_type="meeting",
+                                 title="T", when=NOW, vault=tmp_path)
+    assert calls == [("r-002.webm", [(1.0, 2.5)])]
+    assert out["pii"] == {"masked": {"card": 1, "ssn": 1}, "partial": ["audio"]}
+
+
+def test_a_password_the_model_names_is_masked_counted_and_silenced(tmp_path, monkeypatch):
+    from slim.capture import audio
+    from slim.recorder import pipeline
+    from slim.vault.frontmatter import parse_frontmatter
+    tokens = [("the", 0.0, 0.2), (" wifi", 0.2, 0.5), (" password", 0.5, 0.9),
+              (" is", 0.9, 1.0), (" hunter2", 1.2, 1.8), (" okay", 1.9, 2.2)]
+    _fakes(monkeypatch, transcript="the wifi password is hunter2 okay", tokens=tokens,
+           ask_model=lambda window: "hunter2")
+    calls = []
+    monkeypatch.setattr(audio, "silence", lambda path, spans, pad=0.15: calls.append(spans))
+    out = pipeline.handle_record(audio_rel=_staged(tmp_path), notes_md="",
+                                 declared_type="meeting", title="T", when=NOW, vault=tmp_path)
+    body = (tmp_path / out["note"]).read_text(encoding="utf-8")
+    fm, _ = parse_frontmatter(body)
+    assert "hunter2" not in body and "the wifi password is [PASSWORD] okay" in body
+    assert fm["pii_masked"] == ["password:1"] and "pii_partial" not in fm
+    assert calls == [[(1.2, 1.8)]]
+
+
+def test_a_cancel_at_the_last_boundary_silences_and_writes_nothing(tmp_path, monkeypatch):
+    from slim.capture import audio
+    from slim.recorder import pipeline, state, suggest
+    _fakes(monkeypatch, transcript=SSN_TEXT, tokens=SSN_TOKENS)
+
+    def cancel_in_card(*a, **k):
+        state.request_cancel("job-card")
+        return suggest.Card(dest_dir="Notes/_unfiled", confident_depth=1, candidates=[],
+                            type_tag="meeting", topics=[])
+    monkeypatch.setattr(suggest, "build_card", cancel_in_card)
+    monkeypatch.setattr(audio, "silence", lambda *a, **k: pytest.fail("silenced after a cancel"))
+    staged = _staged(tmp_path)
+    state.progress_start("job-card")
+    with pytest.raises(state.RecordCancelled):
+        pipeline.handle_record(audio_rel=staged, notes_md="", declared_type="meeting",
+                               title="T", when=NOW, vault=tmp_path, job_id="job-card")
+    assert (tmp_path / staged).read_bytes() == b"fake-audio-bytes"
+    assert not list(tmp_path.rglob("*.md"))

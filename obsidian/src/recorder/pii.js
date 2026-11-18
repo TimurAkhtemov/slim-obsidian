@@ -2,10 +2,12 @@
 // leave the server.
 "use strict";
 
-// In the order a reader weighs them.
-const PII_LABELS = [["ssn", "SSN"], ["card", "card"], ["account", "account"],
-                    ["password", "password"], ["email", "email"], ["address", "address"],
-                    ["phone", "phone"]];
+// In the order a reader weighs them: [class, one, more than one]. "SSN" reads the same for any
+// count.
+const PII_LABELS = [["ssn", "SSN", "SSN"], ["card", "card", "cards"],
+                    ["account", "account", "accounts"], ["password", "password", "passwords"],
+                    ["email", "email", "emails"], ["address", "address", "addresses"],
+                    ["phone", "phone", "phones"]];
 const KNOWN = new Set(PII_LABELS.map(([cls]) => cls));
 
 // Why masking is unfinished (`pii_partial`), and what each leaves them to do. `password` is
@@ -29,8 +31,8 @@ function partialReasons(value) {
 function piiHint(pii) {
   if (!pii) return "";
   const counts = pii.masked || {};
-  const parts = PII_LABELS.filter(([cls]) => counts[cls] > 0).map(([cls, label]) =>
-    `${counts[cls]} ${label}${counts[cls] === 1 || cls === "ssn" ? "" : "s"}`);
+  const parts = PII_LABELS.filter(([cls]) => counts[cls] > 0).map(([cls, one, many]) =>
+    `${counts[cls]} ${counts[cls] === 1 ? one : many}`);
   const lines = [];
   if (parts.length) lines.push(`Masked ${parts.join(", ")}.`);
   const unfinished = partialReasons(pii.partial);

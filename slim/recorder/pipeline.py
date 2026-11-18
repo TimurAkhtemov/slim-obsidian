@@ -138,7 +138,9 @@ def _mask_segments(gots: list[dict], *, model: bool):
             reasons.add("password")
         if missed:
             reasons.add("audio")
-        masked.append({**got, "text": m.text})
+        # Token times are spent: spans hold them now, and a copy kept with raw tokens would
+        # carry the very words the text just lost.
+        masked.append({**{k: v for k, v in got.items() if k != "tokens"}, "text": m.text})
         seg_spans.append(found)
     return masked, counts, reasons, seg_spans
 
@@ -284,7 +286,9 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
             wall += 0.0 if cached else (got.get("wall_seconds") or 0.0)
             asr_model = got.get("model") or asr_model
             speakers_by = got.get("speakers_by") or speakers_by
-        # ⚠ BEFORE ANY MODEL: the summary, the title and the card all read `text`.
+        # ⚠ BEFORE ANY MODEL: the summary, the title and the card all read `text`. The password
+        # pass is a model call per cue window, so a cancel is honoured before it.
+        state.check_cancel(job_id)
         if config.PII_MASK:
             progress("masking", "Masking sensitive details",
                      "Replacing identifiers before any model reads the transcript")
@@ -510,6 +514,7 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
         seconds += got.get("audio_seconds") or 0.0
         asr_model = got.get("model") or asr_model
         speakers_by = got.get("speakers_by") or speakers_by
+    state.check_cancel(job_id)            # the password pass is a model call per cue window
     gots, counts, reasons, seg_spans = _mask_segments(gots, model=True)
     fm, _ = parse_frontmatter(text)
     addition = _join_segments(gots, labelled=bool(fm.get("speakers_by")))
@@ -545,6 +550,8 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
                                                     speakers_by=speakers_by)
         if config.PII_MASK:
             text = note_writer.merge_pii_frontmatter(text, counts, reasons)
+        # The card shows the NOTE's masking, so the response is what the note now says.
+        note_counts, note_reasons = note_writer.read_pii(text)
         note_writer.write_note_text(src, note_writer.append_transcript(text, addition))
 
     archived_paths = {state.vault_path(vault, rel).resolve() for rel in archived_rels}
@@ -562,7 +569,7 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
     trace.record("record", {"stage": "append", "note": str(src), "segments": len(segments),
                             "words": len(addition.split())})
     return {"note": str(src.relative_to(vault)), "words": len(addition.split()),
-            "audio_seconds": seconds, "pii": {"masked": counts, "partial": sorted(reasons)}}
+            "audio_seconds": seconds, "pii": {"masked": note_counts, "partial": note_reasons}}
 
 
 def handle_record_transcript(*, audio_rel: str | list[str],

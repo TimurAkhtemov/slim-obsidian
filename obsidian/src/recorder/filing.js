@@ -183,8 +183,9 @@ module.exports = {
         if (this.state === "processing") this.render();
       });
     }
+    let appended = null;
     try {
-      await this.plugin.appendRecording({ note, audio: rels, job_id: jobId });
+      appended = await this.plugin.appendRecording({ note, audio: rels, job_id: jobId });
     } catch (e) {
       if (e && (e.cancelled || e.silent)) {
         // A silent resumed segment adds nothing and costs nothing: say so, and put them back
@@ -225,6 +226,9 @@ module.exports = {
                  + `${e.message || e}`);
     }
     if (this.result) this.result.notes_md = this.noteParts.notes;
+    // The server answers with the NOTE's masking after the write, so the card's line is what
+    // the note now says — an empty answer clears it.
+    if (this.result && appended && appended.pii) this.result.pii = appended.pii;
     this.freezeEditor(false);
     this.activeTab = "transcript";
     this.state = this.resumeReturnState || "finished";

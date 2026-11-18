@@ -13,6 +13,17 @@ test("the line reads like a sentence, SSN never pluralised", () => {
   assert.equal(piiHint(undefined), "");
 });
 
+test("every class reads right at one and at two", () => {
+  const want = { ssn: ["1 SSN", "2 SSN"], card: ["1 card", "2 cards"],
+                 account: ["1 account", "2 accounts"], password: ["1 password", "2 passwords"],
+                 email: ["1 email", "2 emails"], address: ["1 address", "2 addresses"],
+                 phone: ["1 phone", "2 phones"] };
+  for (const [cls, [one, two]] of Object.entries(want)) {
+    assert.equal(piiHint({ masked: { [cls]: 1 }, partial: [] }), `Masked ${one}.`);
+    assert.equal(piiHint({ masked: { [cls]: 2 }, partial: [] }), `Masked ${two}.`);
+  }
+});
+
 test("each unfinished reason says what is left, and only that", () => {
   const password = "The password check didn't run. Run `slim mask` on this note.";
   const audio = "Some secrets could not be silenced in the audio.";
