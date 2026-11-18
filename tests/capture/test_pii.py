@@ -445,7 +445,9 @@ def test_garbled_ssn_with_cue_still_masked():
     assert _m("**Me:** Sure. My social is 6858199.").text == "**Me:** Sure. My social is [SSN]."
     t = "**Them:** Can I get your social security number?\n\n**Me:** Yeah, it's 60590647."
     assert _m(t).text.endswith("it's [SSN].")
-    for t in ("my social club has 123456 members", "my social is 123456789012 long"):
+    # a strong cue ("my social is") holds a garbled number of up to twelve digits
+    assert _m("my social is 123456789012 long").text == "my social is [SSN] long"
+    for t in ("my social club has 123456 members", "my social is 1234567890123 long"):
         _same(t)
 
 
@@ -847,9 +849,11 @@ def test_phone_bound_shapes():
         assert _m(t, PHONE).counts == {}, t
 
 
-@pytest.mark.xfail(strict=True, reason="pending a ruling: a cue under a preposition does not bind, even right before the number")
 def test_cue_under_a_preposition_directly_before_the_number():
+    # the preposition test needs a word between cue and number: "on my account 80608689949" binds
     assert _m("on my account 80608689949").text == "on my account [ACCOUNT]"
+    assert _m("on my account: 80608689949").text == "on my account: [ACCOUNT]"
+    _same("The phone number on the account, 4155550134.")      # a phone is named before the cue
 
 
 def test_bound_account_shapes():
@@ -1055,6 +1059,13 @@ def test_a_bound_value_stops_when_it_is_complete():
         ("card number 3782, 332494, 74751", "card number [CARD]"),
         ("my social is 692, 87, 1253", "my social is [SSN]"),
         ("account number 1234, 5678", "account number [ACCOUNT]"),
+        ("account number 123456, 7890", "account number [ACCOUNT]"),        # an account has no set length
+        ("My card is 4111 1111 1111 1111, 123", "My card is [CARD], 123"),
+        ("my social is 219099999, 12", "my social is [SSN], 12"),            # nine digits is a whole SSN
+        ("My account number is 50266269, 16-89-87 is the sort code.",
+         "My account number is [ACCOUNT], [ACCOUNT] is the sort code."),
+        # too long for one account: the longest leading part that is one is taken
+        ("account number 1234, 5678, 9012, 3456, 7890, 1234", "account number [ACCOUNT], 7890, 1234"),
     ):
         assert _m(t).text == want, t
     _same("My account number is 12345678 dollars.")
@@ -1223,3 +1234,27 @@ def test_realistic_exchange(cid, text, secrets, ordinary):
     assert [o for o in ordinary if o not in m.text] == []
     if not secrets:
         assert [h for h in pii.find(text, CLS) if h.cls != "address"] == []
+
+
+def test_a_strong_ssn_cue_masks_a_garbled_number():
+    t = "**Me:** The counts were 004\n\n**Them:** 265075.1253. That's my social."
+    assert _m(t).text == "**Me:** The counts were 004\n\n**Them:** [SSN]. That's my social."
+    assert _m("My social is 68581399.").text == "My social is [SSN]."
+    assert _m("My social is 6858.13990.").text == "My social is [SSN]."
+    assert _m("My social's um 4471-2.").text == "My social's um [SSN]."
+    for t in ("Room 123. That's my social.", "Hello. That's my social.", "1,250.50. That's my social security check.",
+              "415-555-0134. That's my social.", "2024-03-15. That's my social.", "12345-6789. That's my social.",
+              "My social is 68581399 dollars.", "1234567890123. That's my social."):
+        _same(t)
+
+
+def test_a_glued_email_with_an_identifying_cue():
+    t = "**Them:** Faxmore.steranatexample.com, that's my email."
+    assert _m(t).text == "**Them:** [EMAIL], that's my email."
+    t = "**Them:** Vandrel.corvainat example.org, that's my email."
+    assert _m(t).text == "**Them:** [EMAIL], that's my email."
+    assert _m("My email is Vandrel.corvainatexample.org.").text == "My email is [EMAIL]."
+    _same("I got it from bestbuy.com, that's my email client's fault.")
+    _same("Vandral.corvainatexample.org.")                          # no cue: never an email
+    # the speaker says this website is their email: masked, by the rule
+    assert _m("Check amazon.com, that's my email.").text == "Check [EMAIL], that's my email."

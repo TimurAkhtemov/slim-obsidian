@@ -40,7 +40,8 @@ _CUE_NOUNS = {
     "card": f"{_NUMBER_ON_CARD}|credit card number|debit card number|card number|{_CARD_NAMES}",
     "account": "routing number|routing|account number|account no|account|acct|iban|bban|sort code",
     "iban": "iban",
-    "phone": f"phone number|phone|cell|mobile|callback|call back|best number|good number|number for|"
+    "phone": f"phone number|phone|cell|mobile|callback number|call back number|callback|call back|best number|"
+             f"good number|number for|"
              f"number on(?! (?:{_THE}) (?:{_CARD_NAMES})\\b)",
 }
 _CUE = {c: re.compile(rf"\b(?:{nouns})\b", re.I) for c, nouns in _CUE_NOUNS.items()}
@@ -103,12 +104,24 @@ _UNDER_PREPOSITION = re.compile(
 _PREPOSITION_CLASSES = {"ssn", "account", "iban"}   # the classes a same-sentence cue is checked for
 
 
-def _subject(norm: str, s: int, a: int, cls: str) -> bool:
-    """The cue noun of `cls` at `a`, in the sentence starting at `s`, names the thing being given."""
+_COORDINATED_TO = re.compile(
+    rf"\s*(?:,|and|or|, and|, or)\s+(?:(?:{_DETERMINERS})\s+)?(?:(?:{_ASK_ADJECTIVES})\s+)?")
+
+
+def _subject(norm: str, s: int, a: int, cls: str, preposition: bool = True) -> bool:
+    """The cue noun of `cls` at `a`, in the sentence starting at `s`, names the thing being given.
+    `preposition`: whether a cue under a preposition is a modifier here (not when the number
+    follows the cue directly: "on my account 80608689949")."""
     pre = norm[s:a]
     tail = pre if len(pre) <= 60 else pre[-60:].split(" ", 1)[-1]   # the phrase is short; whole words
-    if cls in _PREPOSITION_CLASSES and _UNDER_PREPOSITION.search(tail):
+    if preposition and cls in _PREPOSITION_CLASSES and _UNDER_PREPOSITION.search(tail):
         return False
+    if cls != "phone":
+        # a phone named before the cue ("the phone number on the account, 4155550134") is the
+        # thing given, unless the two are listed together ("a callback number and your account")
+        for m in _CUE["phone"].finditer(pre):
+            if not _COORDINATED_TO.fullmatch(pre, m.end()):
+                return False
     if not _OTHER.search(pre):
         return True
     for rx in _CUE.values():
@@ -237,6 +250,7 @@ def _all_years(s: str) -> bool:
 
 # The speaker says what the number is, and it is not the cue's thing: "98919781 is the
 # ticket", "821 688 dollars short".
+_WHEN_AFTER = re.compile(r"\s*,?\s*(?:is|was)\s+when\b", re.I)   # "2024 was when I opened it"
 _LABEL_AFTER = re.compile(
     rf"\s*,?\s*(?:is|was|are|were)\s+(?:{_THE}|a|an)\s+([^.,!?;\n]*)", re.I)
 _UNIT_AFTER = re.compile(
@@ -246,10 +260,11 @@ _UNIT_AFTER = re.compile(
 
 
 # The digits that make a complete value of each class: a comma-joined value stops growing there.
-# A card is complete at 15 (an Amex), so "4242, 7844, 6476, 8778" is read whole.
+# A card is complete at 15 (an Amex), so "4242, 7844, 6476, 8778" is read whole. An account has
+# no set length: leaking the tail of "123456, 7890" is worse than taking an unlabelled number.
 CARD_COMPLETE = 15
 _SENTENCE_REACH = 300
-_COMPLETE = {"ssn": 7, "card": CARD_COMPLETE, "account": 6, "iban": 6, "phone": 10}
+_COMPLETE = {"ssn": 9, "card": CARD_COMPLETE, "account": None, "iban": None, "phone": 10}
 
 
 class _Scene:
@@ -327,7 +342,9 @@ class _Scene:
             if _TURN_START.search(self.norm, end, a):
                 if not self.asks_for(cls, cue):
                     continue
-            elif cls in _PREPOSITION_CLASSES and not _subject(self.norm, self.sentence_of(cue[0])[0], cue[0], cls):
+            elif cls in _PREPOSITION_CLASSES and not _subject(
+                    self.norm, self.sentence_of(cue[0])[0], cue[0], cls,
+                    preposition=bool(re.search(r"[A-Za-z]", self.orig(end, a)))):
                 continue
             return True
         return self.asked(cls, a)
@@ -353,6 +370,8 @@ class _Scene:
         return bool(_CUE_AFTER[cls].match(self.norm, b))
 
     def labelled(self, cls: str, b: int) -> bool:
+        if _WHEN_AFTER.match(self.norm, b):
+            return True
         m = _LABEL_AFTER.match(self.norm, b)
         return bool(m and not _CUE[cls].search(m.group(1))) or bool(_UNIT_AFTER.match(self.norm, b))
 
@@ -362,21 +381,26 @@ class _Scene:
         at the account number; after a cue before it, it is dropped when the speaker labels it as
         something else."""
         need = _COMPLETE[cls]
+
+        def short(a: int, b: int) -> bool:
+            return need is None or len(_digits(self.norm[a:b])) < need
+
         spans = []
         for a0, b0, segs in self.runs:
             if self.before(cls, a0):
+                # grow while incomplete, never into a piece the speaker labels ("…, 891 dollars")
                 k = 0
-                while k + 1 < len(segs) and len(_digits(self.norm[a0:segs[k][1]])) < need:
+                while k + 1 < len(segs) and short(a0, segs[k][1]) and not self.labelled(cls, segs[k + 1][1]):
                     k += 1
-                b = segs[k][1]
-                if fits(self.norm[a0:b]) and not self.labelled(cls, b):
+                b = next((segs[j][1] for j in range(k, -1, -1) if fits(self.norm[a0:segs[j][1]])), None)
+                if b is not None and not self.labelled(cls, b):
                     spans.append((a0, b))
             if self.after(cls, b0):
                 k = len(segs) - 1
-                while k > 0 and len(_digits(self.norm[segs[k][0]:b0])) < need:
+                while k > 0 and short(segs[k][0], b0):
                     k -= 1
-                a = segs[k][0]
-                if fits(self.norm[a:b0]):
+                a = next((segs[j][0] for j in range(k, len(segs)) if fits(self.norm[segs[j][0]:b0])), None)
+                if a is not None:
                     spans.append((a, b0))
         return spans
 
@@ -420,6 +444,58 @@ def _last_four_answers(scene: _Scene) -> list[tuple[int, int]]:
     return spans
 
 
+# A strong cue: an identifying phrase attached to the value ("265075.1253. That's my social.",
+# "My social is 68581399."). Next to it, a number the transcriber garbled (fused with a list,
+# a digit too many or too few) is still the SSN.
+_PERSONAL = "my|your|his|her|their"
+_STRONG_SSN_AFTER = re.compile(
+    rf"\s*[,.]?\s*(?:that's|that is|it's|is)\s+(?:{_PERSONAL})\s+(?:{_CUE_NOUNS['ssn']})(?=\s*(?:[.,!?;]|$))",
+    re.I | re.M)
+_STRONG_SSN_BEFORE = re.compile(rf"\b(?:{_PERSONAL})\s+(?:{_CUE_NOUNS['ssn']})\s*(?:is\b|['’]s\b|:)", re.I)
+_DIGIT_TOKEN = re.compile(r"\d[\d.,-]*\d|\d")          # a number glued with . , or -
+_PIECE_TO_HERE = re.compile(r"\d+(?:[ ./-]\d+)*$")      # groups up to here, never across ", "
+# Ten digits after "social" is more often a phone number than a garbled SSN (provisional)
+_PHONE_DIGITS = re.compile(r"1?[2-9]\d{2}[2-9]\d{6}")
+
+
+def _strong_value(s: str) -> bool:
+    return (4 <= len(_digits(s)) <= 12 and not _PHONE_SHAPED.fullmatch(s) and not _PHONE_DIGITS.fullmatch(s)
+            and not _date(s) and not _ZIP4.fullmatch(s))
+
+
+def _strong_ssns(scene: _Scene) -> list[tuple[int, int]]:
+    """Values held by a strong SSN cue: the whitespace-delimited number next to it, or the run of
+    groups ending or starting there, whichever is longer, when it stands alone and is not a
+    phone number, a date, a ZIP+4 or labelled as something else."""
+    norm, spans = scene.norm, []
+
+    def take(a: int, b: int, check_label: bool) -> None:
+        if (_alone(norm, a, b) and _strong_value(norm[a:b])
+                and not (check_label and scene.labelled("ssn", b))):
+            spans.append((a, b))
+
+    for m in _DIGIT_TOKEN.finditer(norm):
+        if (m.start() and not norm[m.start() - 1].isspace()) or not _STRONG_SSN_AFTER.match(norm, m.end()):
+            continue
+        run = _PIECE_TO_HERE.search(norm, max(0, m.end() - 80), m.end())
+        a = min(m.start(), run.start()) if run else m.start()
+        take(a, m.end(), check_label=False)
+    for m in _STRONG_SSN_BEFORE.finditer(norm):
+        p, words = m.end(), 0
+        while True:                                          # at most two filler words
+            gap = re.match(r"[\s,]*([A-Za-z']+)?", norm[p:p + 40])
+            if gap.group(1) and gap.group(1).lower() in _FILLER and words < 2:
+                p += gap.end()
+                words += 1
+                continue
+            p += len(gap.group(0)) - len(gap.group(1) or "")
+            break
+        token, run = _DIGIT_TOKEN.match(norm, p), _SEGMENT.match(norm, p)
+        if token:
+            take(p, max(token.end(), run.end() if run else 0), check_label=True)
+    return spans
+
+
 def _ssns(scene: _Scene) -> list[tuple[int, int]]:
     spans = []
     for a, b, s in scene.segments():
@@ -429,7 +505,7 @@ def _ssns(scene: _Scene) -> list[tuple[int, int]]:
     for m in _SSN_LAST_FOUR.finditer(scene.norm):
         if _alone(scene.norm, *m.span(1)):
             spans.append(m.span(1))
-    return spans + _last_four_answers(scene) + scene.bound("ssn", _ssn_fits)
+    return spans + _last_four_answers(scene) + scene.bound("ssn", _ssn_fits) + _strong_ssns(scene)
 
 
 # --- card ---
@@ -614,6 +690,29 @@ def _email_local(norm: str, at: int, end: int) -> int | None:
     return lo + min(starts) if starts else None
 
 
+# The transcriber sometimes drops the " at ": "Faxmore.steranatexample.com", "Vandrel.corvainat
+# example.org". With an identifying cue, a token ending in a dotted TLD (and up to two name-like
+# tokens before it) is the address; without one, a website is never an email.
+_DOMAIN_TOKEN = re.compile(rf"(?<!\S)[\w.+-]*\.(?:{_TLD})\b", re.I)
+_EMAIL_CUE_BEFORE = re.compile(
+    rf"(?:\b(?:{_THE}) e-?mail(?: address)?(?: is|:|'s)?|\be-?mail(?: address)?(?: is|:))\s*$", re.I)
+
+
+def _glued_emails(norm: str) -> list[tuple[int, int]]:
+    spans = []
+    for m in _DOMAIN_TOKEN.finditer(norm):
+        start = m.start()
+        for _ in range(2):
+            prev = re.search(r"(\S+)\s+$", norm[max(0, start - 80):start])
+            word = prev.group(1) if prev else ""
+            if not re.search(r"[A-Za-z][._][A-Za-z]", word) or word[-1] in ".,?!:":
+                break
+            start -= len(prev.group(0))
+        if _EMAIL_AFTER.match(norm, m.end()) or _EMAIL_CUE_BEFORE.search(norm[max(0, start - 60):start]):
+            spans.append((start, m.end()))
+    return spans
+
+
 def _emails(scene: "_Scene") -> list[tuple[int, int]]:
     norm = scene.norm
     spans = [m.span() for m in _EMAIL.finditer(norm)]
@@ -621,7 +720,7 @@ def _emails(scene: "_Scene") -> list[tuple[int, int]]:
         start = _email_local(norm, m.start(), m.end())
         if start is not None:
             spans.append((start, m.end()))
-    return spans
+    return spans + _glued_emails(norm)
 
 
 # --- address, phone ---
