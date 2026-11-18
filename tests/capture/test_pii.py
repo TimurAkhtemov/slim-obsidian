@@ -1259,3 +1259,31 @@ def test_a_glued_email_with_an_identifying_cue():
     _same("Vandral.corvainatexample.org.")                          # no cue: never an email
     # the speaker says this website is their email: masked, by the rule
     assert _m("Check amazon.com, that's my email.").text == "Check [EMAIL], that's my email."
+
+
+# --- a guard reads the cue's own clause; money is not a social; listed questions ----------------
+
+def test_an_earlier_thing_in_the_sentence_does_not_block_the_cue():
+    for t, want in (
+        ("My zip code is 10001, and the account number is 48213377.", "account"),
+        ("The order number is 5512334, and my routing number is 011000028.", "account"),
+        ("My balance is 250 dollars, and the SSN is 219-09-9999.", "ssn"),
+        ("My balance is 250 dollars, and my social is 219 09 9999.", "ssn"),
+        ("My cell number is 4155550134 and my account number is 48213377.", "account"),
+        ("My mobile account number is 48213377.", "account"),
+        ("My phone account number is 48213377.", "account"),
+        ("I'm calling about my phone bill, my account number is 48213377.", "account"),
+        ("I'm calling about my phone bill, the SSN is 219099999.", "ssn"),
+        ("My claim number is 7437291, and the routing number is 011000028.", "account"),
+    ):
+        assert want in _m(t).counts, t
+    assert "48213377" not in _m("My cell number is 4155550134 and my account number is 48213377.").text
+
+
+def test_a_phone_blocks_only_what_it_governs():
+    for t in ("The phone number on the account is 4155550134.", "My cell on my account is 4155550134.",
+              "Your claim number on the account is 20417733.", "The policy number for the account is 88213345.",
+              "The tracking number they sent to my account is 1Z999AA10123456784.",
+              _q("Can I get your employee ID for the account?", "It's 20417733."),
+              "The phone number on the account, 4155550134.", "A cell for my account: 4155550134."):
+        _same(t)

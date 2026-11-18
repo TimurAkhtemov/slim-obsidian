@@ -104,8 +104,13 @@ _UNDER_PREPOSITION = re.compile(
 _PREPOSITION_CLASSES = {"ssn", "account", "iban"}   # the classes a same-sentence cue is checked for
 
 
-_COORDINATED_TO = re.compile(
-    rf"\s*(?:,|and|or|, and|, or)\s+(?:(?:{_DETERMINERS})\s+)?(?:(?:{_ASK_ADJECTIVES})\s+)?")
+# A phone noun that governs the cue: "the phone number on the account", "a cell for my account".
+# The number given is the phone's. "my phone bill", "my mobile account number" govern nothing.
+_PHONE_GOVERNS = re.compile(
+    r"\b(?:phone number|phone|cell|mobile|callback number|call back number|callback|call back|best number|"
+    rf"good number|number)\s+(?:on|for|of|to|with)\s+(?:(?:{_DETERMINERS})\s+)?(?:(?:{_ASK_ADJECTIVES})\s+)?$", re.I)
+# Where the cue's own clause begins: after a number, a comma, semicolon or colon, or a joining word.
+_CLAUSE_CUT = re.compile(r"\d|[,;:]|\b(?:and|but|so)\b", re.I)
 
 
 def _subject(norm: str, s: int, a: int, cls: str, preposition: bool = True) -> bool:
@@ -116,17 +121,19 @@ def _subject(norm: str, s: int, a: int, cls: str, preposition: bool = True) -> b
     tail = pre if len(pre) <= 60 else pre[-60:].split(" ", 1)[-1]   # the phrase is short; whole words
     if preposition and cls in _PREPOSITION_CLASSES and _UNDER_PREPOSITION.search(tail):
         return False
-    if cls != "phone":
-        # a phone named before the cue ("the phone number on the account, 4155550134") is the
-        # thing given, unless the two are listed together ("a callback number and your account")
-        for m in _CUE["phone"].finditer(pre):
-            if not _COORDINATED_TO.fullmatch(pre, m.end()):
-                return False
-    if not _OTHER.search(pre):
+    if cls != "phone" and _PHONE_GOVERNS.search(tail):
+        return False
+    # another thing named in the cue's own clause: "your claim account number", not "the order
+    # number is 5512334, and my routing number is …"
+    start = 0
+    for cut in _CLAUSE_CUT.finditer(pre):
+        start = cut.end()
+    clause = pre[start:]
+    if not _OTHER.search(clause):
         return True
     for rx in _CUE.values():
-        pre = rx.sub(lambda m: " " * len(m.group()), pre)
-    return not _OTHER.search(pre)
+        clause = rx.sub(lambda m: " " * len(m.group()), clause)
+    return not _OTHER.search(clause)
 _SENTENCE_END = re.compile(r"[.?!]+(?=\s|$)")
 
 
