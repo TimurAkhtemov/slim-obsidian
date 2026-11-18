@@ -425,7 +425,8 @@ def test_ssn_as_words():
 
 def test_spaced_324_triple_standing_alone_is_an_ssn_without_cue():
     assert _m("rooms 219 09 9999").text == "rooms [SSN]"
-    for t in ("rooms 12 219 09 9999", "rooms 219 09 9999 12", "rooms 12, 219 09 9999",
+    assert _m("rooms 12, 219 09 9999").text == "rooms 12, [SSN]"           # P1: a value ends at a comma
+    for t in ("rooms 12 219 09 9999", "rooms 219 09 9999 12",
               "rooms 219 09 9999-1", "rooms 219  09 9999", "rooms 219, 09, 9999", "rooms 000 09 9999"):
         _same(t)
 
@@ -494,7 +495,8 @@ def test_card_brand_table():
 def test_luhn_without_brand_needs_a_cue_and_a_cue_rescues_a_misheard_digit():
     nobrand = _luhn_complete("9" + "1" * 14)
     _same(f"ref {nobrand}")
-    assert _m(f"my card is {nobrand}").counts == {"card": 1}
+    _same(f"my card is {nobrand}")                                       # P5: bound needs a brand prefix
+    assert _m("my card is 4111 1111 1111 111").counts == {"card": 1}      # 15 digits: no Luhn, no length
     assert _m("card 4111 1111 1111 1112").counts == {"card": 1}             # Luhn fails
     assert _m("4111 1111 1111 1112 is the card").counts == {"card": 1}      # cue after
     assert _m("my visa, 4111, 1111, 1111, 1112").counts == {"card": 1}     # `, ` groups
@@ -664,7 +666,7 @@ def test_phone_cue_free_and_cued():
     assert _m("Call me on my cell. 4035550184.", PHONE).text == "Call me on my cell. [PHONE]."
     assert _m("4345550188. That's my cell.", PHONE).text == "[PHONE]. That's my cell."
     assert _m("my mobile is 344 5550101", PHONE).text == "my mobile is [PHONE]"
-    assert _m("the number is 495, 555, 0133", PHONE).text == "the number is [PHONE]"
+    assert _m("my cell is 495, 555, 0133", PHONE).text == "my cell is [PHONE]"   # P2b: no bare "number"
 
 
 # priorities (R9)
@@ -835,7 +837,7 @@ def test_new_street_suffixes():
 
 
 def test_phone_bound_shapes():
-    for t in ("my cell is 7245550311", "my cell is 1 724 555 0311", "the number is 495, 555, 0133"):
+    for t in ("my cell is 7245550311", "my cell is 1 724 555 0311", "my cell is 495, 555, 0133"):
         assert _m(t, PHONE).counts == {"phone": 1}, t
     for t in ("my cell is 72 45 55 03 11", "my number is 123456789", "my number is 123456789012"):
         assert _m(t, PHONE).counts == {}, t
@@ -877,7 +879,7 @@ def test_question_binding_limits():
     for t in ("**Them:** Did you get the card?\n\n**Me:** Yes. 12 people came.",
               "**Them:** Which card do you want to use?\n\n**Me:** Hm.\n\n**Them:** Okay. 4242, 7844, 6476, 8778.",
               "**Them:** Which card do you want to use?\n\n**Me:** The one ending in 8778, order 12345678901234.",
-              "**Them:** Which card do you want? Never mind, what time is it?\n\n**Me:** Okay. 4242, 7844, 6476, 8778.",
+              "**Them:** Which card do you want? Never mind. What time is it?\n\n**Me:** Okay. 4242, 7844, 6476, 8778.",
               "**Them:** Which card do you want to use.\n\n**Me:** Okay. 4242, 7844, 6476, 8778.",
               "**Them:** Which card do you want to use?\n\n**Me:** Okay. 12, 7844, 6476, 8778."):
         _same(t)
@@ -886,5 +888,133 @@ def test_question_binding_limits():
 def test_question_with_several_cues_binds_the_class_the_value_fits():
     q = "**Them:** Card, account or social, which do you have?\n\n**Me:** Okay. "
     assert _m(q + "219099999.").counts == {"ssn": 1}
-    assert _m(q + "806086899491.").counts == {"card": 1}      # 12 digits: card before account
+    assert _m(q + "412345678901.").counts == {"card": 1}      # 12 digits: card before account
+    assert _m(q + "806086899491.").counts == {"account": 1}   # P5: no brand prefix, not a card
     assert _m(q + "12345").counts == {}
+
+
+# --- fix round 2 (P1-P7, m1-m4) -----------------------------------------------------------------
+
+def _q(question, answer):
+    return f"**Them:** {question}\n\n**Me:** {answer}"
+
+
+def _answer(t, classes=CLS):
+    return _m(t, classes).text.split("\n")[-1]
+
+
+def test_a_value_ends_at_the_comma():                                     # P1
+    assert _m("My card is 4111 1111 1111 1111, 09 30 is the expiry.").text \
+        == "My card is [CARD], 09 30 is the expiry."
+    assert _m("Card number 4111 1111 1111 1111, 03/28.").text == "Card number [CARD], 03/28."
+    assert _answer(_q("Card number and expiry?", "4111 1111 1111 1111, 02 28.")) == "**Me:** [CARD], 02 28."
+    assert _m("My social is 309-75-1370, 81 years old.").text == "My social is [SSN], 81 years old."
+    assert _m("It's 351-72-3375, 7 of us share it.").text == "It's [SSN], 7 of us share it."
+    assert _answer(_q("Social and date of birth?", "317 41 4878, 04/06/1966.")) == "**Me:** [SSN], 04/06/1966."
+    assert _m("My account number is 50266269, 16-89-87 is the sort code.").text \
+        == "My account number is [ACCOUNT], [ACCOUNT] is the sort code."
+    assert _m("My social is 741 05 7024, 45 Main Street.").text == "My social is [SSN], [ADDRESS]"
+    assert _m("card number 4242, 7844, 6476, 8778").text == "card number [CARD]"
+
+
+def test_phone_numbers_are_never_ssn_or_account():                       # P2
+    for t in (_q("What's the best number for the account?", "Okay, 864-937-8396."),
+              _q("What's the phone number on your account?", "Sure. 547-382-3582."),
+              _q("Do you have the number for Social Security?", "Yeah, 777-588-2562."),
+              _q("Let me pull up your account.", "So 3618077883 is my cell."),
+              "It's my account. 573 897 2549.", "My social is 4155550134.",
+              "My account number is 1 415 555 0134."):
+        _same(t)
+    t = _q("What's the best phone number for the account?", "Sure, 4155550134.")
+    assert _answer(t, PHONE) == "**Me:** Sure, [PHONE]."
+    assert _answer(_q("What's a good number for you?", "Sure. 344 5550101."), PHONE) == "**Me:** Sure. [PHONE]."
+
+
+def test_after_cue_must_end_its_clause():                                # P3
+    for t in ("888 655 8028 is the Social Security office.", "Call 358 870 9876, the account manager.",
+              "We hit 36231709, the social media team said."):
+        _same(t)
+    for t, want in (("030809137 would be my social.", "[SSN] would be my social."),
+                    ("030809137, which is my social.", "[SSN], which is my social."),
+                    ("030809137 — that's my social.", "[SSN] — that's my social."),
+                    ("030809137, it is my social.", "[SSN], it is my social."),
+                    ("12345678 for the account.", "[ACCOUNT] for the account."),
+                    ("4000123456789011, which is my card.", "[CARD], which is my card.")):
+        assert _m(t).text == want, t
+
+
+def test_bound_values_are_never_dates_or_zip4():                         # P4
+    for t in (_q("When did you get your social security card?", "So 04.17.2000."),
+              _q("When did the social security letter come?", "2016/10/14."),
+              _q("What's the zip on the account?", "Yeah, 13946-4891."),
+              "My IBAN? Yeah, 39424 6236 is the zip.",
+              "My social security is 8-27-2024, that is when it changed.",
+              "My account number is 2016 10 14.", "My social is 10 14 2016.", "My social is 3.4.21",
+              "My account is 1995 1996 1997.", "My card is 1995 1996 1997 1998 1999."):
+        _same(t)
+
+
+def test_a_number_labelled_as_something_else_is_left():                  # P5
+    for t in ("Your account. Okay so 98919781 is the ticket.", "My social. Well, 467032083 is the claim.",
+              "Your Visa. Yes. 48915166171993 is the tracking.",
+              "The card number. 51858923398493 is the tracking.",
+              "My Amex, yeah, 2007 2008 2009 2010 were the years.",
+              "My routing number is yeah, 821 688 dollars short.",
+              _q("How much is in the account?", "So 2687213."),
+              "My account number is 12345678 points.", "my card is 9999 8888 7777 6666"):
+        _same(t)
+    assert _m("Your account. 98919781 is my account number.").text == "Your account. [ACCOUNT] is my account number."
+
+
+def test_a_question_must_ask_for_the_cue_thing():                         # P6
+    for t in (_q("What's the order number on the account?", "So 43562933."),
+              _q("What's the confirmation for the card payment?", "4111111111111112"),
+              _q("Which years did you use the card?", "Right, 1995 1996 1997."),
+              _q("How many followers on social?", "Sure. 55803808.")):
+        _same(t)
+    assert _answer(_q("What's your social? I need it for the form.", "030809137")) == "**Me:** [SSN]"
+    assert _answer(_q("Routing and account number?", "011000028 and 12345678")) \
+        == "**Me:** [ACCOUNT] and [ACCOUNT]"
+    assert _answer(_q("Can I get your social security number?", "Sure, 030809137.")) == "**Me:** Sure, [SSN]."
+
+
+def test_cue_with_apostrophe_s():                                         # P7
+    for t, want in (("My social's 741057024.", "My social's [SSN]."),
+                    ("The card number's 4000 1234 5678 9011.", "The card number's [CARD]."),
+                    ("My account number’s 12345678.", "My account number’s [ACCOUNT]."),
+                    ("The routing number's 011000028.", "The routing number's [ACCOUNT].")):
+        assert _m(t).text == want, t
+
+
+def test_hash_opens_a_value():                                            # m1
+    assert _m("My account number is #12345678.").text == "My account number is #[ACCOUNT]."
+
+
+def test_filler_phrases_on_the_original_text():                           # m2
+    assert _m("My social is, um, let me see, 030809137.").text == "My social is, um, let me see, [SSN]."
+    assert _m("My card number is, hold on, one moment, 4000 1234 5678 9011.").text \
+        == "My card number is, hold on, one moment, [CARD]."
+    _same("My social is, two weeks ago, 030809137.")
+
+
+def test_ssn_last_four():                                                 # m3
+    assert _m("The last four of my social are 8901.").text == "The last four of my social are [SSN]."
+    assert _m("last 4 digits of the ssn: 8901").text == "last 4 digits of the ssn: [SSN]"
+    _same("The last four of my card are 8901.")
+    _same("The last four of my social are 89012.")
+
+
+def test_pathological_inputs_stay_fast():                                 # m4
+    import time
+    for t in ("1" * 50_000, "a" * 50_000, "**Me:** 1234567\n\n" * 20_000, "account 1234567 " * 20_000,
+              "**Them:** What's your social?\n\n**Me:** It's 1234567.\n\n" * 10_000):
+        t0 = time.perf_counter()
+        pii.mask(t, classes=CLS)
+        assert time.perf_counter() - t0 < 1.0, t[:30]
+
+
+def test_a_spelled_iban_starts_with_its_country_letters():
+    # beyond the rulings: "1995, 1996, …" after "IBAN" read as a spelled IBAN (hunt.py, 7.8%)
+    _same("My IBAN, so, 1995, 1996, 1997, 1998, 1999 were the years.")
+    t = "My IBAN is G B 82, W E S T, 1234, 5698, 7654, 32, that one."
+    assert _m(t).text == "My IBAN is [ACCOUNT], that one."
