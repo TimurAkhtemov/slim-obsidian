@@ -22,6 +22,7 @@ RECALL_GATE = 0.95
 GARBLED_GATE = 0.8          # recall over values Parakeet did not write verbatim
 SILENT_DBFS = -60.0           # a muted span must be quieter than this
 SPEECH_DBFS = -45.0           # a line nobody muted must be louder than this
+VANISHED_BELOW = 0.35         # a muted transcript's best turn reading this little like the line: gone
 
 
 _SAID_SEPARATOR = re.compile(r"\b(?:dash|hyphen)\b", re.I)   # "two one nine dash oh nine"
@@ -423,36 +424,94 @@ def _raw_turns(raw: str) -> list[tuple[int, int]]:
     return [(x, y - 2) for x, y in zip(edges, edges[1:])]
 
 
-def _turn_of(item: Item, script: Script, raw: str, turns) -> tuple[int, int]:
-    """The raw turn that holds the script line `item` is on: the raw turn whose words read most
-    like that line (Parakeet keeps the order and wording of lines, not their exact spelling)."""
+def _turn_match(item: Item, script: Script, text: str, turns) -> tuple[tuple[int, int], float]:
+    """The turn of `text` that holds the script line `item` is on, and how well it reads as that
+    line: Parakeet keeps the order and wording of lines, not their exact spelling or turn breaks,
+    so turns are matched by content, not counted."""
     line = squash(next((t for _, t in script.lines if item.spoken in t), item.spoken))
-    return max(turns, key=lambda tn: difflib.SequenceMatcher(
-        None, squash(raw[tn[0]:tn[1]]), line, autojunk=False).ratio())
+    scored = [(difflib.SequenceMatcher(None, squash(text[x:y]), line, autojunk=False).ratio(), (x, y))
+              for x, y in turns]
+    best = max(scored, default=(0.0, (0, 0)))
+    return best[1], best[0]
+
+
+def _turn_of(item: Item, script: Script, raw: str, turns) -> tuple[int, int]:
+    return _turn_match(item, script, raw, turns)[0]
+
+
+_TURN_CUT = re.compile(r"\n\n|\*\*[^*\n]+:\*\*")
+
+
+def _blocks(sq: str, f: str):
+    return [bl for bl in difflib.SequenceMatcher(None, sq, f, autojunk=False).get_matching_blocks()
+            if bl.size]
+
+
+def _best_window(raw, words, f, *, anchor=None):
+    """The word run that reads best as `f` (>= 0.6, at least half its length): any run, or one
+    that starts at the first word (`anchor="start"`) or ends at the last (`anchor="end"`).
+    Returns (ratio, start, end, f_start, f_end) or None."""
+    best = None
+    n = len(words)
+    for i in range(n):
+        if anchor == "start" and i:
+            break
+        for j in range(i, min(i + 12, n)):
+            if anchor == "end" and j != n - 1:
+                continue
+            ws, we = words[i][0], words[j][1]
+            sq = squash(raw[ws:we])
+            if not f or not sq or len(sq) < len(f) / 2:
+                continue
+            r = difflib.SequenceMatcher(None, sq, f, autojunk=False).ratio()
+            if r >= 0.6 and (best is None or (r, we - ws) > (best[0], best[2] - best[1])):
+                bl = _blocks(sq, f)
+                best = (r, ws, we, bl[0].b, bl[-1].b + bl[-1].size)
+    return best
 
 
 def _aligned(raw: str, a: int, b: int, forms) -> tuple[int, int] | None:
-    """The one contiguous run of words in raw[a:b] that best reads as a value Parakeet garbled
-    (>= 0.6 against a form, at least half its length), never crossing a sentence end or a turn
-    start, and inside the turn that value belongs to. `forms` is (form, turn span). Returns
-    (start, end) in raw, else None. Only that run is excused."""
+    """The stretch of raw[a:b] excused as a value Parakeet garbled, or None. `forms` is
+    (form, turn span). The best word run inside one sentence that reads as a form (>= 0.6, at
+    least half its length), inside that value's own turn; then grown, sentence by sentence but
+    never past a turn start, over neighbouring sentences whose opening (or closing) words read
+    as the REST of the same form in order ("6691 Yerrick Road. 26430." for an address with its
+    ZIP). Everything else in the replaced span stays a false positive."""
     cuts = sorted({a, b, *(m.start() + a for m in _PIECE_CUT.finditer(raw[a:b])),
                    *(m.end() + a for m in _PIECE_CUT.finditer(raw[a:b]))})
-    best = None
+    pieces = []
     for x, y in zip(cuts, cuts[1:]):
         words = [(m.start() + x, m.end() + x) for m in re.finditer(r"\S+", raw[x:y])
                  if "**" not in m.group()]
-        for i in range(len(words)):
-            for j in range(i, min(i + 12, len(words))):
-                ws, we = words[i][0], words[j][1]
-                sq = squash(raw[ws:we])
-                for f, (lo, hi) in forms:
-                    if not sq or len(sq) < len(f) / 2 or ws < lo or we > hi:
-                        continue
-                    r = difflib.SequenceMatcher(None, sq, f, autojunk=False).ratio()
-                    if r >= 0.6 and (best is None or (r, we - ws) > (best[0], best[2] - best[1])):
-                        best = (r, ws, we)
-    return (best[1], best[2]) if best else None
+        if words:
+            pieces.append(words)
+
+    def joined(p, q):                  # pieces p < q with no turn start between them
+        return not _TURN_CUT.search(raw[pieces[p][-1][1]:pieces[q][0][0]])
+
+    best = None
+    for k, words in enumerate(pieces):
+        for f, (lo, hi) in forms:
+            got = _best_window(raw, words, f)
+            if got and lo <= got[1] and got[2] <= hi and (
+                    best is None or (got[0], got[2] - got[1]) > (best[0][0], best[0][2] - best[0][1])):
+                best = (got, k, f, (lo, hi))
+    if best is None:
+        return None
+    (_, ws, we, f_start, f_end), k, f, (lo, hi) = best
+    q = k
+    while f_end < len(f) and q + 1 < len(pieces) and joined(q, q + 1):
+        nxt = _best_window(raw, pieces[q + 1], f[f_end:], anchor="start")
+        if not nxt or nxt[2] > hi:
+            break
+        we, f_end, q = nxt[2], f_end + nxt[4], q + 1
+    q = k
+    while f_start > 0 and q > 0 and joined(q - 1, q):
+        prev = _best_window(raw, pieces[q - 1], f[:f_start], anchor="end")
+        if not prev or prev[1] < lo:
+            break
+        ws, f_start, q = prev[1], prev[3], q - 1
+    return ws, we
 
 
 def _distractor_spans(script: Script, raw: str) -> list[tuple[str, int, int]]:
@@ -508,17 +567,21 @@ def score_call(script: Script, raw: str, masked: str, heard_after: str, classes,
         renderings.append({"script": script.sid, "class": i.cls, "kind": i.kind, "style": i.style,
                            "spoken": i.spoken, "heard": heard, "status": status,
                            "form": _form(heard) if transcribed else "-"})
+        audible = None
         if i.cls in _gate_classes(classes, model):
-            # Located: the raw transcript minus every located value explains runs. Not located:
-            # the raw text holds the garbled value itself, so only the SCRIPT's other lines may.
-            if transcribed:
-                why = _segments_outside(raw, [sp for x in script.items for sp in rendered[id(x)]])
-            else:
-                why = elsewhere
-            leaked = _fresh_runs(squash(i.token), 3, squash(heard_after), why)
+            # Only inside the muted transcript's turn that holds this item's own line: runs
+            # elsewhere in the call are other text's (another item left audible, a distractor).
+            # A turn that vanished because it was muted reads as nothing like the line: a pass.
+            # Within the turn, the rest of the item's own line may explain a run.
+            (x, y), fit = _turn_match(i, script, heard_after, _raw_turns(heard_after))
+            rest = next((t for _, t in script.lines if i.spoken in t), i.spoken).replace(i.spoken, " | ")
+            hay = squash(heard_after[x:y]) if fit >= VANISHED_BELOW else ""
+            leaked = _fresh_runs(squash(i.token), 3, hay, [squash(p) for p in rest.split("|")])
+            audible = bool(leaked)
             if leaked:
                 audio_fail.append({"script": script.sid, "check": "retranscribed", "class": i.cls,
-                                   "runs": leaked[:5], "heard": _heard(i, line, heard_after)[0]})
+                                   "cue": i.cue, "runs": leaked[:5], "heard": heard_after[x:y].strip()})
+        items[-1]["audible"] = audible
     own_all = [sp for i in script.items if i.cls in classes for sp in rendered[id(i)]]
     dspans = _distractor_spans(script, raw)
     # Only a value Parakeet did NOT write verbatim may excuse a mask as "garbled", and only inside
@@ -660,7 +723,13 @@ def aggregate_calls(results: list[dict], classes, *, model: bool = True) -> dict
     triples = sum(r.get("ssn_shaped_triples", 0) for r in results)
     gated = fps
     damaged = [k for f in fps for k in f.get("distractors") or []]
-    audio_fail = [f for r in results for f in r["audio_failures"]]
+    audio_all = [f for r in results for f in r["audio_failures"]]
+    audio_fail = [f for f in audio_all if f.get("cue") != "none"]       # span checks carry no cue
+    audio_no_cue = [f for f in audio_all if f.get("cue") == "none"]
+    cued = [i for r in results for i in r["items"]
+            if i["class"] in gate_cls and i["class"] in classes and i["cue"] != "none"]
+    headline = {"text": [sum(bool(i["masked"]) for i in cued), len(cued)],
+                "audio": [sum(i.get("audible") is False for i in cued), len(cued)]}
     fulls = [r["full"] for r in results if "full" in r]
     secret_recall, n, shape = _cued_recall(records, gate_cls)
     garbled_recall, _, garbled_shape = _cued_recall(garbled_records, gate_cls)
@@ -682,7 +751,7 @@ def aggregate_calls(results: list[dict], classes, *, model: bool = True) -> dict
         "false_positives": fps, "distractors_damaged": len(damaged),
         "ssn_shaped_triples": triples, "shape_only": shape, "garbled_shape_only": garbled_shape,
         "garbled_masked": [g for r in results for g in r.get("garbled_masked", [])],
-        "audio_failures": audio_fail,
+        "audio_failures": audio_fail, "audio_no_cue": audio_no_cue, "headline": headline,
         "renderings": [x for r in results for x in r["renderings"]],
         "full": fulls,
         "partial": {r["script"]: r["reasons"] for r in results if r.get("reasons")},
@@ -701,7 +770,10 @@ def aggregate_calls(results: list[dict], classes, *, model: bool = True) -> dict
 def print_calls_report(r: dict) -> None:
     print(f"\n== calls: {r['scripts']} scripts, model={'yes' if r['model'] else 'no'}, "
           f"classes={','.join(r['classes'])}, {r['seconds']}s of work")
-    print(GATE_RULE)
+    h = r["headline"]
+    print(f"cued secrets masked in text: {h['text'][0]} of {h['text'][1]}")
+    print(f"cued secrets silent in audio: {h['audio'][0]} of {h['audio'][1]}")
+    print(GATE_RULE + "; the audio check gates cued items too")
     print("How Parakeet wrote each spoken form:")
     print(f"  {'script':<7}{'class':<9}{'style':<12}{'form':<8}spoken -> heard")
     for x in r["renderings"]:
@@ -736,6 +808,9 @@ def print_calls_report(r: dict) -> None:
     for f in r["audio_failures"]:
         print(f"  AUDIO {f['script']} {f['check']}: "
               + json.dumps({k: v for k, v in f.items() if k not in ('script', 'check')}))
+    for f in r["audio_no_cue"]:
+        print(f"  no cue — audible, not gated: {f['script']} {f['class']} runs {f['runs']} "
+              f"heard {f['heard']!r}")
     for f in r["full"]:
         print(f"  FULL {f['script']} {'ok' if f['ok'] else 'FAIL'}: title {f['title']!r} "
               + "; ".join(f["problems"]))

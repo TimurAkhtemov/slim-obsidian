@@ -832,6 +832,59 @@ def test_a_rewrite_that_is_not_a_placeholder_substitution_fails(tmp_path):
         ev_score.replaced(raw, raw.replace("[", "").replace("Hi", "Ho"))
 
 
+def test_a_garbled_value_may_span_a_sentence_end(tmp_path):
+    # s27: the address with its ZIP, a period put inside it by the transcriber, masked whole.
+    addr = ("address", "Yarrick", "6691 Yarrick Road, 26430",
+            "six six nine one Yarrick Road, two six four three oh")
+    s = _mini([("Me", "Okay."), ("Them", f"{addr[3]}, that's my address.")], addr)
+    raw = "**Me:** Okay.\n\n**Them:** 6691 Yerrick Road. 26430. That's my address."
+    masked = "**Me:** Okay.\n\n**Them:** [ADDRESS]. That's my address."
+    res = _call(s, raw, masked, masked, tmp_path)
+    assert not res["items"][0]["transcribed"]
+    assert not res["false_positives"], res["false_positives"]
+    assert res["garbled_masked"][0]["text"] == "6691 Yerrick Road. 26430"
+    # ...but never past a turn start
+    raw2 = "**Me:** Okay.\n\n**Them:** 6691 Yerrick Road.\n\n**Me:** 26430. That's my address."
+    masked2 = "**Me:** Okay.\n\n**Them:** [ADDRESS]. That's my address."
+    res = _call(s, raw2, masked2, masked2, tmp_path)
+    assert res["false_positives"] and "26430" in res["false_positives"][0]["leftover"]
+
+
+def _two_items():
+    """s29's shape: a cue-less routing number left unmasked, a cued card muted correctly."""
+    lines = [("Them", "Here it is, 097 684 811."), ("Me", "Right."),
+             ("Them", "Put it on my visa, 4242 2481 0417 6586.")]
+    text = "\n\n".join(f"**{sp}:** {t}" for sp, t in lines)
+    def item(cls, kind, token, spoken, cue):
+        at = text.index(spoken)
+        return ev_gen.Item(cls, kind, spoken, spoken, token, "digits", cue, "Them", at, at + len(spoken))
+    items = [item("account", "routing", "097684811", "097 684 811", "none"),
+             item("card", "card", "4242248104176586", "4242 2481 0417 6586", "same_sentence")]
+    return ev_gen.Script("m29", lines, items, [], text)
+
+
+def test_audio_is_checked_in_the_items_own_turn_and_gated_on_cued_items(tmp_path, capsys):
+    s = _two_items()
+    raw = s.transcript
+    masked = raw.replace("4242 2481 0417 6586", "[CARD]")
+    after = raw.replace(", 4242 2481 0417 6586", "")
+    res = _call(s, raw, masked, after, tmp_path)
+    fails = [(f["class"], f["cue"]) for f in res["audio_failures"]]
+    assert fails == [("account", "none")]          # the card's "481" lives in the routing turn
+    report = ev_score.aggregate_calls([res], ev_gen.CLASSES)
+    assert report["gate"]["ok"], report["gate"]
+    assert report["headline"] == {"text": [1, 1], "audio": [1, 1]}
+    ev_score.print_calls_report(report)
+    out = capsys.readouterr().out
+    assert "cued secrets masked in text: 1 of 1" in out and "cued secrets silent in audio: 1 of 1" in out
+    assert "no cue — audible, not gated: m29 account" in out
+    # the card left audible in its own turn fails the gate
+    res = _call(s, raw, masked, raw, tmp_path)
+    report = ev_score.aggregate_calls([res], ev_gen.CLASSES)
+    assert ("card", "same_sentence") in [(f["class"], f["cue"]) for f in report["audio_failures"]]
+    assert not report["gate"]["ok"] and report["headline"]["audio"] == [0, 1]
+
+
 def test_check_full_and_full_runner_with_fakes(tmp_path):
     import sqlite3
     from types import SimpleNamespace
