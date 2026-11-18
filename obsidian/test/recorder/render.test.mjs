@@ -234,3 +234,37 @@ test("review details stay open on redraw, path breadcrumbs select prefixes, and 
   assert.equal(v.result.card.dest_dir, "Notes/school");
   assert.ok(!notices.slice(before).some((n) => String(n).includes("will create")));
 });
+
+function cardResult(pii) {
+  return { title: "T", summary: "", notes_md: "", pii,
+           card: { dest_dir: "Notes/_unfiled", confident_depth: 1, type_tag: "meeting",
+                   topics: [], folders: [], tag_counts: {} } };
+}
+
+function hintTexts(root, out = []) {
+  if (root.classes && root.classes.has("slim-hint")) out.push(root.options?.text ?? root.text);
+  for (const child of root.children || []) hintTexts(child, out);
+  return out;
+}
+
+test("the card says what was masked, and when masking ran only partly", () => {
+  const v = view();
+  v.result = cardResult({ masked: { email: 2, ssn: 1 }, partial: true });
+  v.noteParts = { summary: "", notes: "", transcript: "" };
+  const root = fakeContentEl();
+  v.renderCard(root);
+  const hints = hintTexts(root).join("\n");
+  assert.match(hints, /Masked 1 SSN, 2 emails\./);
+  assert.match(hints, /The password check didn't run\. Run `slim mask` on this note later\./);
+});
+
+test("the card says nothing about masking when nothing was masked", () => {
+  for (const pii of [{ masked: {}, partial: false }, undefined]) {
+    const v = view();
+    v.result = cardResult(pii);
+    v.noteParts = { summary: "", notes: "", transcript: "" };
+    const root = fakeContentEl();
+    v.renderCard(root);
+    assert.doesNotMatch(hintTexts(root).join("\n"), /Masked|password check/);
+  }
+});

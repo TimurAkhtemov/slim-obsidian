@@ -6,6 +6,23 @@ const { markdownBlockShortcut, stampSourceAtoms,
         markdownFromEditable } = require("./editable-markdown");
 const { TYPES, renderMeetingTabs } = require("./meeting-note");
 
+// What the server replaced before any model read the transcript, in the order a reader
+// weighs it. Counts only: the values never leave the server.
+const PII_LABELS = [["ssn", "SSN"], ["card", "card"], ["account", "account"],
+                    ["password", "password"], ["email", "email"], ["address", "address"],
+                    ["phone", "phone"]];
+
+function piiHint(pii) {
+  if (!pii) return "";
+  const counts = pii.masked || {};
+  const parts = PII_LABELS.filter(([cls]) => counts[cls] > 0).map(([cls, label]) =>
+    `${counts[cls]} ${label}${counts[cls] === 1 || cls === "ssn" ? "" : "s"}`);
+  const lines = [];
+  if (parts.length) lines.push(`Masked ${parts.join(", ")}.`);
+  if (pii.partial) lines.push("The password check didn't run. Run `slim mask` on this note later.");
+  return lines.join(" ");
+}
+
 module.exports = {
   /* Returns the render promise when there is one, so a caller can act when the DOM is
    * actually there; a synchronous fallback returns undefined. */
@@ -191,6 +208,8 @@ module.exports = {
     const c = this.result.card;
     this.renderObjectHeader(root, "AI review", this.result.title || "Review this meeting note",
                             "Ready for approval");
+    const masked = piiHint(this.result.pii);
+    if (masked) root.createEl("p", { cls: "slim-hint", text: masked });
     this.renderSavedLocation(root);
     this.renderProperties(root);
     this.renderSource(root, true);

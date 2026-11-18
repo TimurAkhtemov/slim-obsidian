@@ -45,7 +45,8 @@ def body_after_frontmatter(text: str) -> str:
 # `tests/vault/test_frontmatter.py::test_record_renders_a_subsequence_of_the_canonical_order`.
 FRONTMATTER_ORDER = (
     "title", "date", "type", "tags", "subject_by", "topics",
-    "origin", "review_status", "source", "asr_model", "asr_selected", "speakers_by", "audio",
+    "origin", "review_status", "source", "asr_model", "asr_selected", "speakers_by",
+    "pii_masked", "pii_by", "pii_partial", "audio",
     "audio_sha256", "audio_seconds", "recorded_at", "transcribed_at", "routed_by",
     "tagged_by", "filed_by",
 )

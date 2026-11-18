@@ -110,7 +110,8 @@ def test_record_renders_a_subsequence_of_the_canonical_order():
         audio_rel="Attachments/Recordings/x.webm", filed_by_slim=True,
         audio_sha256="d" * 64, asr_model="parakeet", speakers_by="channels",
         audio_seconds=1.0,
-        transcribed_at=datetime(2026, 8, 6, tzinfo=timezone.utc))
+        transcribed_at=datetime(2026, 8, 6, tzinfo=timezone.utc),
+        pii={"pii_masked": ["ssn:1"], "pii_by": "pii-1", "pii_partial": "true"})
     keys = [l.split(":", 1)[0] for l in text.split("---")[1].strip().splitlines()]
     assert set(keys) - set(frontmatter.FRONTMATTER_ORDER) == set(), keys
     assert keys == sorted(keys, key=frontmatter.FRONTMATTER_ORDER.index), keys

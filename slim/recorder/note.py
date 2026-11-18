@@ -232,6 +232,31 @@ def append_audio_frontmatter(text: str, *, rels: list[str], digests: list[str],
     return set_frontmatter(text, updates)
 
 
+def merge_pii_frontmatter(text: str, masked) -> str:
+    """Add a resumed segment's masking (`pii.Masked`) to the note's: counts add, partial sticks.
+
+    ⚠ `pii_by` is never ADDED here. It says the whole transcript was checked, and a note filed
+    before masking existed was not: only the new words were. Such a note gets its counts and
+    partial flag, and nothing at all when the new words held nothing."""
+    from ..vault.frontmatter import parse_frontmatter, set_frontmatter
+
+    fm, _ = parse_frontmatter(text)
+    if not fm.get("pii_by") and not masked.counts and not masked.partial:
+        return text
+    prior = fm.get("pii_masked") or []
+    counts: dict[str, int] = {}
+    for item in prior if isinstance(prior, list) else [prior]:
+        cls, _, n = str(item).partition(":")
+        if cls.strip() and n.strip().isdigit():
+            counts[cls.strip()] = counts.get(cls.strip(), 0) + int(n)
+    for cls, n in masked.counts.items():
+        counts[cls] = counts.get(cls, 0) + n
+    updates: dict[str, object] = {"pii_masked": [f"{c}:{n}" for c, n in sorted(counts.items())]}
+    if masked.partial:
+        updates["pii_partial"] = "true"
+    return set_frontmatter(text, updates)
+
+
 def write_note_text(path: Path, text: str) -> None:
     """The one way a recorded note is written after it exists.
 
@@ -321,7 +346,8 @@ def render_note(*, title: str, when: datetime, type_tag: str, transcript: str,
                 filed_by_slim: bool, audio_sha256: str | list[str] = "", asr_model: str = "",
                 speakers_by: str = "",
                 audio_seconds: float | None = None,
-                transcribed_at: datetime | None = None) -> str:
+                transcribed_at: datetime | None = None,
+                pii: dict[str, object] | None = None) -> str:
     """One recording's frontmatter.
 
     ⚠ THE KEY ORDER MATCHES inbox's `_render_note`. Two lanes write recordings, and when they
@@ -353,6 +379,9 @@ def render_note(*, title: str, when: datetime, type_tag: str, transcript: str,
         # Provenance like `tagged_by`: which layer decided who spoke. "channels" is the
         # capture itself — microphone against system audio — not a model's opinion.
         fm.append(f"speakers_by: {speakers_by}")
+    for key, value in (pii or {}).items():
+        # `pii.frontmatter`: class counts and the masker's version, never a masked value.
+        fm.append(f"{key}: {_yaml_list(value) if isinstance(value, list) else value}")
     # A RESUMED recording has several segments: a second MediaRecorder session writes its own
     # container header, so one file per segment is what keeps every recording playable. A single
     # segment still writes a plain scalar, which is what 300 existing notes carry.
@@ -390,6 +419,7 @@ def write_recording(*, audio_src: Path | list[Path], title: str, when: datetime,
                     asr_model: str = "", speakers_by: str = "",
                     audio_seconds: float | None = None,
                     transcribed_at: datetime | None = None,
+                    pii: dict[str, object] | None = None,
                     draft_src: Path | None = None,
                     vault: Path = VAULT) -> Recorded:
     from ..vault import notefile
@@ -415,7 +445,7 @@ def write_recording(*, audio_src: Path | list[Path], title: str, when: datetime,
                        filed_by_slim=filed_by_slim,
                        audio_sha256=digests if len(digests) > 1 else digest,
                        asr_model=asr_model, speakers_by=speakers_by, audio_seconds=audio_seconds,
-                       transcribed_at=transcribed_at)
+                       transcribed_at=transcribed_at, pii=pii)
 
     name = f"{notefile.local_date(when)}--{notefile.slug(title)}--{digest[:8]}.md"
     note = vault / dest_dir / name

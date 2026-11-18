@@ -111,6 +111,46 @@ def _join_segments(gots: list[dict], labelled: bool = False) -> str:
     return "\n\n".join(parts)
 
 
+def _mask_segments(gots: list[dict], *, model: bool):
+    """Each segment's words with personal data replaced, before any model reads them.
+
+    Returns (masked copies of `gots`, one `pii.Masked` holding the summed counts, the audio
+    spans of each segment's secrets). Partial when the password pass failed, or a secret could
+    not be placed in its segment's audio: a cache written before token times has none, and a
+    secret left audible is the leak. `model=False` is the paused preview, which never waits."""
+    from ..capture import pii
+
+    find = (lambda window: pii.ask_model(window)) if model else None
+    masked, seg_spans, counts, partial = [], [], {}, False
+    for got in gots:
+        m = pii.mask(str(got.get("text") or ""), find_password=find)
+        for cls, n in m.counts.items():
+            counts[cls] = counts.get(cls, 0) + n
+        found, missed = pii.spans(got.get("tokens") or [], m.secrets)
+        partial = partial or m.partial or bool(missed)
+        masked.append({**got, "text": m.text})
+        seg_spans.append(found)
+    return masked, pii.Masked(text="", counts=counts, secrets=[], partial=partial), seg_spans
+
+
+def _silence_segments(segments: list[Path], seg_spans: list) -> bool:
+    """Mute each segment's secrets in place. False when a mute failed: filing never waits on
+    masking, so the note is still written, marked partial."""
+    from ..capture import audio
+
+    ok = True
+    for seg, found in zip(segments, seg_spans):
+        if not found:
+            continue
+        try:
+            audio.silence(seg, found)
+        except Exception as exc:                    # noqa: BLE001 - recorded, never fatal
+            trace.record("record", {"stage": "pii", "status": "silence_failed",
+                                    "error": type(exc).__name__})
+            ok = False
+    return ok
+
+
 def _transcribe_segment(staged: Path, transcribe_mod) -> tuple[dict, bool]:
     """One segment's words, from the cache when the cache is still about THIS audio.
 
@@ -167,7 +207,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
     `_incoming`, where the plugin's error screen names it and a retry is one button.
     """
     from . import note as note_writer
-    from ..capture import enrich, summarize, transcribe
+    from ..capture import enrich, pii, summarize, transcribe
     from . import suggest
     from ..config import VAULT as _VAULT
 
@@ -234,6 +274,10 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
             wall += 0.0 if cached else (got.get("wall_seconds") or 0.0)
             asr_model = got.get("model") or asr_model
             speakers_by = got.get("speakers_by") or speakers_by
+        # ⚠ BEFORE ANY MODEL: the summary, the title and the card all read `text`.
+        progress("masking", "Masking sensitive details",
+                 "Replacing identifiers before any model reads the transcript")
+        gots, masked, seg_spans = _mask_segments(gots, model=True)
         text = _join_segments(gots)
         audio_seconds = seconds or None
         transcribed_at = datetime.now(timezone.utc)
@@ -330,13 +374,18 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
     # a written recording, which this never does.
     state.check_cancel(job_id)
     progress("saving", "Saving the note", "Archiving audio, writing Markdown and refreshing the index")
+    # Past the last cancel, so a cancelled pass leaves the audio as it found it; before the
+    # archive, so the archived copy is the muted one.
+    if not _silence_segments(segments, seg_spans):
+        masked.partial = True
+    trace.record("record", {"stage": "pii", "counts": masked.counts, "partial": masked.partial})
     r = note_writer.write_recording(
         audio_src=segments, title=title, when=when, type_tag=card.type_tag, transcript=text,
         notes_md=notes_md, summary_md=summary_md,
         topics=card.topics, dest_dir=card.dest_dir, filed_by_slim=True, asr_model=asr_model,
         speakers_by=speakers_by,
-        audio_seconds=audio_seconds, transcribed_at=transcribed_at, draft_src=draft,
-        vault=vault)
+        audio_seconds=audio_seconds, transcribed_at=transcribed_at,
+        pii=pii.frontmatter(masked), draft_src=draft, vault=vault)
 
     # The note is committed, so the per-segment transcript caches have nothing left to save.
     for seg in segments:
@@ -357,6 +406,7 @@ def handle_record(*, audio_rel: str | list[str], notes_md: str | None = None,
         "audio": str(r.audio.relative_to(vault)),
         "title": title,
         "summary": summary_md,
+        "pii": {"masked": masked.counts, "partial": masked.partial},
         "card": {"dest_dir": card.dest_dir, "confident_depth": card.confident_depth,
                  "type_tag": card.type_tag,
                  "topics": card.topics, **_card_lists(vault, tags)},
@@ -446,6 +496,7 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
         seconds += got.get("audio_seconds") or 0.0
         asr_model = got.get("model") or asr_model
         speakers_by = got.get("speakers_by") or speakers_by
+    gots, masked, seg_spans = _mask_segments(gots, model=True)
     fm, _ = parse_frontmatter(text)
     addition = _join_segments(gots, labelled=bool(fm.get("speakers_by")))
     if not addition:
@@ -457,6 +508,9 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
     # and the note grew anyway. `archive_audio` writes durable files, so a cancel landing after
     # it left orphan copies. This is the last boundary; nothing durable happens before it.
     state.check_cancel(job_id)
+    if not _silence_segments(segments, seg_spans):
+        masked.partial = True
+    trace.record("record", {"stage": "pii", "counts": masked.counts, "partial": masked.partial})
     with state.note_lock(vault, note):
         text = state.reread_for_write(src, note)
 
@@ -474,6 +528,7 @@ def handle_record_append(*, note: str, audio_rel: str | list[str], job_id: str =
         text = note_writer.append_audio_frontmatter(text, rels=archived_rels, digests=digests,
                                                     seconds=seconds, asr_model=asr_model,
                                                     speakers_by=speakers_by)
+        text = note_writer.merge_pii_frontmatter(text, masked)
         note_writer.write_note_text(src, note_writer.append_transcript(text, addition))
 
     archived_paths = {state.vault_path(vault, rel).resolve() for rel in archived_rels}
@@ -515,6 +570,8 @@ def handle_record_transcript(*, audio_rel: str | list[str],
             gots.append(json.loads(cache.read_text(encoding="utf-8")))
         except (OSError, json.JSONDecodeError):
             pending += 1
+    # No password pass: this screen is meant to be instant, and nothing here is filed.
+    gots, _masked, _spans = _mask_segments(gots, model=False)
     text = _join_segments(gots)
     return {"text": text, "pending": pending, "segments": len(rels),
             "words": len(text.split())}

@@ -514,3 +514,17 @@ def test_pasted_notes_cannot_close_the_meeting_block_early(tmp_path):
     assert block is not None
     assert "## Transcript" in block.body, "the transcript stays inside the object"
     assert block.after.strip() == ""
+
+
+def test_pii_provenance_sits_after_speakers_by(tmp_path):
+    r = _write(tmp_path, asr_model="parakeet", speakers_by="channels",
+               pii={"pii_masked": ["email:2", "ssn:1"], "pii_by": "pii-1", "pii_partial": "true"})
+    text = r.note.read_text(encoding="utf-8")
+    assert "speakers_by: channels\npii_masked: [email:2, ssn:1]\npii_by: pii-1\npii_partial: true\naudio:" in text
+    fm, _ = parse_frontmatter(text)
+    assert fm["pii_masked"] == ["email:2", "ssn:1"]
+
+
+def test_nothing_found_still_reads_as_checked(tmp_path):
+    r = _write(tmp_path, pii={"pii_masked": [], "pii_by": "pii-1"})
+    assert "pii_masked: []\npii_by: pii-1\n" in r.note.read_text(encoding="utf-8")

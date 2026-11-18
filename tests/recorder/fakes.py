@@ -34,15 +34,15 @@ def _draft(tmp_path: Path, *, recording_id: str = "t", type_tag: str = "lecture"
 
 def _fakes(monkeypatch, *, transcript="the kernel trick", summary="Derived the kernel trick.",
            dest="Notes/school/CS201 ML",
-           transcribe_raises=False, summarize_raises=False):
-    from slim.capture import summarize, transcribe
+           transcribe_raises=False, summarize_raises=False, tokens=(), ask_model=None):
+    from slim.capture import audio, pii, summarize, transcribe
     from slim.recorder import suggest
 
     def fake_tx(p, model=None):
         if transcribe_raises:
             raise RuntimeError("ASR exploded")
         return transcribe.Transcript(text=transcript, model="fake",
-                                     audio_seconds=10.0, wall_seconds=1.0)
+                                     audio_seconds=10.0, wall_seconds=1.0, tokens=list(tokens))
 
     def fake_sum(*a, **k):
         if summarize_raises:
@@ -51,6 +51,10 @@ def _fakes(monkeypatch, *, transcript="the kernel trick", summary="Derived the k
 
     monkeypatch.setattr(transcribe, "transcribe", fake_tx)
     monkeypatch.setattr(summarize, "summarize", fake_sum)
+    # The password pass never reaches a model here: a test that wants it passes its own.
+    monkeypatch.setattr(pii, "ask_model", ask_model or (lambda window: None))
+    # The staged bytes are not audio; ffmpeg has its own suite (tests/capture/test_audio.py).
+    monkeypatch.setattr(audio, "silence", lambda path, spans, pad=0.15: None)
     monkeypatch.setattr(suggest, "build_card", lambda *a, **k: suggest.Card(
         dest_dir=dest, confident_depth=2, candidates=["CS201 ML", "CS202 RL"],
         type_tag=k.get("declared_type") or "lecture", topics=["school"]))
