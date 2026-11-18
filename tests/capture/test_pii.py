@@ -112,8 +112,7 @@ def test_spoken_card_is_covered_whole():
     assert m.text == "card [CARD] then five"
 
 
-def test_hit_ending_inside_a_spoken_group_is_widened():
-    # the SSN pattern ends inside "nine nine nine nine nine": the whole phrase goes
+def test_a_spoken_ssn_after_a_cue_is_masked_whole():
     t = "ssn two one nine oh nine nine nine nine nine"
     m = pii.mask(t, classes=config.PII_DEFAULT)
     assert m.text == "ssn [SSN]"
@@ -1226,6 +1225,22 @@ _REAL_ACCEPTED = {
 _REAL_PASSWORDS = ["Bluefin42", "Harbor2024!", "greenteapot77", "Tango-Lima-88", "742"]
 
 
+# Masked besides the secrets: a real street address in an ordinary exchange.
+_REAL_ALSO_MASKED = {"o21": ["42 Elm Court, unit 3B"]}
+_ANY_PLACEHOLDER = r"\[(?:SSN|CARD|ACCOUNT|PASSWORD|EMAIL|ADDRESS|PHONE)\]"
+
+
+def _expected(text, values):
+    """The masked text as a pattern: each value a placeholder, every other byte as it was."""
+    import re
+    at = sorted((text.index(v), v) for v in values)
+    pattern, pos = "", 0
+    for a, v in at:
+        pattern += re.escape(text[pos:a]) + _ANY_PLACEHOLDER
+        pos = a + len(v)
+    return re.compile(pattern + re.escape(text[pos:]))
+
+
 @pytest.mark.parametrize("cid,text,secrets,ordinary", [
     pytest.param(cid, text, secrets, ordinary, id=cid,
                  marks=[pytest.mark.xfail(strict=True, reason=_REAL_ACCEPTED[cid])] if cid in _REAL_ACCEPTED else [])
@@ -1236,8 +1251,8 @@ def test_realistic_exchange(cid, text, secrets, ordinary):
     m = pii.mask(text, classes=CLS, find_password=stub)
     assert [s for s in secrets if s in m.text] == []
     assert [o for o in ordinary if o not in m.text] == []
-    if not secrets:
-        assert [h for h in pii.find(text, CLS) if h.cls != "address"] == []
+    # nothing else moved: exactly the listed values became placeholders
+    assert _expected(text, secrets + _REAL_ALSO_MASKED.get(cid, [])).fullmatch(m.text), m.text
 
 
 def test_a_strong_ssn_cue_masks_a_garbled_number():
@@ -1361,6 +1376,9 @@ def test_a_lead_in_is_not_a_listed_thing():
         ("Okay, perfect, and the account number?", "1234, 5678, 9012.", "**Me:** [ACCOUNT]."),
         ("How much was the payment, and what's the account number?", "250 and 48213377.",
          "**Me:** 250 and [ACCOUNT]."),
+        # as many numbers as parts: a lead-in counted as a thing would take the first number
+        ("Okay, and your social?", "219099999 and 10001.", "**Me:** [SSN] and 10001."),
+        ("Okay, and the last four of your social?", "4471 and 1980.", "**Me:** [SSN] and 1980."),
     ):
         assert _answer(_q(q, a)) == want, (q, a)
 
@@ -1369,6 +1387,8 @@ def test_a_comma_read_value_is_one_number_of_a_list():
     assert _answer(_q("Can I get the routing number and your zip?", "Sure, 3267, 333943.")) \
         == "**Me:** Sure, [ACCOUNT]."
     assert _answer(_q("Can I get your social security number and your zip?", "6379, 65709.")) == "**Me:** [SSN]."
+    # one number for two things: no list, and the account cue binds the whole run
+    assert _answer(_q("Can I get your zip code and your account number?", "10001, 48213377.")) == "**Me:** [ACCOUNT]."
     # "and" (or "and then") and a sentence end separate the numbers of a listed answer
     assert _answer(_q("Can I get your zip code and your account number?", "10001, and then 48213377.")) \
         == "**Me:** 10001, and then [ACCOUNT]."
@@ -1405,6 +1425,8 @@ def test_overlapping_hits_mask_their_union_as_the_higher_class():
     assert m.secrets == ["219 09 9999 Main Street."]
     hits = pii.find("I live at 219 09 9999 Main Street.", CLS)
     assert [(h.cls, h.start) for h in hits] == [("ssn", 10)]
+    # the lower class first: the address's unit runs into a spaced SSN
+    assert _m("I live at 42 Elm Street, unit 219 09 9999.").text == "I live at [SSN]."
 
 
 def test_an_over_long_bound_value_masks_its_longest_fitting_prefix():
@@ -1468,3 +1490,52 @@ def test_spans_match_whole_tokens_only():
 
 def test_no_dead_surface():
     assert not hasattr(pii, "DEFAULT_CLASSES") and not hasattr(pii, "_aba_ok")
+
+
+# --- guards a mutation could remove -----------------------------------------------------------
+
+def test_a_verbatim_answer_inside_a_longer_word_or_number_is_not_masked_there():
+    t = "The PIN is 4471. The order was 44712, in Room 14471."
+    assert pii.mask(t, classes=CLS, find_password=lambda w: "4471").text \
+        == "The PIN is [PASSWORD]. The order was 44712, in Room 14471."
+
+
+def test_a_password_answer_never_masks_inside_a_placeholder():
+    # verbatim: "SSN" sits inside "[SSN]"
+    m = pii.mask("My social is 219-09-9999 and the password is SSN.", classes=CLS, find_password=lambda w: "SSN")
+    assert m.text == "My social is [SSN] and the password is [PASSWORD]."
+    # located by letters and digits: "ssn" is "[SSN]." once tidied
+    m = pii.mask("The PIN is 219-09-9999.", classes=CLS, find_password=lambda w: "ssn")
+    assert m.text == "The PIN is [SSN]." and m.counts == {"ssn": 1}
+    # the located run must read as the answer exactly, not contain it
+    assert pii.mask("The wifi password is xsalvorn four six.", classes=CLS,
+                    find_password=lambda w: "salvorn46").counts == {}
+
+
+def test_a_cue_under_a_preposition_is_a_modifier():
+    for t in (_q("What's the number you want me to use for your account?", "It's 48213377."),
+              _q("Which extension is on your social?", "4471023."),
+              "the login for my account is 48213377",
+              _q("Who do I call about my account?", "4155550134.")):
+        _same(t)
+
+
+def test_a_last_four_answer_follows_filler_only():
+    for t in (_q("Last four of your social?", "Hang on, my bill was 1200."),
+              _q("Last four of your social?", "I moved in 2019.")):
+        _same(t)
+
+
+def test_a_bare_function_word_never_forms_a_local_part():
+    # the glued-domain rule takes the website; "it" stays
+    assert _m("it at amazon.com, that's my email.").text == "it at [EMAIL], that's my email."
+    _same("My email is me at example.com.")
+
+
+def test_a_hit_ending_inside_a_spoken_number_is_widened_to_the_whole_phrase(monkeypatch):
+    from slim.capture import pii_detect
+    text = "ref two one nine oh nine nine ok"
+    norm, _ = pii.normalise(text)
+    a = norm.index("2190")
+    monkeypatch.setattr(pii_detect, "_detect", lambda *args, **kw: [pii.Hit(a + 1, a + 4, "ssn")])
+    assert [(text[h.start:h.end], h.cls) for h in pii.find(text, CLS)] == [("two one nine oh nine nine", "ssn")]

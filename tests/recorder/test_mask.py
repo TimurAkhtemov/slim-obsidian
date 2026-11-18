@@ -567,3 +567,16 @@ def test_a_symlinked_note_is_never_written_through(tmp_path, indexed):
     assert mask.recordings(tmp_path) == ["elsewhere/real.md"]
     out = mask.mask_note(tmp_path, "Notes/w/link.md")
     assert out["error"] == "symlink" and link.is_symlink() and target.read_text(encoding="utf-8") == text
+
+
+def test_a_transcript_heading_typed_in_the_notes_is_not_the_transcript(tmp_path, indexed):
+    """The LAST exact `## Transcript` line is the transcript: one typed above it stays theirs."""
+    rel = "Notes/w/heading.md"
+    typed = f"## Transcript\n\nmy own copy: {SSN}\n"
+    before = _recorded(tmp_path, rel, notes=typed)
+    assert SSN not in note_writer.read_transcript(before).split("**Me:**")[0]
+    mask.mask_note(tmp_path, rel)
+    after = (tmp_path / rel).read_text(encoding="utf-8")
+    assert typed in after and after.count(SSN) == 1
+    assert note_writer.read_transcript(after) == note_writer.read_transcript(before).replace(SSN, "[SSN]") \
+        .replace(EMAIL, "[EMAIL]")

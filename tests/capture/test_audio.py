@@ -191,3 +191,49 @@ def test_silence_with_no_spans_leaves_the_bytes(tmp_path):
     raw = p.read_bytes()
     audio.silence(p, [])
     assert p.read_bytes() == raw
+
+
+def _channels(path: Path) -> str:
+    return subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+                           "stream=channels", "-of", "default=nw=1:nk=1", str(path)],
+                          capture_output=True, text=True).stdout.strip()
+
+
+@needs_ffmpeg
+def test_silence_keeps_stereo_and_pads_the_span_by_default(tmp_path):
+    """Mic left, system audio right: a mono result would lose who said what. The default pad
+    covers a word's edges the token times cut close."""
+    p = tmp_path / "t.webm"
+    _tone(p)
+    audio.silence(p, [(1.0, 2.0)])
+    assert _channels(p) == "2"
+    assert _rms_db(p, 2.04, 2.12) < -60 and _rms_db(p, 0.88, 0.96) < -60   # within 0.15 s
+    assert _rms_db(p, 2.35, 2.65) > -30                                        # past the pad
+
+
+def test_silence_failure_leaves_the_original_bytes_and_no_temp_file(tmp_path, monkeypatch):
+    p = tmp_path / "t.webm"
+    p.write_bytes(b"the original recording")
+
+    def failing_encode(argv, **kw):
+        Path(argv[-1]).write_bytes(b"half an encode")          # what a crashed ffmpeg leaves
+        raise subprocess.CalledProcessError(1, argv)
+    monkeypatch.setattr(audio.subprocess, "run", failing_encode)
+    def ffbin(name):
+        return name
+    ffbin.cache_clear = lambda: None                            # the autouse fixture clears it
+    monkeypatch.setattr(audio, "ffbin", ffbin)
+    with pytest.raises(subprocess.CalledProcessError):
+        audio.silence(p, [(1.0, 2.0)])
+    assert p.read_bytes() == b"the original recording"
+    assert [q.name for q in tmp_path.iterdir()] == ["t.webm"]
+
+
+@needs_ffmpeg
+def test_silence_on_a_file_that_is_not_audio_leaves_it_as_it_was(tmp_path):
+    p = tmp_path / "t.webm"
+    p.write_bytes(b"not audio at all")
+    with pytest.raises(subprocess.CalledProcessError):
+        audio.silence(p, [(1.0, 2.0)])
+    assert p.read_bytes() == b"not audio at all"
+    assert [q.name for q in tmp_path.iterdir()] == ["t.webm"]

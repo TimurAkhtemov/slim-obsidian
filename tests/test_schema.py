@@ -240,6 +240,8 @@ def test_compact_leaves_no_deleted_text_in_the_files(tmp_path):
     path = tmp_path / "c.db"
     marker = "zqxmarkerqvj"
     con = db.connect(path)
+    # Some SQLite builds zero deleted pages themselves: off, so only `compact` can clear them.
+    con.execute("PRAGMA secure_delete=OFF")
     con.execute("INSERT INTO sources (id, path, current_hash) VALUES ('s', 'n.md', 'h')")
     for i in range(50):
         con.execute("INSERT INTO fragments (source_id, content_hash, seq, text) VALUES "

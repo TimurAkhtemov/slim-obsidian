@@ -1391,8 +1391,11 @@ def test_guard_refuses_a_hard_link_below_out(tmp_path):
                                    "caller_data", "caller_vault_itself"])
 def test_guard_refuses_home_icloud_folders_typos_and_caller_paths(tmp_path, where):
     home = tmp_path / "home"
-    for d in ("Desktop", "Documents"):
-        (home / d).mkdir(parents=True)
+    if where == "home":
+        home.mkdir()                     # empty: refused as the home folder, not as unmarked
+    else:
+        for d in ("Desktop", "Documents"):
+            (home / d).mkdir(parents=True)
     (tmp_path / "data-they-set").mkdir()
     (tmp_path / "vault-they-set").mkdir()
     env = {"SLIM_DATA_DIR": str(tmp_path / "data-they-set"),
@@ -1402,16 +1405,21 @@ def test_guard_refuses_home_icloud_folders_typos_and_caller_paths(tmp_path, wher
            "caller_data": tmp_path / "data-they-set" / "eval",
            "caller_vault_itself": tmp_path / "vault-they-set"}[where]
     before = _snapshot(tmp_path)
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as err:
         ev_sandbox.guard(out, home=home, discovered=lambda: None, env=env)
     assert _snapshot(tmp_path) == before
+    why = {"home": "the home folder", "home_parent": "the home folder", "desktop": "~/Desktop",
+           "documents": "~/Documents", "no_parent": "parent folder does not exist",
+           "caller_data": "the caller had set", "caller_vault_itself": "the caller had set"}[where]
+    assert why in str(err.value), err.value
 
 
 def test_cli_prints_the_resolved_out_before_creating_it(tmp_path):
     import os
     import subprocess
     import sys
-    env = {k: v for k, v in os.environ.items() if not k.startswith("SLIM_")}
+    # every SLIM_ location is the caller's to refuse, but never the switch that keeps models off
+    env = {k: v for k, v in os.environ.items() if not k.startswith("SLIM_") or k == "SLIM_TEST_NO_MODELS"}
     out = tmp_path / "a" / ".." / "eval"
     run = subprocess.run([sys.executable, "-m", "scripts.pii_eval", "text", "--no-model", "--n", "2",
                           "--out", str(out)], cwd=ev_sandbox.REPO, env=env, capture_output=True,

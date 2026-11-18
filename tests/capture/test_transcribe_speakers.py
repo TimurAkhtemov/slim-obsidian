@@ -64,3 +64,10 @@ def test_a_labelling_failure_never_costs_the_transcript(tmp_path, monkeypatch):
     assert t.text == "so yes" and t.speakers_by == ""
     assert traced == [("record", {"stage": "speakers", "status": "failed",
                                   "error": "ffmpeg could not decode a.webm"})]
+
+
+def test_the_token_times_come_back_as_text_start_end(tmp_path, monkeypatch):
+    """`pii.spans` places a secret in the audio by these: an empty list would mute nothing."""
+    monkeypatch.setattr(speakers, "label", lambda path, tokens: (None, ""))
+    got = transcribe.transcribe(tmp_path / "a.webm")
+    assert got.tokens == [(" so", 0.0, 0.5), (" yes", 2.0, 2.5)]
