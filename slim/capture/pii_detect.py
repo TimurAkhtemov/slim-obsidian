@@ -262,6 +262,11 @@ def _date(s: str) -> bool:
     return bool(m) and _year(m[1]) and 1 <= int(m[3]) <= 12 and 1 <= int(m[4]) <= 31
 
 
+def _dated(s: str) -> bool:
+    """A slash or dash date: never a group of a comma-read number."""
+    return _date(s) and bool(re.search(r"[/-]", s))
+
+
 def _not_a_value(s: str) -> bool:
     return _date(s) or bool(_ZIP4.fullmatch(s))
 
@@ -313,6 +318,16 @@ class _Scene:
                 self.runs.append((m.start(), m.end(), segs))
         self.run_ends = [r[1] for r in self.runs]
         self.run_starts = [r[0] for r in self.runs]
+        # The numbers a run holds: a date is never a group of a comma-read number, so a run is
+        # cut on both sides of one ("10001, 1/2/1980"). (start, end, segments, follows the
+        # previous piece inside the same run)
+        self.pieces = []
+        for _, _, segs in self.runs:
+            cut = [i for i, (x, y) in enumerate(segs) if _dated(norm[x:y])]
+            edges = sorted({0, len(segs), *cut, *(i + 1 for i in cut)})
+            for n, (i, j) in enumerate(zip(edges, edges[1:])):
+                self.pieces.append((segs[i][0], segs[j - 1][1], segs[i:j], n > 0))
+        self.piece_starts = [p[0] for p in self.pieces]
         self.cues = {c: [m.span() for m in rx.finditer(norm)] for c, rx in _CUE.items()}
         self.cue_ends = {c: [b for _, b in spans] for c, spans in self.cues.items()}
         self.labels = [m.span() for m in _TURN_START.finditer(norm)]
@@ -408,7 +423,8 @@ class _Scene:
     def ordinal(self, a: int) -> set[str] | None:
         """The listed thing the number starting at `a` answers, when the answer gives exactly as
         many numbers as the question listed. The numbers are runs: "3267, 333943" is one number
-        read in pieces, and only "and" ("and then") or a sentence end separates two."""
+        read in pieces, and only "and" ("and then"), a sentence end or a date ("10001, 1/2/1980")
+        separates two."""
         k = self.turn(a)
         if k <= 0:
             return None
@@ -418,11 +434,11 @@ class _Scene:
             if things:
                 body, end = self.labels[k][1], self.turn_end(k)
                 numbers, prev = [], None
-                i = bisect.bisect_left(self.run_starts, body)
-                while i < len(self.runs) and self.runs[i][0] < end and len(numbers) <= len(things):
-                    a0, b0, _ = self.runs[i]
+                i = bisect.bisect_left(self.piece_starts, body)
+                while i < len(self.pieces) and self.pieces[i][0] < end and len(numbers) <= len(things):
+                    a0, b0, _, joined = self.pieces[i]
                     if not (_gap_ok(self.orig(body, a0)) if prev is None
-                            else _LIST_GAP.fullmatch(self.orig(prev, a0))):
+                            else joined or _LIST_GAP.fullmatch(self.orig(prev, a0))):
                         break
                     numbers.append(a0)
                     prev, i = b0, i + 1
@@ -456,7 +472,7 @@ class _Scene:
         return bool(_CUE_AFTER[cls].match(self.norm, b))
 
     def labelled(self, cls: str, b: int) -> bool:
-        if _WHEN_AFTER.match(self.norm, b):
+        if _WHEN_AFTER.match(self.norm, b) or _RATE_AFTER.match(self.norm, b):
             return True
         m = _LABEL_AFTER.match(self.norm, b)
         return bool(m and not _CUE[cls].search(m.group(1))) or bool(_UNIT_AFTER.match(self.norm, b))
@@ -467,6 +483,7 @@ class _Scene:
         at the account number; after a cue before it, it is dropped when the speaker labels it as
         something else."""
         need, most = _COMPLETE[cls], _LONGEST[cls]
+        fits = _no_cents(fits)
 
         def short(a: int, b: int) -> bool:
             """Incomplete, and not yet past the longest value of the class (beyond it no piece
@@ -495,7 +512,7 @@ class _Scene:
             return b if b is not None and not self.labelled(cls, b) else None
 
         spans = []
-        for a0, b0, segs in self.runs:
+        for a0, b0, segs, _ in self.pieces:
             # a listed answer is bound only by its place in the list
             if self.asked(cls, a0) if self.ordinal(a0) is not None else self.before(cls, a0):
                 b = leading(a0, segs)
@@ -539,7 +556,7 @@ _LAST_FOUR_ASKED = re.compile(rf"{_LAST_FOUR_OF}\b", re.I)
 def _last_four_answers(scene: _Scene) -> list[tuple[int, int]]:
     """"Last four of your social?" ⏎ "Yeah, it's 4471.": exactly four digits, first in the answer."""
     spans = []
-    for a, b, segs in scene.runs:
+    for a, b, segs, _ in scene.pieces:
         thing = scene.ordinal(a)                             # a listed answer: "1/2/1980 and 4471"
         if thing is not None:
             if "last4" in thing and b - a == 4 and not scene.labelled("ssn", b):
@@ -564,6 +581,14 @@ _STRONG_SSN_BEFORE = re.compile(rf"\b(?:{_PERSONAL})\s+({_CUE_NOUNS['ssn']})\s*(
 # A benefit amount is not a social: "My social security is 1,840 a month." Seven digits or more
 # with thousands commas and no cents is an SSN the transcriber wrote that way ("219,099,999").
 _MONEY = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|\d+\.\d{1,2}")
+
+
+_CENTS = re.compile(r"\d+\.\d{1,2}")
+
+
+def _no_cents(fits: Callable[[str], bool]) -> Callable[[str], bool]:
+    """A value with cents is money, whatever the class: "My social is 219099.99." """
+    return lambda s: fits(s) and not _CENTS.fullmatch(s)
 
 
 def _money(s: str) -> bool:
@@ -726,10 +751,32 @@ def _account_fits(s: str) -> bool:
     return (groups and 6 <= sum(shape) <= 17) or edge or bool(_SORT_CODE.fullmatch(s))
 
 
+# The answer is this one number and nothing else: filler before it, a sentence end after.
+_ENDS_ANSWER = re.compile(r"[.?!]+(?=\s|$)|\s*(?=\*\*[^*\n]+:\*\*|$)")
+
+
+def _comma_read_answers(scene: _Scene) -> list[tuple[int, int]]:
+    """"What's your account number?" ⏎ "123, 45, 67890.": a whole answer read in comma pieces,
+    8-17 digits with exactly one 1- or 2-digit group. Only as the answer to a question: after a
+    cue in the same sentence such a list is as often counts ("Routing was 675, 86, 415 …")."""
+    spans = []
+    for a0, b0, segs, joined in scene.pieces:
+        shape = _shape(scene.norm[a0:b0])
+        k = scene.turn(a0)
+        if (joined or len(segs) < 2 or ", " not in scene.norm[a0:b0] or not 8 <= sum(shape) <= 17
+                or sum(n <= 2 for n in shape) != 1 or k <= 0 or scene.ordinal(a0) is not None):
+            continue
+        body = scene.labels[k][1]
+        if (_gap_ok(scene.orig(body, a0)) and _ENDS_ANSWER.match(scene.norm, b0)
+                and any("account" in cs for _, _, cs in scene.question(k - 1))):
+            spans.append((a0, b0))
+    return spans
+
+
 def _accounts(scene: _Scene) -> list[tuple[int, int]]:
     norm = scene.norm
     spans = [span for m in _IBAN.finditer(norm) if (span := _iban(norm, m))]
-    spans += scene.bound("account", _account_fits)
+    spans += scene.bound("account", _account_fits) + _comma_read_answers(scene)
     for m in _ACCOUNT_TOKEN.finditer(norm):
         token = m.group()
         lettered = re.search(r"[A-Za-z]", token) and sum(c.isdigit() for c in token) >= 6
@@ -769,8 +816,15 @@ _EMAIL_AFTER = re.compile(
 _SENTENCE_START = re.compile(r".*(?:[.?!]\s+|\n|\*\*[^*\n]+:\*\*\s*)", re.S)   # ends where one starts
 # Words that never make a local part on their own: "it at amazon.com", "me at Starbucks.com".
 _NOT_LOCAL = frozenset(
-    "it me us them him her you that this there here up out in on over back look looked".split()
+    "it me us them him her you that this there here up out in on over back look looked to".split()
 )
+
+
+def _after_function_words(words: list[str]) -> list[str]:
+    """The trailing words that follow the last word which never makes a local part: "Just put
+    it" leaves nothing, "send it to jsmith" leaves "to jsmith"."""
+    last = max((i for i, w in enumerate(words) if w.strip(".,'").lower() in _NOT_LOCAL), default=-1)
+    return words[last + 1:]
 
 
 def _local_ok(local: str) -> bool:
@@ -808,9 +862,10 @@ def _email_local(norm: str, at: int, end: int) -> int | None:
     if _EMAIL_AFTER.match(norm, end):                    # "… at example.com, that's my email"
         begin = _SENTENCE_START.match(head)
         begin = begin.end() if begin else 0
-        words = list(re.finditer(r"\S+", head[begin:]))[-3:]
-        if words and _local_ok(" ".join(w.group() for w in words)):
-            starts.append(begin + words[0].start())
+        found = list(re.finditer(r"\S+", head[begin:]))[-3:]
+        words = _after_function_words([w.group() for w in found])
+        if words and _local_ok(" ".join(words)):
+            starts.append(begin + found[len(found) - len(words)].start())
     return lo + min(starts) if starts else None
 
 

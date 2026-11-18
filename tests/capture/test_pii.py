@@ -1326,6 +1326,12 @@ def test_a_listed_question_binds_in_order():
     assert _answer(_q("Routing and account number?", "011000028 and 12345678")) == "**Me:** [ACCOUNT] and [ACCOUNT]"
     assert _answer(_q("Your zip code, date of birth and account number?", "10001 and 1/2/1980 and 48213377.")) \
         == "**Me:** 10001 and 1/2/1980 and [ACCOUNT]."
+    # a date is never a piece of a comma-read number: it is a number of its own
+    assert _answer(_q("Your zip code, date of birth and account number?", "10001, 1/2/1980 and 48213377.")) \
+        == "**Me:** 10001, 1/2/1980 and [ACCOUNT]."
+    assert _answer(_q("Your date of birth, zip code and account number?", "1-2-1980, 10001 and 48213377.")) \
+        == "**Me:** 1-2-1980, 10001 and [ACCOUNT]."
+    assert _answer(_q("Social and date of birth?", "317 41 4878, 04/06/1966.")) == "**Me:** [SSN], 04/06/1966."
     # counts differ: the first cue thing binds the first number
     assert _answer(_q("Can I get your zip code and your account number?", "48213377.")) == "**Me:** [ACCOUNT]."
 
@@ -1539,3 +1545,40 @@ def test_a_hit_ending_inside_a_spoken_number_is_widened_to_the_whole_phrase(monk
     a = norm.index("2190")
     monkeypatch.setattr(pii_detect, "_detect", lambda *args, **kw: [pii.Hit(a + 1, a + 4, "ssn")])
     assert [(text[h.start:h.end], h.cls) for h in pii.find(text, CLS)] == [("two one nine oh nine nine", "ssn")]
+
+
+# --- a date ends a comma-read number; the email local part; money on every path; a comma-read
+# account answer ---------------------------------------------------------------------------------
+
+def test_the_spoken_local_part_starts_after_the_last_function_word():
+    assert _m("Just put it at amazon.com, that's my email.").text == "Just put it at [EMAIL], that's my email."
+    assert _m("john smith at gmail.com, that's my email.").text == "[EMAIL], that's my email."
+    assert _m("**Them:** Okay. Send it to jsmith at gmail.com, that's my email.").text \
+        == "**Them:** Okay. Send it to [EMAIL], that's my email."
+
+
+def test_a_rate_unit_or_decimal_is_money_on_the_bound_path_too():
+    for t in ("My social security is 21909999 a month.", "My social is 219099.99.",
+              "My account number is 12345678 per month.", "My account number is 1234567.50.",
+              _q("What's your account number?", "1234567.50.")):
+        _same(t)
+    # the D4 examples do not move
+    assert _m("My social is 219,099,999.").text == "My social is [SSN]."
+    assert _m("My social security is 6858139.").counts == {"ssn": 1}
+
+
+def test_a_comma_read_account_answer_with_one_short_group():
+    assert _answer(_q("What's your account number?", "123, 45, 67890.")) == "**Me:** [ACCOUNT]."
+    assert _answer(_q("Can I get your account number?", "Sure, 4821, 33, 7790.")) == "**Me:** Sure, [ACCOUNT]."
+    assert _answer(_q("What's your account number?", "123, 45, 67890. Is that right?")) \
+        == "**Me:** [ACCOUNT]. Is that right?"
+    assert _answer(_q("What's your account number?", "123, 45, 67890")) == "**Me:** [ACCOUNT]"
+    # the whole answer only, and a question only
+    for t in (_q("What's your account number?", "123, 45, 67890, and that's it."),
+              _q("What's your account number?", "12, 345."),             # too short
+              _q("What's your account number?", "12345, 67, 8901234567890."),   # too long
+              "My account number is 123, 45, 67890.",
+              "Routing was 675, 86, 415, 4, 643 packets",
+              _q("What's your account number?", "123, 4, 56, 67890."),   # two short groups
+              _q("How many did you sell each week?", "123, 45, 67890.")):  # no account asked
+        _same(t)
