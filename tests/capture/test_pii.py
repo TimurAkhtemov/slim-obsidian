@@ -857,3 +857,34 @@ def test_bound_account_shapes():
                     ("on my account 80608689949", "on my account [ACCOUNT]"),
                     ("80608689949, was the account number", "[ACCOUNT], was the account number")):
         assert _m(t).text == want, t
+
+
+# N1c: a question in the previous turn binds the first number of the answer
+
+def test_question_binds_the_answer():
+    t = "**Them:** Which card do you want to use?\n\n**Me:** Okay. 4242, 7844, 6476, 8778."
+    assert _m(t).text == "**Them:** Which card do you want to use?\n\n**Me:** Okay. [CARD]."
+    t = "**Me:** What's your social?\n\n**Them:** Sure, it's 030809137."
+    assert _m(t).text.endswith("**Them:** Sure, it's [SSN].")
+    t = "**Them:** What's the routing number for that?\n\n**Me:** Here it is. 035 690 281."
+    assert _m(t).text.endswith("Here it is. [ACCOUNT].")
+    t = ("**Them:** Which card do you want to use?\n\n**Me:** Okay, three seven eight two, three three two "
+         "four nine four, seven four seven five one.")
+    assert _m(t).text.endswith("**Me:** Okay, [CARD].")
+
+
+def test_question_binding_limits():
+    for t in ("**Them:** Did you get the card?\n\n**Me:** Yes. 12 people came.",
+              "**Them:** Which card do you want to use?\n\n**Me:** Hm.\n\n**Them:** Okay. 4242, 7844, 6476, 8778.",
+              "**Them:** Which card do you want to use?\n\n**Me:** The one ending in 8778, order 12345678901234.",
+              "**Them:** Which card do you want? Never mind, what time is it?\n\n**Me:** Okay. 4242, 7844, 6476, 8778.",
+              "**Them:** Which card do you want to use.\n\n**Me:** Okay. 4242, 7844, 6476, 8778.",
+              "**Them:** Which card do you want to use?\n\n**Me:** Okay. 12, 7844, 6476, 8778."):
+        _same(t)
+
+
+def test_question_with_several_cues_binds_the_class_the_value_fits():
+    q = "**Them:** Card, account or social, which do you have?\n\n**Me:** Okay. "
+    assert _m(q + "219099999.").counts == {"ssn": 1}
+    assert _m(q + "806086899491.").counts == {"card": 1}      # 12 digits: card before account
+    assert _m(q + "12345").counts == {}

@@ -56,13 +56,36 @@ def _gap_ok(gap: str) -> bool:
     return all(w in _FILLER for w in words)
 
 
+_SENTENCE_CUT = re.compile(r"[.?!]\s+")
+
+
+def _question_cues(norm: str, turn: tuple[int, int, int]) -> set[str]:
+    """Classes cued by a turn that ends with a question: (label start, body start, end)."""
+    body = norm[turn[1]:turn[2]].rstrip()
+    if not body.endswith("?"):
+        return set()
+    last = _SENTENCE_CUT.split(body[:-1])[-1]
+    return {c for c, rx in _CUE.items() if rx.search(last)}
+
+
 def _binder(norm: str) -> Callable[[str, int, int], bool]:
     """bound(cls, a, b): is the value at [a, b) bound to a `cls` cue?"""
     cues = {c: [m.end() for m in rx.finditer(norm)] for c, rx in _CUE.items()}
+    labels = list(_TURN_START.finditer(norm))
+    turns = [(m.start(), m.end(), nxt.start() if nxt else len(norm))
+             for m, nxt in zip(labels, [*labels[1:], None])]
+
+    def asked(cls: str, a: int) -> bool:
+        """N1c: the previous turn asked for `cls`, and the value is the first number of the
+        answer with only filler words before it."""
+        k = next((k for k, (start, body, end) in enumerate(turns) if body <= a < end), None)
+        if not k:                                    # no turn, or the first turn
+            return False
+        return _gap_ok(norm[turns[k][1]:a]) and cls in _question_cues(norm, turns[k - 1])
 
     def bound(cls: str, a: int, b: int) -> bool:
         before = any(end <= a and _gap_ok(norm[end:a]) for end in cues[cls] if a - end <= _GAP_MAX)
-        return before or bool(_CUE_AFTER[cls].match(norm, b))
+        return before or bool(_CUE_AFTER[cls].match(norm, b)) or asked(cls, a)
     return bound
 
 
