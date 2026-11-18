@@ -785,7 +785,7 @@ def test_no_distractor_is_a_valid_secret_over_200_seeds():
 def test_with_phone_masked_no_distractor_is_phone_shaped():
     bad = [(seed, d.kind, d.text) for seed in range(200)
            for s in ev_gen.generate(30, seed=seed, phone=True) for d in s.distractors
-           if pii._PHONE.search(pii.normalise(d.text)[0])]
+           if pii.find(d.text, ("phone",))]       # what a detector with phone ON would mask
     assert not bad, bad[:5]
     assert ev_gen.generate(30, seed=7, phone=True) == ev_gen.generate(30, seed=7, phone=True)
 
