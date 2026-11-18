@@ -1242,6 +1242,7 @@ def test_a_strong_ssn_cue_masks_a_garbled_number():
     assert _m("My social is 68581399.").text == "My social is [SSN]."
     assert _m("My social is 6858.13990.").text == "My social is [SSN]."
     assert _m("My social's um 4471-2.").text == "My social's um [SSN]."
+    _same("My social is 4155550134.")              # a phone number, even next to a strong cue
     for t in ("Room 123. That's my social.", "Hello. That's my social.", "1,250.50. That's my social security check.",
               "415-555-0134. That's my social.", "2024-03-15. That's my social.", "12345-6789. That's my social.",
               "My social is 68581399 dollars.", "1234567890123. That's my social."):

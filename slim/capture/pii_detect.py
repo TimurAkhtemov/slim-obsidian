@@ -454,7 +454,7 @@ _STRONG_SSN_AFTER = re.compile(
 _STRONG_SSN_BEFORE = re.compile(rf"\b(?:{_PERSONAL})\s+(?:{_CUE_NOUNS['ssn']})\s*(?:is\b|['’]s\b|:)", re.I)
 _DIGIT_TOKEN = re.compile(r"\d[\d.,-]*\d|\d")          # a number glued with . , or -
 _PIECE_TO_HERE = re.compile(r"\d+(?:[ ./-]\d+)*$")      # groups up to here, never across ", "
-# Ten digits after "social" is more often a phone number than a garbled SSN (provisional)
+# Ten digits after "social" is more often a phone number than a garbled SSN, even with no separators
 _PHONE_DIGITS = re.compile(r"1?[2-9]\d{2}[2-9]\d{6}")
 
 
