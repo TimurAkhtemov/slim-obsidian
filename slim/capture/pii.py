@@ -87,35 +87,51 @@ class _Tokens:
         return None
 
 
+_DASH_WORDS = {"dash", "hyphen", "minus"}
+
+
 def normalise(text: str) -> tuple[str, list[int]]:
-    """Turn spoken number words into digits.
+    """Turn spoken number words into digits, and a spoken dash between two numbers into "-".
 
     Returns (norm, idx), idx of length len(norm) + 1: a span [a, b) of norm
     is [idx[a], idx[b]) of text. Every char of a converted group maps to the
-    group's start; the char after it maps to the group's end.
+    group's start; the char after it maps to the group's end. A " dash " that became
+    "-" maps to its leading space.
     """
     t = _Tokens(text)
     out: list[str] = []
     idx: list[int] = []
     i = 0
+
+    def number_at(k):
+        return k < len(t.tok) and (t.tok[k][0].isdigit() or t.value(k) is not None)
+
     while i < len(t.tok):
         piece, start, end = t.tok[i]
         first = t.value(i) if piece.isalpha() else None
-        if not first:
+        if first:
+            digits, i = first
+            # keep joining number words separated by a single space
+            while i < len(t.tok) and t.tok[i][0] == " ":
+                more = t.value(i + 1) if i + 1 < len(t.tok) else None
+                if not more:
+                    break
+                digits += more[0]
+                i = more[1]
+            out.append(digits)
+            idx.extend([start] * len(digits))
+        else:
             out.append(piece)
             idx.extend(range(start, end))
             i += 1
-            continue
-        digits, i = first
-        # keep joining number words separated by a single space
-        while i < len(t.tok) and t.tok[i][0] == " ":
-            more = t.value(i + 1) if i + 1 < len(t.tok) else None
-            if not more:
-                break
-            digits += more[0]
-            i = more[1]
-        out.append(digits)
-        idx.extend([start] * len(digits))
+            if not piece.isdigit():
+                continue
+        # "six four four dash zero four": a dash word between two numbers is "-"
+        if (i + 3 < len(t.tok) and t.tok[i][0] == " " and t.word(i + 1) in _DASH_WORDS
+                and t.tok[i + 2][0] == " " and number_at(i + 3)):
+            out.append("-")
+            idx.append(t.tok[i][1])
+            i += 3
     idx.append(len(text))
     return "".join(out), idx
 
@@ -145,31 +161,48 @@ class Masked:
     partial: bool = False  # the password pass did not complete
 
 
-_SSN = re.compile(r"\b\d{3}[-\s,]+\d{2}[-\s,]+\d{4}\b")
-_SSN_RUN = re.compile(r"\b\d{9}\b")
-_SSN_CUE = re.compile(r"social|ssn|security number", re.I)
+_TURN_START = re.compile(r"\*\*[^*\n]+:\*\*")
+
+
+def _cue(words: str) -> re.Pattern:
+    return re.compile(rf"\b(?:{words})s?\b", re.I)
+
+
+# Cues that make a number personal (R1). `_reach` decides whether one is close enough.
+_SSN_CUE = _cue("social|ssn|security number")
+_CARD_CUE = _cue("card|visa|mastercard|amex|american express|credit|debit")
+_ACCOUNT_CUE = _cue("routing|account number|account no|acct|iban|bban|sort code")
+_IBAN_CUE = _cue("iban")
+_PHONE_CUE = _cue("phone|cell|mobile|call me|number is")
+_REACH_BEFORE = 60   # may reach into the previous turn: a question, then its answer
+_REACH_AFTER = 40    # "…, that's my social"; never past the next turn start
+
+
+def _after(norm: str, b: int, cue: re.Pattern) -> bool:
+    """A cue within 40 characters after position b, in the same turn."""
+    after = norm[b:b + _REACH_AFTER]
+    turn = _TURN_START.search(after)
+    return bool(cue.search(after[:turn.start()] if turn else after))
+
+
+def _reach(norm: str, a: int, b: int, cue: re.Pattern) -> bool:
+    """A cue within 60 characters before [a, b), or within 40 after it in the same turn."""
+    return bool(cue.search(norm[max(0, a - _REACH_BEFORE):a])) or _after(norm, b, cue)
+
+
+# A maximal run of digit groups joined by a space, ", " or a dash. Every detector below judges
+# a WHOLE run, so a secret is never read out of the middle of a longer list of numbers.
+_GROUPS = re.compile(r"\d+(?:(?:, | |-)\d+)*")
+# The same without commas: a card is never a sub-window of one of these (R3c).
 _DIGIT_RUN = re.compile(r"\d+(?:[ -]\d+)*")
-_DASHED_SSN = re.compile(r"\d{3}-\d{2}-\d{4}")
-_CARD_CUE = re.compile(r"card|visa|mastercard|amex|credit|debit", re.I)
-_CARD_SHAPES = {(4, 4, 4, 4), (4, 4, 4, 4, 3), (4, 6, 5)}
-_EMAIL_CUE = re.compile(r"e-?mail|address|reach|write|send|contact", re.I)
-_IBAN = re.compile(r"\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){2,7}(?:\s?[A-Z0-9]{1,3})?\b")
-_ROUTING = re.compile(r"routing(?:\s+(?:number|no\.?|#))?\s*:?\s*(\d{9})\b", re.I)
-_ACCOUNT = re.compile(r"account\s+(?:number|no\.?|#)\s*:?\s*(\d+(?: \d+)*)\b", re.I)
-_EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
-_SPOKEN_EMAIL = re.compile(
-    r"\b(\w+(?: dot \w+)*) at \w+(?: dot \w+)* dot (?:com|org|net|edu|gov|io|co|us|uk|de|ca|me|info)\b",
-    re.I,
-)
-_STREET = (
-    "Street|St|Avenue|Ave|Road|Rd|Drive|Dr|Lane|Ln|Boulevard|Blvd|Court|Ct|Way|Place|Pl|"
-    "Terrace|Parkway|Pkwy|Circle|Highway|Hwy"
-)
-_ADDRESS = re.compile(
-    rf"\b\d{{1,6}}(?:\s\d{{1,3}})?\s+(?:[A-Z][a-z]+\s+){{1,4}}(?:{_STREET})\b\.?"
-    r"(?:,? (?i:apartment|apt|suite|unit|#) \w+)?(?:,? \d{5}(?:-\d{4})?\b)?"
-)
-_PHONE = re.compile(r"(?<!\d)(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}(?!\d)")
+
+
+def _digits(s: str) -> str:
+    return re.sub(r"\D", "", s)
+
+
+def _shape(s: str) -> tuple[int, ...]:
+    return tuple(len(g) for g in re.findall(r"\d+", s))
 
 
 def _ssn_ok(digits: str) -> bool:
@@ -196,80 +229,202 @@ def _aba_ok(d: str) -> bool:
     return (3 * (n[0] + n[3] + n[6]) + 7 * (n[1] + n[4] + n[7]) + (n[2] + n[5] + n[8])) % 10 == 0
 
 
-def _cards(norm: str) -> list[tuple[int, int]]:
-    """Whole runs of digit groups (single space or dash) that are 13-19 digits and pass Luhn,
-    and are card-shaped or cued: ordinary number lists must not read as a card."""
-    spans = []
-    for run in _DIGIT_RUN.finditer(norm):
-        groups = tuple(len(g) for g in re.findall(r"\d+", run.group()))
-        digits = re.sub(r"\D", "", run.group())
-        if not 13 <= len(digits) <= 19 or not _luhn(digits):
-            continue
-        shaped = len(groups) == 1 or groups in _CARD_SHAPES
-        if shaped or _CARD_CUE.search(norm[max(0, run.start() - 60):run.start()]):
-            spans.append((run.start(), run.end()))
+# --- ssn (R2) ---
+
+_SSN_DASHED = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
+_SSN_SPACED = re.compile(r"\d{3} \d{2} \d{4}")
+
+
+def _ssns(norm: str) -> list[tuple[int, int]]:
+    # a. dashed 3-2-4: nothing else is written that way
+    spans = [m.span() for m in _SSN_DASHED.finditer(norm) if _ssn_ok(_digits(m.group()))]
+    for run in _GROUPS.finditer(norm):
+        d = _digits(run.group())
+        # b. exactly "741 05 7024", standing alone: how the transcriber writes a spoken SSN
+        if _SSN_SPACED.fullmatch(run.group()) and _ssn_ok(d):
+            spans.append(run.span())
+        # c. a valid nine in any grouping, or d. a misheard 7-11 digits, with a cue in reach
+        elif 7 <= len(d) <= 11 and (len(d) != 9 or _ssn_ok(d)) and _reach(norm, *run.span(), _SSN_CUE):
+            spans.append(run.span())
     return spans
 
 
-def _account_digits(m: re.Match) -> tuple[int, int] | None:
-    """The cued digit groups of an account number, up to 17 digits, as a span."""
-    end, total = m.start(1), 0
-    for g in re.finditer(r"\d+", m.group(1)):
-        total += len(g.group())
-        if total > 17:
-            break
-        end = m.start(1) + g.end()
-    return (m.start(1), end) if sum(c.isdigit() for c in m.string[m.start(1):end]) >= 6 else None
+# --- card (R3) ---
+
+# Issuer prefixes (inclusive ranges, compared on as many leading digits as the bound has)
+# and the card lengths each brand issues.
+_BRANDS = {
+    "visa": ([(4, 4)], (13, 16, 19)),
+    "mastercard": ([(51, 55), (2221, 2720)], (16,)),
+    "amex": ([(34, 34), (37, 37)], (15,)),
+    "discover": ([(6011, 6011), (644, 649), (65, 65)], (16, 17, 18, 19)),
+    "diners": ([(300, 305), (36, 36), (38, 39)], (14,)),
+    "jcb": ([(3528, 3589)], (16, 17, 18, 19)),
+    "unionpay": ([(62, 62)], (16, 17, 18, 19)),
+}
+_CARD_SHAPES = {(4, 4, 4, 4), (4, 4, 4, 4, 3), (4, 6, 5)}   # how a card is read out in groups
+
+
+def _branded(d: str) -> bool:
+    return any(
+        len(d) in lengths and any(lo <= int(d[:len(str(lo))]) <= hi for lo, hi in prefixes)
+        for prefixes, lengths in _BRANDS.values()
+    )
+
+
+def _cards(norm: str) -> list[tuple[int, int]]:
+    spans = []
+    # a. Luhn and a brand: contiguous, or groups joined by spaces or dashes, any grouping ...
+    for run in _DIGIT_RUN.finditer(norm):
+        d = _digits(run.group())
+        if _branded(d) and _luhn(d):
+            spans.append(run.span())
+    for run in _GROUPS.finditer(norm):
+        d = _digits(run.group())
+        # ... or joined by ", " only in the shapes a card is read out in
+        if ", " in run.group() and _shape(run.group()) in _CARD_SHAPES and _branded(d) and _luhn(d):
+            spans.append(run.span())
+    # b. a card cue in reach: 12-19 digits are a card even when a misheard digit breaks Luhn
+    for run in [*_DIGIT_RUN.finditer(norm), *_GROUPS.finditer(norm)]:
+        if 12 <= len(_digits(run.group())) <= 19 and _reach(norm, *run.span(), _CARD_CUE):
+            spans.append(run.span())
+    return spans
+
+
+# --- account (R4) ---
+
+_IBAN = re.compile(r"(?:(?<=IBAN)|(?<![A-Za-z0-9]))[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,3})?\b")
+# An IBAN spelled out: single letters and digit groups ("G B 73, H W E C, 4532, ...").
+_SPELLED = re.compile(r"(?<![A-Za-z0-9'’])(?:[A-Za-z]|\d+)(?:,? (?:[A-Za-z]|\d+))+(?![A-Za-z0-9])")
+# One token holding letters, digits and dashes: "E11248142150", "ACCT-911155810".
+_ACCOUNT_TOKEN = re.compile(r"(?<![\w-])[A-Za-z0-9][A-Za-z0-9-]{6,32}[A-Za-z0-9](?![\w-])")
+_ROUTING = re.compile(r"\d{9}|\d{3} \d{3} \d{3}")
+_FED_PREFIXES = [(0, 12), (21, 32), (61, 72), (80, 80)]   # Federal Reserve routing symbols
+
+
+def _fed_prefix(d: str) -> bool:
+    return any(lo <= int(d[:2]) <= hi for lo, hi in _FED_PREFIXES)
+
+
+def _accounts(norm: str) -> list[tuple[int, int]]:
+    # a. an IBAN that passes mod-97, "IBAN" glued in front or not
+    spans = [m.span() for m in _IBAN.finditer(norm) if _iban_ok(m.group())]
+    for run in _GROUPS.finditer(norm):
+        d = _digits(run.group())
+        # b. 6-17 digits with an account cue in reach
+        if 6 <= len(d) <= 17 and _reach(norm, *run.span(), _ACCOUNT_CUE):
+            spans.append(run.span())
+        # c. a routing number standing alone: ABA checksum and a Federal Reserve prefix
+        elif _ROUTING.fullmatch(run.group()) and _aba_ok(d) and _fed_prefix(d):
+            spans.append(run.span())
+    for m in _ACCOUNT_TOKEN.finditer(norm):
+        if sum(c.isdigit() for c in m.group()) >= 6 and _reach(norm, *m.span(), _ACCOUNT_CUE):
+            spans.append(m.span())
+    for m in _SPELLED.finditer(norm):
+        if sum(c.isalnum() for c in m.group()) >= 12 and _reach(norm, *m.span(), _IBAN_CUE):
+            spans.append(m.span())
+    return spans
+
+
+# --- email (R5) ---
+
+_EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+_TLD = "com|org|net|edu|gov|io|co|us|uk|de|ca|me|info|ai|app|dev"
+# " at example.org" as the transcriber writes it, or " at example dot org" as words
+_AT_DOMAIN = re.compile(rf" at (?:[A-Za-z0-9-]+\.)+(?:{_TLD})\b| at (?:\w+ dot )+(?:{_TLD})\b", re.I)
+_LOCAL_TOKEN = re.compile(r"[\w.+-]+$")
+_LOCAL_DOTTED = re.compile(r"\w+(?: dot \w+)+$", re.I)
+_EMAIL_BEFORE = re.compile(r"\be-?mail(?: address)?(?: is|:|'s)? ((?:\S+ ){0,4}\S+)$", re.I)
+_EMAIL_AFTER = re.compile(r"\b(?:that's|that is|is) (?:my|the|his|her|their|your|our) e-?mail\b", re.I)
+_SENTENCE_START = re.compile(r".*(?:[.?!]\s+|\n|\*\*[^*\n]+:\*\*\s*)", re.S)   # ends where one starts
+# Words that never make a local part on their own: "it at amazon.com", "me at Starbucks.com".
+_NOT_LOCAL = frozenset(
+    "it me us them him her you that this there here up out in on over back look looked".split()
+)
+
+
+def _local_ok(local: str) -> bool:
+    return not all(w.strip(".,'").lower() in _NOT_LOCAL for w in local.split())
+
+
+def _email_local(norm: str, at: int, end: int) -> int | None:
+    """Start of the local part in front of the " at " at `at`, or None when nothing says this is
+    an address rather than a website mentioned after "at"."""
+    lo = max(0, at - 200)
+    head = norm[lo:at]
+    starts = []
+    m = _LOCAL_DOTTED.search(head)                       # "jane dot doe at …"
+    if m:
+        starts.append(m.start())
+    m = _LOCAL_TOKEN.search(head)                        # "quarrel43 at …", "quarrel.telvane at …"
+    if m and re.search(r"[A-Za-z]", m.group()) and re.search(r"[\d._]", m.group()) and _local_ok(m.group()):
+        starts.append(m.start())
+    m = _EMAIL_BEFORE.search(head)                       # "my email is vanholt at …"
+    if m and _local_ok(m.group(1)):
+        starts.append(m.start(1))
+    if _after(norm, end, _EMAIL_AFTER):                  # "… at example.com, that's my email"
+        begin = _SENTENCE_START.match(head)
+        begin = begin.end() if begin else 0
+        words = list(re.finditer(r"\S+", head[begin:]))[-3:]
+        if words and _local_ok(" ".join(w.group() for w in words)):
+            starts.append(begin + words[0].start())
+    return lo + min(starts) if starts else None
+
+
+def _emails(norm: str) -> list[tuple[int, int]]:
+    spans = [m.span() for m in _EMAIL.finditer(norm)]
+    for m in _AT_DOMAIN.finditer(norm):
+        start = _email_local(norm, m.start(), m.end())
+        if start is not None:
+            spans.append((start, m.end()))
+    return spans
+
+
+# --- address, phone ---
+
+_STREET = (
+    "Street|St|Avenue|Ave|Road|Rd|Drive|Dr|Lane|Ln|Boulevard|Blvd|Court|Ct|Way|Place|Pl|"
+    "Terrace|Parkway|Pkwy|Circle|Highway|Hwy"
+)
+_ADDRESS = re.compile(
+    rf"\b\d{{1,6}}(?:\s\d{{1,3}})?\s+(?:[A-Z][a-z]+\s+){{1,4}}(?:{_STREET})\b\.?"
+    r"(?:,? (?i:apartment|apt|suite|unit|#) \w+)?(?:,? \d{5}(?:-\d{4})?\b)?"
+)
+# NXX NXX XXXX, area and exchange starting 2-9, separators a space, dash or dot
+_PHONE = re.compile(r"(?<!\d)(?:\+?1[ .-]?)?(?:\([2-9]\d{2}\) ?|[2-9]\d{2}[ .-])[2-9]\d{2}[ .-]\d{4}(?!\d)")
+_PHONE_SHAPES = {(10,), (3, 7), (3, 3, 4)}
+
+
+def _phones(norm: str) -> list[tuple[int, int]]:
+    spans = [m.span() for m in _PHONE.finditer(norm)]
+    for run in _GROUPS.finditer(norm):
+        d = _digits(run.group())
+        cued_shape = _shape(run.group()) in _PHONE_SHAPES and d[0] >= "2" and d[3] >= "2"
+        if cued_shape and _reach(norm, *run.span(), _PHONE_CUE):
+            spans.append(run.span())
+    return spans
+
+
+_DETECTORS = {
+    "ssn": _ssns,
+    "card": _cards,
+    "account": _accounts,
+    "phone": _phones,
+    "address": lambda norm: [m.span() for m in _ADDRESS.finditer(norm)],
+    "email": _emails,
+}
+# An exact tie goes to the class listed first (R9).
+_RANK = {c: k for k, c in enumerate(_DETECTORS)}
 
 
 def _detect(norm: str, classes: set[str]) -> list[Hit]:
     """Hits in the normalised text."""
-    hits: list[Hit] = []
-
-    def add(cls, a, b):
-        hits.append(Hit(a, b, cls))
-
-    if "ssn" in classes:
-        for m in _SSN.finditer(norm):
-            cued = _SSN_CUE.search(norm[max(0, m.start() - 60):m.start()])
-            if (cued or _DASHED_SSN.fullmatch(m.group())) and _ssn_ok(re.sub(r"\D", "", m.group())):
-                add("ssn", m.start(), m.end())
-        for m in _SSN_RUN.finditer(norm):
-            if _SSN_CUE.search(norm[max(0, m.start() - 60):m.start()]) and _ssn_ok(m.group()):
-                add("ssn", m.start(), m.end())
-    if "card" in classes:
-        for a, b in _cards(norm):
-            add("card", a, b)
-    if "account" in classes:
-        for m in _IBAN.finditer(norm):
-            if _iban_ok(m.group()):
-                add("account", m.start(), m.end())
-        for m in _ROUTING.finditer(norm):
-            if _aba_ok(m.group(1)):
-                add("account", m.start(1), m.end(1))
-        for m in _ACCOUNT.finditer(norm):
-            span = _account_digits(m)
-            if span:
-                add("account", *span)
-    if "email" in classes:
-        for m in _EMAIL.finditer(norm):
-            add("email", m.start(), m.end())
-        for m in _SPOKEN_EMAIL.finditer(norm):
-            local = m.group(1)
-            plain = " dot " in local or re.search(r"[\d_]", local)
-            if plain or _EMAIL_CUE.search(norm[max(0, m.start() - 60):m.start()]):
-                add("email", m.start(), m.end())
-    if "address" in classes:
-        for m in _ADDRESS.finditer(norm):
-            add("address", m.start(), m.end())
-    if "phone" in classes:
-        for m in _PHONE.finditer(norm):
-            add("phone", m.start(), m.end())
-    return hits
+    return [Hit(a, b, cls) for cls, detect in _DETECTORS.items() if cls in classes for a, b in detect(norm)]
 
 
 def find(text: str, classes: Iterable[str]) -> list[Hit]:
-    """Non-overlapping hits in the original text, sorted; the longest wins an overlap."""
+    """Non-overlapping hits in the original text, sorted; the longest wins an overlap, and an
+    exact tie goes to the higher class (ssn > card > account > phone > address > email)."""
     wanted = set(classes)
     norm, idx = normalise(text)
     mapped = []
@@ -283,7 +438,7 @@ def find(text: str, classes: Iterable[str]) -> list[Hit]:
             q += 1
         mapped.append(Hit(idx[a], idx[q + 1], h.cls))
     kept: list[Hit] = []
-    for h in sorted(mapped, key=lambda h: (-(h.end - h.start), h.start)):
+    for h in sorted(mapped, key=lambda h: (-(h.end - h.start), h.start, _RANK[h.cls])):
         if all(h.end <= k.start or h.start >= k.end for k in kept):
             kept.append(h)
     return sorted(kept, key=lambda h: h.start)
@@ -294,7 +449,6 @@ CUES = re.compile(
     re.I,
 )
 _SENTENCE_END = re.compile(r"[.?!]\s+|\n\s*\n")
-_TURN_START = re.compile(r"\*\*[^*\n]+:\*\*")
 _MAX_SECRET = 64
 # Room for a 64-character secret plus its JSON framing: 64 tokens truncated the answer.
 _ASK_TOKENS = 128
@@ -330,8 +484,9 @@ def _sentences(text: str) -> list[tuple[int, int]]:
     return [(a, b) for a, b in zip(edges, edges[1:]) if a < b]
 
 
-def _windows(text: str) -> list[tuple[int, int, int]]:
-    """(start, end, first cue) of the sentence holding a cue plus the next, never crossing a turn start."""
+def _windows(text: str) -> list[tuple[int, int]]:
+    """(start, end) of each sentence holding a cue plus up to two more, crossing at most one turn
+    start: the password is often asked in one turn and answered in the next."""
     sents = _sentences(text)
     seen: set[int] = set()
     out = []
@@ -340,14 +495,30 @@ def _windows(text: str) -> list[tuple[int, int, int]]:
         if i in seen:
             continue
         seen.add(i)
-        end = sents[i][1]
-        if i + 1 < len(sents) and not _TURN_START.match(text, sents[i + 1][0]):
-            end = sents[i + 1][1]
-        out.append((sents[i][0], end, m.start()))
+        end, turns = sents[i][1], 0
+        for a, b in sents[i + 1:i + 3]:
+            turns += bool(_TURN_START.match(text, a))
+            if turns > 1:
+                break
+            end = b
+        out.append((sents[i][0], end))
     return out
 
 
 _PLACEHOLDER = re.compile("|".join(re.escape(v) for v in PLACEHOLDER.values()))
+# An answer made only of these is not a secret: "it", "the one", "okay".
+_FUNCTION_WORDS = frozenset(
+    "a an and are as at be but by for from has have he her his i if in is it its me my no not of on or "
+    "our she so that the their them then there they this to us was we were what when where who will "
+    "with you your yes okay ok sure".split()
+)
+
+
+def _answer_ok(secret: str | None) -> bool:
+    return (
+        bool(secret) and 3 <= len(secret) <= _MAX_SECRET and "[" not in secret and "]" not in secret
+        and not all(w in _FUNCTION_WORDS for w in re.findall(r"[a-z0-9']+", secret.lower()))
+    )
 
 
 def _password_spans(
@@ -355,12 +526,12 @@ def _password_spans(
 ) -> tuple[list[tuple[int, int]], bool]:
     """Spans of the model-named secret inside each cue window, and whether any call failed.
 
-    Only a verbatim answer counts, only as a whole word at or after the cue, and never over a
-    placeholder already in the text."""
+    Only a verbatim answer counts, as a whole word anywhere in the window (a secret is often said
+    before its cue: "gavrell 68 is my password"), and never over a placeholder already in the text."""
     placeholders = [m.span() for m in _PLACEHOLDER.finditer(text)]
     spans: set[tuple[int, int]] = set()
     failed = False
-    for a, b, cue in _windows(text):
+    for a, b in _windows(text):
         window = text[a:b]
         try:
             secret = find_password(window)
@@ -368,9 +539,9 @@ def _password_spans(
             failed = True
             trace.record("pii", {"stage": "password", "status": "failed", "error": type(exc).__name__})
             continue
-        if not secret or not 1 <= len(secret) <= _MAX_SECRET or "[" in secret or "]" in secret:
+        if not _answer_ok(secret):
             continue
-        pos = window.find(secret, cue - a)
+        pos = window.find(secret)
         while pos >= 0:
             s, e = a + pos, a + pos + len(secret)
             word = (s == 0 or not text[s - 1].isalnum()) and (e == len(text) or not text[e].isalnum())
