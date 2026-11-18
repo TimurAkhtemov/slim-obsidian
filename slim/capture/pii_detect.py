@@ -78,7 +78,7 @@ _ASK_LEAD = {
         r"\b(?:your|the|my|his|her|their|our|that|this|a|an|which|what)\s+"
         rf"(?:(?:{_ASK_ADJECTIVES}{'|best|good' if c == 'phone' else ''})\s+)?$", re.I)
     for c in _CUE_NOUNS
-}   # "the best phone number": provisional, pending a ruling (P2b vs P6(i))
+}   # "the best phone number": best|good only before a phone cue (ruling on P2b vs P6(i))
 _COORDINATED = re.compile(r"\s*(?:,|and|or|, and|, or)\s*")
 _OTHER_THINGS = (
     "order|confirmation|tracking|ticket|invoice|reference|ref|claim|case|policy|zip|postal|amount|balance|"

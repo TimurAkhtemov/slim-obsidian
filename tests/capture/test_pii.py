@@ -1018,3 +1018,12 @@ def test_a_spelled_iban_starts_with_its_country_letters():
     _same("My IBAN, so, 1995, 1996, 1997, 1998, 1999 were the years.")
     t = "My IBAN is G B 82, W E S T, 1234, 5698, 7654, 32, that one."
     assert _m(t).text == "My IBAN is [ACCOUNT], that one."
+
+
+def test_best_or_good_asks_only_for_a_phone():
+    # ruling on P2b vs P6(i): "best|good" may stand before a PHONE cue noun only
+    t = _q("What's the best phone number for the account?", "Sure, 4155550134.")
+    assert _answer(t, PHONE) == "**Me:** Sure, [PHONE]."
+    _same(t)                                                  # phone off: left, never [ACCOUNT]
+    assert _answer(_q("Is this a good cell to reach you?", "Yes, 4155550134."), PHONE) == "**Me:** Yes, [PHONE]."
+    _same(_q("What's the best account to use?", "Okay. 12345678."))
