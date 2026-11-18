@@ -285,3 +285,31 @@ def test_ask_model_sends_bounded_schema_call(monkeypatch):
     assert pii.ask_model("the password is hunter2") == "hunter2"
     assert got["kw"]["think"] is False and got["kw"]["num_predict"] == 64
     assert got["schema"]["properties"]["secret"]["maxLength"] == 64
+
+
+def test_short_answers_never_touch_other_words():
+    t = "the password is a big deal."
+    for ans in ("a", "is"):
+        m = pii.mask(t, classes=CLS, find_password=lambda w, a=ans: a)
+        assert m.text == t.replace(f" {ans} ", " [PASSWORD] ", 1)
+
+
+def test_answer_before_the_cue_is_not_masked():
+    m = pii.mask("hunter2 was mine. the password is hunter2.", classes=CLS, find_password=lambda w: "hunter2")
+    assert m.text == "hunter2 was mine. the password is [PASSWORD]."
+
+
+def test_placeholder_fragments_rejected():
+    t = "ssn 219-09-9999 and the password is blank."
+    for ans in ("SSN]", "[SSN]"):
+        m = pii.mask(t, classes=CLS, find_password=lambda w, a=ans: a)
+        assert m.text == "ssn [SSN] and the password is blank." and m.secrets == ["219-09-9999"]
+
+
+def test_failure_in_later_window_keeps_earlier_password():
+    def finder(w):
+        if "hunter2" in w:
+            return "hunter2"
+        raise RuntimeError("down")
+    m = pii.mask("the password is hunter2.\n\nthe PIN is later.", classes=CLS, find_password=finder)
+    assert m.partial and m.counts == {"password": 1} and "hunter2" not in m.text

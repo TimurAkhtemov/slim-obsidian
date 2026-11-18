@@ -321,8 +321,8 @@ def _sentences(text: str) -> list[tuple[int, int]]:
     return [(a, b) for a, b in zip(edges, edges[1:]) if a < b]
 
 
-def _windows(text: str) -> list[tuple[int, int]]:
-    """The sentence holding each cue plus the next, never crossing a turn start."""
+def _windows(text: str) -> list[tuple[int, int, int]]:
+    """(start, end, first cue) of the sentence holding a cue plus the next, never crossing a turn start."""
     sents = _sentences(text)
     seen: set[int] = set()
     out = []
@@ -334,27 +334,45 @@ def _windows(text: str) -> list[tuple[int, int]]:
         end = sents[i][1]
         if i + 1 < len(sents) and not _TURN_START.match(text, sents[i + 1][0]):
             end = sents[i + 1][1]
-        out.append((sents[i][0], end))
+        out.append((sents[i][0], end, m.start()))
     return out
 
 
-def _password_spans(text: str, find_password: Callable[[str], str | None]) -> list[tuple[int, int]]:
-    """Spans of the model-named secret inside each cue window; only verbatim answers count."""
+_PLACEHOLDER = re.compile("|".join(re.escape(v) for v in PLACEHOLDER.values()))
+
+
+def _password_spans(
+    text: str, find_password: Callable[[str], str | None]
+) -> tuple[list[tuple[int, int]], bool]:
+    """Spans of the model-named secret inside each cue window, and whether any call failed.
+
+    Only a verbatim answer counts, only as a whole word at or after the cue, and never over a
+    placeholder already in the text."""
+    placeholders = [m.span() for m in _PLACEHOLDER.finditer(text)]
     spans: set[tuple[int, int]] = set()
-    for a, b in _windows(text):
+    failed = False
+    for a, b, cue in _windows(text):
         window = text[a:b]
-        secret = find_password(window)
-        if not secret or not 1 <= len(secret) <= _MAX_SECRET or secret not in window:
+        try:
+            secret = find_password(window)
+        except Exception as exc:
+            failed = True
+            trace.record("pii", {"stage": "password", "status": "failed", "error": type(exc).__name__})
             continue
-        pos = window.find(secret)
+        if not secret or not 1 <= len(secret) <= _MAX_SECRET or "[" in secret or "]" in secret:
+            continue
+        pos = window.find(secret, cue - a)
         while pos >= 0:
-            spans.add((a + pos, a + pos + len(secret)))
+            s, e = a + pos, a + pos + len(secret)
+            word = (s == 0 or not text[s - 1].isalnum()) and (e == len(text) or not text[e].isalnum())
+            if word and all(e <= x or s >= y for x, y in placeholders):
+                spans.add((s, e))
             pos = window.find(secret, pos + len(secret))
     kept: list[tuple[int, int]] = []
     for s in sorted(spans, key=lambda s: (-(s[1] - s[0]), s[0])):
         if all(s[1] <= k[0] or s[0] >= k[1] for k in kept):
             kept.append(s)
-    return sorted(kept)
+    return sorted(kept), failed
 
 
 def mask(
@@ -381,12 +399,7 @@ def mask(
     masked = "".join(out)
     partial = False
     if "password" in wanted and find_password is not None:
-        try:
-            spans = _password_spans(masked, find_password)
-        except Exception as exc:
-            partial = True
-            trace.record("pii", {"stage": "password", "status": "failed", "error": type(exc).__name__})
-            spans = []
+        spans, partial = _password_spans(masked, find_password)
         if spans:
             parts, last = [], 0
             for a, b in spans:
