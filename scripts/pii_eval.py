@@ -1413,6 +1413,10 @@ def print_public_report(r: dict) -> None:
 
 # --- sandbox ----------------------------------------------------------------------------------
 
+MARKER = ".pii-eval"
+PROJECTS_HEADER = "# written by scripts/pii_eval: a sandbox, never a real vault's config"
+
+
 def _inside(p: Path, root: Path) -> bool:
     try:
         p.relative_to(root)
@@ -1421,26 +1425,67 @@ def _inside(p: Path, root: Path) -> bool:
         return False
 
 
-def check_out(out: Path, *, home: Path | None = None, repo: Path = REPO) -> Path:
-    """`out`, resolved, or exit: never inside a vault, iCloud, the real brain DB or this repo."""
-    home = (home or Path.home()).resolve()
+def discovered_vault() -> Path | None:
+    """The vault SLIM would discover on this machine, from `slim/vaultpath.py` loaded by path
+    (stdlib only), so nothing from `slim` is imported before the sandbox is set."""
+    import importlib.util
+
+    try:
+        spec = importlib.util.spec_from_file_location("_pii_eval_vaultpath",
+                                                      REPO / "slim" / "vaultpath.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return Path(mod.discover_vault()).expanduser().resolve()
+    except Exception:                                  # noqa: BLE001 - no discovery, no refusal
+        return None
+
+
+def _refusal(p: Path, *, home: Path, vault: Path | None) -> str | None:
+    if _inside(p, home / "Library" / "Mobile Documents"):
+        return "under iCloud Drive"
+    if _inside(p, home / "Library" / "Application Support" / "slim"):
+        return "inside the real brain DB folder"
+    if vault is not None and _inside(p, vault):
+        return "inside the vault SLIM discovers on this machine"
+    if ".obsidian" in p.parts:
+        return "inside an Obsidian vault"
+    for q in (p, *p.parents):
+        if (q / ".obsidian").is_dir():
+            return "inside an Obsidian vault"
+        if (q / ".git").exists():
+            return "inside a git working tree"
+    return None
+
+
+def guard(out, *, home: Path | None = None, discovered=discovered_vault) -> Path:
+    """`out` resolved once, or exit, WITHOUT creating or writing anything. `out` and the vault,
+    data and projects.yaml under it are resolved through symlinks, and each must stay clear of
+    iCloud, the brain DB, the discovered vault, any Obsidian vault and any git working tree. An
+    existing non-empty `out` must carry pii_eval's marker."""
+    home = Path(home or Path.home()).expanduser().resolve()
     out = Path(out).expanduser().resolve()
-    refuse = [
-        (home / "Library" / "Mobile Documents", "under iCloud Drive"),
-        (home / "Library" / "Application Support" / "slim", "inside the real brain DB folder"),
-        (Path(repo).resolve(), "inside the repository"),
-    ]
-    for root, why in refuse:
-        if _inside(out, root.resolve()):
-            raise SystemExit(f"refusing --out: it is {why}")
-    for p in (out, *out.parents):
-        if (p / ".obsidian").is_dir():
-            raise SystemExit("refusing --out: it is inside an Obsidian vault")
+    vault = discovered()
+    targets = {"--out": out}
+    for name in ("vault", "data", "projects.yaml"):
+        targets[f"--out/{name}"] = (out / name).resolve()
+    for name, p in targets.items():
+        why = _refusal(p, home=home, vault=vault)
+        if why:
+            raise SystemExit(f"refusing {name}: it is {why}")
+    if out.exists():
+        if not out.is_dir():
+            raise SystemExit("refusing --out: it is not a directory")
+        if any(out.iterdir()) and not (out / MARKER).is_file():
+            raise SystemExit("refusing --out: not a pii_eval output directory "
+                             f"(non-empty, no {MARKER} marker)")
+    projects = targets["--out/projects.yaml"]
+    if projects.exists() and not projects.read_text(errors="replace").startswith(PROJECTS_HEADER):
+        raise SystemExit("refusing --out: its projects.yaml was not written by pii_eval")
     return out
 
 
 def write_projects(path: Path, classes) -> None:
-    lines = ['owner: "Alex"', "projects:", "  work:",
+    lines = [PROJECTS_HEADER, 'owner: "Alex"', "projects:", "  work:",
              '    description: "Day job — meetings and calls."', "  school:",
              '    description: "Coursework — lectures and readings."']
     if classes is not None:
@@ -1448,24 +1493,35 @@ def write_projects(path: Path, classes) -> None:
     path.write_text("\n".join(lines) + "\n")
 
 
-def sandbox(out: Path, *, classes=None, home: Path | None = None, repo: Path = REPO):
-    """Point SLIM at `<out>` and prove it: returns `slim.config`, or exits having done nothing."""
-    out = check_out(out, home=home, repo=repo)
+def _config_outside(config, out: Path) -> list[str]:
+    return [name for name in ("VAULT", "DATA_DIR", "PROJECTS_YAML", "DB_PATH", "TRACE_DIR")
+            if not _inside(Path(getattr(config, name)).resolve(), out)]
+
+
+def sandbox(out, *, classes=None, home: Path | None = None, discovered=discovered_vault):
+    """Point SLIM at `<out>` and prove it: returns (resolved out, `slim.config`), or exits having
+    created and written nothing."""
+    out = guard(out, home=home, discovered=discovered)
+    already = sys.modules.get("slim.config")
+    if already is not None and _config_outside(already, out):
+        raise SystemExit("refusing to run: slim was imported before the sandbox was set, and "
+                         f"slim.config.{_config_outside(already, out)[0]} resolves outside --out")
+    out.mkdir(parents=True, exist_ok=True)
+    (out / MARKER).write_text("pii_eval output directory\n")
     vault, data, projects = out / "vault", out / "data", out / "projects.yaml"
-    os.environ["SLIM_VAULT"] = str(vault)
-    os.environ["SLIM_DATA_DIR"] = str(data)
-    os.environ["SLIM_PROJECTS"] = str(projects)
     for d in (vault / "Notes" / "work", vault / "Notes" / "school",
               vault / "Attachments" / "_incoming", data):
         d.mkdir(parents=True, exist_ok=True)
     write_projects(projects, classes)
+    os.environ["SLIM_VAULT"] = str(vault)
+    os.environ["SLIM_DATA_DIR"] = str(data)
+    os.environ["SLIM_PROJECTS"] = str(projects)
     import slim.config as config
 
-    for name in ("VAULT", "DATA_DIR", "PROJECTS_YAML", "DB_PATH", "TRACE_DIR"):
-        if not _inside(Path(getattr(config, name)).resolve(), out):
-            raise SystemExit(f"refusing to run: slim.config.{name} resolves outside --out "
-                             "(was slim imported before the sandbox was set?)")
-    return config
+    bad = _config_outside(config, out)
+    if bad:
+        raise SystemExit(f"refusing to run: slim.config.{bad[0]} resolves outside --out")
+    return out, config
 
 
 # --- entry ------------------------------------------------------------------------------------
@@ -1541,7 +1597,8 @@ def _full_runner(config, *, pipeline=None, measure=rms_dbfs):
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("mode", choices=("text", "calls", "public"))
-    ap.add_argument("--out", required=True, type=Path)
+    ap.add_argument("--out", required=True, help="a new or pii_eval-made directory, outside any "
+                    "git tree or vault")
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--n", type=int, default=30)
     ap.add_argument("--only", action="append", help="script id (repeatable)")
@@ -1552,8 +1609,7 @@ def main(argv=None) -> int:
     ap.add_argument("--rows", type=int, default=2000, help="public: English rows per dataset")
     a = ap.parse_args(argv)
 
-    config = sandbox(a.out, classes=_classes(a.classes))
-    out = a.out.resolve()
+    out, config = sandbox(a.out, classes=_classes(a.classes))
     from slim.capture import pii
 
     classes = tuple(config.PII_MASK)

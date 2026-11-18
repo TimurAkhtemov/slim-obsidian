@@ -735,31 +735,107 @@ def test_public_counts_letters_and_digits_and_rejects_slots():
 
 # --- sandbox guard ---------------------------------------------------------------------
 
-def test_out_inside_a_vault_or_icloud_or_the_repo_is_refused(tmp_path):
-    vault = tmp_path / "v"
-    (vault / ".obsidian").mkdir(parents=True)
-    with pytest.raises(SystemExit):
-        ev.check_out(vault / "eval", home=tmp_path / "home", repo=tmp_path / "repo")
-    icloud = tmp_path / "home" / "Library" / "Mobile Documents" / "x"
-    with pytest.raises(SystemExit):
-        ev.check_out(icloud, home=tmp_path / "home", repo=tmp_path / "repo")
-    with pytest.raises(SystemExit):
-        ev.check_out(tmp_path / "repo" / "out", home=tmp_path / "home", repo=tmp_path / "repo")
-    ok = tmp_path / "scratch" / "eval"
-    assert ev.check_out(ok, home=tmp_path / "home", repo=tmp_path / "repo") == ok.resolve()
+def _snapshot(root: Path) -> dict:
+    """Every path under root with its kind, size and mtime: a refusal must change none."""
+    return {str(p): (p.is_dir(), p.lstat().st_size, p.lstat().st_mtime_ns)
+            for p in [root, *root.rglob("*")]}
 
 
-def test_sandbox_refuses_when_config_resolved_elsewhere(tmp_path, monkeypatch):
-    # In this process slim.config is already imported with other paths: the guard must catch it.
+def _guard(out, tmp_path, discovered=None):
+    return ev.guard(out, home=tmp_path / "home", discovered=lambda: discovered)
+
+
+@pytest.mark.parametrize("where", ["icloud", "brain", "git", "obsidian", "obsidian_part", "discovered"])
+def test_guard_refuses_and_touches_nothing(tmp_path, where):
+    home = tmp_path / "home"
+    places = {
+        "icloud": home / "Library" / "Mobile Documents" / "x",
+        "brain": home / "Library" / "Application Support" / "slim" / "x",
+        "git": tmp_path / "checkout" / "deep" / "x",
+        "obsidian": tmp_path / "v" / "sub" / "x",
+        "obsidian_part": tmp_path / "w" / ".obsidian" / "x",
+        "discovered": tmp_path / "real-vault" / "x",
+    }
+    (tmp_path / "checkout" / ".git").mkdir(parents=True)
+    (tmp_path / "v" / ".obsidian").mkdir(parents=True)
+    (tmp_path / "w" / ".obsidian").mkdir(parents=True)
+    (tmp_path / "real-vault").mkdir()
+    for p in places.values():
+        p.parent.mkdir(parents=True, exist_ok=True)
+    before = _snapshot(tmp_path)
+    with pytest.raises(SystemExit):
+        _guard(places[where], tmp_path, discovered=(tmp_path / "real-vault").resolve())
+    assert _snapshot(tmp_path) == before
+
+
+def test_guard_refuses_another_checkouts_config_and_keeps_its_projects_yaml(tmp_path):
+    checkout = tmp_path / "other"
+    (checkout / ".git").mkdir(parents=True)
+    (checkout / "config").mkdir()
+    real = checkout / "config" / "projects.yaml"
+    real.write_text('owner: "Someone"\n')
+    before = _snapshot(tmp_path)
+    with pytest.raises(SystemExit):
+        ev.sandbox(checkout / "config", home=tmp_path / "home", discovered=lambda: None)
+    assert _snapshot(tmp_path) == before and real.read_text() == 'owner: "Someone"\n'
+    # the same folder outside any git tree: refused for having no marker
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    (plain / "projects.yaml").write_text('owner: "Someone"\n')
+    before = _snapshot(tmp_path)
+    with pytest.raises(SystemExit, match="not a pii_eval output directory"):
+        _guard(plain, tmp_path)
+    assert _snapshot(tmp_path) == before
+
+
+def test_guard_follows_a_vault_symlink_into_an_obsidian_vault(tmp_path):
+    target = tmp_path / "somebodys-vault"
+    (target / ".obsidian").mkdir(parents=True)
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / ev.MARKER).write_text("x")
+    (out / "vault").symlink_to(target)
+    before = _snapshot(tmp_path)
+    with pytest.raises(SystemExit, match="vault"):
+        _guard(out, tmp_path)
+    assert _snapshot(tmp_path) == before and sorted(p.name for p in target.iterdir()) == [".obsidian"]
+
+
+def test_guard_expands_the_home_once_and_returns_the_one_path(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    (tmp_path / "home").mkdir()
+    before = _snapshot(tmp_path)
+    got = ev.guard("~/eval", home=tmp_path / "home", discovered=lambda: None)
+    assert got == (tmp_path / "home" / "eval").resolve() and _snapshot(tmp_path) == before
+
+
+def test_guard_accepts_its_own_directory_and_refuses_a_foreign_projects_yaml(tmp_path):
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / ev.MARKER).write_text("x")
+    ev.write_projects(out / "projects.yaml", None)
+    assert _guard(out, tmp_path) == out.resolve()
+    (out / "projects.yaml").write_text('owner: "Someone"\n')
+    with pytest.raises(SystemExit, match="projects.yaml"):
+        _guard(out, tmp_path)
+
+
+def test_sandbox_refuses_when_config_resolved_elsewhere_before_writing(tmp_path, monkeypatch):
+    # In this process slim.config is already imported with other paths: refuse, write nothing.
     for name in ("SLIM_VAULT", "SLIM_DATA_DIR", "SLIM_PROJECTS"):
         monkeypatch.delenv(name, raising=False)           # restored after the test
-    with pytest.raises(SystemExit):
-        ev.sandbox(tmp_path / "out", home=tmp_path / "home", repo=tmp_path / "repo")
+    before = _snapshot(tmp_path)
+    with pytest.raises(SystemExit, match="imported before"):
+        ev.sandbox(tmp_path / "out", home=tmp_path / "home", discovered=lambda: None)
+    assert _snapshot(tmp_path) == before and "SLIM_VAULT" not in __import__("os").environ
 
 
 def test_sandbox_projects_yaml_is_generic(tmp_path):
     ev.write_projects(tmp_path / "projects.yaml", ev.CLASSES)
     text = (tmp_path / "projects.yaml").read_text()
-    assert 'owner: "Alex"' in text and "phone" in text
+    assert text.startswith(ev.PROJECTS_HEADER) and 'owner: "Alex"' in text and "phone" in text
 
 
+def test_discovered_vault_loads_vaultpath_without_importing_slim(monkeypatch, tmp_path):
+    monkeypatch.setenv("SLIM_VAULT", str(tmp_path / "v"))
+    assert ev.discovered_vault() == (tmp_path / "v").resolve()
