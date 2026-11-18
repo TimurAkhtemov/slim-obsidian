@@ -102,7 +102,8 @@ def main(argv=None) -> int:
               "seconds": round(time.monotonic() - t0, 1), "score": scored, "per_case": per_case}
     if classifier:
         report["model"] = {"calls": classifier.calls, "cached": classifier.cached,
-                           "failures": classifier.failures, "call_seconds": classifier.seconds}
+                           "failures": classifier.failures, "errors": classifier.errors,
+                           "call_seconds": classifier.seconds}
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     name = f"{a.arm}-{a.set}{'-' + a.split if a.split else ''}{a.tag}.json"

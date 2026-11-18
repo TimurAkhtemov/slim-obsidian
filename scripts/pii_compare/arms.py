@@ -85,23 +85,38 @@ def _orig_span(idx: list[int], norm: str, a: int, b: int) -> tuple[int, int]:
 
 
 def candidates(text: str, hits: Iterable[d.Hit]) -> list[Candidate]:
-    """The standing numbers outside `hits`, each run cut where a hit sits. A run with fewer digits
-    than any secret class can hold is no candidate (code, not a model, says so)."""
+    """The standing numbers outside `hits`, each run cut where a hit sits (inside a segment, at
+    its digit groups: "4111 1111 1111 1111 9999 Elm Street" keeps the card part when the address
+    took "9999"). A run with fewer digits than any secret class can hold is no candidate (code,
+    not a model, says so)."""
     norm, idx = normalise(text)
     taken = [(h.start, h.end) for h in hits]
+
+    def free(a: int, b: int) -> bool:
+        return not any(a < y and x < b for x, y in taken)
+
     out = []
     for m in d._RUN.finditer(norm):
         if not d._alone(norm, *m.span()):
             continue
         cur = Candidate()
         for s in d._SEGMENT.finditer(m.group()):
-            a, b = _orig_span(idx, norm, m.start() + s.start(), m.start() + s.end())
-            if any(a < y and x < b for x, y in taken):
-                if cur.segments:
-                    out.append(cur)
-                cur = Candidate()
+            s0 = m.start() + s.start()
+            a, b = _orig_span(idx, norm, s0, m.start() + s.end())
+            if free(a, b):
+                cur.segments.append(Segment(a, b, len(re.sub(r"\D", "", s.group()))))
                 continue
-            cur.segments.append(Segment(a, b, len(re.sub(r"\D", "", s.group()))))
+            for g in d._GROUP.finditer(s.group()):           # the groups the hit left
+                ga, gb = _orig_span(idx, norm, s0 + g.start(), s0 + g.end())
+                if not free(ga, gb):
+                    if cur.segments:
+                        out.append(cur)
+                    cur = Candidate()
+                elif cur.segments and cur.segments[-1].end > a:     # the same segment's last group
+                    last = cur.segments[-1]
+                    cur.segments[-1] = Segment(last.start, gb, last.digits + len(g.group()))
+                else:
+                    cur.segments.append(Segment(ga, gb, len(g.group())))
         if cur.segments:
             out.append(cur)
     return [c for c in out if c.digits >= LEAST]
@@ -120,18 +135,25 @@ def apply(text: str, hits: Iterable[d.Hit]) -> str:
 
 
 def merge_labels(cand: Candidate, kinds: list[str], wanted=SCORED) -> list[d.Hit]:
-    """Consecutive segments given the same class are one value; it is masked when the class is
-    one to mask and its digit count is possible for the class. The span is code's, never text a
-    classifier wrote."""
+    """Consecutive segments given the same class are one value, masked when the class is one to
+    mask and its digit count is possible for the class; when the whole block's count is not, its
+    longest leading part that is ("219099999, 10001" both called ssn masks the first), then the
+    rest the same way. The span is code's, never text a classifier wrote."""
     hits, i = [], 0
     segs = cand.segments
     while i < len(segs):
         j = i
         while j + 1 < len(segs) and kinds[j + 1] == kinds[i]:
             j += 1
-        k = kinds[i]
-        if k in wanted and sum(s.digits for s in segs[i:j + 1]) in POSSIBLE[k]:
-            hits.append(d.Hit(segs[i].start, segs[j].end, k))
+        k, p = kinds[i], i
+        while k in wanted and p <= j:
+            q = next((q for q in range(j, p - 1, -1)
+                      if sum(s.digits for s in segs[p:q + 1]) in POSSIBLE[k]), None)
+            if q is None:
+                p += 1
+                continue
+            hits.append(d.Hit(segs[p].start, segs[q].end, k))
+            p = q + 1
         i = j + 1
     return hits
 

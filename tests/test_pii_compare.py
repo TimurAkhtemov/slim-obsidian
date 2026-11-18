@@ -66,8 +66,17 @@ def test_classifier_answers_are_merged_and_checked_by_digit_count():
     assert [(T[h.start:h.end], h.cls) for h in hits] == [("4821, 3377", "account")]
     four = arms.merge_labels(cands[0], ["none", "ssn", "account"])     # four digits can be a last four
     assert [(T[h.start:h.end], h.cls) for h in four] == [("4821", "ssn")]   # "3377" alone is no account
-    assert arms.merge_labels(cands[0], ["ssn", "ssn", "ssn"]) == []     # 13 digits is no SSN
+    ssn = arms.merge_labels(cands[0], ["ssn", "ssn", "ssn"])   # 13 digits is no SSN: its leading 9 are
+    assert [T[h.start:h.end] for h in ssn] == ["10001, 4821", "3377"]   # then the rest, a last four
     assert arms.merge_labels(cands[0], ["phone", "phone", "phone"]) == []
+
+
+def test_a_hit_inside_a_segment_leaves_its_other_groups_standing():
+    t = "**Me:** card 4111 1111 1111 1111 9999 Elm Street"
+    hits = [h for h in arms.shapes(t) if h.cls == "address"]
+    assert hits and t[hits[0].start:hits[0].end].startswith(("1111 9999", "9999"))
+    cands = arms.candidates(t, hits)
+    assert [t[s.start:s.end] for c in cands for s in c.segments][0].startswith("4111 1111 1111")
 
 
 def test_candidates_skip_what_an_earlier_layer_masked_and_short_numbers():

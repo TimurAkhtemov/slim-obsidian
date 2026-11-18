@@ -16,7 +16,7 @@ from .arms import Segment, placeholders
 KINDS = ("ssn", "card", "account", "phone", "none")
 _SCHEMA = {"type": "object", "properties": {"kind": {"type": "string", "enum": list(KINDS)}},
            "required": ["kind"]}
-_TOKENS = 24
+_TOKENS = 64      # 24 cut one answer off inside its JSON whitespace
 _TIMEOUT = 180      # a cold start reloads the weights
 TURNS_BEFORE, TURNS_AFTER = 3, 1
 _MAX_WINDOW = 1600
@@ -70,6 +70,7 @@ class Classifier:
         self.calls = self.cached = 0
         self.seconds: list[float] = []
         self.failures = 0
+        self.errors: list[str] = []
         self._dirty = 0
 
     def key(self, prompt: str) -> str:
@@ -86,9 +87,11 @@ class Classifier:
                 [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}],
                 _SCHEMA, think=False, num_predict=_TOKENS, timeout=_TIMEOUT)
             kind = out.get("kind") if out.get("kind") in KINDS else "none"
-        except llm.LLMError:
-            self.failures += 1
-            kind = "none"          # a failed call masks nothing: counted, reported
+        except llm.LLMError as exc:
+            self.failures += 1                 # a failed call masks nothing: counted, reported,
+            self.errors.append(str(exc)[:160])  # never cached
+            self.calls += 1
+            return "none"
         self.seconds.append(time.monotonic() - t)
         self.calls += 1
         if self.use_cache:
