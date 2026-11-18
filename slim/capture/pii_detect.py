@@ -20,7 +20,8 @@ class Hit:
 
 _TURN_START = re.compile(r"\*\*[^*\n]+:\*\*")
 # The words that stand before a noun, as one list composed per use.
-_POSSESSIVES = "my|your|his|her|their|our"
+_PERSONAL = "my|your|his|her|their"         # "that's my social": one person's own
+_POSSESSIVES = f"{_PERSONAL}|our"
 _THE = f"{_POSSESSIVES}|the"                 # "my social", "the card number"
 _DETERMINERS = f"{_THE}|that|this|a|an"     # "a callback number", "this account"
 
@@ -87,9 +88,8 @@ _ASK_LEAD = {
     for c in _CUE_NOUNS
 }   # "the best phone number", "a good cell": best and good only ever describe a phone
 _COORDINATED = re.compile(r"\s*(?:,|and|or|, and|, or)\s*")
-# Another thing named before the cue noun in its sentence: "the order number on the account",
-# "your claim account number". Cue nouns themselves are blanked out first, so "a callback number
-# and your account number" still asks for the account.
+# Another thing named in the cue's own clause: "your claim account number", "the order number on
+# the account". Cue nouns themselves are blanked out first.
 _OTHER = re.compile(
     r"\b(?:order|confirmation|tracking|ticket|invoice|reference|ref|claim|case|policy|zip|postal|amount|"
     r"balance|total|price|cost|date|year|years|birthday|born|expiry|expiration|how much|how many|when|"
@@ -220,7 +220,6 @@ def _aba_ok(d: str) -> bool:
 # --- what a bound value is never ---
 
 _ZIP4 = re.compile(r"\d{5}-\d{4}")   # dashed only: a spaced 5-4 is also how an account is read
-# written as a phone number, with separators: never an SSN or an account number
 # A phone number as written: optional 1/+1, an area code (in brackets or not) and an exchange
 # starting 2-9, separators a space, dash or dot. `_PHONE` finds one with no cue; `_PHONE_SHAPED`
 # says a bound value is one (one separator throughout, or "344 5550101"), so it is never an SSN
@@ -471,8 +470,8 @@ _SSN_SPACED = re.compile(r"\d{3} \d{2} \d{4}")
 # "we had 300 25 2000 users". Measurement-gated: False switches the shape off.
 SSN_SPACED_CUE_FREE = True
 # "the last four of my social are 8901"; "four" is "4" after normalise
-_SSN_LAST_FOUR = re.compile(
-    rf"\blast 4(?: digits)? of (?:{_THE}) (?:{_CUE_NOUNS['ssn']})(?: is| are|:)? (\d{{4}})\b", re.I)
+_LAST_FOUR_OF = rf"\blast 4(?: digits)? of (?:{_THE}) (?:{_CUE_NOUNS['ssn']})"
+_SSN_LAST_FOUR = re.compile(rf"{_LAST_FOUR_OF}(?: is| are|:)? (\d{{4}})\b", re.I)
 
 
 def _ssn_fits(s: str) -> bool:
@@ -480,8 +479,7 @@ def _ssn_fits(s: str) -> bool:
     return 7 <= len(_digits(s)) <= 9 and len(_shape(s)) <= 3 and not _not_a_value(s) and not _PHONE_SHAPED.fullmatch(s)
 
 
-_LAST_FOUR_ASKED = re.compile(
-    rf"\blast 4(?: digits)? of (?:{_THE}) (?:{_CUE_NOUNS['ssn']})\b", re.I)
+_LAST_FOUR_ASKED = re.compile(rf"{_LAST_FOUR_OF}\b", re.I)
 
 
 def _last_four_answers(scene: _Scene) -> list[tuple[int, int]]:
@@ -504,7 +502,6 @@ def _last_four_answers(scene: _Scene) -> list[tuple[int, int]]:
 # A strong cue: an identifying phrase attached to the value ("265075.1253. That's my social.",
 # "My social is 68581399."). Next to it, a number the transcriber garbled (fused with a list,
 # a digit too many or too few) is still the SSN.
-_PERSONAL = "my|your|his|her|their"
 _STRONG_SSN_AFTER = re.compile(
     rf"\s*[,.]?\s*(?:that's|that is|it's|is)\s+(?:{_PERSONAL})\s+({_CUE_NOUNS['ssn']})(?=\s*(?:[.,!?;]|$))",
     re.I | re.M)
@@ -701,9 +698,9 @@ _LOCAL_NAME_DIGITS = re.compile(r"[A-Za-z]{3,}\d{1,4}")
 # what may stand right before a "quarrel43": a sentence or turn start, or one of these words
 _LOCAL_LEAD = re.compile(
     r"(?:[.?!]\s+|\n\s*|\*\*[^*\n]+:\*\*\s*|\b(?:it's|it is|is|use|try|to|at|email|e-mail)\s+|:\s*)$", re.I)
-_EMAIL_BEFORE = re.compile(
-    rf"(?:\b(?:{_THE}) e-?mail(?: address)?((?: is|:|'s)?)|\be-?mail(?: address)?( is|:))"
-    r" ((?:\S+ ){0,4}\S+)$", re.I)
+# "my email is …", "email: …": the determiner form may stand alone, the bare form needs is or ":"
+_EMAIL_CUE = rf"(?:\b(?:{_THE}) e-?mail(?: address)?((?: is|:|'s)?)|\be-?mail(?: address)?( is|:))"
+_EMAIL_BEFORE = re.compile(rf"{_EMAIL_CUE} ((?:\S+ ){{0,4}}\S+)$", re.I)
 _EMAIL_AFTER = re.compile(
     rf"\s*[,.]?\s*(?:that's|that is)\s+(?:{_POSSESSIVES})\s+e-?mail(?: address)?(?=\s*(?:[.,!?]|$))",
     re.I | re.M)
@@ -759,8 +756,7 @@ def _email_local(norm: str, at: int, end: int) -> int | None:
 # example.org". With an identifying cue, a token ending in a dotted TLD (and up to two name-like
 # tokens before it) is the address; without one, a website is never an email.
 _DOMAIN_TOKEN = re.compile(rf"(?<!\S)[\w.+-]*\.(?:{_TLD})\b", re.I)
-_EMAIL_CUE_BEFORE = re.compile(
-    rf"(?:\b(?:{_THE}) e-?mail(?: address)?(?: is|:|'s)?|\be-?mail(?: address)?(?: is|:))\s*$", re.I)
+_EMAIL_CUE_BEFORE = re.compile(rf"{_EMAIL_CUE}\s*$", re.I)
 
 
 def _glued_emails(norm: str) -> list[tuple[int, int]]:

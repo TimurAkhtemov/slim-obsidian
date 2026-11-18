@@ -857,7 +857,7 @@ def test_cue_under_a_preposition_directly_before_the_number():
 
 
 def test_bound_account_shapes():
-    # ruling on fix-1: "was" is not filler; bound accounts are contiguous, 2-5 groups of 3+
+    # "was" is not filler; bound accounts are contiguous, 2-5 groups of 3+
     # digits, or the 2-2-2 sort code
     for t in ("Routing was 675, 86, 415, 4, 643 packets per second.",
               "Routing was 8848, 4, 83 packets per second.",
@@ -1026,7 +1026,7 @@ def test_pathological_inputs_stay_fast():
 
 
 def test_a_spelled_iban_starts_with_its_country_letters():
-    # beyond the rulings: "1995, 1996, …" after "IBAN" read as a spelled IBAN (hunt.py, 7.8%)
+    # "1995, 1996, …" after "IBAN" is a list of years, not an IBAN spelled out
     _same("My IBAN, so, 1995, 1996, 1997, 1998, 1999 were the years.")
     t = "My IBAN is G B 82, W E S T, 1234, 5698, 7654, 32, that one."
     assert _m(t).text == "My IBAN is [ACCOUNT], that one."
