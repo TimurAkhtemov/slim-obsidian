@@ -523,7 +523,8 @@ class _Scene:
         return bool(_CUE_AFTER[cls].match(self.norm, b))
 
     def labelled(self, cls: str, b: int) -> bool:
-        if _WHEN_AFTER.match(self.norm, b) or _RATE_AFTER.match(self.norm, b):
+        # a period after the value is a benefit only where "social security" names one too
+        if _WHEN_AFTER.match(self.norm, b) or (cls == "ssn" and _RATE_AFTER.match(self.norm, b)):
             return True
         m = _LABEL_AFTER.match(self.norm, b)
         return bool(m and not _CUE[cls].search(m.group(1))) or bool(_UNIT_AFTER.match(self.norm, b))
@@ -659,8 +660,10 @@ def _money(s: str) -> bool:
     return bool(_MONEY.fullmatch(s)) and ("." in s or len(_digits(s)) <= 6)
 
 
+# A benefit's period after an SSN-cued value: money, unless it is a time ago ("a year ago").
 _RATE_AFTER = re.compile(
-    r"\s*(?:a month|per month|monthly|a year|per year|annually|a week|per week|dollars|bucks)\b", re.I)
+    r"\s*(?:a month|per month|monthly|a year|per year|annually|a week|per week|dollars|bucks)\b"
+    r"(?!\s+ago\b)", re.I)
 _DIGIT_TOKEN = re.compile(r"\d[\d.,-]*\d|\d")          # a number glued with . , or -
 _PIECE_TO_HERE = re.compile(r"\d+(?:[ ./-]\d+)*$")      # groups up to here, never across ", "
 # Ten digits after "social" is more often a phone number than a garbled SSN, even with no separators
@@ -945,8 +948,9 @@ def _email_local(norm: str, at: int, end: int) -> int | None:
 
 # The transcriber sometimes drops the " at ": "Faxmore.steranatexample.com", "Vandrel.corvainat
 # example.org". With an identifying cue, a token ending in a dotted TLD (and up to two name-like
-# tokens before it) is the address; without one, a website is never an email.
-_DOMAIN_TOKEN = re.compile(rf"(?<!\S)[\w.+-]*\.(?:{_TLD})\b", re.I)
+# tokens before it) is the address; without one, a website is never an email. The TLD may be
+# spoken ("jsmith dot com"), as when no local part is left before " at ".
+_DOMAIN_TOKEN = re.compile(rf"(?<!\S)(?:[\w.+-]*\.|\w+(?: dot \w+)* dot )(?:{_TLD})\b", re.I)
 _EMAIL_CUE_BEFORE = re.compile(rf"{_EMAIL_CUE}\s*$", re.I)
 
 

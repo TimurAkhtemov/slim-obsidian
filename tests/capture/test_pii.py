@@ -1570,14 +1570,26 @@ def test_the_spoken_local_part_starts_after_the_last_function_word():
         == "**Them:** Okay. Send it to [EMAIL], that's my email."
 
 
-def test_a_rate_unit_or_decimal_is_money_on_the_bound_path_too():
-    for t in ("My social security is 21909999 a month.", "My social is 219099.99.",
-              "My account number is 12345678 per month.", "My account number is 1234567.50.",
+def test_a_rate_after_a_social_or_cents_anywhere_is_money():
+    # "social security" also names a benefit: a period after its value makes it money
+    for t in ("My social security is 21909999 a month.", "My social security is 12345678 per month.",
+              "My social is 219099.99.", "My account number is 1234567.50.",
               _q("What's your account number?", "1234567.50.")):
         _same(t)
+    # never an account or a card, and never a period that is a time ago
+    for t, want in (("My account number is 48213377 a year ago they changed it",
+                     "My account number is [ACCOUNT] a year ago they changed it"),
+                    ("The account number is 48213377 monthly.", "The account number is [ACCOUNT] monthly."),
+                    ("My card is 4111 1111 1111 1112 per month.", "My card is [CARD] per month."),
+                    ("My social is 219099999 a month ago I gave it to them.",
+                     "My social is [SSN] a month ago I gave it to them.")):
+        assert _m(t).text == want, t
     # the D4 examples do not move
     assert _m("My social is 219,099,999.").text == "My social is [SSN]."
     assert _m("My social security is 6858139.").counts == {"ssn": 1}
+    for t in ("My social security is 1,840 a month.", "My social is 1,840,000 dollars.",
+              "His social security is 2,310.75 now.", "My social is 1,234,567.50."):
+        _same(t)
 
 
 def test_a_comma_read_account_answer_with_one_short_group():
@@ -1662,6 +1674,10 @@ def test_the_local_part_starts_after_a_copula_or_preposition():
     assert _m("You can reach me at jsmith at gmail.com, that's my email.").text \
         == "You can reach me at [EMAIL], that's my email."
     assert _m("Mine is in jsmith at gmail.com, that's my email.").text == "Mine is in [EMAIL], that's my email."
+    # no local part left: the identifying cue takes the spoken domain, as it takes "amazon.com"
+    assert _m("Write back to me at jsmith dot com, that's my email.").text \
+        == "Write back to me at [EMAIL], that's my email."
+    _same("Write back to me at jsmith dot com, it's my site.")
 
 
 def _placed(text, secrets):
