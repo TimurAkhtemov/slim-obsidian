@@ -335,6 +335,20 @@ def test_unmatched_secret_does_not_stop_later_ones_and_cache_lists_work():
     assert pii.spans(toks, ["nope", "pw"]) == ([(0.1, 0.4)], 1)
 
 
-def test_secrets_match_forward_so_repeats_map_in_order():
-    toks = [(" x", 0, 1), (" x", 1, 2)]
-    assert pii.spans(toks, ["x", "x"]) == ([(0, 1), (1, 2)], 0)
+def test_every_occurrence_is_muted():
+    toks = [(" the", 0, 1), (" password", 1, 2), (" is", 2, 3), (" blue", 3, 4),
+            (" sky", 4, 5), (" blue", 5, 6)]
+    assert pii.spans(toks, ["blue"]) == ([(3, 4), (5, 6)], 0)
+    toks = [(" nine", 0, 1), (" x", 1, 2), (" nine", 2, 3)]
+    assert pii.spans(toks, ["nine"]) == ([(0, 1), (2, 3)], 0)
+
+
+def test_duplicate_secrets_do_not_double_count():
+    toks = [(" x", 0, 1), (" y", 1, 2)]
+    assert pii.spans(toks, ["x", "x", "zz", "zz"]) == ([(0, 1)], 1)
+
+
+def test_overlapping_and_touching_spans_merge():
+    toks = [(" a", 0, 1), (" b", 1, 2), (" c", 2, 3), (" d", 5, 6)]
+    assert pii.spans(toks, ["a b", "b c", "d"]) == ([(0, 3), (5, 6)], 0)
+    assert pii.spans(toks, ["a", "b"]) == ([(0, 2)], 0)

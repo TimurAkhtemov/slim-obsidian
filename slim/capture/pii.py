@@ -424,8 +424,9 @@ def spans(tokens, secrets: list[str]) -> tuple[list[tuple[float, float]], int]:
     """Audio time of each secret: `(seconds spans, unmatched count)`.
 
     `tokens` is `(text, start, end)` for the segment whose text was masked. Secrets arrive in
-    text order, so each search resumes after the previous hit. Whitespace runs are collapsed
-    on both sides; everything else must match exactly."""
+    text order, but EVERY occurrence of each distinct secret is muted: a secret left audible is the
+    leak. Spans come back sorted and merged. Whitespace runs are collapsed on both sides;
+    everything else must match exactly."""
     chars: list[str] = []
     owner: list[int] = []                 # chars[i] belongs to tokens[owner[i]]
     for k, tok in enumerate(tokens):
@@ -438,14 +439,21 @@ def spans(tokens, secrets: list[str]) -> tuple[list[tuple[float, float]], int]:
             owner.append(k)
     hay = "".join(chars)
     found: list[tuple[float, float]] = []
-    missed, cursor = 0, 0
-    for secret in secrets:
-        needle = " ".join(secret.split())
-        at = hay.find(needle, cursor) if needle else -1
-        if at < 0:
-            missed += 1
+    missed = 0
+    for secret in dict.fromkeys(" ".join(x.split()) for x in secrets):
+        if not secret:
             continue
-        end = at + len(needle) - 1
-        found.append((float(tokens[owner[at]][1]), float(tokens[owner[end]][2])))
-        cursor = end + 1
-    return found, missed
+        at, hit = hay.find(secret), False
+        while at >= 0:
+            hit = True
+            end = at + len(secret) - 1
+            found.append((float(tokens[owner[at]][1]), float(tokens[owner[end]][2])))
+            at = hay.find(secret, at + 1)
+        missed += not hit
+    merged: list[tuple[float, float]] = []
+    for a, b in sorted(found):
+        if merged and a <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        else:
+            merged.append((a, b))
+    return merged, missed
