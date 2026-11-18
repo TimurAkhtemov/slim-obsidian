@@ -100,6 +100,12 @@ def _after_summary(body: str) -> str:
 _TRANSCRIPT_LINE = re.compile(rf"(?m)^{re.escape(TRANSCRIPT_MARKER)}[ \t]*\r?$")
 
 
+# The summary's TEXT is group 1: after `## Summary` and its blank lines, up to the line before
+# the closing marker. One pattern for the reader and the splice.
+_SUMMARY_RE = re.compile(
+    rf"^<!-- slim:summary[^\n]*-->\n## Summary\n+([\s\S]*?)\n{re.escape(SUMMARY_CLOSE)}", re.M)
+
+
 def _transcript_at(scope: str, fm_end: int = 0) -> int:
     """THE transcript locator: where the last line that is exactly `## Transcript` begins in
     `scope`, at or after `fm_end`, or -1.
@@ -136,9 +142,7 @@ def read_review_sections(text: str) -> dict:
     head = scope[fm_end:_before_transcript(scope, at)] if at >= 0 else scope[fm_end:]
     transcript = scope[at + len(TRANSCRIPT_MARKER):] if at >= 0 else ""
 
-    summary = re.search(
-        rf"^<!-- slim:summary[^\n]*-->\n## Summary\n+([\s\S]*?)\n{re.escape(SUMMARY_CLOSE)}",
-        head, re.M)
+    summary = _SUMMARY_RE.search(head)
     # ⚠ AFTER the summary fence. The summary is hand-editable, so it can contain `## Notes`
     # itself; searching the whole block let that swallow the closing marker and their real notes,
     # which a later write would re-emit as SOURCE.
@@ -346,50 +350,87 @@ def _drop_frontmatter_key(text: str, key: str) -> str:
     return "".join(kept + body)
 
 
-def _transcript_bounds(text: str) -> tuple[int, int]:
-    """Where the transcript's words sit: just past `## Transcript` to the end of the meeting
-    block's body, or of the file for a note filed before the block existed. One reader for
-    both shapes, through the one locator `read_review_sections` uses."""
+def _managed_scope(text: str) -> tuple[str, int, int]:
+    """(scope, its offset in `text`, where its sections may begin): the meeting block's body,
+    or for a note filed before the block existed, the text after its frontmatter."""
     block = split_meeting_block(text)
-    if block is None:
-        if not text.startswith("---\n"):
-            raise ValueError("recorded note has no frontmatter")
-        fm_end = text.find("\n---", 4)
-        if fm_end < 0:
-            raise ValueError("recorded note has unterminated frontmatter")
-        scope, offset, fm_end = text, 0, fm_end + 4
-    else:
-        scope, offset, fm_end = block.body, len(block.before) + len(block.opener), 0
+    if block is not None:
+        return block.body, len(block.before) + len(block.opener), 0
+    if not text.startswith("---\n"):
+        raise ValueError("recorded note has no frontmatter")
+    fm_end = text.find("\n---", 4)
+    if fm_end < 0:
+        raise ValueError("recorded note has unterminated frontmatter")
+    return text, 0, fm_end + 4
+
+
+def transcript_span(text: str) -> tuple[int, int]:
+    """Where the transcript's words sit in `text`: just past `## Transcript` to the end of the
+    meeting block's body, or of the file for a note filed before the block existed. Found
+    through the one locator `read_review_sections` uses."""
+    scope, offset, fm_end = _managed_scope(text)
     at = _transcript_at(scope, fm_end)
     if at < 0:
         raise ValueError("recorded note has no transcript section")
     return offset + at + len(TRANSCRIPT_MARKER), offset + len(scope)
 
 
+def summary_span(text: str) -> tuple[int, int] | None:
+    """Where the derived summary's TEXT sits in `text` (inside its fence, after `## Summary`),
+    or None when the note has none. The same match `read_review_sections` strips and returns."""
+    scope, offset, fm_end = _managed_scope(text)
+    at = _transcript_at(scope, fm_end)
+    m = _SUMMARY_RE.search(scope, fm_end, _before_transcript(scope, at) if at >= 0 else len(scope))
+    return (offset + m.start(1), offset + m.end(1)) if m else None
+
+
 def read_transcript(text: str) -> str:
     """The transcript exactly as it sits in the note, from just past `## Transcript` on:
     leading newlines and trailing whitespace included, so a caller that changes a few spans
     and hands it to `replace_transcript` moves no other byte."""
-    start, end = _transcript_bounds(text)
+    start, end = transcript_span(text)
     return text[start:end]
+
+
+def read_summary(text: str) -> str:
+    """The summary's text exactly as it sits in the note, unstripped; "" when there is none."""
+    span = summary_span(text)
+    return text[span[0]:span[1]] if span else ""
+
+
+def _longest_backticks(s: str) -> int:
+    return max((len(r) for r in re.findall(r"`+", s)), default=0)
+
+
+def _splice(text: str, span: tuple[int, int], new: str) -> str:
+    """`new` in place of `text[span]`, nothing else moved. ⚠ NEVER re-fenced: a longer backtick
+    run than the old text had could close the meeting block early, so it is refused instead."""
+    a, b = span
+    if _longest_backticks(new) > _longest_backticks(text[a:b]):
+        raise ValueError("the new text has a longer backtick run than the old")
+    return text[:a] + new + text[b:]
 
 
 def replace_transcript(text: str, transcript: str) -> str:
     """Swap the transcript (as `read_transcript` returns it) and nothing else.
 
     ⚠ ONLY FOR A CHANGE THE OWNER ASKED FOR (`slim mask`): SLIM never rewrites a transcript on
-    its own. Every byte outside it — frontmatter, summary, their notes, `block.after` — is
-    sliced from the original. The block is re-fenced only if the new words carry a backtick
-    run as long as the fence, which would otherwise close it early."""
-    start, end = _transcript_bounds(text)
-    block = split_meeting_block(text)
-    if block is not None:
-        fence = len(block.opener) - len(block.opener.lstrip("`"))
-        if max((len(r) for r in re.findall(r"`+", transcript)), default=0) >= fence:
-            offset = len(block.before) + len(block.opener)
-            body = block.body[:start - offset] + transcript
-            return block.before + wrap_meeting_block(body) + "\n" + block.after
-    return text[:start] + transcript + text[end:]
+    its own. A pure splice: every byte outside it — frontmatter, summary, their notes, the
+    fence, `block.after` — is sliced from the original."""
+    return _splice(text, transcript_span(text), transcript)
+
+
+def replace_summary(text: str, summary: str) -> str:
+    """Swap the summary's text (as `read_summary` returns it) and nothing else.
+
+    Not `replace_review_sections`, which REBUILDS the head from summary and notes: on a note
+    that is not in the canonical shape that drops the owner's text around them."""
+    span = summary_span(text)
+    if span is None:
+        raise ValueError("recorded note has no summary")
+    if SUMMARY_CLOSE in summary or SUMMARY_OPEN in summary:
+        raise ValueError("a summary cannot carry the summary fence's markers")
+    return _splice(text, span, summary)
 
 
 def write_note_text(path: Path, text: str) -> None:

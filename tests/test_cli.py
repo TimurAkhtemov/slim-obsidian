@@ -240,7 +240,7 @@ def test_mask_survives_a_bad_note_and_a_busy_index(monkeypatch, mask_vault, caps
     assert "Notes/w/c.md  (error: UnicodeDecodeError)" in out
     assert "Notes/w/a.md  email:1 ssn:1" in out
     assert "⚠ index not compacted (database in use)" in out
-    assert "1 notes masked, 0 unchanged, 1 skipped" in out
+    assert "1 notes masked, 0 unchanged, 0 skipped, 1 failed" in out
 
 
 def test_mask_marks_partial_notes(monkeypatch, mask_vault, capsys):
@@ -255,3 +255,42 @@ def test_mask_marks_partial_notes(monkeypatch, mask_vault, capsys):
     monkeypatch.setattr(pii, "ask_model", down)
     _run_mask(monkeypatch, "Notes/w/p.md")
     assert capsys.readouterr().out.splitlines()[0] == "Notes/w/p.md  (unchanged) (partial: password)"
+
+
+def test_mask_reports_skips_with_their_reasons(monkeypatch, mask_vault, capsys):
+    from slim.capture import pii
+    from tests.recorder.test_mask import _recorded
+    v, _ = mask_vault
+    (v / "Notes/w/empty.md").write_text("---\norigin: recorded\n---\n\nno words\n")
+    _recorded(v, "Notes/w/audio.md", pii_fm=pii.frontmatter({"ssn": 1}, ["audio"]))
+    _run_mask(monkeypatch, "Notes/w/empty.md", "Notes/w/audio.md")
+    assert capsys.readouterr().out.splitlines() == [
+        "Notes/w/empty.md  (no transcript)",
+        "Notes/w/audio.md  (already masked) (partial: audio)",
+        "0 notes masked, 0 unchanged, 2 skipped"]
+
+
+def test_mask_spells_every_explicit_path_the_index_way(monkeypatch, mask_vault, capsys, tmp_path):
+    """A symlinked or `..` spelling inside the vault is the same note; outside is refused unread."""
+    from slim.recorder import state
+    v, _ = mask_vault
+    link = tmp_path / "link"
+    link.symlink_to(v)
+    seen = []
+    monkeypatch.setattr(state, "index_now", lambda vault, rel, **kw: (seen.append(rel), {})[1])
+    outside = tmp_path / "elsewhere.md"
+    outside.write_text("---\norigin: recorded\n---\n")
+    with pytest.raises(SystemExit) as e:
+        _run_mask(monkeypatch, str(link / "Notes/w/a.md"), "Notes/x/../w/a.md",
+                  str(outside), "../elsewhere.md")
+    assert e.value.code not in (0, None)
+    out = capsys.readouterr().out.splitlines()
+    assert out == [f"{outside}  (error: outside the vault)", "../elsewhere.md  (error: outside the vault)",
+                   "Notes/w/a.md  email:1 ssn:1", "1 notes masked, 0 unchanged, 0 skipped, 2 failed"]
+    assert seen == ["Notes/w/a.md"]
+
+
+def test_mask_help_warns_about_notes_open_in_obsidian(monkeypatch, capsys):
+    with pytest.raises(SystemExit):
+        _run_mask(monkeypatch, "--help")
+    assert "not open for editing in Obsidian" in capsys.readouterr().out

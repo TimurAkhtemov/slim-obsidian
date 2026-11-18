@@ -183,7 +183,9 @@ def cmd_reflect(args):
 def _mask_line(res: dict) -> str:
     """One note: classes and counts, never a value."""
     tail = []
-    if res.get("skipped"):
+    if res.get("error"):
+        tail.append(f"(error: {res['error']})")
+    elif res.get("skipped"):
         tail.append(f"({res['skipped']})")
     elif res["counts"]:
         tail.append(" ".join(f"{c}:{n}" for c, n in sorted(res["counts"].items())))
@@ -215,17 +217,25 @@ def cmd_mask(args):
         finally:
             con.close()
 
+    masked = unchanged = skipped = errors = 0
+    failed = changed = False
     rels = []
     for name in args.notes:
+        # ONE spelling per note, the index's: relative to the RESOLVED vault. A symlinked or
+        # `..` spelling would be masked and then never re-indexed under the path ingest uses.
         path = Path(name)
-        if path.is_absolute() and path.is_relative_to(VAULT):
-            path = path.relative_to(VAULT)
-        rels.append(path.as_posix())
+        try:
+            rel = (path if path.is_absolute() else VAULT / path).resolve() \
+                .relative_to(VAULT.resolve()).as_posix()
+        except ValueError:
+            print(f"{name}  (error: outside the vault)")
+            errors += 1
+            continue
+        if rel not in rels:
+            rels.append(rel)
     if args.all:
         rels += [r for r in mask.recordings(VAULT) if r not in rels]
 
-    masked = unchanged = skipped = 0
-    failed = changed = False
     for rel in rels:
         try:
             res = mask.mask_note(VAULT, rel, force=args.force, dry_run=args.dry_run)
@@ -233,11 +243,12 @@ def cmd_mask(args):
             # The class only: a message can quote the file it choked on.
             trace.record("mask", {"note": rel, "status": "failed", "error": type(exc).__name__})
             print(f"{rel}  (error: {type(exc).__name__})")
-            skipped += 1
-            failed = True
+            errors += 1
             continue
         print(_mask_line(res))
-        if res.get("skipped"):
+        if res.get("error"):
+            errors += 1
+        elif res.get("skipped"):
             skipped += 1
         elif res["counts"]:
             masked += 1
@@ -258,9 +269,11 @@ def cmd_mask(args):
         finally:
             con.close()
     prefix = "dry run: " if args.dry_run else ""
-    print(f"{prefix}{masked} notes masked, {unchanged} unchanged, {skipped} skipped")
+    failures = f", {errors} failed" if errors else ""
+    print(f"{prefix}{masked} notes masked, {unchanged} unchanged, {skipped} skipped{failures}")
+    failed = failed or bool(errors)
     trace.record("mask", {"status": "done", "dry_run": args.dry_run, "masked": masked,
-                          "unchanged": unchanged, "skipped": skipped, "failed": failed})
+                          "unchanged": unchanged, "skipped": skipped, "failed": errors})
     if failed:
         raise SystemExit(1)
 
@@ -305,7 +318,8 @@ def main():
                    help="preview the selection only — no model call, no write")
     p.set_defaults(fn=cmd_reflect)
 
-    p = sub.add_parser("mask", help="mask personal data in recordings already in the vault")
+    p = sub.add_parser("mask", help="mask personal data in recordings already in the vault",
+                       epilog="Run it while those notes are not open for editing in Obsidian.")
     p.add_argument("notes", nargs="*", metavar="NOTE", help="vault-relative recording paths")
     p.add_argument("--all", action="store_true",
                    help="every recording, except folders listed under pii.skip")

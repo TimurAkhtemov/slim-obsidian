@@ -303,3 +303,119 @@ def test_the_masked_value_leaves_the_index(tmp_path, monkeypatch):
     con.close()
     assert rows and not any("9999" in t or EMAIL in t for t in rows)
     assert any("[SSN]" in t for t in rows)
+    con = db.connect()
+    hits = con.execute("SELECT count(*) FROM fragments_fts WHERE fragments_fts MATCH '9999'")
+    assert hits.fetchone()[0] == 0
+    con.close()
+
+
+# --- fix round 1: splices only, refuse what cannot stay byte-exact ---------------------------
+
+FM = "---\ntitle: t\norigin: recorded\n---\n"
+SUM = (f"<!-- slim:summary prompt=\"record-v2\" -->\n## Summary\n\nMail {EMAIL} today.\n"
+       "<!-- /slim:summary -->\n")
+TR = f"## Transcript\n\n**Me:** my number is {SSN}.\n"
+
+SHAPES = {
+    "legacy, title and embed above the summary":
+        FM + "\n# My title\n\n![[a.webm]]\n\n" + SUM + "\n## Notes\n\n- mine\n\n" + TR,
+    "legacy, owner prose above the summary": FM + "\nSome prose of mine.\n\n" + SUM + "\n" + TR,
+    "an owner line between the summary and Notes":
+        FM + "\n````slim-meeting\n" + SUM + "an owner line\n\n## Notes\n\n- mine\n" + TR + "````\n",
+    "owner text after the summary, no Notes heading":
+        FM + "\n````slim-meeting\n" + SUM + "\nowner text, no heading\n" + TR + "````\n",
+    "Notes with no blank line under the heading":
+        FM + "\n````slim-meeting\n" + SUM + "\n## Notes\n- mine\n" + TR + "````\n",
+    "trailing spaces and blank lines after the transcript":
+        FM + "\n````slim-meeting\n" + SUM + "\n" + TR + "  \n\n\n````\n",
+    "five-backtick fence, opener info, closer at EOF":
+        FM + "\n`````slim-meeting x\n" + SUM + "\n" + TR + "`````",
+    "an extra blank line under ## Summary":
+        FM + "\n````slim-meeting\n" + SUM.replace("## Summary\n\n", "## Summary\n\n\n")
+        + "\n" + TR + "````\nafter\n",
+}
+
+
+def _without_pii_lines(text: str) -> str:
+    _, skip = parse_frontmatter(text)
+    lines = text.splitlines(keepends=True)
+    return "".join([l for l in lines[:skip] if not l.startswith("pii_")] + lines[skip:])
+
+
+@pytest.mark.parametrize("shape", SHAPES)
+def test_only_the_masked_spans_and_pii_lines_change(tmp_path, indexed, shape):
+    rel = "Notes/w/shape.md"
+    before = SHAPES[shape]
+    (tmp_path / "Notes/w").mkdir(parents=True)
+    (tmp_path / rel).write_text(before, encoding="utf-8")
+    out = mask.mask_note(tmp_path, rel)
+    after = (tmp_path / rel).read_text(encoding="utf-8")
+    assert out["changed"] is True and out["counts"] == {"email": 1, "ssn": 1}, out
+    assert _without_pii_lines(after) == before.replace(EMAIL, "[EMAIL]").replace(SSN, "[SSN]")
+    assert parse_frontmatter(after)[0]["pii_by"] == pii.VERSION
+
+
+def test_a_note_with_cr_line_endings_is_refused_untouched(tmp_path, indexed):
+    rel = "Notes/w/crlf.md"
+    raw = SHAPES["legacy, owner prose above the summary"].replace("\n", "\r\n").encode()
+    (tmp_path / "Notes/w").mkdir(parents=True)
+    (tmp_path / rel).write_bytes(raw)
+    out = mask.mask_note(tmp_path, rel)
+    assert out["error"] == "CR line endings" and out["changed"] is False
+    assert (tmp_path / rel).read_bytes() == raw and indexed == []
+
+
+def test_a_written_note_keeps_its_exact_bytes(tmp_path, indexed):
+    """Through real file I/O: nothing is translated on the way in or out."""
+    rel = "Notes/w/bytes.md"
+    before = SHAPES["trailing spaces and blank lines after the transcript"].encode()
+    (tmp_path / "Notes/w").mkdir(parents=True)
+    (tmp_path / rel).write_bytes(before)
+    mask.mask_note(tmp_path, rel)
+    after = (tmp_path / rel).read_bytes()
+    assert _without_pii_lines(after.decode()).encode() == \
+        before.replace(EMAIL.encode(), b"[EMAIL]").replace(SSN.encode(), b"[SSN]")
+
+
+def test_a_splice_that_moves_other_bytes_is_refused(tmp_path, indexed, monkeypatch):
+    rel = "Notes/w/call.md"
+    _recorded(tmp_path, rel, summary=f"Mail {EMAIL}.")
+    before = (tmp_path / rel).read_bytes()
+    real = note_writer.replace_summary
+    monkeypatch.setattr(note_writer, "replace_summary",
+                        lambda text, summary: real(text, summary).replace("- typed", "- TYPED"))
+    out = mask.mask_note(tmp_path, rel)
+    assert out["error"] == "integrity" and out["changed"] is False
+    assert (tmp_path / rel).read_bytes() == before and indexed == []
+
+
+def test_a_note_that_keeps_changing_is_a_failure_not_a_skip(tmp_path, indexed, monkeypatch):
+    rel = "Notes/w/busy.md"
+    _recorded(tmp_path, rel, transcript=PASSWORD_TRANSCRIPT)
+    path = tmp_path / rel
+
+    def always_appends(window):
+        path.write_text(path.read_text(encoding="utf-8") + " more", encoding="utf-8")
+        return None
+
+    monkeypatch.setattr(pii, "ask_model", always_appends)
+    out = mask.mask_note(tmp_path, rel)
+    assert out["error"] == "changed while masking" and out["changed"] is False
+    assert "pii_by" not in path.read_text(encoding="utf-8") and indexed == []
+
+
+def test_a_draft_or_excluded_note_is_never_written(tmp_path, indexed):
+    for rel in ("Notes/_unfiled/rec.slim-draft.md", "Attachments/copy.md"):
+        _recorded(tmp_path, rel)
+        before = (tmp_path / rel).read_bytes()
+        out = mask.mask_note(tmp_path, rel)
+        assert out["skipped"] == "not indexed: draft or excluded folder"
+        assert (tmp_path / rel).read_bytes() == before
+    assert indexed == []
+
+
+def test_recordings_leaves_out_a_draft_still_recording(tmp_path):
+    _recorded(tmp_path, "Notes/_unfiled/rec.slim-draft.md")
+    _recorded(tmp_path, "Journal/rec.slim-draft.md")
+    _recorded(tmp_path, "Notes/_unfiled/filed.md")
+    assert mask.recordings(tmp_path) == ["Notes/_unfiled/filed.md"]

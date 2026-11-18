@@ -563,11 +563,29 @@ def test_replace_transcript_reads_a_block_that_starts_with_it():
     assert note_writer.replace_transcript(text, "\n\nsaid it\n") == text.replace("said", "said it")
 
 
-def test_replace_transcript_keeps_the_block_closed():
+def test_replace_transcript_never_refences_and_refuses_a_longer_backtick_run():
+    """A pure splice: a longer backtick run could close the block early, so it is refused."""
     text = _transcript_note()
-    out = note_writer.replace_transcript(text, "\n\n````````\nnot a fence\n")
-    block = note_writer.split_meeting_block(out)
-    assert block is not None and "not a fence" in block.body
+    with pytest.raises(ValueError, match="backtick"):
+        note_writer.replace_transcript(text, "\n\n````````\nnot a fence\n")
+    ticks = note_writer.render_note(title="t", when=NOW, type_tag="meeting",
+                                    transcript="say ``x`` twice", notes_md="", summary_md="",
+                                    topics=[], audio_rel="a.webm", filed_by_slim=True)
+    old = note_writer.read_transcript(ticks)
+    assert note_writer.replace_transcript(ticks, old.replace("``x``", "`y`")) == \
+        ticks.replace("``x``", "`y`")
+
+
+def test_the_summary_is_spliced_not_rebuilt():
+    text = _transcript_note("\nafter\n").replace("s\n<!-- /slim", "  sum mary  \n<!-- /slim")
+    assert note_writer.read_summary(text) == "  sum mary  "
+    out = note_writer.replace_summary(text, "  sum [X]  ")
+    assert out == text.replace("  sum mary  ", "  sum [X]  ")
+    with pytest.raises(ValueError, match="fence"):
+        note_writer.replace_summary(text, "<!-- /slim:summary -->")
+    with pytest.raises(ValueError, match="no summary"):
+        note_writer.replace_summary(LEGACY, "x")
+    assert note_writer.read_summary(LEGACY) == ""
 
 
 def test_replace_transcript_refuses_a_note_without_one():
