@@ -313,3 +313,28 @@ def test_failure_in_later_window_keeps_earlier_password():
         raise RuntimeError("down")
     m = pii.mask("the password is hunter2.\n\nthe PIN is later.", classes=CLS, find_password=finder)
     assert m.partial and m.counts == {"password": 1} and "hunter2" not in m.text
+
+
+def test_spans_map_secret_to_token_times():
+    toks = [(" my", 0.0, 0.2), (" ssn", 0.2, 0.5), (" 219", 0.5, 0.9), ("-09", 0.9, 1.1),
+            ("-9999", 1.1, 1.6), (" ok", 1.6, 1.8)]
+    assert pii.spans(toks, ["219-09-9999"]) == ([(0.5, 1.6)], 0)
+
+
+def test_spoken_secret_maps_through_words():
+    toks = [(" two", 0.0, 0.3), (" one", 0.3, 0.5), (" nine", 0.5, 0.8)]
+    assert pii.spans(toks, ["two one nine"]) == ([(0.0, 0.8)], 0)
+
+
+def test_unmatched_secret_is_counted():
+    assert pii.spans([(" hi", 0, 1)], ["hunter2"]) == ([], 1)
+
+
+def test_unmatched_secret_does_not_stop_later_ones_and_cache_lists_work():
+    toks = [[" a", 0.0, 0.1], [" pw", 0.1, 0.4], [" b", 0.4, 0.6]]
+    assert pii.spans(toks, ["nope", "pw"]) == ([(0.1, 0.4)], 1)
+
+
+def test_secrets_match_forward_so_repeats_map_in_order():
+    toks = [(" x", 0, 1), (" x", 1, 2)]
+    assert pii.spans(toks, ["x", "x"]) == ([(0, 1), (1, 2)], 0)

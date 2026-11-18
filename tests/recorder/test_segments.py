@@ -452,3 +452,23 @@ def test_the_paused_transcript_labels_segments_the_same_way(tmp_path):
 
     out = pipeline.handle_record_transcript(audio_rel=[first, second], vault=tmp_path)
     assert out["text"] == "**Me:** so\n\n**Them:** yes\n\n**Me:** and more"
+
+
+def test_token_times_are_cached_and_returned_on_a_hit(tmp_path, monkeypatch):
+    from slim.recorder import pipeline
+    from slim.capture import transcribe
+    calls = []
+
+    def fake_tx(p, model=None):
+        calls.append(p)
+        return transcribe.Transcript(text="hi there", model="fake", audio_seconds=1.0,
+                                     wall_seconds=1.0,
+                                     tokens=[(" hi", 0.0, 0.5), (" there", 0.5, 1.0)])
+    monkeypatch.setattr(transcribe, "transcribe", fake_tx)
+    staged = tmp_path / "s.webm"
+    staged.write_bytes(b"audio")
+    got, cached = pipeline._transcribe_segment(staged, transcribe)
+    assert not cached and got["tokens"] == [[" hi", 0.0, 0.5], [" there", 0.5, 1.0]]
+    got, cached = pipeline._transcribe_segment(staged, transcribe)
+    assert cached and got["tokens"] == [[" hi", 0.0, 0.5], [" there", 0.5, 1.0]]
+    assert len(calls) == 1

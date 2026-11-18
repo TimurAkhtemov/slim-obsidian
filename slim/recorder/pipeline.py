@@ -137,7 +137,8 @@ def _transcribe_segment(staged: Path, transcribe_mod) -> tuple[dict, bool]:
     t = transcribe_mod.transcribe(staged)
     got = {"text": t.text, "model": t.model, "audio_seconds": t.audio_seconds,
            "words": t.words, "wall_seconds": t.wall_seconds, "rtf": t.rtf,
-           "speakers_by": t.speakers_by, "solo_speaker": t.solo_speaker}
+           "speakers_by": t.speakers_by, "solo_speaker": t.solo_speaker,
+           "tokens": [list(tok) for tok in t.tokens]}
     # After normalize_container, which rewrites the file — hash what was actually read.
     try:
         got["audio_sha256"] = audio.sha256(staged)

@@ -418,3 +418,34 @@ def frontmatter(m: Masked) -> dict[str, object]:
     if m.partial:
         fm["pii_partial"] = "true"
     return fm
+
+
+def spans(tokens, secrets: list[str]) -> tuple[list[tuple[float, float]], int]:
+    """Audio time of each secret: `(seconds spans, unmatched count)`.
+
+    `tokens` is `(text, start, end)` for the segment whose text was masked. Secrets arrive in
+    text order, so each search resumes after the previous hit. Whitespace runs are collapsed
+    on both sides; everything else must match exactly."""
+    chars: list[str] = []
+    owner: list[int] = []                 # chars[i] belongs to tokens[owner[i]]
+    for k, tok in enumerate(tokens):
+        for ch in tok[0]:
+            if ch.isspace():
+                if chars and chars[-1] == " ":
+                    continue
+                ch = " "
+            chars.append(ch)
+            owner.append(k)
+    hay = "".join(chars)
+    found: list[tuple[float, float]] = []
+    missed, cursor = 0, 0
+    for secret in secrets:
+        needle = " ".join(secret.split())
+        at = hay.find(needle, cursor) if needle else -1
+        if at < 0:
+            missed += 1
+            continue
+        end = at + len(needle) - 1
+        found.append((float(tokens[owner[at]][1]), float(tokens[owner[end]][2])))
+        cursor = end + 1
+    return found, missed

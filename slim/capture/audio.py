@@ -124,6 +124,25 @@ def normalize_container(path: Path) -> Path:
     return path
 
 
+def silence(path: Path, spans: list[tuple[float, float]], pad: float = 0.15) -> None:
+    """Zero the audio inside `spans` (seconds), in place, keeping the container. No-op when empty.
+
+    Re-encodes (opus for webm), so it is skipped unless there is something to mute. The result
+    is written beside the original and swapped in, so a failed encode leaves the audio as it was."""
+    if not spans:
+        return
+    gates = "+".join(f"between(t,{max(0.0, a - pad):.3f},{b + pad:.3f})" for a, b in spans)
+    codec = ["-c:a", "libopus"] if path.suffix.lower() == ".webm" else []
+    tmp = path.with_name(f".{path.name}.silence{path.suffix}")
+    try:
+        subprocess.run([ffbin("ffmpeg"), "-y", "-loglevel", "error", "-i", str(path),
+                        "-af", f"volume=enable='{gates}':volume=0", *codec, str(tmp)],
+                       check=True)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def sha256(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as fh:

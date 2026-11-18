@@ -9,6 +9,7 @@ player unable to seek the file.
 These tests synthesize the exact condition: piping ffmpeg's output through stdout produces a
 non-seekable container without a duration header, the same shape a browser recorder writes.
 """
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -154,3 +155,39 @@ def test_ffmpeg_is_put_on_path_for_dependencies_that_look_it_up_themselves(tmp_p
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     audio.ensure_ffmpeg_on_path()
     assert audio.os.environ["PATH"].split(":")[0] == str(brew)
+
+
+def _tone(path: Path) -> None:
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i",
+                    "sine=frequency=440:duration=3", "-ac", "2", "-c:a", "libopus", str(path)],
+                   check=True)
+
+
+def _rms_db(path: Path, a: float, b: float) -> float:
+    out = subprocess.run(
+        ["ffmpeg", "-loglevel", "info", "-ss", str(a), "-t", str(b - a), "-i", str(path),
+         "-af", "astats=metadata=0", "-f", "null", "-"], capture_output=True, text=True)
+    vals = [float(m) for m in re.findall(r"Overall\s*\n?.*?RMS level dB:\s*(-?[\d.]+|-inf)",
+                                         out.stderr, re.S)] or \
+           [float(x.replace("-inf", "-999")) for x in re.findall(r"RMS level dB:\s*(-?[\d.]+|-inf)", out.stderr)]
+    return vals[-1]
+
+
+@needs_ffmpeg
+def test_silence_mutes_only_the_span(tmp_path):
+    p = tmp_path / "t.webm"
+    _tone(p)
+    before = _rms_db(p, 0.1, 0.9)
+    audio.silence(p, [(1.0, 2.0)], pad=0)
+    assert _rms_db(p, 1.1, 1.9) < -60
+    assert abs(_rms_db(p, 0.1, 0.9) - before) < 3
+    assert not list(tmp_path.glob(".*")), "no temp file left behind"
+
+
+@needs_ffmpeg
+def test_silence_with_no_spans_leaves_the_bytes(tmp_path):
+    p = tmp_path / "t.webm"
+    _tone(p)
+    raw = p.read_bytes()
+    audio.silence(p, [])
+    assert p.read_bytes() == raw

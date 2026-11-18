@@ -8,7 +8,7 @@ from __future__ import annotations
 import queue
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
@@ -34,6 +34,8 @@ class Transcript:
     speakers_by: str = ""
     # Stereo, but only one side spoke: who it was ("Me"/"Them"). `text` stays unlabelled.
     solo_speaker: str = ""
+    # Parakeet's tokens as (text, start, end) seconds; `pii.spans` maps a secret to audio time.
+    tokens: list[tuple[str, float, float]] = field(default_factory=list)
 
     @property
     def rtf(self) -> float:
@@ -242,4 +244,5 @@ def transcribe(path: Path, model: str | None = None) -> Transcript:
     wall = time.perf_counter() - t0
 
     return Transcript(text=text, model=model, audio_seconds=secs, wall_seconds=wall,
-                      speakers_by=speakers_by, solo_speaker=solo)
+                      speakers_by=speakers_by, solo_speaker=solo,
+                      tokens=[(t.text, t.start, t.end) for t in getattr(result, "tokens", [])])
