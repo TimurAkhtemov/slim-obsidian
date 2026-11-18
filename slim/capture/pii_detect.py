@@ -19,34 +19,37 @@ class Hit:
 
 
 _TURN_START = re.compile(r"\*\*[^*\n]+:\*\*")
+# The words that stand before a noun, as one list composed per use.
+_POSSESSIVES = "my|your|his|her|their|our"
+_THE = f"{_POSSESSIVES}|the"                 # "my social", "the card number"
+_DETERMINERS = f"{_THE}|that|this|a|an"     # "a callback number", "this account"
 
 # --- cue binding ---
 #
-# A number is masked on the strength of a cue only when it is BOUND to it (N1): it is the
-# first number after the cue with nothing but filler words between them, or it is directly
-# followed by "that's my <cue>", or it answers a question that asked for the cue thing (N1c,
-# P6). A value bound to a phone cue is a phone number and never another class (P2).
+# A number is masked on the strength of a cue only when it is BOUND to it: it is the first
+# number after the cue with nothing but filler words between them, or it is directly followed
+# by "that's my <cue>", or it answers a question that asked for the cue thing. A value bound to
+# a phone cue is a phone number and never another class.
 
 # Cue nouns per class, longest first, matched word-bounded on the whole text.
 _CARD_NAMES = "credit card|debit card|card|visa|mastercard|amex|american express"
 # "the number on your card" asks for the card number, not a phone number
-_NUMBER_ON_CARD = rf"number on (?:my|your|his|her|their|our|the) (?:{_CARD_NAMES})"
+_NUMBER_ON_CARD = rf"number on (?:{_THE}) (?:{_CARD_NAMES})"
 _CUE_NOUNS = {
     "ssn": "social security number|social security|social|ssn",
     "card": f"{_NUMBER_ON_CARD}|credit card number|debit card number|card number|{_CARD_NAMES}",
     "account": "routing number|routing|account number|account no|account|acct|iban|bban|sort code",
     "iban": "iban",
     "phone": f"phone number|phone|cell|mobile|callback|call back|best number|good number|number for|"
-             f"number on(?! (?:my|your|his|her|their|our|the) (?:{_CARD_NAMES})\\b)",
+             f"number on(?! (?:{_THE}) (?:{_CARD_NAMES})\\b)",
 }
 _CUE = {c: re.compile(rf"\b(?:{nouns})\b", re.I) for c, nouns in _CUE_NOUNS.items()}
-_POSSESSIVE = "my|your|his|her|their|our|the"
 # "644 04 8901. That's my social.", "12345678 for the account." The noun must end its clause:
-# "888 655 8028 is the Social Security office" is not an SSN (P3).
+# "888 655 8028 is the Social Security office" is not an SSN.
 _CUE_AFTER = {
     c: re.compile(
         r"\s*(?:[,.—–-]\s*)?(?:and\s+)?(?:(?:that's|that is|it's|it is|which is|is|was|would be)\s+)?(?:for\s+)?"
-        rf"(?:{_POSSESSIVE})\s+(?:{nouns})(?=\s*(?:[.,!?;]|$))", re.I | re.M)
+        rf"(?:{_THE})\s+(?:{nouns})(?=\s*(?:[.,!?;]|$))", re.I | re.M)
     for c, nouns in _CUE_NOUNS.items()
 }
 _GAP_MAX = 60
@@ -54,7 +57,7 @@ _FILLER = frozenset(
     "is it's its it number no the my your okay ok sure yeah yes yep so um uh well here that's that "
     "would be and goes ahead right alright thanks please".split()
 )
-# matched on the ORIGINAL text, so "one moment" is not read as a number (m2)
+# matched on the ORIGINAL text, so "one moment" is not read as a number
 _FILLER_PHRASES = re.compile(
     r"\b(?:let me see|let me check|let me look|let me find it|hold on|just a second|just a sec|just a moment|"
     r"give me a second|bear with me|one second|one moment|on file)\b", re.I)
@@ -62,7 +65,7 @@ _FILLER_PHRASES = re.compile(
 
 def _gap_ok(gap: str) -> bool:
     """Only filler words, punctuation and at most one turn label between a cue and its value.
-    `gap` is original text; a leading "'s" ("my social's …") reads as "is" (P7)."""
+    `gap` is original text; a leading "'s" ("my social's …") reads as "is"."""
     if len(gap) > _GAP_MAX or len(_TURN_START.findall(gap)) > 1:
         return False
     gap = _FILLER_PHRASES.sub(" ", re.sub(r"^['’]s\b", " is", gap))
@@ -72,16 +75,16 @@ def _gap_ok(gap: str) -> bool:
     return all(w in _FILLER for w in words)
 
 
-# A cue in a question, or across a turn, must ask FOR its thing (P6): sentence-initial, or right
+# A cue in a question, or across a turn, must ask FOR its thing: sentence-initial, or right
 # after a determiner (one adjective allowed), or coordinated with a cue that does ("Routing and
 # account number?") — and no other thing named before it ("the order number on the account").
 _ASK_ADJECTIVES = "full|last|whole|complete|current|new|old|other|same"
 _ASK_LEAD = {
     c: re.compile(
-        r"\b(?:your|the|my|his|her|their|our|that|this|a|an|which|what)\s+"
+        rf"\b(?:{_DETERMINERS}|which|what)\s+"
         rf"(?:(?:{_ASK_ADJECTIVES}{'|best|good' if c == 'phone' else ''})\s+)?$", re.I)
     for c in _CUE_NOUNS
-}   # "the best phone number": best|good only before a phone cue (ruling on P2b vs P6(i))
+}   # "the best phone number", "a good cell": best and good only ever describe a phone
 _COORDINATED = re.compile(r"\s*(?:,|and|or|, and|, or)\s*")
 # Another thing named before the cue noun in its sentence: "the order number on the account",
 # "your claim account number". Cue nouns themselves are blanked out first, so "a callback number
@@ -95,7 +98,7 @@ _OTHER = re.compile(
 # my visa, …" is how a card number is introduced.
 _UNDER_PREPOSITION = re.compile(
     r"\b(?:on|for|to|with|from|in|at|about|into|onto|regarding|under|against)\s+"
-    r"(?:(?:your|the|my|his|her|their|our|that|this|a|an)\s+)?"
+    rf"(?:(?:{_DETERMINERS})\s+)?"
     rf"(?:(?:{_ASK_ADJECTIVES})\s+)?$", re.I)
 _PREPOSITION_CLASSES = {"ssn", "account", "iban"}   # the classes a same-sentence cue is checked for
 
@@ -142,10 +145,10 @@ def _sentences(norm: str, s: int, e: int) -> list[tuple[int, int]]:
     return [(a + len(norm[a:b]) - len(norm[a:b].lstrip()), b) for a, b in out]
 
 
-# --- numbers that stand alone (N2) ---
+# --- numbers that stand alone ---
 
 # A maximal run of digit groups joined by one separator: a space, ", ", "-", "." or "/". A run is
-# a list of ", "-separated segments; a value ends at a comma (P1).
+# a list of ", "-separated segments: "4111 1111 1111 1111, 09 28" is a card, then an expiry.
 _RUN = re.compile(r"\d+(?:(?:, |[ ./-])\d+)*")
 _SEGMENT = re.compile(r"\d+(?:[ ./-]\d+)*")
 _OPENERS = "([{\"'“‘#"
@@ -194,11 +197,19 @@ def _aba_ok(d: str) -> bool:
     return (3 * (n[0] + n[3] + n[6]) + 7 * (n[1] + n[4] + n[7]) + (n[2] + n[5] + n[8])) % 10 == 0
 
 
-# --- what a bound value is never (P2, P4) ---
+# --- what a bound value is never ---
 
 _ZIP4 = re.compile(r"\d{5}-\d{4}")   # dashed only: a spaced 5-4 is also how an account is read
 # written as a phone number, with separators: never an SSN or an account number
-_PHONE_SHAPED = re.compile(r"(?:1[ .-]?)?(?:[2-9]\d{2}([ .-])[2-9]\d{2}\1\d{4}|[2-9]\d{2} [2-9]\d{6})")
+# A phone number as written: optional 1/+1, an area code (in brackets or not) and an exchange
+# starting 2-9, separators a space, dash or dot. `_PHONE` finds one with no cue; `_PHONE_SHAPED`
+# says a bound value is one (one separator throughout, or "344 5550101"), so it is never an SSN
+# or an account number.
+_NXX = r"[2-9]\d{2}"
+_PHONE_LEAD = r"(?:\+?1[ .-]?)?"
+_PHONE_FORM = rf"{_PHONE_LEAD}(?:\({_NXX}\) ?|{_NXX}[ .-]){_NXX}[ .-]\d{{4}}"
+_PHONE_SHAPED = re.compile(
+    rf"{_PHONE_LEAD}(?:\({_NXX}\) ?{_NXX}[ .-]\d{{4}}|{_NXX}([ .-]){_NXX}\1\d{{4}}|{_NXX} {_NXX}\d{{4}})")
 
 
 def _year(y: str) -> bool:
@@ -224,10 +235,10 @@ def _all_years(s: str) -> bool:
     return all(len(g) == 4 and 1900 <= int(g) <= 2099 for g in re.findall(r"\d+", s))
 
 
-# The speaker says what the number is, and it is not the cue's thing (P5): "98919781 is the
+# The speaker says what the number is, and it is not the cue's thing: "98919781 is the
 # ticket", "821 688 dollars short".
 _LABEL_AFTER = re.compile(
-    r"\s*,?\s*(?:is|was|are|were)\s+(?:the|my|a|an|our|your|his|her|their)\s+([^.,!?;\n]*)", re.I)
+    rf"\s*,?\s*(?:is|was|are|were)\s+(?:{_THE}|a|an)\s+([^.,!?;\n]*)", re.I)
 _UNIT_AFTER = re.compile(
     r"\s*(?:dollars|bucks|cents|points|percent|years|people|times|views|followers|entries|lookups|packets|"
     r"users|months|days|hours|minutes|miles|items|units|of them|each|short|strong|in the red|in the black|"
@@ -382,9 +393,9 @@ _SSN_SPACED = re.compile(r"\d{3} \d{2} \d{4}")
 # "741 05 7024" with no cue is how the transcriber writes a spoken SSN, and also how it writes
 # "we had 300 25 2000 users". Measurement-gated: False switches the shape off.
 SSN_SPACED_CUE_FREE = True
-# "the last four of my social are 8901" (m3); "four" is "4" after normalise
+# "the last four of my social are 8901"; "four" is "4" after normalise
 _SSN_LAST_FOUR = re.compile(
-    rf"\blast 4(?: digits)? of (?:{_POSSESSIVE}) (?:{_CUE_NOUNS['ssn']})(?: is| are|:)? (\d{{4}})\b", re.I)
+    rf"\blast 4(?: digits)? of (?:{_THE}) (?:{_CUE_NOUNS['ssn']})(?: is| are|:)? (\d{{4}})\b", re.I)
 
 
 def _ssn_fits(s: str) -> bool:
@@ -393,7 +404,7 @@ def _ssn_fits(s: str) -> bool:
 
 
 _LAST_FOUR_ASKED = re.compile(
-    rf"\blast 4(?: digits)? of (?:your|the|his|her|their|my) (?:{_CUE_NOUNS['ssn']})\b", re.I)
+    rf"\blast 4(?: digits)? of (?:{_THE}) (?:{_CUE_NOUNS['ssn']})\b", re.I)
 
 
 def _last_four_answers(scene: _Scene) -> list[tuple[int, int]]:
@@ -436,20 +447,26 @@ _BRANDS = {
 }
 
 
-def _brand_prefix(d: str) -> bool:
-    return any(lo <= int(d[:len(str(lo))]) <= hi for prefixes, _ in _BRANDS.values() for lo, hi in prefixes)
-
-
-def _branded(d: str) -> bool:
+def _issued(d: str, exact_length: bool) -> bool:
+    """d starts with a brand's prefix, and (when asked) has one of that brand's lengths."""
     return any(
-        len(d) in lengths and any(lo <= int(d[:len(str(lo))]) <= hi for lo, hi in prefixes)
+        (not exact_length or len(d) in lengths) and any(lo <= int(d[:len(str(lo))]) <= hi for lo, hi in prefixes)
         for prefixes, lengths in _BRANDS.values()
     )
 
 
+def _brand_prefix(d: str) -> bool:
+    return _issued(d, exact_length=False)
+
+
+def _branded(d: str) -> bool:
+    return _issued(d, exact_length=True)
+
+
 def _card_groups(s: str) -> bool:
+    """Contiguous, or up to five groups of 3+ digits: how a card or an account is read out."""
     shape = _shape(s)
-    return len(shape) <= 5 and min(shape) >= 3                # contiguous, or groups of 3+
+    return len(shape) <= 5 and min(shape) >= 3
 
 
 def _card_fits(s: str) -> bool:
@@ -500,7 +517,7 @@ def _account_fits(s: str) -> bool:
     """Bound: contiguous, 2-5 groups of 3+ digits, or a sort code: a list holding a 1- or 2-digit
     group ("Routing was 675, 86, 415, 4, 643 packets") is not an account number."""
     shape = _shape(s)
-    groups = len(shape) == 1 or (len(shape) <= 5 and min(shape) >= 3)
+    groups = _card_groups(s)
     if _not_a_value(s) or _all_years(s) or _PHONE_SHAPED.fullmatch(s):
         return False
     # "7731 2209 54": one short group at either end of a space- or dash-read number (not a list)
@@ -530,9 +547,9 @@ def _accounts(scene: _Scene) -> list[tuple[int, int]]:
     return spans
 
 
-# --- email (N4) ---
+# --- email ---
 
-# bounded parts: an unbounded local part backtracks quadratically on a long run of letters (m4)
+# bounded parts: an unbounded local part backtracks quadratically on a long run of letters
 _EMAIL = re.compile(r"[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63})+")
 _TLD = "com|org|net|edu|gov|io|co|us|uk|de|ca|me|info|ai|app|dev"
 # " at example.org" as the transcriber writes it, or " at example dot org" as words
@@ -544,10 +561,10 @@ _LOCAL_NAME_DIGITS = re.compile(r"[A-Za-z]{3,}\d{1,4}")
 _LOCAL_LEAD = re.compile(
     r"(?:[.?!]\s+|\n\s*|\*\*[^*\n]+:\*\*\s*|\b(?:it's|it is|is|use|try|to|at|email|e-mail)\s+|:\s*)$", re.I)
 _EMAIL_BEFORE = re.compile(
-    r"(?:\b(?:my|your|his|her|their|our|the) e-?mail(?: address)?((?: is|:|'s)?)|\be-?mail(?: address)?( is|:))"
+    rf"(?:\b(?:{_THE}) e-?mail(?: address)?((?: is|:|'s)?)|\be-?mail(?: address)?( is|:))"
     r" ((?:\S+ ){0,4}\S+)$", re.I)
 _EMAIL_AFTER = re.compile(
-    r"\s*[,.]?\s*(?:that's|that is)\s+(?:my|your|his|her|their|our)\s+e-?mail(?: address)?(?=\s*(?:[.,!?]|$))",
+    rf"\s*[,.]?\s*(?:that's|that is)\s+(?:{_POSSESSIVES})\s+e-?mail(?: address)?(?=\s*(?:[.,!?]|$))",
     re.I | re.M)
 _SENTENCE_START = re.compile(r".*(?:[.?!]\s+|\n|\*\*[^*\n]+:\*\*\s*)", re.S)   # ends where one starts
 # Words that never make a local part on their own: "it at amazon.com", "me at Starbucks.com".
@@ -618,8 +635,7 @@ _ADDRESS = re.compile(
     rf"\b\d{{1,6}}(?:\s\d{{1,3}})?\s+(?:[A-Z][a-z]+\s+){{1,4}}(?:{_STREET})\b\.?"
     r"(?:,? (?i:apartment|apt|suite|unit|#) \w+)?(?:,? \d{5}(?:-\d{4})?\b)?"
 )
-# NXX NXX XXXX, area and exchange starting 2-9, separators a space, dash or dot
-_PHONE = re.compile(r"(?<!\d)(?:\+?1[ .-]?)?(?:\([2-9]\d{2}\) ?|[2-9]\d{2}[ .-])[2-9]\d{2}[ .-]\d{4}(?!\d)")
+_PHONE = re.compile(rf"(?<!\d){_PHONE_FORM}(?!\d)")
 
 
 def _phone_fits(s: str) -> bool:
@@ -638,7 +654,7 @@ _DETECTORS = {
     "address": lambda scene: [m.span() for m in _ADDRESS.finditer(scene.norm)],
     "email": _emails,
 }
-# An exact tie goes to the class listed first (R9).
+# An exact tie goes to the class listed first: the more harmful leak wins.
 _RANK = {c: k for k, c in enumerate(_DETECTORS)}
 
 
@@ -647,7 +663,7 @@ def _detect(norm: str, classes: set[str], text: str | None = None, idx: list[int
     in the original words; without them the normalised text stands in."""
     scene = _Scene(norm, norm if text is None else text, list(range(len(norm) + 1)) if idx is None else idx)
     hits = [Hit(a, b, cls) for cls, detect in _DETECTORS.items() if cls in classes for a, b in detect(scene)]
-    # a value bound to a phone cue is a phone number, whether or not phones are masked (P2)
+    # a value bound to a phone cue is a phone number, whether or not phones are masked
     phone = _merged(scene.phone_bound)
     starts = [a for a, _ in phone]
 
