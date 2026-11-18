@@ -21,3 +21,4 @@ are the history. Past ~20 items is a signal about scope, not a reason for headin
 - [ ] A listed answer given in another order than asked binds by position: "zip and account number?" ⏎ "48213377 and 10001" masks the zip and leaves the account.
 - [ ] A cue noun followed by balance/type/holder is read as the cue: "What's your account balance?" ⏎ "1234567." is masked as an account.
 - [ ] A card's 3-digit security code is not a masked class.
+- [ ] Masking's context rules (`pii_detect.py`, cue binding) keep missing rarer phrasings, most of all in answers to a question that asks for two things. Measure them against the local model and a PII tagger on the synthetic calls and the reviews' hard cases; if a model matches them, delete the binding rules and keep the shapes.
